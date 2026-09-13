@@ -1,6 +1,6 @@
 use super::Shipyard;
 use crate::markets::Market;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Shipyard as JournalShipyard;
 
@@ -16,17 +16,15 @@ impl Shipyard {
     /// row every time somebody without the unlock passes through, and gain it
     /// back from the next sender who has it.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         shipyard: &JournalShipyard,
     ) -> Result<(), Error> {
         // Emptied and refilled together, so that the yard is never seen
         // holding nothing.
-        let mut tx = db.pool.begin().await?;
-
         Market::touch(
-            &mut tx,
+            &mut *conn,
             timestamp,
             user,
             shipyard.market_id,
@@ -38,9 +36,8 @@ impl Shipyard {
         // Read as the whole of what is stocked, so an older message replaces a
         // newer list rather than adding to it. The market itself is already
         // placed, and settled that on its own stamp.
-        if newer_on_record(&mut tx, shipyard.market_id, timestamp).await? {
+        if newer_on_record(&mut *conn, shipyard.market_id, timestamp).await? {
             crate::turned_away("shipyard", timestamp);
-            tx.commit().await?;
             return Ok(());
         }
 
@@ -48,7 +45,7 @@ impl Shipyard {
             "DELETE FROM shipyard WHERE market_id = $1",
             shipyard.market_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         for ship in &shipyard.ships {
@@ -63,11 +60,9 @@ impl Shipyard {
                 ship,
                 timestamp.naive_utc(),
             )
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
         }
-
-        tx.commit().await?;
 
         Ok(())
     }
@@ -79,7 +74,7 @@ impl Shipyard {
 /// newest of any of the four kinds of trade message and so says nothing about
 /// how fresh the yard's list is.
 async fn newer_on_record(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut sqlx::PgConnection,
     market_id: i64,
     timestamp: DateTime<Utc>,
 ) -> Result<bool, Error> {
@@ -87,7 +82,7 @@ async fn newer_on_record(
         "SELECT MAX(listed_at) FROM shipyard WHERE market_id = $1",
         market_id,
     )
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *conn)
     .await?;
 
     Ok(listed.is_some_and(|listed| listed > timestamp.naive_utc()))

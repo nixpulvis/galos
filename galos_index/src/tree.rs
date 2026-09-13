@@ -1,37 +1,30 @@
-//! The galaxy tree: the batch build that raises it and the live tree that keeps
-//! it current.
+//! The galaxy tree: the batch build that raises it and the live tree that
+//! keeps it current.
 //!
-//! [`Snapshot::build`] turns a whole galaxy into a tree at once: the split, the
-//! magnitude ordering, the aggregates. [`Tree`] is that same tree held open, so a scan
-//! arriving on EDDN moves one system and touches only the handful of cells on
-//! its path rather than rebuilding anything. That is what lets the index ride a
-//! live feed: the work of one edit is the depth of the tree, a dozen cells, not
-//! its size.
+//! [`Snapshot::build`] turns a whole galaxy into a tree at once: the split,
+//! the magnitude ordering, the aggregates. [`Tree`] is that same tree held
+//! open, so a scan arriving on EDDN moves one system and touches only the
+//! cells on its path. The work of one edit is the depth of the tree, not its
+//! size.
 //!
-//! Every edit keeps the tree in exactly the state a fresh [`Snapshot::build`] over
-//! the same systems would produce: same cells, same ownership, same payloads. That
-//! is not a hope but the contract the oracle test holds it to, comparing the
-//! live tree to a rebuild after every single operation. The invariants are the
-//! doc's: a system sits in exactly one cell, a cell owns the brightest of its
-//! subtree its ancestors did not, and a cell splits at the cap and collapses
-//! back under it.
+//! Every edit leaves the tree where a fresh [`Snapshot::build`] over the
+//! same systems would: same cells, same ownership, same payloads, which the
+//! oracle test checks after every operation. A system sits in exactly one
+//! cell, a cell owns the brightest of its subtree its ancestors did not, and
+//! a cell splits at the cap and collapses back under it.
 //!
-//! Two moves do all the work. **Insert** walks the system down its path,
-//! settling it at the shallowest cell with room; where a cell is full and the
-//! newcomer is brighter than its faintest, it takes that slot and the evicted
-//! system carries on down its own path, one system bumped down one level per
-//! step, a chain no longer than the tree is deep. **Remove** is the mirror: the
-//! hole a departing system leaves is filled by promoting the brightest system
-//! from the children, which leaves a hole one level down, and so on. Splitting a
-//! cell that has outgrown the cap and collapsing one that has shrunk under it
-//! are local to that cell's own systems.
+//! Two moves do all the work. **Insert** settles the system at the
+//! shallowest cell on its path with room; where that cell is full and the
+//! newcomer brighter than its faintest, it takes the slot and the evicted
+//! system carries on down its own path. **Remove** is the mirror: the hole
+//! is filled by promoting the brightest system from the children, which
+//! leaves a hole one level down. Splitting and collapsing a cell are local
+//! to that cell's own systems.
 //!
-//! Aggregates are not maintained here. They compose exactly but drift under
-//! repeated floating-point addition and subtraction, and `m_min` cannot be
-//! recovered from a summed flux at all, so they are computed fresh from the
-//! records when the tree is [published](Tree::publish), cheap beside the
-//! writes, and exact. What the tree maintains is structure, ownership, and a
-//! per-cell count, all of them integer-exact.
+//! A cell's totals are always re-summed — a leaf from its members, an
+//! internal cell from its children — never adjusted by a difference, which
+//! drifts and cannot recover `m_min`. Structure, ownership and the per-cell
+//! count are integer-exact.
 
 use crate::aggregate::{Aggregate, Cell};
 use crate::cache::Point;
@@ -47,7 +40,7 @@ struct Record {
     position: [f64; 3],
     magnitude: f64,
     temperature: f64,
-    age_bucket: usize,
+    age_bucket: u32,
     updated_at: u32,
 }
 
@@ -66,12 +59,11 @@ fn mag_key(magnitude: f64) -> u64 {
 
 /// One node of the live tree.
 ///
-/// `slice` is what the cell owns, ordered `(magnitude, id)` so its brightest is
-/// first and its faintest last. `physical` is what physically falls in the cell
-/// and is kept only at leaves, where a split reads it; an internal node's
-/// physical members live in its descendants. `count` is the subtree's physical
-/// total, held as an integer so the split and collapse tests never touch a
-/// drifting float.
+/// `slice` is what the cell owns, ordered `(magnitude, id)`, brightest
+/// first. `physical` is what falls in the cell and is kept only at leaves,
+/// where a split reads it; an internal node's physical members live in its
+/// descendants. `count` is the subtree's physical total, an integer, so the
+/// split and collapse tests never touch a float.
 #[derive(Clone, Debug, Default)]
 struct Node {
     child_mask: u8,
@@ -89,14 +81,13 @@ impl Node {
 /// The galaxy index, held open for editing.
 ///
 /// Raised once from every system, then moved a system at a time as a feed
-/// reports changes. [`publish`](Self::publish) writes what has changed since the
-/// last one, so a directory is kept current by rewriting only the cells the
+/// reports changes. [`publish`](Self::publish) rewrites only the cells the
 /// edits touched.
 #[derive(Clone, Debug)]
 pub struct Tree {
     cells: HashMap<CellId, Node>,
     records: HashMap<u64, Record>,
-    /// Which cell owns each system: the cell whose slice, hence payload, holds it.
+    /// Which cell owns each system: whose slice, hence payload, holds it.
     owner: HashMap<u64, CellId>,
     /// Which leaf each system physically falls in.
     leaf: HashMap<u64, CellId>,
@@ -104,15 +95,28 @@ pub struct Tree {
     dirty: HashSet<CellId>,
     /// Cells that existed at the last publish and no longer do.
     gone: HashSet<CellId>,
+    /// Every cell's subtree totals, maintained rather than recomputed:
+    /// settled along the changed paths only. See wall 5 of `TODO-scale.md`.
+    ///
+    /// Never *subtracted*: a leaf is re-summed from its own members, at most
+    /// [`BuildParams::leaf_cap`] of them, and an internal cell is the merge
+    /// of its children — so `m_min` stays exact, which it is not from a
+    /// difference, and nothing drifts with the number of edits.
+    agg: HashMap<CellId, Aggregate>,
+    /// How many of each cell's subtree are owned by it or by something
+    /// below it. `rank_lo` is the subtree's count less this; maintained in
+    /// the same walk as the totals.
+    owned_below: HashMap<CellId, u64>,
+    /// Cells whose totals the next settle must work out again.
+    restat: HashSet<CellId>,
     params: BuildParams,
 }
 
 impl Tree {
     /// Build the tree from scratch, then hold it open.
     ///
-    /// The first build is the batch [`Snapshot::build`], so the live tree starts in
-    /// exactly the state the pass produces; editing keeps it there. Everything
-    /// after is incremental.
+    /// The first build is the batch [`Snapshot::build`]; every edit after it
+    /// is incremental.
     pub fn build(systems: &[System], params: &BuildParams) -> Tree {
         let built = Snapshot::build(systems, params);
         let records = systems
@@ -138,6 +142,9 @@ impl Tree {
             leaf: HashMap::new(),
             dirty: HashSet::new(),
             gone: HashSet::new(),
+            agg: HashMap::new(),
+            owned_below: HashMap::new(),
+            restat: HashSet::new(),
             params: *params,
         };
 
@@ -166,6 +173,15 @@ impl Tree {
             tree.cells.get_mut(&leaf).unwrap().physical.push(id);
         }
 
+        // The batch build's totals are what the maintained ones start from.
+        // `rank_lo` is the subtree count less what a cell and its
+        // descendants own, so the second map is read back out of the first.
+        for cell in built.index.cells() {
+            tree.agg.insert(cell.id, cell.aggregate);
+            tree.owned_below
+                .insert(cell.id, cell.aggregate.count() - cell.rank_lo);
+        }
+
         tree
     }
 
@@ -185,8 +201,7 @@ impl Tree {
     /// The true leaf a point belongs in, creating it where the octant is empty.
     ///
     /// A descent that stops at an internal cell means the point falls in an
-    /// octant that holds nothing yet; the leaf is made there, which is the same
-    /// cell a rebuild would create for the first system in that octant. The
+    /// octant that holds nothing yet, and the leaf is made there. The
     /// returned cell is always a leaf, so physical members never land on an
     /// internal node.
     fn find_or_create_leaf(&mut self, position: [f64; 3]) -> CellId {
@@ -210,8 +225,7 @@ impl Tree {
     /// Apply a batch of changed or new systems.
     ///
     /// A system already known is moved to its new record; one never seen is
-    /// added. This is what a feed calls with the systems a run of messages
-    /// touched.
+    /// added. What a feed calls with the systems a run of messages touched.
     pub fn apply(&mut self, changed: &[System]) {
         for system in changed {
             self.upsert(*system);
@@ -226,33 +240,41 @@ impl Tree {
         self.insert(system);
     }
 
-    /// How many systems the tree holds.
+    /// Whether the tree already holds this system.
     ///
-    /// No `is_empty` beside it. There was one, and nothing ever called it: a
-    /// tree is asked its size for a report or a consistency check, and an
-    /// empty one answers those with a zero like any other number.
+    /// Asked per reading by a run counting new systems. [`Self::upsert`]
+    /// works the same thing out and discards it, and by the time it runs a
+    /// whole pass of readings has accumulated, so there is no telling
+    /// which of them brought a system in.
+    pub fn holds(&self, address: i64) -> bool {
+        self.records.contains_key(&(address as u64))
+    }
+
+    /// How many systems the tree holds. No `is_empty`: a size is asked for a
+    /// report or a check, and an empty tree answers zero like any other.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
-    /// The inputs this tree was built from, reconstructed from its records: the
-    /// full-precision [`System`] values a checkpoint persists so the tree can be
-    /// rebuilt without the database. Exact, since a record holds every field a
-    /// system carries; order is arbitrary, which the order-independent
-    /// [`build`](Self::build) does not care about.
-    pub fn to_inputs(&self) -> Vec<System> {
-        self.records
-            .iter()
-            .map(|(&id64, rec)| System {
-                id64,
-                position: rec.position,
-                absolute_magnitude: rec.magnitude,
-                temperature: rec.temperature,
-                age_bucket: rec.age_bucket,
-                updated_at: rec.updated_at,
-            })
-            .collect()
+    /// The inputs this tree was built from, reconstructed from its records:
+    /// the full-precision [`System`] values a checkpoint persists so the tree
+    /// can be rebuilt without the database. Exact, since a record holds every
+    /// field a system carries; order is arbitrary, which the
+    /// order-independent [`build`](Self::build) does not care about.
+    ///
+    /// An iterator rather than a collection: a galaxy's worth is gigabytes,
+    /// streamed past the checkpoint's writer instead of held beside the tree
+    /// it was copied out of.
+    pub fn inputs(&self) -> impl Iterator<Item = System> + '_ {
+        self.records.iter().map(|(&id64, rec)| System {
+            id64,
+            position: rec.position,
+            absolute_magnitude: rec.magnitude,
+            temperature: rec.temperature,
+            age_bucket: rec.age_bucket,
+            updated_at: rec.updated_at,
+        })
     }
 
     // --- insertion --------------------------------------------------------
@@ -286,14 +308,83 @@ impl Tree {
     }
 
     /// Add `delta` to the count of every cell from the root down to `level`
-    /// along `position`'s path.
+    /// along `position`'s path, and mark each of them for a restat.
+    ///
+    /// The path a count moved along is the path whose totals moved, so this
+    /// is where the settle's work is recorded. Insert and remove both come
+    /// through here.
     fn bump_count(&mut self, position: [f64; 3], level: u8, delta: i64) {
         for l in 0..=level {
             let cid = CellId::of_point(position, l);
             if let Some(node) = self.cells.get_mut(&cid) {
                 node.count = (node.count as i64 + delta) as u64;
+                self.restat.insert(cid);
             }
         }
+    }
+
+    /// Work out the totals of every cell whose subtree has moved since the
+    /// last settle, deepest first.
+    ///
+    /// A leaf is re-summed from its own physical members and an internal
+    /// cell is the merge of its children, so nothing is ever subtracted and
+    /// `m_min` stays exact. The set is what [`bump_count`](Self::bump_count)
+    /// and the structural moves marked, plus every ancestor of those: a
+    /// slice changing without a count changing still moves the owned-below
+    /// totals `rank_lo` is read from.
+    fn settle(&mut self) {
+        for id in &self.gone {
+            self.agg.remove(id);
+            self.owned_below.remove(id);
+        }
+        if self.restat.is_empty() && self.dirty.is_empty() {
+            return;
+        }
+
+        let mut touched: HashSet<CellId> = HashSet::new();
+        for &marked in self.restat.iter().chain(self.dirty.iter()) {
+            let mut at = Some(marked);
+            while let Some(id) = at {
+                if self.cells.contains_key(&id) && !touched.insert(id) {
+                    // Already walked from a deeper mark, and so is the rest
+                    // of the way up.
+                    break;
+                }
+                at = id.parent();
+            }
+        }
+
+        let mut ordered: Vec<CellId> = touched.into_iter().collect();
+        ordered.sort_by_key(|id| std::cmp::Reverse(id.level));
+        for id in ordered {
+            let (aggregate, owned) = {
+                let node = &self.cells[&id];
+                let mut aggregate = Aggregate::ZERO;
+                let mut owned = node.slice.len() as u64;
+                if node.is_leaf() {
+                    for pid in &node.physical {
+                        let r = &self.records[pid];
+                        aggregate = aggregate.merge(Aggregate::of_system(
+                            r.position,
+                            r.magnitude,
+                            r.temperature,
+                            r.age_bucket,
+                        ));
+                    }
+                } else {
+                    for child in id.children() {
+                        if self.cells.contains_key(&child) {
+                            aggregate = aggregate.merge(self.agg[&child]);
+                            owned += self.owned_below[&child];
+                        }
+                    }
+                }
+                (aggregate, owned)
+            };
+            self.agg.insert(id, aggregate);
+            self.owned_below.insert(id, owned);
+        }
+        self.restat.clear();
     }
 
     /// Settle a system into the shallowest cell on its path with room,
@@ -410,6 +501,21 @@ impl Tree {
                 self.split(child);
             }
         }
+    }
+
+    /// Take a system out of the tree, and say whether it was there.
+    ///
+    /// The feed never withdraws one — a report says what is there, never
+    /// what is not — so this is the repair path and not the live one: a
+    /// directory whose names table and cell tree stand for different sets
+    /// is trimmed to what both hold before it is published over. See
+    /// `galos::sink::index::Index::open`.
+    pub fn forget(&mut self, id: u64) -> bool {
+        if !self.records.contains_key(&id) {
+            return false;
+        }
+        self.remove(id);
+        true
     }
 
     // --- removal ----------------------------------------------------------
@@ -565,81 +671,62 @@ impl Tree {
 
     // --- publishing -------------------------------------------------------
 
-    /// The tree as a [`Snapshot`], aggregates computed fresh from the records.
+    /// The tree as a [`Snapshot`]: every cell and every payload.
     ///
-    /// This is the whole state, the shape [`Snapshot::build`] returns, so it can be
-    /// compared to a rebuild or written whole. Aggregates and `m_min` are
-    /// summed here rather than carried, so they are exact; `rank_lo` is the
-    /// count of a subtree owned above it, read off the owned-below totals.
-    pub fn to_snapshot(&self) -> Snapshot {
-        // Fresh aggregates: leaves from their members, internal rolled up.
-        let mut agg: HashMap<CellId, Aggregate> =
-            self.cells.keys().map(|&id| (id, Aggregate::ZERO)).collect();
-        for (&id, node) in &self.cells {
-            if node.is_leaf() {
-                let a = node.physical.iter().fold(Aggregate::ZERO, |a, pid| {
-                    let r = &self.records[pid];
-                    a.merge(Aggregate::of_system(
-                        r.position,
-                        r.magnitude,
-                        r.temperature,
-                        r.age_bucket,
-                    ))
-                });
-                agg.insert(id, a);
-            }
-        }
-        // Owned-below totals, both rolled up deepest first.
-        let mut owned_below: HashMap<CellId, u64> = self
+    /// The shape [`Snapshot::build`] returns, for comparing against a
+    /// rebuild or writing whole, and O(galaxy). A publish wants
+    /// [`publish`](Self::publish), which assembles the index off the
+    /// maintained totals and builds only the payloads it will write.
+    pub fn to_snapshot(&mut self) -> Snapshot {
+        self.settle();
+        let payloads = self
             .cells
-            .iter()
-            .map(|(&id, node)| (id, node.slice.len() as u64))
+            .keys()
+            .filter_map(|&id| {
+                let points = self.payload_of(id);
+                (!points.is_empty()).then_some((id, points))
+            })
             .collect();
-        let mut ordered: Vec<CellId> = self.cells.keys().copied().collect();
-        ordered.sort_by_key(|a| std::cmp::Reverse(a.level));
-        for id in ordered {
-            if let Some(parent) = id.parent()
-                && self.cells.contains_key(&parent)
-            {
-                let child_agg = agg[&id];
-                let child_owned = owned_below[&id];
-                *agg.get_mut(&parent).unwrap() = agg[&parent].merge(child_agg);
-                *owned_below.get_mut(&parent).unwrap() += child_owned;
-            }
-        }
+        Snapshot { index: self.index_of(), payloads }
+    }
 
-        let mut payloads: HashMap<CellId, Vec<Point>> = HashMap::new();
-        let cells = self.cells.iter().map(|(&id, node)| {
-            let count = agg[&id].count();
-            let rank_lo = count - owned_below[&id];
-            let slice_len = node.slice.len() as u64;
-            if slice_len > 0 {
-                let points = node
-                    .slice
-                    .iter()
-                    .map(|&(_, pid)| {
-                        let r = &self.records[&pid];
-                        Point::new(
-                            pid,
-                            r.position,
-                            r.magnitude,
-                            r.temperature,
-                            r.updated_at,
-                        )
-                    })
-                    .collect();
-                payloads.insert(id, points);
-            }
+    /// The index as the maintained totals have it: one pass over the cells,
+    /// which is the tree's size and not the galaxy's.
+    ///
+    /// `rank_lo` is the count of a cell's subtree that something above it
+    /// owns, which is the subtree total less what it and its descendants
+    /// own — both of them settled, neither of them counted here.
+    fn index_of(&self) -> Index {
+        Index::from_cells(self.cells.iter().map(|(&id, node)| {
+            let aggregate = self.agg[&id];
+            let rank_lo = aggregate.count() - self.owned_below[&id];
             Cell {
                 id,
                 rank_lo,
-                rank_hi: rank_lo + slice_len,
+                rank_hi: rank_lo + node.slice.len() as u64,
                 child_mask: node.child_mask,
-                aggregate: agg[&id],
+                aggregate,
             }
-        });
+        }))
+    }
 
-        Snapshot { index: Index::from_cells(cells), payloads }
+    /// One cell's payload: what it owns, brightest first, as the slice holds
+    /// it.
+    fn payload_of(&self, id: CellId) -> Vec<Point> {
+        let Some(node) = self.cells.get(&id) else { return Vec::new() };
+        node.slice
+            .iter()
+            .map(|&(_, pid)| {
+                let r = &self.records[&pid];
+                Point::new(
+                    pid,
+                    r.position,
+                    r.magnitude,
+                    r.temperature,
+                    r.updated_at,
+                )
+            })
+            .collect()
     }
 
     /// Write the tree whole to a directory, as a first publish or a reset.
@@ -654,20 +741,29 @@ impl Tree {
     /// Write only what has changed since the last publish, and forget it.
     ///
     /// The index file is small and rewritten whole; the payload files are the
-    /// bulk, and only the cells the edits touched are written or removed, which
-    /// is what keeps a live directory current for the cost of the churn rather
-    /// than the galaxy.
+    /// bulk, and only the cells the edits touched are written or removed.
+    ///
+    /// Nothing here reads a system the edits did not touch: the index comes
+    /// off the settled totals, one pass over the cells, and a payload is
+    /// built only for a cell about to be written. See
+    /// [`settle`](Self::settle) and wall 5 of `TODO-scale.md`.
     pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
-        let built = self.to_snapshot();
+        self.settle();
         let mut dirtied = Dirtied::default();
+        let mut payloads: HashMap<CellId, Vec<Point>> = HashMap::new();
         let touched: HashSet<CellId> =
             self.dirty.iter().chain(self.gone.iter()).copied().collect();
         for id in touched {
-            match built.payloads.get(&id) {
-                Some(points) if !points.is_empty() => dirtied.changed.push(id),
-                _ => dirtied.removed.push(id),
+            let points = self.payload_of(id);
+            match points.is_empty() {
+                false => {
+                    dirtied.changed.push(id);
+                    payloads.insert(id, points);
+                }
+                true => dirtied.removed.push(id),
             }
         }
+        let built = Snapshot { index: self.index_of(), payloads };
         built.write_diff(dir, &dirtied)?;
         self.dirty.clear();
         self.gone.clear();
@@ -677,18 +773,18 @@ impl Tree {
 
 // The batch build below raises the whole tree at once; the live tree above
 // keeps it current. Both hold the same invariants, so a fresh build and a
-// sequence of edits land on the same tree, which is what the oracle checks.
+// sequence of edits land on the same tree.
 
 /// How many systems an internal node owns in its own slice.
 ///
-/// Small, because budget granularity matters most at coarse levels where one
-/// expansion moves many points. Tuned once a real build has run.
+/// Small: budget granularity matters most at coarse levels, where one
+/// expansion moves many points.
 pub const INTERNAL_SLICE: usize = 512;
 
 /// The most systems a cell holds before it splits, and the most a leaf owns.
 ///
-/// Bulk-transfer efficiency wins over granularity at the leaves, so they are
-/// large. A cell over this divides; one that cannot stays a leaf regardless.
+/// Large, bulk transfer mattering more than granularity at the leaves. A
+/// cell over this divides; one that cannot stays a leaf regardless.
 pub const LEAF_CAP: usize = 4096;
 
 /// The two cuts the build turns on: how big a slice each kind of node owns.
@@ -712,24 +808,28 @@ impl Default for BuildParams {
 /// Absolute magnitude and temperature are the finished figures from the
 /// photometry fallback chain (scanned stars summed, else the primary's class,
 /// else a default), not anything the build works out. `age_bucket` is the
-/// Recency axis the caller has already binned.
+/// Recency axis the caller has already binned; `updated_at` is the same fact
+/// unbinned, Unix seconds, so the Recency filter has something finer than a
+/// day to test. The caller bins one from the other off one reading.
 ///
-/// `updated_at` is the same fact unbinned: Unix seconds of the row's own
-/// `updated_at`. Both, because they answer at different distances. A cell's
-/// aggregate counts systems per age bucket, which is a binning and cannot be
-/// undone; the payload carries the second so that the Recency filter, whose
-/// shortest span is a minute, has something finer than a day to test. The
-/// caller bins one from the other off one reading, so the far view and the near
-/// view of the same filter cannot disagree about a system.
+/// The record is written to disk as its own bytes, so it is `repr(C)`, fifty
+/// six bytes, and padding-free; see [`crate::checkpoint`].
+#[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct System {
     pub id64: u64,
     pub position: [f64; 3],
     pub absolute_magnitude: f64,
     pub temperature: f64,
-    pub age_bucket: usize,
+    pub age_bucket: u32,
     pub updated_at: u32,
 }
+
+/// The record width the resume point's format is written against. A field
+/// added here without the format being told would read a checkpoint of one
+/// galaxy back as another, so it fails the build instead.
+const _: () = assert!(std::mem::size_of::<System>() == 56);
+const _: () = assert!(std::mem::align_of::<System>() == 8);
 
 /// A built tree: the index the walks plan on and the per-cell payloads.
 ///
@@ -772,18 +872,42 @@ impl Snapshot {
 
     /// Build the light snapshot from a list of systems.
     ///
-    /// The order of the input does not matter: the split is by position and the
-    /// slicing is by magnitude, so the same systems build the same tree however
-    /// they arrive. Within a cell's payload the systems come out brightest
-    /// first, the order they were claimed in. For the live, editable form raise
-    /// a [`Tree`] with [`Tree::build`] instead, which builds this and holds it
-    /// open.
+    /// The order of the input does not matter: the split is by position and
+    /// the slicing is by magnitude, so the same systems build the same tree
+    /// however they arrive. Within a cell's payload the systems come out
+    /// brightest first. For the live, editable form raise a [`Tree`] with
+    /// [`Tree::build`], which builds this and holds it open.
     pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
-        let leaves = split_into_leaves(systems, params.leaf_cap);
-        let (cells, child_mask) = tree_of(&leaves);
+        Snapshot::of_region(
+            CellId::ROOT,
+            systems,
+            &HashSet::new(),
+            params,
+        )
+    }
+
+    /// Build the subtree of one cell, out of the systems that fall in it.
+    ///
+    /// [`build`](Self::build) is this with the root cell and nothing
+    /// claimed; rooted lower down, a galaxy is raised a region at a time and
+    /// never held whole. See [`crate::region`], which decides the regions,
+    /// works out what the cells above them own, and joins the pieces.
+    ///
+    /// `claimed` is the systems of this region that a cell *above* it took:
+    /// they are still in `systems`, every cell here holding them, but
+    /// nothing here owns them. It is the whole of the coupling between a
+    /// region and the rest of the galaxy.
+    pub fn of_region(
+        region: CellId,
+        systems: &[System],
+        claimed: &HashSet<u64>,
+        params: &BuildParams,
+    ) -> Snapshot {
+        let leaves = split_into_leaves(region, systems, params.leaf_cap);
+        let (cells, child_mask) = tree_of(region, &leaves);
         let aggregates = roll_up(systems, &leaves, &cells);
         let Slices { payloads, rank_lo, owned } =
-            assign_slices(systems, &leaves, params);
+            assign_slices(region, systems, &leaves, claimed, params);
 
         let built_cells = cells.iter().map(|&id| {
             let lo = rank_lo.get(&id).copied().unwrap_or(0);
@@ -828,14 +952,13 @@ impl Snapshot {
         dirtied
     }
 
-    /// Rebuild over the updated systems, reporting which cells changed from this
-    /// one.
+    /// Rebuild over the updated systems, reporting which cells changed from
+    /// this one.
     ///
-    /// A full rebuild in CPU, but the write cost is only the [`Dirtied`] cells,
-    /// what a nightly or per-minute publish pays, since positions are immutable
-    /// and churn is clustered. The live [`Tree`] cuts the rebuild itself to an
-    /// O(depth) edit; the on-disk result is the same, which is what
-    /// [`diff`](Self::diff) guarantees and the tests check.
+    /// A full rebuild in CPU, but the write cost is only the [`Dirtied`]
+    /// cells, positions being immutable and churn clustered. The live
+    /// [`Tree`] cuts the rebuild itself to an O(depth) edit and lands the
+    /// same directory.
     pub fn rebuild(
         &self,
         systems: &[System],
@@ -847,16 +970,21 @@ impl Snapshot {
     }
 }
 
-/// Drop every system into the cube and split any cell past the cap, returning
+/// Drop every system into `root` and split any cell past the cap, returning
 /// each leaf and the systems that fell in it. The one system-to-leaf map the
 /// rest of the build reads back through the leaf a system landed in.
+///
+/// `root` is [`CellId::ROOT`] for a build of the whole galaxy and the region
+/// cell for a build of one region; see [`Snapshot::of_region`]. Every system
+/// handed over must fall inside it.
 fn split_into_leaves(
+    root: CellId,
     systems: &[System],
     leaf_cap: usize,
 ) -> HashMap<CellId, Vec<usize>> {
     let mut leaves: HashMap<CellId, Vec<usize>> = HashMap::new();
     let mut stack: Vec<(CellId, Vec<usize>)> =
-        vec![(CellId::ROOT, (0..systems.len()).collect())];
+        vec![(root, (0..systems.len()).collect())];
 
     while let Some((id, members)) = stack.pop() {
         if members.len() <= leaf_cap || id.level >= MAX_LEVEL {
@@ -873,14 +1001,19 @@ fn split_into_leaves(
 
     // An empty galaxy is still a tree: the root leaf, holding nothing.
     if leaves.is_empty() {
-        leaves.insert(CellId::ROOT, Vec::new());
+        leaves.insert(root, Vec::new());
     }
     leaves
 }
 
-/// The set of every cell (leaves and the ancestors that hold them) and each
-/// cell's mask of which octants have a child.
+/// The set of every cell from `root` down (leaves and the cells that hold
+/// them) and each cell's mask of which octants have a child.
+///
+/// The walk up stops at `root`: for a whole build that is [`CellId::ROOT`]
+/// and stops where `parent` runs out, and for a region it stops at the
+/// region, whose own ancestors belong to whoever is building them.
 fn tree_of(
+    root: CellId,
     leaves: &HashMap<CellId, Vec<usize>>,
 ) -> (HashSet<CellId>, HashMap<CellId, u8>) {
     let mut cells: HashSet<CellId> = HashSet::new();
@@ -890,7 +1023,9 @@ fn tree_of(
         cells.insert(leaf);
         child_mask.entry(leaf).or_insert(0);
         let mut c = leaf;
-        while let Some(p) = c.parent() {
+        while c != root
+            && let Some(p) = c.parent()
+        {
             *child_mask.entry(p).or_insert(0) |= 1 << c.octant();
             cells.insert(p);
             c = p;
@@ -954,13 +1089,20 @@ struct Slices {
 /// first, and pack it into that cell's payload.
 ///
 /// Returns the payloads, each cell's `rank_lo` (how many of its subtree the
-/// ancestors claimed), and how many systems each cell owns. `rank_lo` is
-/// counted the same way it is meant: a system claimed shallow raises the rank
-/// floor of every deeper cell on its path, since those cells' subtrees hold it
-/// but do not own it.
+/// ancestors claimed), and how many systems each cell owns. A system claimed
+/// shallow raises the rank floor of every deeper cell on its path, those
+/// cells' subtrees holding it but not owning it.
+///
+/// A region's build as well as a galaxy's: the walk starts at `root` rather
+/// than at level zero, and a system in `claimed` was already taken by a cell
+/// *above* `root`, so it competes for nothing here and only raises the rank
+/// floor of every cell on its path. A whole build passes [`CellId::ROOT`]
+/// and an empty claim.
 fn assign_slices(
+    root: CellId,
     systems: &[System],
     leaves: &HashMap<CellId, Vec<usize>>,
+    claimed: &HashSet<u64>,
     params: &BuildParams,
 ) -> Slices {
     let mut leaf_of: HashMap<usize, CellId> = HashMap::new();
@@ -985,30 +1127,43 @@ fn assign_slices(
     for i in order {
         let s = &systems[i];
         let leaf = leaf_of[&i];
-        let mut placed_level = leaf.level;
-        for level in 0..=leaf.level {
-            let cid = CellId::of_point(s.position, level);
-            let cap = if cid == leaf {
-                params.leaf_cap
-            } else {
-                params.internal_slice
-            };
-            let count = slice_count.entry(cid).or_insert(0);
-            if *count < cap {
-                *count += 1;
-                placed_level = level;
-                payloads.entry(cid).or_default().push(Point::new(
-                    s.id64,
-                    s.position,
-                    s.absolute_magnitude,
-                    s.temperature,
-                    s.updated_at,
-                ));
-                break;
+        let claimed_above = claimed.contains(&s.id64);
+
+        // Which level owns it. A leaf never overflows — it holds at most
+        // `leaf_cap` members and its own slice is that wide — so a system
+        // nothing above claimed always finds room somewhere on its path.
+        let mut owner = leaf.level;
+        if !claimed_above {
+            for level in root.level..=leaf.level {
+                let cid = CellId::of_point(s.position, level);
+                let cap = if cid == leaf {
+                    params.leaf_cap
+                } else {
+                    params.internal_slice
+                };
+                let count = slice_count.entry(cid).or_insert(0);
+                if *count < cap {
+                    *count += 1;
+                    owner = level;
+                    payloads.entry(cid).or_default().push(Point::new(
+                        s.id64,
+                        s.position,
+                        s.absolute_magnitude,
+                        s.temperature,
+                        s.updated_at,
+                    ));
+                    break;
+                }
             }
         }
 
-        for level in (placed_level + 1)..=leaf.level {
+        // The cells that hold it without owning it: everything below the
+        // owner, or everything in this build where the owner is above it.
+        let held_by = match claimed_above {
+            true => root.level,
+            false => owner + 1,
+        };
+        for level in held_by..=leaf.level {
             let cid = CellId::of_point(s.position, level);
             *rank_lo.entry(cid).or_insert(0) += 1;
         }
@@ -1024,9 +1179,9 @@ mod batch_tests {
     use std::collections::HashSet;
 
     /// A grid of systems spaced `step` ly apart, `n` on a side, each a touch
-    /// brighter than the last so magnitudes are all distinct and the ordering
-    /// is unambiguous. Positions are pulled toward the cube centre so they sit
-    /// well inside it whatever `n` and `step` are.
+    /// brighter than the last so the ordering is unambiguous. Positions are
+    /// pulled toward the cube centre so they sit well inside it whatever `n`
+    /// and `step` are.
     fn grid(n: usize, step: f64) -> Vec<System> {
         let mut out = Vec::new();
         let span = (n as f64 - 1.0) * step;
@@ -1073,9 +1228,8 @@ mod batch_tests {
     }
 
     /// The root owns the brightest systems and nothing fainter than what it
-    /// left to its children. Magnitude ordering is the invariant the sky's
-    /// completeness depends on, so it is checked at the one boundary it is
-    /// easiest to break: the split between the root's slice and the rest.
+    /// left to its children — the boundary the magnitude ordering is easiest
+    /// to break at.
     #[test]
     fn the_root_owns_the_brightest() {
         let systems = grid(20, 100.0);
@@ -1098,8 +1252,8 @@ mod batch_tests {
         }
     }
 
-    /// Within a cell the payload is brightest first, the order it was claimed
-    /// in, which the client leans on to draw a prefix without re-sorting.
+    /// Within a cell the payload is brightest first, which the client leans
+    /// on to draw a prefix without re-sorting.
     #[test]
     fn a_payload_is_ordered_brightest_first() {
         let built = Snapshot::build(&grid(20, 100.0), &BuildParams::default());
@@ -1111,7 +1265,7 @@ mod batch_tests {
     }
 
     /// The root aggregate is the whole galaxy: every system counted once and
-    /// every flux summed, whatever cell drew it. This is what a splat over an
+    /// every flux summed, whatever cell drew it — what a splat over an
     /// unloaded region stands on.
     #[test]
     fn the_root_aggregate_is_the_whole_galaxy() {
@@ -1130,9 +1284,8 @@ mod batch_tests {
         );
     }
 
-    /// An internal node's aggregate is exactly its children's, merged. This is
-    /// the composition the LOD cross-fade needs: parent and children integrate
-    /// to the same totals, so refining cannot pump brightness or lose a star.
+    /// An internal node's aggregate is exactly its children's, merged, so
+    /// refining cannot pump brightness or lose a star.
     #[test]
     fn a_parents_aggregate_composes_from_its_children() {
         let systems = grid(20, 100.0);
@@ -1155,10 +1308,9 @@ mod batch_tests {
         }
     }
 
-    /// A cell's rank range is `[claimed by ancestors, that plus its own slice)`,
-    /// and a leaf's top rank is its whole subtree: the leaf owns everything its
-    /// ancestors did not. The ranges are what tell how much a cell
-    /// adds when it refines.
+    /// A cell's rank range is `[claimed by ancestors, that plus its own
+    /// slice)`, and a leaf's top rank is its whole subtree: the leaf owns
+    /// everything its ancestors did not.
     #[test]
     fn ranks_are_contiguous_down_each_path() {
         let systems = grid(20, 100.0);
@@ -1205,8 +1357,8 @@ mod batch_tests {
         built.payload(id).len() <= LEAF_CAP
     }
 
-    /// Positions survive the payload bytes exactly, whatever cell owns them, so
-    /// a drawn star sits precisely where it belongs.
+    /// Positions survive the payload bytes exactly, whatever cell owns
+    /// them.
     #[test]
     fn positions_round_trip_through_the_payload() {
         let systems = grid(16, 80.0);
@@ -1227,8 +1379,8 @@ mod batch_tests {
         }
     }
 
-    /// An empty galaxy still builds a well-formed tree: one empty root, nothing
-    /// owned, no panic.
+    /// An empty galaxy still builds a well-formed tree: one empty root,
+    /// nothing owned, no panic.
     #[test]
     fn an_empty_build_is_a_bare_root() {
         let built = Snapshot::build(&[], &BuildParams::default());
@@ -1278,17 +1430,18 @@ mod tests {
             position: rng.position(),
             absolute_magnitude: rng.magnitude(),
             temperature: 3000.0 + (rng.below(20000) as f64),
-            age_bucket: rng.below(8) as usize,
-            // Off the id rather than the rng, so the draws below it keep the
-            // sequence they had, and distinct per system so a payload that
-            // mixed the stamps up fails the equivalence below.
+            age_bucket: rng.below(8) as u32,
+            // Off the id rather than the rng, so the draws below keep the
+            // sequence they had, and distinct per system, so a payload that
+            // mixed the stamps up fails the equivalence check.
             updated_at: 1_700_000_000 + id as u32,
         }
     }
 
-    /// The live tree matches a fresh build, cell for cell and system for system.
-    /// Aggregates are summed in a different order either side, so their floats
-    /// are compared within tolerance; everything discrete is compared exactly.
+    /// The live tree matches a fresh build, cell for cell and system for
+    /// system. Aggregates are summed in a different order either side, so
+    /// their floats are compared within tolerance and everything discrete
+    /// exactly.
     fn assert_equivalent(live: &Snapshot, fresh: &Snapshot) {
         assert_eq!(live.index.len(), fresh.index.len(), "cell count differs");
         for cell in fresh.index.cells() {
@@ -1338,38 +1491,37 @@ mod tests {
         let systems: Vec<_> =
             (1..=9000).map(|id| input(id, &mut rng)).collect();
         let params = BuildParams::default();
-        let tree = Tree::build(&systems, &params);
+        let mut tree = Tree::build(&systems, &params);
         assert_equivalent(
             &tree.to_snapshot(),
             &Snapshot::build(&systems, &params),
         );
     }
 
-    /// A tree rebuilt from its own `to_inputs` equals the original: the resume
-    /// path. `to_inputs` is exact and `build` is order-independent, so a
-    /// checkpoint round trip lands on the same tree the feed left, cell for
-    /// cell, which is what lets a restart follow from a cursor rather than
-    /// rebuild from the database.
+    /// A tree rebuilt from its own `inputs` equals the original: the resume
+    /// path. `inputs` is exact and `build` is order-independent, so a
+    /// checkpoint round trip lands on the tree the feed left, cell for
+    /// cell.
     #[test]
-    fn to_inputs_rebuilds_an_equal_tree() {
+    fn inputs_rebuild_an_equal_tree() {
         let mut rng = Rng(0xC0FFEE);
         let systems: Vec<_> =
             (1..=9000).map(|id| input(id, &mut rng)).collect();
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
-        let tree = Tree::build(&systems, &params);
-        let rebuilt = Tree::build(&tree.to_inputs(), &params);
+        let mut tree = Tree::build(&systems, &params);
+        let mut rebuilt = Tree::build(&tree.inputs().collect::<Vec<_>>(), &params);
         assert_equivalent(&tree.to_snapshot(), &rebuilt.to_snapshot());
     }
 
-    /// After every edit (an insert or a move) the live tree still equals a
-    /// fresh build over the same systems. This is the whole contract: correct in
-    /// place, not merely correct once. A small cap makes splits and collapses
-    /// common so the structural moves are exercised, not just the cascade.
+    /// After every edit — an insert or a move — the live tree still equals a
+    /// fresh build over the same systems. A small cap makes splits and
+    /// collapses common, so the structural moves are exercised as hard as
+    /// the cascade.
     #[test]
     fn every_edit_stays_equal_to_a_rebuild() {
-        // Several seeds, each a run of edits, and the tree is checked against a
-        // fresh build after *every* one; a bug that heals within a few steps
-        // still gets caught the step it happens.
+        // Several seeds, each a run of edits, checked against a fresh build
+        // after *every* one, so a bug that heals in a few steps is still
+        // caught at the step it happens.
         for seed in [0xDEAD_BEEF, 0x0BADC0DE, 0xF00D_CAFE, 0x5EED_1234u64] {
             run_oracle(seed);
         }
@@ -1455,8 +1607,9 @@ mod tests {
         }
     }
 
-    /// Assert every structural invariant of the live tree, so a leak is caught
-    /// at the edit that caused it rather than as an underflow later.
+    /// Assert every structural invariant of the live tree, so a leak is
+    /// caught at the edit that caused it rather than as an underflow
+    /// later.
     fn check(tree: &Tree, seed: u64, step: u64, what: &str) {
         let ctx = || format!("seed {seed:#x} step {step} {what}");
         for (&id, node) in &tree.cells {
@@ -1490,8 +1643,8 @@ mod tests {
                     ctx()
                 );
             }
-            // Ownership is consistent: each owned system exists, points back, and
-            // physically lies in this cell's subtree.
+            // Ownership is consistent: each owned system exists, points
+            // back, and physically lies in this cell's subtree.
             for &(_, sid) in &node.slice {
                 assert_eq!(
                     tree.owner.get(&sid),
@@ -1577,13 +1730,7 @@ mod tests {
         for cell in built.index.cells() {
             assert_eq!(index.get(cell.id), Some(cell));
             let disk = Index::read_payload(&dir, cell.id).unwrap();
-            let bytes =
-                crate::serialization::Encode::to_bytes(built.payload(cell.id));
-            let want =
-                <Vec<Point> as crate::serialization::Decode>::from_bytes(
-                    &bytes,
-                )
-                .unwrap();
+            let want = built.payload(cell.id);
             assert_eq!(disk, want, "payload at {:?}", cell.id);
         }
 

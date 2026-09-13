@@ -1,5 +1,5 @@
 use super::CodexEntry;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::CodexEntry as JournalEntry;
 
@@ -11,7 +11,7 @@ impl CodexEntry {
     /// is worth keeping current, since a second sighting may place it on a
     /// body the first could not name.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         entry: &JournalEntry,
@@ -65,7 +65,7 @@ impl CodexEntry {
             entry.latitude,
             entry.longitude,
         )
-        .execute(&db.pool)
+        .execute(&mut *conn)
         .await?;
 
         if done.rows_affected() == 0 {

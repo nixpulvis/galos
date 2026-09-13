@@ -1,5 +1,5 @@
 use super::SystemSignal;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::SystemSignal as JournalSignal;
 
@@ -11,7 +11,7 @@ impl SystemSignal {
     /// signal's and would be wrong for all the others. A signal the game
     /// wrote alone carries none and takes `timestamp`, which is its own.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         system_address: i64,
@@ -64,7 +64,7 @@ impl SystemSignal {
                 signal.opposing_power,
                 signal.threat_level,
             )
-            .execute(&db.pool)
+            .execute(&mut *conn)
             .await?;
 
             if done.rows_affected() == 0 {

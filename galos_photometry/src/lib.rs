@@ -610,6 +610,40 @@ impl ClassLight {
             return ClassLight::new(0.0, 3200.0);
         }
 
+        // The giants and supergiants, read whole and before the bare
+        // letters, because a supergiant is five to seven magnitudes
+        // brighter than a dwarf wearing the same letter and the index
+        // orders the sky by magnitude. The tokens only arrived with
+        // `elite_journal::body::StarClass`; before that the game's
+        // `B_BlueWhiteSuperGiant` reached here as a `B` and lit as a dwarf.
+        //
+        // Measured over Spansh's 200 M-system dump, these are 2.2 M systems
+        // — 1.1 % of the galaxy and a far larger share of what is visible
+        // from outside it, since they are the brightest things in it.
+        if c == "B_BLUEWHITESUPERGIANT" {
+            return ClassLight::new(-6.5, 18000.0);
+        }
+        if c == "A_BLUEWHITESUPERGIANT" {
+            return ClassLight::new(-6.0, 8700.0);
+        }
+        if c == "F_WHITESUPERGIANT" {
+            return ClassLight::new(-6.0, 6700.0);
+        }
+        if c == "G_WHITESUPERGIANT" {
+            return ClassLight::new(-6.0, 5500.0);
+        }
+        if c == "M_REDSUPERGIANT" {
+            // Betelgeuse and Antares: cool, enormous, and among the
+            // brightest things in the sky for it.
+            return ClassLight::new(-5.5, 3500.0);
+        }
+        if c == "K_ORANGEGIANT" {
+            return ClassLight::new(0.5, 4400.0);
+        }
+        if c == "M_REDGIANT" {
+            return ClassLight::new(-0.5, 3600.0);
+        }
+
         // The main sequence and the brown dwarfs, by leading letter, hottest
         // and brightest to coolest and dimmest.
         match class.chars().next() {
@@ -845,6 +879,38 @@ mod tests {
         for sub in ["D", "DA", "DB", "DC", "DQ", "DAV", "DX"] {
             assert_eq!(ClassLight::of(sub), ClassLight::of("D"));
         }
+    }
+
+    /// A giant is not a dwarf wearing the same letter.
+    ///
+    /// The game distinguishes them and so does the dump — 2.2 M systems of
+    /// the 200 M — and the distinction is worth five to seven magnitudes,
+    /// which is most of what decides whether a system is visible from
+    /// outside the galaxy at all. Before the tokens existed these reached
+    /// [`ClassLight::of`] as their bare letter and lit as dwarfs.
+    #[test]
+    fn a_giant_outshines_its_dwarf() {
+        for (giant, dwarf) in [
+            ("B_BlueWhiteSuperGiant", "B"),
+            ("A_BlueWhiteSuperGiant", "A"),
+            ("F_WhiteSuperGiant", "F"),
+            ("G_WhiteSuperGiant", "G"),
+            ("K_OrangeGiant", "K"),
+            ("M_RedGiant", "M"),
+            ("M_RedSuperGiant", "M"),
+        ] {
+            let (a, b) =
+                (ClassLight::of(giant), ClassLight::of(dwarf));
+            assert!(
+                a.absolute_magnitude.0 < b.absolute_magnitude.0,
+                "{giant} is not brighter than {dwarf}",
+            );
+        }
+        // And a supergiant outshines the giant of its own letter.
+        assert!(
+            ClassLight::of("M_RedSuperGiant").absolute_magnitude.0
+                < ClassLight::of("M_RedGiant").absolute_magnitude.0
+        );
     }
 
     /// A black hole gives off no light, so its flux is nothing the sky ever

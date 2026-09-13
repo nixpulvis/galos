@@ -1,52 +1,8 @@
 use super::Star;
-use crate::bodies::Parent;
+use crate::bodies::ancestry;
 use crate::orbit;
 use crate::{Database, Error};
 use elite_journal::body::Spin;
-
-/// Turn a row of `stars` into one
-///
-/// The four queries below select the same columns and differ only in what
-/// they select by, so the mapping between a row and a [`Star`] is written
-/// once here. `sqlx::query!` gives each query an anonymous row type of its
-/// own, so this is a macro rather than a function: there is no one type to
-/// name in a signature.
-macro_rules! star {
-    ($row:expr) => {{
-        let row = $row;
-        Star {
-            system_address: row.system_address,
-            id: row.id,
-            name: row.name,
-            parents: Parent::rows(row.parent_ids, row.parent_types),
-            updated_at: row.updated_at.and_utc(),
-            updated_by: row.updated_by,
-
-            absolute_magnitude: row.absolute_magnitude,
-            age_my: row.age_my,
-            distance_from_arrival_ls: row.distance_from_arrival_ls,
-            luminosity: row.luminosity,
-            star_class: row.star_class,
-            stellar_mass: row.stellar_mass,
-            subclass: row.subclass,
-
-            orbit: orbit::read(
-                row.semi_major_axis,
-                row.eccentricity,
-                row.orbital_inclination,
-                row.periapsis,
-                row.orbital_period,
-                row.ascending_node,
-                row.mean_anomaly,
-            ),
-            spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
-            radius: row.radius,
-            temperature: row.temperature,
-            mapped: row.was_mapped,
-            discovered_at: row.discovered_at.map(|at| at.and_utc()),
-        }
-    }};
-}
 
 impl Star {
     /// The one star with this id in this system

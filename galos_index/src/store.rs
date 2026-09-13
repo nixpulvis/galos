@@ -1,20 +1,19 @@
 //! A built tree on disk: one index file and a payload file per cell.
 //!
-//! The layout is the serving model in miniature. The index is a single small
-//! file, rewritten whole because it is a few megabytes over a galaxy and cheap
-//! to replace. Each cell that owns any systems is its own payload file, named
-//! by level and Morton key so it can be found without the index and so a
-//! nightly rebuild rewrites only the cells that changed, the whole point of
-//! keeping positions immutable and the churn clustered.
+//! The index is a single small file, a few megabytes over a galaxy, rewritten
+//! whole. Each cell that owns any systems is its own payload file, named by
+//! level and Morton key, so it is found without the index and a rebuild
+//! rewrites only the cells that changed.
 //!
-//! The byte formats are [`crate::serialization`]; this is only where they meet
-//! the filesystem. A client fetching cells over HTTP reads the same bytes
-//! through its own transport, so nothing here is on the client's path; it is
-//! the builder's writer and the tests' reader.
+//! The byte formats are [`crate::serialization`]; this is only where they
+//! meet the filesystem. A client fetching cells over HTTP reads the same
+//! bytes through its own transport, so this is the builder's writer and the
+//! tests' reader.
 
 use crate::cache::Point;
 use crate::geometry::CellId;
-use crate::serialization::{Decode, Encode};
+use crate::serialization::{Decode, Encode, INDEX_VERSION, index_version};
+use crate::source::Resharded;
 use crate::tree::{Dirtied, Snapshot};
 use crate::walk::Index;
 use std::fs;
@@ -27,28 +26,108 @@ pub const INDEX_FILE: &str = "index.bin";
 /// The subdirectory the per-cell payload files live in.
 pub const PAYLOAD_DIR: &str = "cells";
 
-/// The file a cell's payload lives in, named by level and Morton key so the
-/// name is stable and a cell is found without consulting the index.
+/// The file a cell's payload lives in: sharded by the low bits of its Morton
+/// key, then named by level and key, so the name is stable and a cell is
+/// found without consulting the index.
+///
+/// Sharded as `bodies/` is: a cell holds at most [`LEAF_CAP`] systems, so
+/// the file count grows with the galaxy and outgrows one directory. The
+/// shard is the Morton key's low twelve bits, unmixed — a Morton key
+/// interleaves the coordinates, so its low bits are position's fine
+/// structure and already spread evenly.
+///
+/// [`LEAF_CAP`]: crate::tree::LEAF_CAP
 pub(crate) fn payload_path(dir: &Path, id: CellId) -> PathBuf {
-    dir.join(PAYLOAD_DIR).join(format!(
-        "{:02}-{:016x}.bin",
-        id.level,
-        id.morton()
-    ))
+    let morton = id.morton();
+    dir.join(PAYLOAD_DIR)
+        .join(format!("{:03x}", morton & 0xfff))
+        .join(format!("{:02}-{morton:016x}.bin", id.level))
+}
+
+/// Where a cell's payload was written before the sharding: `cells/` flat.
+/// Read where the sharded path is absent, never written.
+pub(crate) fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
+    dir.join(PAYLOAD_DIR)
+        .join(format!("{:02}-{:016x}.bin", id.level, id.morton()))
+}
+
+/// Move every loose `cells/*.bin` into its shard, stopping where asked.
+///
+/// [`crate::source::reshard_bodies`]'s twin, and [`crate::migrate`] is the
+/// pair: a one-time migration, idempotent, a rename each. A directory
+/// already sharded costs one `readdir`.
+///
+/// `stop` is asked before each move, and abandoning is safe wherever it
+/// lands: [`legacy_payload_path`] is read where the sharded path is absent,
+/// so a half-migrated directory serves every cell a finished one does, and
+/// the next open takes the rest. A payload already standing in its shard
+/// wins over the loose one, for the reason [`crate::source::reshard_bodies`]
+/// gives.
+pub fn reshard_cells(
+    dir: &Path,
+    stop: &dyn Fn() -> bool,
+) -> io::Result<Resharded> {
+    let entries = match fs::read_dir(dir.join(PAYLOAD_DIR)) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Resharded { moved: 0, finished: true });
+        }
+        Err(e) => return Err(e),
+    };
+    let mut moved = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(rest) = name.strip_suffix(".bin") else { continue };
+        let Some((_, morton)) = rest.split_once('-') else { continue };
+        let Ok(morton) = u64::from_str_radix(morton, 16) else { continue };
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        if stop() {
+            return Ok(Resharded { moved, finished: false });
+        }
+        let to = dir
+            .join(PAYLOAD_DIR)
+            .join(format!("{:03x}", morton & 0xfff))
+            .join(name);
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        match fs::metadata(&to) {
+            Ok(_) => fs::remove_file(entry.path())?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                fs::rename(entry.path(), to)?;
+            }
+            Err(e) => return Err(e),
+        }
+        moved += 1;
+    }
+    Ok(Resharded { moved, finished: true })
 }
 
 impl Snapshot {
     /// Write the whole tree to a directory: the index file and one payload file
-    /// per cell that owns any systems. Existing files are overwritten; a cell
-    /// that has emptied is not cleaned up here, since a full write goes to a
-    /// fresh directory and an incremental [`write_diff`](Self::write_diff) hands
-    /// back exactly which files to touch.
+    /// per cell that owns any systems. Existing files are overwritten; a
+    /// cell that has emptied is not cleaned up here — a full write goes to a
+    /// fresh directory, and [`write_diff`](Self::write_diff) names the files
+    /// an incremental publish must touch.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
+        self.write_payloads(dir)?;
+        self.index.write(dir)
+    }
+
+    /// Write the payloads and no index file.
+    ///
+    /// What a regional build writes: its cells are only part of the
+    /// galaxy's, so the index file belongs to whoever joins them — see
+    /// [`crate::region`]. A whole build is this and then the index.
+    pub fn write_payloads(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-        fs::write(dir.join(INDEX_FILE), self.index.to_bytes())?;
         for (&id, points) in &self.payloads {
             if !points.is_empty() {
-                fs::write(payload_path(dir, id), points.as_slice().to_bytes())?;
+                write_payload(dir, id, points.as_slice().to_bytes())?;
             }
         }
         Ok(())
@@ -62,38 +141,85 @@ impl Snapshot {
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
         fs::write(dir.join(INDEX_FILE), self.index.to_bytes())?;
         for &id in &dirtied.changed {
-            fs::write(payload_path(dir, id), self.payload(id).to_bytes())?;
+            write_payload(dir, id, self.payload(id).to_bytes())?;
         }
         for &id in &dirtied.removed {
-            match fs::remove_file(payload_path(dir, id)) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
+            for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
         Ok(())
     }
 }
 
+/// Write one cell's payload, opening its shard directory the first time
+/// anything lands there.
+fn write_payload(dir: &Path, id: CellId, bytes: Vec<u8>) -> io::Result<()> {
+    let path = payload_path(dir, id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, bytes)
+}
+
 impl Index {
     /// Read an index from a build directory.
+    ///
+    /// A directory at another format version is refused here and nowhere
+    /// else: its payloads carry no header, so reading it would decode every
+    /// field of every system out of the wrong bytes. The error names the
+    /// version met, and a rebuild is the fix — `bring_level` falls back to a
+    /// full build when a resume cannot read what is there.
     pub fn read(dir: &Path) -> io::Result<Index> {
         let bytes = fs::read(dir.join(INDEX_FILE))?;
         Index::from_bytes(&bytes).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "not an index file")
+            let what = match index_version(&bytes) {
+                Some(found) if found != INDEX_VERSION => format!(
+                    "index format version {found}, this build reads \
+                     {INDEX_VERSION}: the payload record changed width, so \
+                     rebuild the directory"
+                ),
+                _ => "not an index file".to_string(),
+            };
+            io::Error::new(io::ErrorKind::InvalidData, what)
         })
+    }
+
+    /// Write the index file, and nothing else.
+    ///
+    /// Rewritten whole every time: the aggregates and the rank ranges, a few
+    /// megabytes over today's galaxy. Writing it whole per publish is its own
+    /// item in `TODO-scale.md`.
+    pub fn write(&self, dir: &Path) -> io::Result<()> {
+        fs::create_dir_all(dir)?;
+        fs::write(dir.join(INDEX_FILE), self.to_bytes())
     }
 
     /// Read one cell's payload from a build directory, empty when the cell owns
     /// nothing and so has no file. Positions are in light years.
+    ///
+    /// The sharded path first and the flat one after it, so a directory
+    /// published before the sharding, or one being resharded as this reads,
+    /// answers with what it has.
     pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<Point>> {
-        match fs::read(payload_path(dir, id)) {
-            Ok(bytes) => {
-                Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default())
+        let bytes = match fs::read(payload_path(dir, id)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                match fs::read(legacy_payload_path(dir, id)) {
+                    Ok(bytes) => bytes,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        return Ok(Vec::new());
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+            Err(e) => return Err(e),
+        };
+        Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default())
     }
 }
 
@@ -149,7 +275,7 @@ mod tests {
                         ],
                         absolute_magnitude: id as f64 * 0.001 - 3.0,
                         temperature: 4000.0 + (id % 5000) as f64,
-                        age_bucket: (id % 8) as usize,
+                        age_bucket: (id % 8) as u32,
                         // Each its own moment, so a payload that dropped the
                         // stamp or carried a neighbour's would show up in the
                         // round trip below.
@@ -175,14 +301,7 @@ mod tests {
         for cell in built.index.cells() {
             assert_eq!(index.get(cell.id), Some(cell));
             let payload = Index::read_payload(&scratch.0, cell.id).unwrap();
-            let want = built.payload(cell.id);
-            assert_eq!(payload.len(), want.len());
-            for (a, b) in payload.iter().zip(want) {
-                assert_eq!(a.id64, b.id64);
-                assert_eq!(a.pos, b.pos);
-                assert_eq!(a.temp_bucket, b.temp_bucket);
-                assert_eq!(a.updated_at, b.updated_at);
-            }
+            assert_eq!(payload, built.payload(cell.id));
         }
     }
 
@@ -197,18 +316,41 @@ mod tests {
         assert!(Index::read_payload(&scratch.0, deep).unwrap().is_empty());
     }
 
+    /// A directory written by an older codec is refused by name, not read.
+    ///
+    /// Its payloads are 39-byte records where this build reads 41, and a
+    /// payload block carries nothing that could say so. The message has to
+    /// carry the version met and the remedy, because the alternative is a
+    /// galaxy of plausible nonsense.
+    #[test]
+    fn a_directory_at_an_older_version_is_refused_by_name() {
+        let scratch = Scratch::new();
+        let built = Snapshot::build(&systems(100), &BuildParams::default());
+        built.write(&scratch.0).unwrap();
+
+        let path = scratch.0.join(INDEX_FILE);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[4..6].copy_from_slice(&(INDEX_VERSION - 1).to_le_bytes());
+        fs::write(&path, &bytes).unwrap();
+
+        let err = Index::read(&scratch.0).expect_err("a stale index reads");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let said = err.to_string();
+        assert!(
+            said.contains(&format!("version {}", INDEX_VERSION - 1)),
+            "the version met is not named: {said}"
+        );
+        assert!(said.contains("rebuild"), "no remedy named: {said}");
+    }
+
     /// The directory read back holds exactly the built tree, cell for cell.
     fn assert_dir_matches(dir: &Path, built: &Snapshot) {
         let index = Index::read(dir).unwrap();
         assert_eq!(index.len(), built.index.len());
         for cell in built.index.cells() {
             assert_eq!(index.get(cell.id), Some(cell));
-            // Compare through the same lossy codec both sides pass, so the
-            // hundredth-magnitude rounding is not mistaken for a difference.
             let disk = Index::read_payload(dir, cell.id).unwrap();
-            let bytes = built.payload(cell.id).to_bytes();
-            let want = Vec::<Point>::from_bytes(&bytes).unwrap();
-            assert_eq!(disk, want);
+            assert_eq!(disk, built.payload(cell.id));
         }
     }
 
@@ -219,11 +361,23 @@ mod tests {
             fs::read(b.join(INDEX_FILE)).unwrap(),
             "index files differ",
         );
+        // One level of shard directories, so the comparison is over the
+        // payloads and not over how they are filed.
         let names = |d: &Path| {
-            let mut v: Vec<String> = fs::read_dir(d.join(PAYLOAD_DIR))
-                .unwrap()
-                .map(|e| e.unwrap().file_name().into_string().unwrap())
-                .collect();
+            let mut v: Vec<PathBuf> = Vec::new();
+            for shard in fs::read_dir(d.join(PAYLOAD_DIR)).unwrap() {
+                let shard = shard.unwrap();
+                if !shard.file_type().unwrap().is_dir() {
+                    v.push(PathBuf::from(shard.file_name()));
+                    continue;
+                }
+                for file in fs::read_dir(shard.path()).unwrap() {
+                    v.push(
+                        PathBuf::from(shard.file_name())
+                            .join(file.unwrap().file_name()),
+                    );
+                }
+            }
             v.sort();
             v
         };
@@ -233,7 +387,8 @@ mod tests {
             assert_eq!(
                 fs::read(a.join(PAYLOAD_DIR).join(&name)).unwrap(),
                 fs::read(b.join(PAYLOAD_DIR).join(&name)).unwrap(),
-                "payload {name} differs",
+                "payload {} differs",
+                name.display(),
             );
         }
     }

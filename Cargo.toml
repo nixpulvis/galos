@@ -7,6 +7,14 @@ rust-version.workspace = true
 
 default-run = "galos"
 
+[[bin]]
+name = "galos"
+path = "bin/galos/main.rs"
+
+[[bin]]
+name = "galos-sync"
+path = "bin/sync/main.rs"
+
 [dependencies]
 async-std = "*"
 structopt = "*"
@@ -19,14 +27,17 @@ chrono = "*"
 eddb = { path = "./eddb" }
 eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
+# Spansh's galaxy dumps, read a line at a time. `galos-sync` is the only
+# thing that reads one.
+spansh = { path = "./spansh" }
 galos_db = { path = "./galos_db" }
-# The index format, and the journal read into it. `galos-sync` writes to either
-# a database or an index directory, and the second of those needs both: the
-# tree and its metadata records from one, the event accumulator from the other.
-# Default features off on both, so neither command line follows them in here.
+# The index format and the event accumulator that fills it. `galos-sync`
+# writes to either a database or an index directory; the second of those
+# needs the tree, its metadata records and the accumulator, all from here.
+# Default features off, so no command line follows them in.
 galos_index = { path = "./galos_index", default-features = false }
-galos_journal = { path = "./galos_journal", default-features = false }
-elite_journal = { path = "./elite_journal" }
+# The journal's events, and the reader that tails a directory of them.
+elite_journal = { path = "./elite_journal", features = ["watch"] }
 prettytable-rs = "*"
 serde_json = "*"
 serde = "1"
@@ -40,17 +51,16 @@ async-channel = "2"
 # supervisor now: Ctrl-C has to end in a last publish, a whole-directory
 # `finish()` and a resume point rather than in a killed process.
 ctrlc = "3"
-tui = "*"
 tracing = "*"
 tracing-subscriber = { version = "*", features = ["env-filter"] }
-galos_map = { path = "./galos_map", optional = true }
 
 [dev-dependencies]
 # Driving the async `Sink` methods from a `#[test]`, which has no runtime.
 pollster = "0.3"
-
-[target.'cfg(unix)'.dependencies]
-termion = "*"
+# `derivations_agree` writes to a database of its own, made and dropped by
+# `galos_db::testing`. The same dependency as above with one more feature,
+# which a dev-dependency is how to ask for.
+galos_db = { path = "./galos_db", features = ["testing"] }
 
 [patch.crates-io]
 # elite_dat     = { path = './elite_dat' }
@@ -78,13 +88,13 @@ resolver = "2"
 members = [
     # "elite_dat",
     "elite_journal",
+    "spansh",
     "eddn",
     "eddb",
     "edsm",
     "galos_db",
     "galos_photometry",
     "galos_index",
-    "galos_journal",
     "galos_catalog",
     "galos_sky",
     "galos_map",

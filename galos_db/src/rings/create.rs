@@ -1,5 +1,5 @@
 use super::Ring;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::body::Orbit;
 use elite_journal::entry::incremental::exploration::Ring as JournalRing;
@@ -10,7 +10,7 @@ impl Ring {
     /// so the reading is the enclosing entry's timestamp, and only something
     /// holding that entry can say which that is.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         ring: &JournalRing,
@@ -105,7 +105,7 @@ impl Ring {
             ring.orbit.ascending_node,
             ring.orbit.mean_anomaly,
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Ring {

@@ -1,22 +1,20 @@
 //! What the EDDN sync writes, written and read back
 //!
-//! These need a database of their own, named by `TEST_DATABASE_URL`. They
-//! write systems and markets under addresses they own and delete only what a
-//! test needs gone before it runs, so every run leaves those rows sitting in
-//! whatever they were pointed at. `DATABASE_URL` is deliberately not read
-//! here: the database being filled from EDDN is one `cargo test` must not be
-//! able to reach.
+//! Each test gets a migrated database of its own and drops it at its end, so
+//! nothing has to be created by hand and nothing is left behind. What
+//! `TEST_DATABASE_URL` names is a server, and whichever database on it the
+//! url happens to name is only somewhere to connect while the real one is
+//! made; `postgresql://localhost/postgres` will do. `DATABASE_URL` is
+//! deliberately not read here: the server being filled from EDDN is one
+//! `cargo test` must not be able to reach.
 //!
-//! Each test stands down when `TEST_DATABASE_URL` says nothing, so CI passes
-//! without a database -- it runs `SQLX_OFFLINE=true` against the cached query
-//! metadata and never connects. Point them at a migrated database and they run
-//! for real:
+//! A test stands down when there is no server to reach -- the variable
+//! unset, or nothing listening where it points -- so CI passes without one,
+//! running `SQLX_OFFLINE=true` against the cached query metadata and never
+//! connecting. Point them at a server and they run for real:
 //!
 //! ```sh
-//! createdb galos_test
-//! DATABASE_URL=postgresql://…/galos_test \
-//!     cargo sqlx migrate run --source galos_db/migrations/
-//! TEST_DATABASE_URL=postgresql://…/galos_test \
+//! TEST_DATABASE_URL=postgresql://localhost/postgres \
 //!     cargo test -p galos_db --test write_path
 //! ```
 //!
@@ -41,6 +39,7 @@ use elite_journal::entry::market::{
     BlackMarket as JournalBlackMarket, Market as JournalMarket, Module,
     Outfitting as JournalOutfitting, PricedModule, Shipyard as JournalShipyard,
 };
+use elite_journal::prelude::{Economy, Government};
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
 };
@@ -50,93 +49,26 @@ use galos_db::{
     black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
     clusters::Cluster, codex_entries::CodexEntry, markets::Market,
     outfitting::Outfitting, rings::Ring, shipyard::Shipyard, stars::Star,
-    stations::Station, system_signals::SystemSignal, systems::System, Database,
+    stations::Station, system_signals::SystemSignal,
+    systems::{Landed, System},
+    testing::Scratch,
+    Database, Error,
 };
+use galos_index::{merge, meta, SystemReport};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// Where these tests write, or nothing and they stand down
+/// A database of this test's own, or nothing and the test stands down
 ///
-/// `TEST_DATABASE_URL` and never `DATABASE_URL`, so that a database being used
-/// for anything else cannot be reached from here. Read out of the environment
-/// or out of `.env`, either of which is a place to say it.
-fn database_url() -> Option<String> {
-    dotenv::dotenv().ok();
-    std::env::var("TEST_DATABASE_URL").ok()
-}
-
-/// Forget a system, so a test may assert on what did not happen
-///
-/// These tests share one database and own an address each, and asserting that a
-/// write was turned away means telling a refusal apart from a row an earlier run
-/// left behind. Only this file writes these addresses, so nothing points at the
-/// row being dropped.
-async fn forget(address: i64) {
-    let Some(url) = database_url() else { return };
-    let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
-    // Whatever hangs off the system, then the system. Only this file writes
-    // these addresses, so nothing else loses anything.
-    for table in [
-        "clusters",
-        "rings",
-        "bodies",
-        "stars",
-        "barycenters",
-        "body_signals",
-        "system_signals",
-        "codex_entries",
-        "system_factions",
-        "stations",
-        "systems",
-    ] {
-        sqlx::query(&format!(
-            "DELETE FROM {} WHERE {} = $1",
-            table,
-            if table == "systems" { "address" } else { "system_address" },
-        ))
-        .bind(address)
-        .execute(&pool)
-        .await
-        .unwrap_or_else(|e| panic!("{} should be clearable: {}", table, e));
-    }
-}
-
-/// Forget a market, for the reason [`forget`] exists
-///
-/// Keyed by its own id rather than by a system, so there is no reaching these
-/// through the address a test owns.
-async fn forget_market(id: i64) {
-    let Some(url) = database_url() else { return };
-    let Ok(pool) = sqlx::PgPool::connect(&url).await else { return };
-    for table in
-        ["commodities", "outfitting", "shipyard", "black_market", "markets"]
-    {
-        sqlx::query(&format!(
-            "DELETE FROM {} WHERE {} = $1",
-            table,
-            if table == "markets" { "id" } else { "market_id" },
-        ))
-        .bind(id)
-        .execute(&pool)
-        .await
-        .unwrap_or_else(|e| panic!("{} should be clearable: {}", table, e));
-    }
-}
-
-/// A database to write to, or nothing and the test stands down
-///
-/// Standing down is for having nowhere to write. A url that is there and will
-/// not connect is a database that was meant to be run against, so it fails.
+/// Standing down is for having no server to reach. A server that answers and
+/// then refuses what the harness asks of it is a server that was meant to be
+/// run against, so it fails. Every test ends in `db.done().await`, which is
+/// what drops the database again.
 macro_rules! db {
     () => {
-        match database_url() {
-            Some(url) => Database::from_url(&url)
-                .await
-                .expect("TEST_DATABASE_URL should connect"),
-            None => {
-                eprintln!("no TEST_DATABASE_URL: standing down");
-                return;
-            }
+        match Scratch::new().await {
+            Some(db) => db,
+            None => return,
         }
     };
 }
@@ -144,19 +76,30 @@ macro_rules! db {
 fn at(secs: i64) -> DateTime<Utc> {
     Utc.timestamp_opt(1_780_000_000 + secs, 0).unwrap()
 }
-
 fn somewhere(n: f64) -> Coordinate {
     Coordinate { x: n, y: n, z: n }
 }
 
-/// Each test owns its own address, so they can run at the same time
+/// One ancestor as a scan writes it: a one-entry map of kind to id.
+fn hangs_off(ty: &str, id: i16) -> BTreeMap<String, i16> {
+    let mut parent = BTreeMap::new();
+    parent.insert(ty.to_owned(), id);
+    parent
+}
+
+/// The system each test writes under, named for what the test is about
 ///
-/// Two tests writing counts to one system would race: the whole point of one
-/// of them is that a second message changes what the first wrote.
+/// A number per test rather than one reused, because a test's name is
+/// easier to read off `COUNTS_UNHEARD` than off a constant everything
+/// shares. Nothing turns on their being distinct: each test has a database
+/// to itself.
 const COUNTS: i64 = 900_000_001;
 const COUNTS_AGAIN: i64 = 900_000_007;
 const COUNTS_UNNAMED: i64 = 900_000_048;
 const COUNTS_UNHEARD: i64 = 900_000_049;
+const COUNTS_AND_POLITICS: i64 = 900_000_068;
+const COUNTS_KEEP_POLITICS: i64 = 900_000_069;
+const COUNTS_UNHEARD_UNNAMED: i64 = 900_000_070;
 const BODY_SIGNALS: i64 = 900_000_002;
 const SYSTEM_SIGNALS: i64 = 900_000_003;
 const CODEX: i64 = 900_000_004;
@@ -188,14 +131,27 @@ const CROWDED: i64 = 900_000_022;
 const WRONGLY_NAMED: i64 = 900_000_050;
 const DISCOVERED: i64 = 900_000_051;
 const ARRIVAL_CLASS: i64 = 900_000_052;
+const INTERRUPTED: i64 = 900_000_053;
+const TWIN: i64 = 900_000_054;
+const TWIN_RACE: i64 = 900_000_055;
 
-/// A market id each, for the reason the addresses above are one each
+/// For [`a_write_says_whether_it_made_a_row_moved_one_or_neither`]
+const LANDED: i64 = 900_000_067;
+
+/// One each for the pairs the conformance tests merge; see
+/// [`the_upsert_says_what_the_merge_rule_says`] and its two peers.
+const CONFORMANCE_FILLS: i64 = 900_000_060;
+const CONFORMANCE_LATE: i64 = 900_000_061;
+const CONFORMANCE_RENAME: i64 = 900_000_062;
+const CONFORMANCE_COUNT: i64 = 900_000_063;
+const CONFORMANCE_CLASS: i64 = 900_000_064;
+const CONFORMANCE_STAR: i64 = 900_000_065;
+const CONFORMANCE_BODY: i64 = 900_000_066;
+
+/// A market id per test, the addresses above being system addresses
 ///
-/// A market is keyed by its own id and reached through nothing else, so two
-/// tests sharing one are two tests writing the same rows. Nothing catches that
-/// today, the guards being written to survive whatever an earlier run left
-/// behind, but a key from `stations.market_id` onto `markets` would make the
-/// order they run in decide what they see.
+/// A market is keyed by its own id and reached through nothing else, so a
+/// market and the system it stands in are two numbers rather than one.
 const OUTFITTING: i64 = 128_016_384;
 const UNPRICED: i64 = 128_016_385;
 const SHIPYARD: i64 = 128_016_386;
@@ -215,9 +171,10 @@ const LATE_STOCK: i64 = 128_900_002;
 #[async_std::test]
 async fn a_body_count_creates_the_system_it_counts() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         COUNTS,
         Some("Test Counts"),
         Some(somewhere(1.0)),
@@ -234,6 +191,8 @@ async fn a_body_count_creates_the_system_it_counts() {
     assert_eq!(system.address, COUNTS);
     assert_eq!(system.body_count, Some(40));
     assert_eq!(system.non_body_count, Some(10));
+
+    db.done().await;
 }
 
 /// The count is taken from a later message, and the belts are left alone
@@ -244,9 +203,10 @@ async fn a_body_count_creates_the_system_it_counts() {
 #[async_std::test]
 async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         COUNTS_AGAIN,
         Some("Test Counts Again"),
         Some(somewhere(7.0)),
@@ -259,7 +219,7 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     .expect("the honk should write");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         COUNTS_AGAIN,
         Some("Test Counts Again"),
         None,
@@ -276,6 +236,8 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
 
     assert_eq!(system.body_count, Some(41));
     assert_eq!(system.non_body_count, Some(10));
+
+    db.done().await;
 }
 
 /// A beacon names no system, so its count is set on one already on record
@@ -287,9 +249,10 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
 #[async_std::test]
 async fn a_count_without_a_name_reaches_a_system_already_there() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::create(
-        &db,
+        &mut *conn,
         COUNTS_UNNAMED,
         "Test Unnamed Counts",
         Some(somewhere(21.0)),
@@ -306,7 +269,7 @@ async fn a_count_without_a_name_reaches_a_system_already_there() {
     .expect("system should write");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         COUNTS_UNNAMED,
         None,
         None,
@@ -323,6 +286,8 @@ async fn a_count_without_a_name_reaches_a_system_already_there() {
 
     assert_eq!(system.name, "TEST UNNAMED COUNTS");
     assert_eq!(system.body_count, Some(23));
+
+    db.done().await;
 }
 
 /// A count for a system nothing has named and nothing has heard of is dropped
@@ -333,10 +298,10 @@ async fn a_count_without_a_name_reaches_a_system_already_there() {
 #[async_std::test]
 async fn a_count_without_a_name_or_a_system_writes_nothing() {
     let db = db!();
-    forget(COUNTS_UNHEARD).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         COUNTS_UNHEARD,
         None,
         None,
@@ -349,6 +314,139 @@ async fn a_count_without_a_name_or_a_system_writes_nothing() {
     .expect("counts should not error");
 
     assert!(System::fetch(&db, COUNTS_UNHEARD).await.is_err());
+
+    db.done().await;
+}
+
+/// A report carrying counts and politics writes both
+///
+/// A dump's row is one report saying a population, an allegiance, a
+/// government and a body count at once. Reading the count as evidence that
+/// the report was a counting event threw every political column away: of
+/// the 52,908 populated systems in a week-old Spansh dump, 40 reached the
+/// database with their politics, and those 40 were the ones the dump gave
+/// no body count for.
+#[async_std::test]
+async fn a_report_of_counts_and_politics_writes_both() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+
+    let landed = System::report(
+        &mut *conn,
+        &SystemReport {
+            name: Some("Test Counts And Politics".to_owned()),
+            position: Some(somewhere(31.0)),
+            population: Some(9_000_000),
+            security: Some(Security::High),
+            government: Some(Government::Corporate),
+            allegiance: Some(Allegiance::Federation),
+            primary_economy: Some(Economy::Industrial),
+            secondary_economy: Some(Economy::Refinery),
+            body_count: Some(40),
+            non_body_count: Some(10),
+            ..SystemReport::new(COUNTS_AND_POLITICS, at(0))
+        },
+        "test",
+    )
+    .await
+    .expect("the report should write");
+
+    assert_eq!(landed, Some(Landed::New), "the report made this row");
+
+    let stored = System::fetch(&db, COUNTS_AND_POLITICS)
+        .await
+        .expect("system should exist");
+
+    assert_eq!(stored.population, 9_000_000, "the population was dropped");
+    assert_eq!(stored.security, Some(Security::High));
+    assert_eq!(stored.government, Some(Government::Corporate));
+    assert_eq!(stored.allegiance, Some(Allegiance::Federation));
+    let trades = stored.economies.expect("the economies were dropped");
+    assert_eq!(trades.primary, Economy::Industrial);
+    assert_eq!(trades.secondary, Some(Economy::Refinery));
+    assert_eq!(stored.body_count, Some(40));
+    assert_eq!(stored.non_body_count, Some(10));
+
+    db.done().await;
+}
+
+/// A counting event does not undo a system's politics
+///
+/// The honk, the all-found tally and the beacon carry a number and say
+/// nothing about who holds the place. Every political column in
+/// [`System::create`] is `COALESCE`d, so a report stating no politics
+/// states none rather than blank, and a honk arriving after a visit leaves
+/// what the visit said.
+#[async_std::test]
+async fn a_counting_event_does_not_undo_a_system_s_politics() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+    let name = "Test Counts Keep Politics";
+
+    System::report(
+        &mut *conn,
+        &arrived(COUNTS_KEEP_POLITICS, name, at(0)),
+        "arrival",
+    )
+    .await
+    .expect("the arrival should write");
+
+    let landed = System::report(
+        &mut *conn,
+        &SystemReport {
+            body_count: Some(23),
+            non_body_count: Some(4),
+            ..scanned(COUNTS_KEEP_POLITICS, name, at(600))
+        },
+        "honk",
+    )
+    .await
+    .expect("the honk should write");
+
+    assert_eq!(landed, Some(Landed::Updated), "the honk moved this row");
+
+    let stored = System::fetch(&db, COUNTS_KEEP_POLITICS)
+        .await
+        .expect("system should exist");
+
+    assert_eq!(stored.population, 9_000, "the honk blanked the population");
+    assert_eq!(
+        stored.allegiance,
+        Some(Allegiance::Federation),
+        "the honk blanked the allegiance",
+    );
+    assert_eq!(stored.security, Some(Security::High));
+    assert_eq!(stored.body_count, Some(23));
+    assert_eq!(stored.non_body_count, Some(4));
+
+    db.done().await;
+}
+
+/// A nameless count for a system nothing has heard of writes nothing
+///
+/// A nav beacon as the game writes it carries an address and a count. There
+/// is no row to set the count on and no name to make one with, so
+/// [`System::report`] has nothing to hand [`System::create`] either.
+#[async_std::test]
+async fn a_nameless_count_for_an_unheard_system_writes_nothing() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+
+    let landed = System::report(
+        &mut *conn,
+        &SystemReport {
+            body_count: Some(23),
+            ..SystemReport::new(COUNTS_UNHEARD_UNNAMED, at(0))
+        },
+        "test",
+    )
+    .await
+    .expect("the count should not error");
+
+    assert_eq!(landed, None, "a row was written from an address alone");
+    assert!(System::fetch(&db, COUNTS_UNHEARD_UNNAMED).await.is_err());
+
+    db.done().await;
 }
 
 /// Signals land on bodies nothing has scanned, which is most of them
@@ -359,9 +457,10 @@ async fn a_count_without_a_name_or_a_system_writes_nothing() {
 #[async_std::test]
 async fn signals_are_kept_for_a_body_that_was_never_scanned() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         BODY_SIGNALS,
         Some("Test Body Signals"),
         Some(somewhere(2.0)),
@@ -378,9 +477,16 @@ async fn signals_are_kept_for_a_body_that_was_never_scanned() {
         Signal { ty: "$SAA_SignalType_Biological;".into(), count: 1 },
     ];
 
-    BodySignal::from_journal(&db, at(0), "test", BODY_SIGNALS, 12, &signals)
-        .await
-        .expect("signals should write for an unknown body");
+    BodySignal::from_journal(
+        &mut *conn,
+        at(0),
+        "test",
+        BODY_SIGNALS,
+        12,
+        &signals,
+    )
+    .await
+    .expect("signals should write for an unknown body");
 
     let found = BodySignal::fetch(&db, BODY_SIGNALS, 12)
         .await
@@ -389,15 +495,18 @@ async fn signals_are_kept_for_a_body_that_was_never_scanned() {
     assert_eq!(found.len(), 2);
     assert_eq!(found[0].signal_type, "$SAA_SignalType_Biological;");
     assert_eq!(found[0].count, 1);
+
+    db.done().await;
 }
 
 /// A second report of the same kind replaces the count rather than adding one
 #[async_std::test]
 async fn a_signal_seen_again_is_the_same_row() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         BODY_SIGNALS,
         Some("Test Body Signals"),
         Some(somewhere(2.0)),
@@ -412,9 +521,16 @@ async fn a_signal_seen_again_is_the_same_row() {
     for (count, when) in [(3, at(0)), (5, at(60))] {
         let signals =
             vec![Signal { ty: "$SAA_SignalType_Geological;".into(), count }];
-        BodySignal::from_journal(&db, when, "test", BODY_SIGNALS, 13, &signals)
-            .await
-            .expect("signals should write");
+        BodySignal::from_journal(
+            &mut *conn,
+            when,
+            "test",
+            BODY_SIGNALS,
+            13,
+            &signals,
+        )
+        .await
+        .expect("signals should write");
     }
 
     let found = BodySignal::fetch(&db, BODY_SIGNALS, 13)
@@ -423,15 +539,18 @@ async fn a_signal_seen_again_is_the_same_row() {
 
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].count, 5);
+
+    db.done().await;
 }
 
 /// Each signal in a batch is written under its own time, not the message's
 #[async_std::test]
 async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         SYSTEM_SIGNALS,
         Some("Test System Signals"),
         Some(somewhere(3.0)),
@@ -470,9 +589,15 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
         },
     ];
 
-    SystemSignal::from_journal(&db, at(0), "test", SYSTEM_SIGNALS, &signals)
-        .await
-        .expect("signals should write");
+    SystemSignal::from_journal(
+        &mut *conn,
+        at(0),
+        "test",
+        SYSTEM_SIGNALS,
+        &signals,
+    )
+    .await
+    .expect("signals should write");
 
     let found = SystemSignal::fetch_all(&db, SYSTEM_SIGNALS)
         .await
@@ -484,14 +609,17 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
     assert_eq!(found[0].updated_at, at(300));
     assert_eq!(found[1].updated_at, at(0));
     assert_eq!(found[1].is_station, Some(true));
+
+    db.done().await;
 }
 
 #[async_std::test]
 async fn a_codex_sighting_is_one_row_per_kind_per_system() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         CODEX,
         Some("Test Codex"),
         Some(somewhere(4.0)),
@@ -519,13 +647,13 @@ async fn a_codex_sighting_is_one_row_per_kind_per_system() {
         longitude: None,
     };
 
-    CodexEntry::from_journal(&db, at(0), "test", &entry)
+    CodexEntry::from_journal(&mut *conn, at(0), "test", &entry)
         .await
         .expect("sighting should write");
 
     // Found again, this time placed on a body.
     let placed = JournalCodex { body_id: Some(12), ..entry };
-    CodexEntry::from_journal(&db, at(60), "test", &placed)
+    CodexEntry::from_journal(&mut *conn, at(60), "test", &placed)
         .await
         .expect("second sighting should write");
 
@@ -536,15 +664,18 @@ async fn a_codex_sighting_is_one_row_per_kind_per_system() {
     assert_eq!(found[0].body_id, Some(12));
     // The first sighting named it and the second did not have to again.
     assert_eq!(found[0].name.as_deref(), Some("$Codex_Ent_Sulphur_Name;"));
+
+    db.done().await;
 }
 
 /// A settlement is a station, and docking at it later keeps where it is
 #[async_std::test]
 async fn a_settlement_keeps_its_place_on_the_body() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         SETTLEMENT,
         Some("Test Settlement"),
         Some(somewhere(5.0)),
@@ -573,11 +704,11 @@ async fn a_settlement_keeps_its_place_on_the_body() {
         economies: None,
     };
 
-    Station::from_settlement(&db, at(0), "test", &settlement)
+    Station::from_settlement(&mut *conn, at(0), "test", &settlement)
         .await
         .expect("settlement should write");
 
-    let station = Station::fetch(&db, SETTLEMENT, "Bloomfield Vision")
+    let station = Station::fetch(&mut *conn, SETTLEMENT, "Bloomfield Vision")
         .await
         .expect("station should read");
 
@@ -585,6 +716,8 @@ async fn a_settlement_keeps_its_place_on_the_body() {
     assert_eq!(station.latitude, Some(12.5));
     assert_eq!(station.longitude, Some(-47.25));
     assert_eq!(station.market_id, Some(3510085376));
+
+    db.done().await;
 }
 
 /// Outfitting is the whole of what is stocked, so what is left out is gone
@@ -594,12 +727,10 @@ async fn a_settlement_keeps_its_place_on_the_body() {
 #[async_std::test]
 async fn an_outfitting_message_replaces_what_came_before() {
     let db = db!();
-    // The market points at the station, so it goes first.
-    forget_market(OUTFITTING).await;
-    forget(TRADE).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         TRADE,
         Some("Test Trade"),
         Some(somewhere(6.0)),
@@ -626,7 +757,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
         market_id: OUTFITTING,
         modules: vec![priced("Int_Engine_A", 100), priced("Int_Engine_B", 200)],
     };
-    Outfitting::from_journal(&db, at(0), "test", &first)
+    Outfitting::from_journal(&mut *conn, at(0), "test", &first)
         .await
         .expect("outfitting should write");
 
@@ -634,7 +765,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
         modules: vec![priced("Int_Engine_B", 250)],
         ..first
     };
-    Outfitting::from_journal(&db, at(60), "test", &second)
+    Outfitting::from_journal(&mut *conn, at(60), "test", &second)
         .await
         .expect("outfitting should write again");
 
@@ -645,6 +776,8 @@ async fn an_outfitting_message_replaces_what_came_before() {
     assert_eq!(stocked.len(), 1);
     assert_eq!(stocked[0].module_name, "Int_Engine_B");
     assert_eq!(stocked[0].buy_price, Some(250));
+
+    db.done().await;
 }
 
 /// A trade message writes the station its market hangs off
@@ -657,11 +790,10 @@ async fn an_outfitting_message_replaces_what_came_before() {
 #[async_std::test]
 async fn a_trade_message_writes_the_station_it_names() {
     let db = db!();
-    forget_market(STATION_MARKET).await;
-    forget(TRADE_STATION).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         TRADE_STATION,
         Some("Test Trade Station"),
         Some(somewhere(23.0)),
@@ -680,7 +812,7 @@ async fn a_trade_message_writes_the_station_it_names() {
         commodities: vec![],
     };
 
-    let placed = Market::from_journal(&db, at(0), "trader", &market)
+    let placed = Market::from_journal(&mut *conn, at(0), "trader", &market)
         .await
         .expect("the market should write");
 
@@ -690,22 +822,23 @@ async fn a_trade_message_writes_the_station_it_names() {
         "the market never found the system it names",
     );
 
-    let station = Station::fetch(&db, TRADE_STATION, "Test Trade Station Port")
-        .await
-        .expect("the station the market points at should be on record");
+    let station =
+        Station::fetch(&mut *conn, TRADE_STATION, "Test Trade Station Port")
+            .await
+            .expect("the station the market points at should be on record");
     assert_eq!(station.updated_by, "trader");
+
+    db.done().await;
 }
 
 /// A module from the older schema is stocked without a price
 #[async_std::test]
 async fn an_unpriced_module_is_still_stocked() {
     let db = db!();
-    // The market points at the station, so it goes first.
-    forget_market(UNPRICED).await;
-    forget(TRADE_UNPRICED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         TRADE_UNPRICED,
         Some("Test Trade Unpriced"),
         Some(somewhere(6.0)),
@@ -723,7 +856,7 @@ async fn an_unpriced_module_is_still_stocked() {
         market_id: UNPRICED,
         modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
     };
-    Outfitting::from_journal(&db, at(0), "test", &outfitting)
+    Outfitting::from_journal(&mut *conn, at(0), "test", &outfitting)
         .await
         .expect("outfitting should write");
 
@@ -734,17 +867,17 @@ async fn an_unpriced_module_is_still_stocked() {
     assert_eq!(stocked.len(), 1);
     assert_eq!(stocked[0].module_name, "Hpt_ChaffLauncher_Tiny");
     assert_eq!(stocked[0].buy_price, None);
+
+    db.done().await;
 }
 
 #[async_std::test]
 async fn a_shipyard_message_replaces_what_came_before() {
     let db = db!();
-    // The market points at the station, so it goes first.
-    forget_market(SHIPYARD).await;
-    forget(TRADE_SHIPYARD).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         TRADE_SHIPYARD,
         Some("Test Trade Shipyard"),
         Some(somewhere(6.0)),
@@ -763,12 +896,12 @@ async fn a_shipyard_message_replaces_what_came_before() {
         ships: vec!["SideWinder".into(), "Eagle".into()],
         allow_cobra_mk_iv: Some(false),
     };
-    Shipyard::from_journal(&db, at(0), "test", &yard)
+    Shipyard::from_journal(&mut *conn, at(0), "test", &yard)
         .await
         .expect("shipyard should write");
 
     let second = JournalShipyard { ships: vec!["SideWinder".into()], ..yard };
-    Shipyard::from_journal(&db, at(60), "test", &second)
+    Shipyard::from_journal(&mut *conn, at(60), "test", &second)
         .await
         .expect("shipyard should write again");
 
@@ -777,6 +910,8 @@ async fn a_shipyard_message_replaces_what_came_before() {
 
     assert_eq!(stocked.len(), 1);
     assert_eq!(stocked[0].ship_name, "SideWinder");
+
+    db.done().await;
 }
 
 /// The black market clears nothing, because it never says what else it takes
@@ -786,12 +921,10 @@ async fn a_shipyard_message_replaces_what_came_before() {
 #[async_std::test]
 async fn a_black_market_sale_does_not_retire_the_others() {
     let db = db!();
-    // The market points at the station, so it goes first.
-    forget_market(BLACK_MARKET).await;
-    forget(TRADE_BLACK_MARKET).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         TRADE_BLACK_MARKET,
         Some("Test Trade Black Market"),
         Some(somewhere(6.0)),
@@ -813,7 +946,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
             sell_price: price,
             prohibited: true,
         };
-        BlackMarket::from_journal(&db, when, "test", 128016387, &sale)
+        BlackMarket::from_journal(&mut *conn, when, "test", 128016387, &sale)
             .await
             .expect("sale should write");
     }
@@ -825,6 +958,8 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     assert_eq!(taken.len(), 2);
     assert_eq!(taken[0].name, "gold");
     assert_eq!(taken[1].name, "silver");
+
+    db.done().await;
 }
 
 /// A belt cluster lands, and a second sighting replaces it
@@ -835,10 +970,10 @@ async fn a_black_market_sale_does_not_retire_the_others() {
 #[async_std::test]
 async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     let db = db!();
-    forget(CLUSTER).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         CLUSTER,
         Some("Test Cluster"),
         Some(somewhere(8.0)),
@@ -863,7 +998,7 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
         discovery: Discovery { discovered: true, mapped: false },
     };
 
-    Cluster::from_journal(&db, at(0), "test", &cluster, CLUSTER, None)
+    Cluster::from_journal(&mut *conn, at(0), "test", &cluster, CLUSTER, None)
         .await
         .expect("cluster should write");
 
@@ -878,7 +1013,7 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     assert_eq!(held[0].parent_types, vec!["Ring", "Star"]);
 
     cluster.discovery.mapped = true;
-    Cluster::from_journal(&db, at(60), "test", &cluster, CLUSTER, None)
+    Cluster::from_journal(&mut *conn, at(60), "test", &cluster, CLUSTER, None)
         .await
         .expect("second scan should write");
 
@@ -886,6 +1021,8 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     assert_eq!(held.len(), 1, "a second scan wrote a second row");
     assert!(held[0].mapped);
     assert_eq!(held[0].updated_at, at(60));
+
+    db.done().await;
 }
 
 /// A scan delivered late does not call a cluster what it called it
@@ -902,10 +1039,10 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
 #[async_std::test]
 async fn a_late_scan_does_not_rename_a_cluster() {
     let db = db!();
-    forget(RENAMED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         RENAMED,
         Some("Test Renamed"),
         Some(somewhere(24.0)),
@@ -926,7 +1063,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
     };
 
     Cluster::from_journal(
-        &db,
+        &mut *conn,
         at(600),
         "newer",
         &named("Test Renamed A Belt Cluster 1"),
@@ -938,7 +1075,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
 
     // Sent ten minutes earlier, under the name the body had then.
     Cluster::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "older",
         &named("Test Renamed A Belt"),
@@ -955,6 +1092,8 @@ async fn a_late_scan_does_not_rename_a_cluster() {
         "the late scan renamed the row",
     );
     assert_eq!(held[0].updated_at, at(600), "the stamp went back in time");
+
+    db.done().await;
 }
 
 /// A basic scan does not undo what a detailed one recorded
@@ -966,9 +1105,10 @@ async fn a_late_scan_does_not_rename_a_cluster() {
 #[async_std::test]
 async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         RESCAN,
         Some("Test Rescan"),
         Some(somewhere(9.0)),
@@ -1023,7 +1163,7 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     let mut detailed = detailed;
     detailed.tidal_lock = Some(true);
 
-    Body::from_journal(&db, at(0), "test", &detailed, RESCAN, None)
+    Body::from_journal(&mut *conn, at(0), "test", &detailed, RESCAN, None)
         .await
         .expect("detailed scan should write");
 
@@ -1033,7 +1173,7 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     basic.orbit.ascending_node = None;
     basic.orbit.mean_anomaly = None;
     let returned =
-        Body::from_journal(&db, at(60), "test", &basic, RESCAN, None)
+        Body::from_journal(&mut *conn, at(60), "test", &basic, RESCAN, None)
             .await
             .expect("basic scan should write");
 
@@ -1079,6 +1219,8 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
         Some(0.),
         "the mean anomaly was erased",
     );
+
+    db.done().await;
 }
 
 /// A sparser station message does not undo a fuller one
@@ -1089,9 +1231,10 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
 #[async_std::test]
 async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         REDOCK,
         Some("Test Redock"),
         Some(somewhere(10.0)),
@@ -1122,17 +1265,17 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
         Some(LandingPads { large: 4, medium: 4, small: 8 }),
         Some(vec![Service::Dock, Service::Refuel, Service::Shipyard]),
     );
-    Station::from_journal(&db, at(0), "test", &docked, REDOCK)
+    Station::from_journal(&mut *conn, at(0), "test", &docked, REDOCK)
         .await
         .expect("docking should write");
 
     // The same station, named in passing.
     let mentioned = station(None, None, None);
-    Station::from_journal(&db, at(60), "test", &mentioned, REDOCK)
+    Station::from_journal(&mut *conn, at(60), "test", &mentioned, REDOCK)
         .await
         .expect("a mention should write");
 
-    let stored = Station::fetch(&db, REDOCK, "Test Redock Port")
+    let stored = Station::fetch(&mut *conn, REDOCK, "Test Redock Port")
         .await
         .expect("should read back");
 
@@ -1148,6 +1291,8 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
         "the services were erased",
     );
     assert_eq!(stored.dist_from_star_ls, Some(120.5));
+
+    db.done().await;
 }
 
 /// A message older than what is stored does not undo it
@@ -1159,9 +1304,10 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
 #[async_std::test]
 async fn a_stale_station_message_does_not_undo_a_newer_one() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         STALE,
         Some("Test Stale"),
         Some(somewhere(11.0)),
@@ -1189,15 +1335,16 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
 
     // What is known now.
     let now = station(Some(vec![Service::Dock, Service::Shipyard]));
-    Station::from_journal(&db, at(600), "test", &now, STALE)
+    Station::from_journal(&mut *conn, at(600), "test", &now, STALE)
         .await
         .expect("the newer message should write");
 
     // An older reading of the same station, arriving late.
     let then = station(Some(vec![Service::Dock]));
-    let answered = Station::from_journal(&db, at(0), "test", &then, STALE)
-        .await
-        .expect("a stale message should not fail");
+    let answered =
+        Station::from_journal(&mut *conn, at(0), "test", &then, STALE)
+            .await
+            .expect("a stale message should not fail");
 
     // Answered with what is on record rather than with what it carried.
     assert_eq!(
@@ -1206,7 +1353,7 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
         "the write answered with the stale message",
     );
 
-    let stored = Station::fetch(&db, STALE, "Test Stale Port")
+    let stored = Station::fetch(&mut *conn, STALE, "Test Stale Port")
         .await
         .expect("should read back");
     assert_eq!(
@@ -1215,6 +1362,8 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
         "a stale message undid the newer one",
     );
     assert_eq!(stored.updated_at, at(600), "the older time was written");
+
+    db.done().await;
 }
 
 /// A settlement approached again keeps where it stands
@@ -1225,10 +1374,10 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
 #[async_std::test]
 async fn a_settlement_approached_again_keeps_its_place() {
     let db = db!();
-    forget(PLACED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         PLACED,
         Some("Test Placed"),
         Some(somewhere(18.0)),
@@ -1258,7 +1407,7 @@ async fn a_settlement_approached_again_keeps_its_place() {
     };
 
     Station::from_settlement(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &approach(Some(12.5), Some(-47.25)),
@@ -1266,15 +1415,17 @@ async fn a_settlement_approached_again_keeps_its_place() {
     .await
     .expect("the first approach should write");
 
-    Station::from_settlement(&db, at(60), "test", &approach(None, None))
+    Station::from_settlement(&mut *conn, at(60), "test", &approach(None, None))
         .await
         .expect("an approach without a place should write");
 
-    let stored = Station::fetch(&db, PLACED, "Test Placed Outpost")
+    let stored = Station::fetch(&mut *conn, PLACED, "Test Placed Outpost")
         .await
         .expect("should read back");
     assert_eq!(stored.latitude, Some(12.5), "the latitude was erased");
     assert_eq!(stored.longitude, Some(-47.25), "the longitude was erased");
+
+    db.done().await;
 }
 
 /// Two messages in the same second both get to say their part
@@ -1285,11 +1436,11 @@ async fn a_settlement_approached_again_keeps_its_place() {
 #[async_std::test]
 async fn two_messages_in_one_second_both_land() {
     let db = db!();
-    forget(SAME_SECOND).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     // The first says how many live there and nothing about who runs it.
     System::create(
-        &db,
+        &mut *conn,
         SAME_SECOND,
         "Test Same Second",
         Some(somewhere(12.0)),
@@ -1307,7 +1458,7 @@ async fn two_messages_in_one_second_both_land() {
 
     // The second, in the same second, says the allegiance and not the rest.
     System::create(
-        &db,
+        &mut *conn,
         SAME_SECOND,
         "Test Same Second",
         None,
@@ -1330,6 +1481,8 @@ async fn two_messages_in_one_second_both_land() {
         Some(Allegiance::Empire),
         "the second message in the second did not land",
     );
+
+    db.done().await;
 }
 
 /// A ring is kept where its belt clusters can find it
@@ -1341,9 +1494,10 @@ async fn two_messages_in_one_second_both_land() {
 #[async_std::test]
 async fn a_ring_is_kept_where_its_clusters_can_find_it() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         RING,
         Some("Test Ring"),
         Some(somewhere(13.0)),
@@ -1377,7 +1531,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         discovery: Discovery { discovered: false, mapped: false },
     };
 
-    Ring::from_journal(&db, at(0), "test", &scanned, RING, None)
+    Ring::from_journal(&mut *conn, at(0), "test", &scanned, RING, None)
         .await
         .expect("ring should write");
 
@@ -1389,7 +1543,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         distance_from_arrival: Some(377022.0),
         discovery: Discovery { discovered: true, mapped: false },
     };
-    Cluster::from_journal(&db, at(0), "test", &cluster, RING, None)
+    Cluster::from_journal(&mut *conn, at(0), "test", &cluster, RING, None)
         .await
         .expect("cluster should write");
 
@@ -1411,6 +1565,8 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
         .expect("the cluster should be on record");
     assert_eq!(lying_in.parent_ids.first(), Some(&65));
     assert_eq!(lying_in.parent_ids.first(), Some(&held[0].id));
+
+    db.done().await;
 }
 
 /// Once something has been mapped it stays mapped
@@ -1422,9 +1578,10 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
 #[async_std::test]
 async fn a_thing_once_mapped_stays_mapped() {
     let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         UNMAPPED,
         Some("Test Unmapped"),
         Some(somewhere(14.0)),
@@ -1458,18 +1615,27 @@ async fn a_thing_once_mapped_stays_mapped() {
         discovery: Discovery { discovered: true, mapped },
     };
 
-    Ring::from_journal(&db, at(0), "test", &ring(true), UNMAPPED, None)
+    Ring::from_journal(&mut *conn, at(0), "test", &ring(true), UNMAPPED, None)
         .await
         .expect("the first scan should write");
 
     // Another scan of the same ring, saying nobody has mapped it.
-    Ring::from_journal(&db, at(60), "test", &ring(false), UNMAPPED, None)
-        .await
-        .expect("the second scan should write");
+    Ring::from_journal(
+        &mut *conn,
+        at(60),
+        "test",
+        &ring(false),
+        UNMAPPED,
+        None,
+    )
+    .await
+    .expect("the second scan should write");
 
     let held = Ring::fetch_all(&db, UNMAPPED).await.expect("should read");
     let stored = held.iter().find(|r| r.id == 40).expect("on record");
     assert!(stored.mapped, "a later scan unmapped it");
+
+    db.done().await;
 }
 
 /// The earliest discovery on record is the one that is kept
@@ -1483,10 +1649,10 @@ async fn a_thing_once_mapped_stays_mapped() {
 #[async_std::test]
 async fn the_earliest_discovery_on_record_is_kept() {
     let db = db!();
-    forget(DISCOVERED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         DISCOVERED,
         Some("Test Discovered"),
         Some(somewhere(26.0)),
@@ -1507,7 +1673,7 @@ async fn the_earliest_discovery_on_record_is_kept() {
     };
 
     let discovering = Cluster::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &cluster,
@@ -1522,7 +1688,7 @@ async fn the_earliest_discovery_on_record_is_kept() {
     // The stamp that scan would carry is when it passed by, not when the
     // cluster was found.
     Cluster::from_journal(
-        &db,
+        &mut *conn,
         at(60),
         "test",
         &cluster,
@@ -1541,9 +1707,16 @@ async fn the_earliest_discovery_on_record_is_kept() {
     );
 
     // And a scan with nothing to say about discovery at all.
-    Cluster::from_journal(&db, at(120), "test", &cluster, DISCOVERED, None)
-        .await
-        .expect("a scan without a reading should write");
+    Cluster::from_journal(
+        &mut *conn,
+        at(120),
+        "test",
+        &cluster,
+        DISCOVERED,
+        None,
+    )
+    .await
+    .expect("a scan without a reading should write");
 
     let held = Cluster::fetch_all(&db, DISCOVERED).await.expect("should read");
     let stored = held.iter().find(|c| c.id == 5).expect("on record");
@@ -1552,6 +1725,8 @@ async fn the_earliest_discovery_on_record_is_kept() {
         Some(at(0)),
         "a scan carrying no reading cleared the one on record",
     );
+
+    db.done().await;
 }
 
 /// Two systems may stand at one point
@@ -1563,24 +1738,27 @@ async fn the_earliest_discovery_on_record_is_kept() {
 #[async_std::test]
 async fn two_systems_may_share_a_position() {
     let db = db!();
-    forget(SHARED_A).await;
-    forget(SHARED_B).await;
 
     let at_the_same_point = |address, name| {
-        System::create(
-            &db,
-            address,
-            name,
-            Some(somewhere(15.0)),
-            None,
-            Some(1),
-            None,
-            None,
-            None,
-            None,
-            at(0),
-            "test",
-        )
+        let db = db.clone();
+        async move {
+            let mut conn = db.acquire().await.expect("a connection");
+            System::create(
+                &mut *conn,
+                address,
+                name,
+                Some(somewhere(15.0)),
+                None,
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                at(0),
+                "test",
+            )
+            .await
+        }
     };
 
     at_the_same_point(SHARED_A, "Test Shared A")
@@ -1596,6 +1774,8 @@ async fn two_systems_may_share_a_position() {
     assert_eq!(first.position, second.position);
     assert_eq!(first.population, 1, "the first lost what it said");
     assert_eq!(second.population, 1, "the second lost what it said");
+
+    db.done().await;
 }
 
 /// A scan that names no ancestor does not orphan what it describes
@@ -1607,10 +1787,10 @@ async fn two_systems_may_share_a_position() {
 #[async_std::test]
 async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     let db = db!();
-    forget(ORPHANED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         ORPHANED,
         Some("Test Orphaned"),
         Some(somewhere(17.0)),
@@ -1645,7 +1825,7 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     };
 
     Ring::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &ring(vec![hangs_off("Planet", 39), hangs_off("Star", 0)]),
@@ -1656,9 +1836,16 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     .expect("the first scan should write");
 
     // The same ring from a sender that left the field out.
-    Ring::from_journal(&db, at(60), "test", &ring(vec![]), ORPHANED, None)
-        .await
-        .expect("a scan without parents should write");
+    Ring::from_journal(
+        &mut *conn,
+        at(60),
+        "test",
+        &ring(vec![]),
+        ORPHANED,
+        None,
+    )
+    .await
+    .expect("a scan without parents should write");
 
     let held = Ring::fetch_all(&db, ORPHANED).await.expect("should read");
     let stored = held.iter().find(|r| r.id == 41).expect("on record");
@@ -1699,7 +1886,7 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     };
 
     Star::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &star(vec![hangs_off("Null", 1)]),
@@ -1709,10 +1896,16 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     .await
     .expect("the first scan should write");
 
-    let answered =
-        Star::from_journal(&db, at(60), "test", &star(vec![]), ORPHANED, None)
-            .await
-            .expect("a scan without parents should write");
+    let answered = Star::from_journal(
+        &mut *conn,
+        at(60),
+        "test",
+        &star(vec![]),
+        ORPHANED,
+        None,
+    )
+    .await
+    .expect("a scan without parents should write");
 
     assert_eq!(
         answered.parent_id(),
@@ -1721,6 +1914,8 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     );
     let stored = Star::fetch(&db, ORPHANED, 2).await.expect("on record");
     assert_eq!(stored.parent_id(), Some(1), "the ancestry was blanked");
+
+    db.done().await;
 }
 
 /// A message delivered late is taken without putting the row back in time
@@ -1733,10 +1928,10 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
 #[async_std::test]
 async fn a_message_delivered_late_does_not_put_the_stamp_back() {
     let db = db!();
-    forget(LATE).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         LATE,
         Some("Test Late"),
         Some(somewhere(19.0)),
@@ -1774,14 +1969,21 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
         discovery: Discovery { discovered: true, mapped: true },
     };
 
-    Body::from_journal(&db, at(600), "newer", &body(None), LATE, None)
+    Body::from_journal(&mut *conn, at(600), "newer", &body(None), LATE, None)
         .await
         .expect("the scan taken later should write");
 
     // The fuller scan, taken ten minutes before and arriving after.
-    Body::from_journal(&db, at(0), "older", &body(Some(500.)), LATE, None)
-        .await
-        .expect("the scan delivered late should write");
+    Body::from_journal(
+        &mut *conn,
+        at(0),
+        "older",
+        &body(Some(500.)),
+        LATE,
+        None,
+    )
+    .await
+    .expect("the scan delivered late should write");
 
     let stored = Body::fetch(&db, LATE, 1).await.expect("should read back");
     assert_eq!(
@@ -1791,6 +1993,8 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
     );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+
+    db.done().await;
 }
 
 /// A count delivered late is taken without putting the system back in time
@@ -1802,19 +2006,23 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
 #[async_std::test]
 async fn a_count_delivered_late_does_not_put_the_stamp_back() {
     let db = db!();
-    forget(LATE_COUNT).await;
 
     let honk = |bodies, non_bodies, secs, user| {
-        System::set_body_counts(
-            &db,
-            LATE_COUNT,
-            Some("Test Late Count"),
-            Some(somewhere(20.0)),
-            bodies,
-            non_bodies,
-            at(secs),
-            user,
-        )
+        let db = db.clone();
+        async move {
+            let mut conn = db.acquire().await.expect("a connection");
+            System::set_body_counts(
+                &mut *conn,
+                LATE_COUNT,
+                Some("Test Late Count"),
+                Some(somewhere(20.0)),
+                bodies,
+                non_bodies,
+                at(secs),
+                user,
+            )
+            .await
+        }
     };
 
     honk(40, None, 600, "newer").await.expect("the newer honk should write");
@@ -1826,6 +2034,8 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
     assert_eq!(stored.non_body_count, Some(7), "the late count was refused");
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+
+    db.done().await;
 }
 
 /// A visit delivered late does not put a system back to what it said
@@ -1843,7 +2053,7 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
 #[async_std::test]
 async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
     let db = db!();
-    forget(LATE_VISIT).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     let visit = |population, allegiance| JournalSystem {
         address: LATE_VISIT,
@@ -1855,7 +2065,7 @@ async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
     };
 
     System::from_journal(
-        &db,
+        &mut *conn,
         at(600),
         "newer",
         &visit(4_000_000, Allegiance::Empire),
@@ -1866,7 +2076,7 @@ async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
     // Sent ten minutes before and handed over after, as an uploader that
     // batches and reconnects does.
     System::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "older",
         &visit(1_000, Allegiance::Federation),
@@ -1883,6 +2093,8 @@ async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
     );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+
+    db.done().await;
 }
 
 /// An older visit still fills in what a system has never held
@@ -1899,12 +2111,12 @@ async fn a_visit_delivered_late_does_not_undo_a_newer_one() {
 #[async_std::test]
 async fn an_older_visit_fills_in_what_a_system_has_never_held() {
     let db = db!();
-    forget(LATE_FILLS).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     // A scan, which is the whole of what `ensure_system` ever carries.
     let mut scanned = JournalSystem::new(LATE_FILLS, "Test Late Fills");
     scanned.pos = Some(somewhere(22.0));
-    System::from_journal(&db, at(600), "scan", &scanned)
+    System::from_journal(&mut *conn, at(600), "scan", &scanned)
         .await
         .expect("the scan should write");
 
@@ -1913,7 +2125,7 @@ async fn an_older_visit_fills_in_what_a_system_has_never_held() {
     visit.pos = Some(somewhere(22.0));
     visit.population = Some(4_000_000);
     visit.allegiance = Some(Allegiance::Empire);
-    System::from_journal(&db, at(0), "visit", &visit)
+    System::from_journal(&mut *conn, at(0), "visit", &visit)
         .await
         .expect("the late visit should write");
 
@@ -1926,6 +2138,8 @@ async fn an_older_visit_fills_in_what_a_system_has_never_held() {
     );
     assert_eq!(stored.updated_at, at(600), "the fill-in moved the stamp");
     assert_eq!(stored.updated_by, "scan", "the sender went with it");
+
+    db.done().await;
 }
 
 /// The same holds where a system is written by name rather than from a journal
@@ -1938,23 +2152,27 @@ async fn an_older_visit_fills_in_what_a_system_has_never_held() {
 #[async_std::test]
 async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
     let db = db!();
-    forget(LATE_CREATE).await;
 
     let wrote = |secs, population, allegiance, security, user| {
-        System::create(
-            &db,
-            LATE_CREATE,
-            "Test Late Create",
-            Some(somewhere(25.0)),
-            None,
-            Some(population),
-            security,
-            None,
-            Some(allegiance),
-            None,
-            at(secs),
-            user,
-        )
+        let db = db.clone();
+        async move {
+            let mut conn = db.acquire().await.expect("a connection");
+            System::create(
+                &mut *conn,
+                LATE_CREATE,
+                "Test Late Create",
+                Some(somewhere(25.0)),
+                None,
+                Some(population),
+                security,
+                None,
+                Some(allegiance),
+                None,
+                at(secs),
+                user,
+            )
+            .await
+        }
     };
 
     wrote(600, 4_000_000, Allegiance::Empire, None, "newer")
@@ -1981,6 +2199,76 @@ async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
     );
     assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
     assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+
+    db.done().await;
+}
+
+/// A write says which of three things it did
+///
+/// A run counts new systems apart from updated ones as it reads, and only
+/// the statement that wrote the row can tell them apart — reading it back
+/// afterwards is a round trip per system and a race with every other
+/// writer. So the upsert reports both flags, and all three answers have to
+/// stay distinct: a reading beaten by a newer one is not an update, and
+/// counting it as one claims a system the run turned away.
+#[async_std::test]
+async fn a_write_says_whether_it_made_a_row_moved_one_or_neither() {
+    let db = db!();
+
+    let wrote = |secs, name: &'static str, place: f64, user| {
+        let db = db.clone();
+        async move {
+            let mut conn = db.acquire().await.expect("a connection");
+            System::create(
+                &mut *conn,
+                LANDED,
+                name,
+                Some(somewhere(place)),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                at(secs),
+                user,
+            )
+            .await
+            .expect("the write should land")
+        }
+    };
+
+    assert_eq!(
+        wrote(0, "Test Landed", 27.0, "first").await,
+        Landed::New,
+        "nothing held this system and the row was made here",
+    );
+    assert_eq!(
+        wrote(600, "Test Landed Again", 28.0, "newer").await,
+        Landed::Updated,
+        "a newer reading over a row that stood is an update",
+    );
+    // Sent between the two and handed over last, as a batching uploader
+    // does: older than the row and newer than the reading that made it, so
+    // a write that weighed this against the wrong one would call it an
+    // update.
+    assert_eq!(
+        wrote(60, "Test Landed Late", 29.0, "older").await,
+        Landed::Stale,
+        "a reading the row already has something newer than is no update",
+    );
+
+    let stored = System::fetch(&db, LANDED).await.expect("should read");
+    assert_eq!(stored.name, "TEST LANDED AGAIN", "a late message renamed it");
+    assert_eq!(
+        stored.position,
+        Some(somewhere(28.0)),
+        "a late message moved it",
+    );
+    assert_eq!(stored.updated_at, at(600), "the stamp went back in time");
+    assert_eq!(stored.updated_by, "newer", "the sender went back with it");
+
+    db.done().await;
 }
 
 /// A newer message renames a system, and an older one cannot
@@ -1993,7 +2281,7 @@ async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
 #[async_std::test]
 async fn a_newer_message_renames_a_system() {
     let db = db!();
-    forget(WRONGLY_NAMED).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     let named = |name: &str| {
         let mut system = JournalSystem::new(WRONGLY_NAMED, name);
@@ -2002,12 +2290,12 @@ async fn a_newer_message_renames_a_system() {
     };
 
     // The bad upload, reaching the address first under the wrong name.
-    System::from_journal(&db, at(0), "wrong", &named("Wrongly Named"))
+    System::from_journal(&mut *conn, at(0), "wrong", &named("Wrongly Named"))
         .await
         .expect("the first write should land");
 
     // The truth, heard later.
-    System::from_journal(&db, at(600), "right", &named("Rightly Named"))
+    System::from_journal(&mut *conn, at(600), "right", &named("Rightly Named"))
         .await
         .expect("the newer name should write");
 
@@ -2015,12 +2303,14 @@ async fn a_newer_message_renames_a_system() {
     assert_eq!(stored.name, "RIGHTLY NAMED", "the newer name did not win");
 
     // Sent between the two and handed over last, as a batching uploader does.
-    System::from_journal(&db, at(300), "stale", &named("Stale Name"))
+    System::from_journal(&mut *conn, at(300), "stale", &named("Stale Name"))
         .await
         .expect("the late message should be taken without erroring");
 
     let stored = System::fetch(&db, WRONGLY_NAMED).await.expect("should read");
     assert_eq!(stored.name, "RIGHTLY NAMED", "a late message renamed the row");
+
+    db.done().await;
 }
 
 /// The later reading of a signal wins, whichever of the two arrives first
@@ -2032,10 +2322,10 @@ async fn a_newer_message_renames_a_system() {
 #[async_std::test]
 async fn the_later_reading_of_a_signal_wins() {
     let db = db!();
-    forget(LATE_SIGNAL).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     System::set_body_counts(
-        &db,
+        &mut *conn,
         LATE_SIGNAL,
         Some("Test Late Signal"),
         Some(somewhere(21.0)),
@@ -2051,14 +2341,28 @@ async fn the_later_reading_of_a_signal_wins() {
         vec![Signal { ty: "$SAA_SignalType_Geological;".into(), count }]
     };
 
-    BodySignal::from_journal(&db, at(600), "newer", LATE_SIGNAL, 3, &found(9))
-        .await
-        .expect("the reading taken later should write");
+    BodySignal::from_journal(
+        &mut *conn,
+        at(600),
+        "newer",
+        LATE_SIGNAL,
+        3,
+        &found(9),
+    )
+    .await
+    .expect("the reading taken later should write");
 
     // The same kind, read ten minutes before and arriving after.
-    BodySignal::from_journal(&db, at(0), "older", LATE_SIGNAL, 3, &found(2))
-        .await
-        .expect("the reading delivered late should write");
+    BodySignal::from_journal(
+        &mut *conn,
+        at(0),
+        "older",
+        LATE_SIGNAL,
+        3,
+        &found(2),
+    )
+    .await
+    .expect("the reading delivered late should write");
 
     let stored = BodySignal::fetch(&db, LATE_SIGNAL, 3)
         .await
@@ -2066,6 +2370,8 @@ async fn the_later_reading_of_a_signal_wins() {
     let signal = stored.first().expect("on record");
     assert_eq!(signal.count, 9, "the older reading won");
     assert_eq!(signal.updated_by, "newer", "the older sender won");
+
+    db.done().await;
 }
 
 /// A message delivered late does not put a carrier back where it was
@@ -2076,7 +2382,7 @@ async fn the_later_reading_of_a_signal_wins() {
 #[async_std::test]
 async fn a_late_message_does_not_put_a_carrier_back() {
     let db = db!();
-    forget_market(CARRIER_MARKET).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     let docked_at = |system: &str| JournalMarket {
         system_name: system.into(),
@@ -2085,13 +2391,18 @@ async fn a_late_message_does_not_put_a_carrier_back() {
         commodities: vec![],
     };
 
-    Market::from_journal(&db, at(600), "test", &docked_at("Test Carrier Here"))
-        .await
-        .expect("the newer message should write");
+    Market::from_journal(
+        &mut *conn,
+        at(600),
+        "test",
+        &docked_at("Test Carrier Here"),
+    )
+    .await
+    .expect("the newer message should write");
 
     // The system it jumped out of, named by a sender catching up.
     let placed = Market::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &docked_at("Test Carrier Gone"),
@@ -2103,6 +2414,8 @@ async fn a_late_message_does_not_put_a_carrier_back() {
         placed.system_name, "TEST CARRIER HERE",
         "the carrier was put back where it had been",
     );
+
+    db.done().await;
 }
 
 /// A list of stock delivered late does not replace a newer one
@@ -2113,7 +2426,7 @@ async fn a_late_message_does_not_put_a_carrier_back() {
 #[async_std::test]
 async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
     let db = db!();
-    forget_market(LATE_STOCK).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     let priced = |name: &str, price: i64| {
         Module::Priced(PricedModule {
@@ -2131,7 +2444,7 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
     };
 
     Outfitting::from_journal(
-        &db,
+        &mut *conn,
         at(600),
         "test",
         &stocking(priced("Int_Engine_B", 250)),
@@ -2140,7 +2453,7 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
     .expect("the newer message should write");
 
     Outfitting::from_journal(
-        &db,
+        &mut *conn,
         at(0),
         "test",
         &stocking(priced("Int_Engine_A", 100)),
@@ -2157,28 +2470,28 @@ async fn a_late_list_of_stock_does_not_replace_a_newer_one() {
         stocked[0].module_name, "Int_Engine_B",
         "the late message rewrote the bay",
     );
+
+    db.done().await;
 }
 
 /// More trade messages at once than the pool has connections to answer with
 ///
-/// Each of these opens a transaction and then has to find the system its market
-/// stands in. Asked of the pool rather than of the transaction it is already
-/// holding, that second question waits on a connection its five neighbours are
-/// holding transactions open on, and none of them can answer until one of the
-/// others lets go. Nothing does, so they all wait out the acquire timeout.
+/// Each of these runs in a transaction of its own and then has to find the
+/// system its market stands in. Asked of the pool rather than of the
+/// connection it was handed, that second question waits on a connection its
+/// five neighbours are holding transactions open on, and none of them can
+/// answer until one of the others lets go. Nothing does, so they all wait out
+/// the acquire timeout.
 ///
 /// Eight against a pool of five, so more than one has to be waiting on a
 /// connection at once for this to say anything.
 #[async_std::test]
 async fn trade_messages_do_not_wait_on_each_other() {
-    let Some(url) = database_url() else { return };
-    let db = Database::from_url(&url).await.expect("a database");
-    // The market points at the station, so it goes first.
-    forget_market(CROWDED_MARKET).await;
-    forget(CROWDED).await;
+    let db = db!();
 
+    let mut tx = db.begin().await.expect("a transaction");
     System::create(
-        &db,
+        &mut *tx,
         CROWDED,
         "Test Crowded",
         Some(Coordinate { x: 0., y: 0., z: 0. }),
@@ -2193,6 +2506,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
     )
     .await
     .expect("system should write");
+    tx.commit().await.expect("the system should land");
 
     let mut running = Vec::new();
     for _ in 0..8 {
@@ -2204,7 +2518,11 @@ async fn trade_messages_do_not_wait_on_each_other() {
                 market_id: CROWDED_MARKET,
                 modules: vec![Module::Named("Hpt_ChaffLauncher_Tiny".into())],
             };
-            Outfitting::from_journal(&db, at(0), "test", &outfitting).await
+            let mut tx = db.begin().await?;
+            Outfitting::from_journal(&mut *tx, at(0), "test", &outfitting)
+                .await?;
+            tx.commit().await?;
+            Ok::<(), Error>(())
         }));
     }
 
@@ -2217,6 +2535,8 @@ async fn trade_messages_do_not_wait_on_each_other() {
             .expect("the messages should not be waiting on each other")
             .expect("every message should be written");
     }
+
+    db.done().await;
 }
 
 /// What the row says burns at the middle of a system
@@ -2224,14 +2544,13 @@ async fn trade_messages_do_not_wait_on_each_other() {
 /// Read through SQL because `System` does not carry the column: nothing
 /// reading a system as a whole has wanted it, the index reading it out of a
 /// query of its own.
-async fn class_of(address: i64) -> Option<String> {
-    let url = database_url().expect("a database to read");
-    let pool = sqlx::PgPool::connect(&url).await.expect("it should connect");
+async fn class_of(db: &Database, address: i64) -> Option<String> {
+    let mut conn = db.acquire().await.expect("a connection");
     sqlx::query_scalar::<_, Option<String>>(
         "SELECT primary_star_class FROM systems WHERE address = $1",
     )
     .bind(address)
-    .fetch_one(&pool)
+    .fetch_one(&mut *conn)
     .await
     .expect("the system should read")
 }
@@ -2246,39 +2565,782 @@ async fn class_of(address: i64) -> Option<String> {
 #[async_std::test]
 async fn a_scanned_arrival_star_names_the_system() {
     let db = db!();
-    forget(ARRIVAL_CLASS).await;
+    let mut conn = db.acquire().await.expect("a connection");
 
     let mut system = JournalSystem::new(ARRIVAL_CLASS, "Test Arrival");
     system.pos = Some(Coordinate { x: 1.0, y: 2.0, z: 3.0 });
-    System::from_journal(&db, at(0), "test", &system)
+    System::from_journal(&mut *conn, at(0), "test", &system)
         .await
         .expect("the system should write");
 
     assert_eq!(
-        class_of(ARRIVAL_CLASS).await,
+        class_of(&db, ARRIVAL_CLASS).await,
         None,
         "an arrival says nothing about the star, and never did",
     );
 
     assert!(
-        System::set_primary_star_class(&db, ARRIVAL_CLASS, "N")
+        System::set_primary_star_class(&mut *conn, ARRIVAL_CLASS, "N")
             .await
             .expect("the class should write"),
         "the column was empty and a scan filled it",
     );
-    assert_eq!(class_of(ARRIVAL_CLASS).await.as_deref(), Some("N"));
+    assert_eq!(class_of(&db, ARRIVAL_CLASS).await.as_deref(), Some("N"));
 
     assert!(
-        !System::set_primary_star_class(&db, ARRIVAL_CLASS, "N")
+        !System::set_primary_star_class(&mut *conn, ARRIVAL_CLASS, "N")
             .await
             .expect("the class should write"),
         "a feed reporting the same system again rewrote the row",
     );
 
     assert!(
-        !System::set_primary_star_class(&db, 900_000_099, "N")
+        !System::set_primary_star_class(&mut *conn, 900_000_099, "N")
             .await
             .expect("the class should write"),
         "a class was written for a system nothing has named",
     );
+
+    db.done().await;
+}
+
+/// Every column the two derivations both have to answer for.
+///
+/// `updated_by` is not one of them. It is a column on this row and nothing
+/// the index publishes, and the two sides fill it differently on purpose: an
+/// EDDN uploader id is an anonymised sender rather than a commander. See
+/// `galos_index::report`'s header.
+#[derive(Debug, PartialEq)]
+struct Columns {
+    name: Option<String>,
+    position: Option<Coordinate>,
+    population: u64,
+    security: Option<Security>,
+    government: Option<Government>,
+    allegiance: Option<Allegiance>,
+    primary_economy: Option<Economy>,
+    secondary_economy: Option<Economy>,
+    body_count: Option<i32>,
+    non_body_count: Option<i32>,
+    star_class: Option<String>,
+    updated_at: DateTime<Utc>,
+}
+
+impl Columns {
+    /// The row Postgres merged, read back.
+    async fn of_row(db: &Database, address: i64) -> Columns {
+        let row =
+            System::fetch(db, address).await.expect("the system should exist");
+        Columns {
+            name: Some(row.name),
+            position: row.position,
+            population: row.population,
+            security: row.security,
+            government: row.government,
+            allegiance: row.allegiance,
+            primary_economy: row.economies.map(|it| it.primary),
+            secondary_economy: row.economies.and_then(|it| it.secondary),
+            body_count: row.body_count,
+            non_body_count: row.non_body_count,
+            star_class: class_of(db, address).await,
+            updated_at: row.updated_at,
+        }
+    }
+
+    /// The report `SystemReport::over` merged.
+    fn of_report(report: &SystemReport) -> Columns {
+        Columns {
+            name: report.named(),
+            position: report.position,
+            population: report.population.unwrap_or(0),
+            security: report.security,
+            government: report.government,
+            allegiance: report.allegiance,
+            primary_economy: report.primary_economy,
+            secondary_economy: report.secondary_economy,
+            body_count: report.body_count,
+            non_body_count: report.non_body_count,
+            star_class: report.star_class.clone(),
+            updated_at: report.at,
+        }
+    }
+}
+
+/// A report of a scan: the system named and placed, and nothing else.
+fn scanned(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
+    SystemReport {
+        name: Some(name.to_string()),
+        position: Some(somewhere(address as f64 % 100.0)),
+        ..SystemReport::new(address, at)
+    }
+}
+
+/// A report of an arrival: the system named, placed and governed.
+fn arrived(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
+    SystemReport {
+        population: Some(9_000),
+        security: Some(Security::High),
+        allegiance: Some(Allegiance::Federation),
+        primary_economy: Some(Economy::Refinery),
+        ..scanned(address, name, at)
+    }
+}
+
+/// The `systems` upsert says what `SystemReport::over` says
+///
+/// The rule for merging two reports of one system is stated once, in
+/// `galos_index::report::SystemReport::over`. The `ON CONFLICT DO UPDATE`
+/// clauses below it are a second copy of that rule, and they are kept:
+/// Postgres merges against a row Postgres holds, so doing it in Rust would
+/// mean reading the row back first — a round trip per message and a lost
+/// update between the collect pool and the derive pool.
+///
+/// So the copy is pinned rather than trusted. Every pair here is written to
+/// Postgres in order and merged in Rust in the same order, and the two
+/// answers have to be the same system. What used to keep them the same was
+/// having read both carefully, which is how four events came to write a
+/// positioned row on one side and nothing at all on the other.
+#[async_std::test]
+async fn the_upsert_says_what_the_merge_rule_says() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+
+    // A honk, which says how much there is and nothing about who runs it.
+    let honked = |address: i64, at: DateTime<Utc>| SystemReport {
+        body_count: Some(40),
+        non_body_count: Some(10),
+        ..scanned(address, "Test Conformance Counted", at)
+    };
+    // A plotted route, which is the only thing that states a class for a
+    // system nobody has scanned.
+    let plotted = |address: i64, at: DateTime<Utc>| SystemReport {
+        star_class: Some("N".to_string()),
+        ..scanned(address, "Test Conformance Routed", at)
+    };
+
+    let pairs = [
+        (
+            "an arrival after a scan fills what the scan left blank",
+            scanned(CONFORMANCE_FILLS, "Test Conformance Fills", at(0)),
+            arrived(CONFORMANCE_FILLS, "Test Conformance Fills", at(60)),
+        ),
+        (
+            "an arrival delivered late still fills what nothing has said",
+            scanned(CONFORMANCE_LATE, "Test Conformance Late", at(60)),
+            arrived(CONFORMANCE_LATE, "Test Conformance Late", at(0)),
+        ),
+        (
+            "a rename from behind leaves the name that stands",
+            arrived(CONFORMANCE_RENAME, "Test Conformance Renamed", at(60)),
+            arrived(CONFORMANCE_RENAME, "Test Conformance Was", at(0)),
+        ),
+        (
+            // A count cannot go stale, so it is the one thing an older
+            // message still overwrites: a system busy enough to be honked at
+            // is busy enough to have been reported since, and a stamp guard
+            // would throw nearly every count away.
+            "a honk's count lands whenever it arrives",
+            SystemReport {
+                body_count: Some(40),
+                ..honked(CONFORMANCE_COUNT, at(60))
+            },
+            SystemReport {
+                body_count: Some(50),
+                non_body_count: None,
+                ..honked(CONFORMANCE_COUNT, at(0))
+            },
+        ),
+        (
+            "an arrival that names no class leaves the route's",
+            plotted(CONFORMANCE_CLASS, at(0)),
+            arrived(CONFORMANCE_CLASS, "Test Conformance Routed", at(60)),
+        ),
+    ];
+
+    for (what, first, second) in pairs {
+        System::report(&mut *conn, &first, "first")
+            .await
+            .unwrap_or_else(|err| panic!("{}: the first write: {}", what, err));
+        System::report(&mut *conn, &second, "second").await.unwrap_or_else(
+            |err| panic!("{}: the second write: {}", what, err),
+        );
+
+        let mut merged = first;
+        merged.over(second);
+
+        assert_eq!(
+            Columns::of_row(&db, merged.address).await,
+            Columns::of_report(&merged),
+            "{}: Postgres and the merge rule disagree",
+            what,
+        );
+    }
+
+    db.done().await;
+}
+
+/// The `stars` upsert says what `galos_index::merge::star` says
+///
+/// The peer of [`the_upsert_says_what_the_merge_rule_says`], one level down.
+/// `merge::star` is the statement of the rule for a rescan; the `ON CONFLICT
+/// DO UPDATE` clauses in `stars` are a copy of it, and the copy is what runs
+/// against Postgres. `from_journal` ends `RETURNING *`, so what the statement
+/// merged comes straight back and says itself in the index's vocabulary.
+///
+/// Both pairs are the two things a second look at a star really does: arrive
+/// later with a different reading, and arrive carrying no orbit at all, which
+/// is what a primary's scan is and what some uploaders strip.
+#[async_std::test]
+async fn the_star_upsert_says_what_the_merge_rule_says() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+
+    let star = |class: &str, orbit, mapped| JournalStar {
+        name: "Test Conformance A".into(),
+        id: 1,
+        parents: vec![hangs_off("Null", 0)],
+        absolute_magnitude: 8.4,
+        age_my: 1000,
+        distance_from_arrival_ls: 900.,
+        luminosity: "V".into(),
+        star_class: class.into(),
+        stellar_mass: 0.35,
+        subclass: 4,
+        orbit,
+        spin: Spin { period: 1e5, tilt: 0. },
+        radius: 3e8,
+        temperature: 3200.,
+        discovery: Discovery { discovered: true, mapped },
+    };
+    let orbit = || {
+        Some(Orbit {
+            semi_major_axis: 3e11,
+            eccentricity: 0.1,
+            orbital_inclination: 0.,
+            periapsis: 0.,
+            orbital_period: 1e9,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        })
+    };
+
+    let pairs = [
+        (
+            "a rescan taken later wins the reading and the stamp",
+            (star("M", orbit(), false), at(0), None),
+            (star("K", orbit(), true), at(60), None),
+        ),
+        (
+            "a scan carrying no orbit keeps the one on record",
+            (star("M", orbit(), true), at(60), None),
+            (star("M", None, false), at(0), Some(at(0))),
+        ),
+    ];
+
+    for (what, (first, first_at, found), (second, second_at, found_again)) in
+        pairs
+    {
+        System::create(
+            &mut *conn,
+            CONFORMANCE_STAR,
+            "Test Conformance Star",
+            Some(somewhere(60.0)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            at(0),
+            "test",
+        )
+        .await
+        .expect("the system should write");
+
+        Star::from_journal(
+            &mut *conn,
+            first_at,
+            "first",
+            &first,
+            CONFORMANCE_STAR,
+            found,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{}: the first scan: {}", what, err));
+        let wrote = Star::from_journal(
+            &mut *conn,
+            second_at,
+            "second",
+            &second,
+            CONFORMANCE_STAR,
+            found_again,
+        )
+        .await
+        .unwrap_or_else(|err| panic!("{}: the second scan: {}", what, err));
+
+        let held = merge::star(
+            CONFORMANCE_STAR,
+            &first,
+            first_at,
+            "first",
+            found,
+            None,
+        );
+        let merged = merge::star(
+            CONFORMANCE_STAR,
+            &second,
+            second_at,
+            "second",
+            found_again,
+            Some(&held),
+        );
+
+        assert_eq!(
+            meta::Star::from(wrote),
+            merged,
+            "{}: Postgres and the merge rule disagree",
+            what,
+        );
+    }
+
+    db.done().await;
+}
+
+/// The `bodies` upsert says what `galos_index::merge::body` says
+///
+/// The same pinning for a body, where the rule has one more clause than a
+/// star's: the game writes a surface block only where it looked at one, so a
+/// basic `AutoScan` arriving after a detailed scan must keep the surface, the
+/// materials, the temperature and the tidal lock it does not mention. That is
+/// the pair below, in the order the game really produces it — a ship
+/// re-entering a system it has already looked at closely.
+#[async_std::test]
+async fn the_body_upsert_says_what_the_merge_rule_says() {
+    let db = db!();
+    let mut conn = db.acquire().await.expect("a connection");
+
+    System::create(
+        &mut *conn,
+        CONFORMANCE_BODY,
+        "Test Conformance Body",
+        Some(somewhere(61.0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the system should write");
+
+    let body =
+        |temperature, surface, parents, tidal_lock, mapped| JournalBody {
+            id: 1,
+            name: "Test Conformance Body 1".into(),
+            ty: None,
+            distance_from_arrival: Some(12.5),
+            parents,
+            planet_class: "Rocky body".into(),
+            tidal_lock,
+            mass: 1.,
+            radius: 6e6,
+            gravity: 9.8,
+            temperature,
+            surface,
+            orbit: Orbit {
+                semi_major_axis: 1e11,
+                eccentricity: 0.01,
+                orbital_inclination: 0.,
+                periapsis: 1.,
+                orbital_period: 1e7,
+                ascending_node: Some(0.),
+                mean_anomaly: Some(0.),
+            },
+            spin: Spin { period: 80000., tilt: 0.1 },
+            discovery: Discovery { discovered: true, mapped },
+        };
+
+    let detailed = body(
+        Some(500.),
+        Some(Surface {
+            atmosphere_type: AtmosphereType::SulphurDioxide,
+            pressure: 101325.,
+            composition: Composition { ice: 0., rock: 70., metal: 30. },
+            landable: true,
+            atmosphere: Some("thin sulphur dioxide atmosphere".into()),
+            volcanism: Some("minor silicate vapour geysers".into()),
+            terraform_state: None,
+            materials: vec![Material { name: "iron".into(), percent: 22.0 }],
+        }),
+        vec![hangs_off("Star", 0)],
+        Some(true),
+        true,
+    );
+    // The same body, seen from further off, by a sender that strips the two
+    // orbital elements the game does not always write.
+    let mut basic = body(None, None, vec![], None, false);
+    basic.orbit.ascending_node = None;
+    basic.orbit.mean_anomaly = None;
+
+    Body::from_journal(
+        &mut *conn,
+        at(0),
+        "first",
+        &detailed,
+        CONFORMANCE_BODY,
+        None,
+    )
+    .await
+    .expect("the detailed scan should write");
+    let wrote = Body::from_journal(
+        &mut *conn,
+        at(60),
+        "second",
+        &basic,
+        CONFORMANCE_BODY,
+        Some(at(60)),
+    )
+    .await
+    .expect("the basic scan should write");
+
+    let held =
+        merge::body(CONFORMANCE_BODY, &detailed, at(0), "first", None, None);
+    let merged = merge::body(
+        CONFORMANCE_BODY,
+        &basic,
+        at(60),
+        "second",
+        Some(at(60)),
+        Some(&held),
+    );
+
+    assert_eq!(
+        meta::Body::from(wrote),
+        merged,
+        "Postgres and the merge rule disagree about a rescanned body",
+    );
+
+    db.done().await;
+}
+
+/// An entry that was interrupted part way through wrote nothing at all
+///
+/// Every write below system level runs on the connection it is handed, so
+/// what one transaction covers is the caller's to say and a message's rows
+/// are one of them. A run cut off in the middle has therefore written whole
+/// messages rather than halves: the body, its materials and the system it
+/// hangs off either all stand or none do.
+#[async_std::test]
+async fn an_interrupted_entry_writes_nothing() {
+    let db = db!();
+
+    let body = JournalBody {
+        id: 1,
+        name: "Test Interrupted 1".into(),
+        ty: None,
+        distance_from_arrival: Some(12.5),
+        parents: vec![],
+        planet_class: "Rocky body".into(),
+        tidal_lock: None,
+        mass: 1.,
+        radius: 6e6,
+        gravity: 9.8,
+        temperature: Some(500.),
+        surface: Some(Surface {
+            atmosphere_type: AtmosphereType::SulphurDioxide,
+            pressure: 101325.,
+            composition: Composition { ice: 0., rock: 70., metal: 30. },
+            landable: true,
+            atmosphere: None,
+            volcanism: None,
+            terraform_state: None,
+            materials: vec![Material { name: "iron".into(), percent: 22.0 }],
+        }),
+        orbit: Orbit {
+            semi_major_axis: 1e11,
+            eccentricity: 0.01,
+            orbital_inclination: 0.,
+            periapsis: 1.,
+            orbital_period: 1e7,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        },
+        spin: Spin { period: 80000., tilt: 0.1 },
+        discovery: Discovery { discovered: true, mapped: true },
+    };
+
+    let mut tx = db.begin().await.expect("a transaction");
+    System::create(
+        &mut *tx,
+        INTERRUPTED,
+        "Test Interrupted",
+        Some(somewhere(27.0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the system should write");
+    Body::from_journal(&mut *tx, at(0), "test", &body, INTERRUPTED, None)
+        .await
+        .expect("the body should write");
+
+    // What an interruption is: the connection goes away without a commit.
+    tx.rollback().await.expect("the transaction should roll back");
+
+    assert!(
+        System::fetch(&db, INTERRUPTED).await.is_err(),
+        "half of an entry is on record",
+    );
+    assert!(
+        Body::fetch_all(&db, INTERRUPTED)
+            .await
+            .expect("bodies should read")
+            .is_empty(),
+        "a body outlived the entry that was writing it",
+    );
+
+    db.done().await;
+}
+
+/// One star written twice under one name leaves one row, and the entry
+/// stands
+///
+/// The dump carries systems whose stars are listed twice: one name, one
+/// magnitude, one temperature, two `bodyId`s and two distances from
+/// arrival. Elite numbers a body once within its system, so those are two
+/// records of one star, which is what `UNIQUE (system_address, name)` says.
+///
+/// The upsert names the primary key as its conflict target and not that
+/// key, so the second record used to break it. A statement that fails
+/// inside a transaction aborts it, so the cost was not the record turned
+/// away: it was the entry, and with it the system row and everything else
+/// the message had to say. What the two derivations of the index then
+/// disagreed about was the whole system.
+#[async_std::test]
+async fn one_star_written_twice_leaves_the_nearer_record() {
+    let db = db!();
+
+    let star = |id: i16, name: &str, distance: f32| JournalStar {
+        name: name.into(),
+        id,
+        parents: vec![],
+        absolute_magnitude: 1.858093,
+        age_my: 1000,
+        distance_from_arrival_ls: distance,
+        luminosity: "III".into(),
+        star_class: "F".into(),
+        stellar_mass: 1.6,
+        subclass: 5,
+        orbit: None,
+        spin: Spin { period: 1e5, tilt: 0. },
+        radius: 2e9,
+        temperature: 7441.,
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+    let far = star(1, "Test Twin A", 11342.86);
+    let near = star(2, "Test Twin A", 0.0);
+    let other = star(3, "Test Twin B", 500.0);
+
+    let body = JournalBody {
+        id: 4,
+        name: "Test Twin A 1".into(),
+        ty: None,
+        distance_from_arrival: Some(700.),
+        parents: vec![hangs_off("Star", 1)],
+        planet_class: "Rocky body".into(),
+        tidal_lock: None,
+        mass: 1.,
+        radius: 6e6,
+        gravity: 9.8,
+        temperature: Some(500.),
+        surface: None,
+        orbit: Orbit {
+            semi_major_axis: 1e11,
+            eccentricity: 0.01,
+            orbital_inclination: 0.,
+            periapsis: 1.,
+            orbital_period: 1e7,
+            ascending_node: Some(0.),
+            mean_anomaly: Some(0.),
+        },
+        spin: Spin { period: 80000., tilt: 0.1 },
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    // One entry's worth of writes, on one connection and in one
+    // transaction, which is what `record::entry` runs: the system, a body
+    // in it, and both records of the star.
+    let mut tx = db.begin().await.expect("a transaction");
+    System::create(
+        &mut *tx,
+        TWIN,
+        "Test Twin",
+        Some(somewhere(31.0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the system should write");
+    Body::from_journal(&mut *tx, at(0), "test", &body, TWIN, None)
+        .await
+        .expect("the body should write");
+    Star::from_journal(&mut *tx, at(0), "test", &far, TWIN, None)
+        .await
+        .expect("the farther record should write");
+    let kept = Star::from_journal(&mut *tx, at(60), "test", &near, TWIN, None)
+        .await
+        .expect("the second record of one star turned the entry away");
+    Star::from_journal(&mut *tx, at(60), "test", &other, TWIN, None)
+        .await
+        .expect("a second star should write");
+    tx.commit().await.expect("the entry should commit whole");
+
+    assert_eq!(kept.id, 2, "the write answered with the record it dropped");
+
+    let mut stars = Star::fetch_all(&db, TWIN).await.expect("stars should read");
+    stars.sort_by_key(|star| star.id);
+    assert_eq!(
+        stars.iter().map(|star| star.id).collect::<Vec<_>>(),
+        vec![2, 3],
+        "the two records of one star did not collapse to one row",
+    );
+    assert_eq!(
+        stars[0].distance_from_arrival_ls, 0.0,
+        "the record kept is not the one nearer the arrival point",
+    );
+
+    // The rest of the entry, which the refusal used to take back with it.
+    assert!(
+        System::fetch(&db, TWIN).await.is_ok(),
+        "the system the entry named went back with the record it dropped",
+    );
+    assert_eq!(
+        Body::fetch_all(&db, TWIN).await.expect("bodies should read").len(),
+        1,
+        "the body the entry carried went back with the record it dropped",
+    );
+
+    // The other order, which is the one the dump delivers about as often:
+    // the farther record arriving after the nearer is on record does not
+    // take its place, and does not so much as move the stamp.
+    let mut tx = db.begin().await.expect("a transaction");
+    let kept = Star::from_journal(&mut *tx, at(120), "test", &far, TWIN, None)
+        .await
+        .expect("the farther record turned the entry away");
+    tx.commit().await.expect("the entry should commit whole");
+
+    assert_eq!(kept.id, 2, "the farther record took the nearer one's place");
+    assert_eq!(kept.updated_at, at(60), "the dropped record moved the stamp");
+    assert_eq!(
+        Star::fetch_all(&db, TWIN).await.expect("stars should read").len(),
+        2,
+        "the farther record was written beside the nearer one",
+    );
+
+    db.done().await;
+}
+
+/// Two writers naming one star at once do not turn each other away
+///
+/// Which record is kept is read before it is written, and a read is only an
+/// answer if nothing may write between it and the write it decides. Both
+/// feeds are live at once -- EDDN and a dump import, or a dump sharded
+/// across processes -- so two transactions do name one star at one moment.
+/// Left to the unique index, the second of them is refused, which is the
+/// whole entry gone. So the pair is serialized on the system and the name.
+///
+/// The first write holds its transaction open, which is what makes this a
+/// race and not a sequence: the second writer cannot see the row and cannot
+/// insert beside it either.
+#[async_std::test]
+async fn two_writers_of_one_name_do_not_refuse_each_other() {
+    let db = db!();
+
+    let star = |id: i16, distance: f32| JournalStar {
+        name: "Test Race A".into(),
+        id,
+        parents: vec![],
+        absolute_magnitude: 1.858093,
+        age_my: 1000,
+        distance_from_arrival_ls: distance,
+        luminosity: "III".into(),
+        star_class: "F".into(),
+        stellar_mass: 1.6,
+        subclass: 5,
+        orbit: None,
+        spin: Spin { period: 1e5, tilt: 0. },
+        radius: 2e9,
+        temperature: 7441.,
+        discovery: Discovery { discovered: true, mapped: false },
+    };
+
+    let mut tx = db.begin().await.expect("a transaction");
+    System::create(
+        &mut *tx,
+        TWIN_RACE,
+        "Test Race",
+        Some(somewhere(32.0)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        at(0),
+        "test",
+    )
+    .await
+    .expect("the system should write");
+    let far = star(1, 11342.86);
+    Star::from_journal(&mut *tx, at(0), "test", &far, TWIN_RACE, None)
+        .await
+        .expect("the first record should write");
+
+    // The second writer, on a connection of its own, waiting on the first.
+    let second = db.clone();
+    let near = star(2, 0.0);
+    let racing = async_std::task::spawn(async move {
+        let mut tx = second.begin().await.expect("a transaction");
+        let kept =
+            Star::from_journal(&mut *tx, at(60), "test", &near, TWIN_RACE, None)
+                .await
+                .expect("the second writer was turned away");
+        tx.commit().await.expect("the second entry should commit");
+        kept
+    });
+
+    // The second writer has to have reached the name before the first lets
+    // go of it, or the two are a sequence and this says nothing. Too short a
+    // wait is that and nothing worse: the pair cannot fail this way round.
+    async_std::task::sleep(Duration::from_millis(200)).await;
+
+    tx.commit().await.expect("the first entry should commit");
+    let kept = racing.await;
+
+    assert_eq!(kept.id, 2, "the second writer read a galaxy without the first");
+    assert_eq!(
+        Star::fetch_all(&db, TWIN_RACE)
+            .await
+            .expect("stars should read")
+            .len(),
+        1,
+        "two writers of one star left two rows",
+    );
+
+    db.done().await;
 }

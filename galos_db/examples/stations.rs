@@ -15,7 +15,8 @@ async fn main() -> Result<(), Error> {
     let system_address = 0;
     let user = "EXAMPLE";
     let system = JournalSystem::new(system_address, "The Sun");
-    System::from_journal(&db, Utc::now(), user, &system).await.unwrap();
+    let mut tx = db.begin().await?;
+    System::from_journal(&mut *tx, Utc::now(), user, &system).await.unwrap();
     let station = JournalStation {
         dist_from_star_ls: None,
         name: "Maxland".into(),
@@ -29,9 +30,15 @@ async fn main() -> Result<(), Error> {
         economies: None,
         wanted: None,
     };
-    let station =
-        Station::from_journal(&db, Utc::now(), user, &station, system_address)
-            .await?;
+    let station = Station::from_journal(
+        &mut *tx,
+        Utc::now(),
+        user,
+        &station,
+        system_address,
+    )
+    .await?;
+    tx.commit().await?;
     println!("{:#?}", station);
 
     Ok(())

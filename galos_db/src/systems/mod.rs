@@ -79,6 +79,64 @@ impl fmt::Display for Economies {
     }
 }
 
+/// What a system write did to the row it was for
+///
+/// Read out of the upsert itself rather than queried afterwards: the
+/// statement returns whether it inserted the row and whether the row's
+/// stamp ended up at this reading's, which is all three cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landed {
+    /// No row existed; this write created it.
+    New,
+    /// A row existed and this reading is what it now says.
+    Updated,
+    /// A row existed with a newer reading, so this one did not win.
+    ///
+    /// Not a refusal: an older reading still fills columns the row has
+    /// never held, per the merge rule in [`System::create`]. It means the
+    /// stamp did not move, so counting it as an update would count a
+    /// reading that was thrown away.
+    Stale,
+}
+
+impl Landed {
+    /// Read the two flags the upsert returns.
+    ///
+    /// `inserted` is `xmax = 0`, exact for a statement writing one row:
+    /// the conflict path locks the row it updates and the new version
+    /// carries that lock. `took` is `updated_at = $stamp`, which given
+    /// `updated_at = GREATEST(old, $stamp)` is the same test the merge
+    /// arms use.
+    fn of(inserted: bool, took: bool) -> Landed {
+        match (inserted, took) {
+            (true, _) => Landed::New,
+            (false, true) => Landed::Updated,
+            (false, false) => Landed::Stale,
+        }
+    }
+
+    /// The stronger of two landings, for a write with more than one part
+    ///
+    /// `New` beats `Updated` beats `Stale` beats nothing: a reading that
+    /// created a system in either part created one. Per-store numbers are
+    /// in each store's own end-of-run line.
+    pub fn widest(a: Option<Landed>, b: Option<Landed>) -> Option<Landed> {
+        fn rank(it: Option<Landed>) -> u8 {
+            match it {
+                Some(Landed::New) => 3,
+                Some(Landed::Updated) => 2,
+                Some(Landed::Stale) => 1,
+                None => 0,
+            }
+        }
+        if rank(a) >= rank(b) {
+            a
+        } else {
+            b
+        }
+    }
+}
+
 mod create;
 mod fetch;
 pub mod nav;

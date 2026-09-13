@@ -13,10 +13,10 @@
 //! bytes are a contract both sides hold across versions. The primitives get
 //! their bytes from their own `to_le_bytes`; a record spells its fields out,
 //! transforms and all (a cell's `id` as level plus Morton key, an aggregate's
-//! `m_min` as a NaN-sentinel `f32`, a point's magnitude as fixed-point `i16`),
-//! which is the part a derive could not express.
+//! `m_min` as a NaN-sentinel `f32`), which is the part a derive could not
+//! express.
 //!
-//! The payload is thirty-nine bytes a system, its position carried in full as
+//! The payload is forty-one bytes a system, its position carried in full as
 //! three `f64`, so a block stands on its own without its cell. Nothing is
 //! frozen yet: the version moves when a record's width does and the check
 //! cannot catch it (see [`INDEX_VERSION`]), and the index record keeps
@@ -181,45 +181,11 @@ macro_rules! record {
 }
 pub(crate) use record;
 
-/// A magnitude on the wire: kept to a hundredth as a signed 16-bit int, finer
-/// than the photometry it comes from.
-struct Centimag(i16);
-
-impl Encode for Centimag {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
-    }
-}
-
-impl Decode for Centimag {
-    fn decode(cur: &mut &[u8]) -> Option<Centimag> {
-        Some(Centimag(i16::decode(cur)?))
-    }
-}
-
-impl FixedCodec for Centimag {
-    const LEN: usize = i16::LEN;
-}
-
-impl From<f32> for Centimag {
-    fn from(m: f32) -> Centimag {
-        Centimag(
-            (m * 100.0).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
-        )
-    }
-}
-
-impl From<Centimag> for f32 {
-    fn from(c: Centimag) -> f32 {
-        c.0 as f32 / 100.0
-    }
-}
-
 record! {
     Point {
         id64: u64,
         pos: [f64; 3],
-        magnitude: f32 as Centimag,
+        magnitude: f32,
         temp_bucket: u8,
         updated_at: u32,
     }
@@ -260,28 +226,42 @@ impl Decode for Vec<Point> {
 
 /// The magic and version at the head of an index file.
 const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// One, and moved by the payload record's width
+/// Two, and moved by the payload record's width
 ///
-/// It stood at zero while the format settled, and a record changed width under
-/// it more than once — the age buckets went from `u64` to `u32` — on the
-/// argument that the length check in [`Index`]'s own `decode` catches a stale
-/// file by its size, so a rebuild is the fix and rebuilding is cheap against
-/// inputs already to hand.
+/// It stood at zero while the format settled, and a record changed width
+/// under it more than once — the age buckets went from `u64` to `u32` — on
+/// the argument that the length check in [`Index`]'s own `decode` catches a
+/// stale file by its size, so a rebuild is the fix and rebuilding is cheap
+/// against inputs already to hand.
 ///
-/// That argument holds for the index file and not for the payload. A block of
-/// points carries no magic, no version and no count, so nothing about it can
-/// be held to a width: [`Vec<Point>`]'s decode takes whole records until fewer
-/// than one remains, and a file written at the old width decodes as the right
-/// number of plausible systems with every field read out of the wrong bytes.
+/// That argument holds for the index file and not for the payload. A block
+/// of points carries no magic, no version and no count, so nothing about it
+/// can be held to a width: [`Vec<Point>`]'s decode takes whole records until
+/// fewer than one remains, and a file written at another width decodes as a
+/// plausible number of systems with every field read out of the wrong bytes.
 /// The index beside it cannot tell either, `Cell::LEN` being unchanged. So a
 /// change to [`Point`]'s width has to be caught in the one header there is,
-/// and this is it: a stale directory is refused at `index.bin` and the map
-/// says so instead of drawing a galaxy of nonsense.
+/// and this is it: a stale directory is refused at `index.bin`, named by
+/// [`index_version`], and rebuilt.
 ///
-/// Which means a bump costs a full rebuild of the cells, and is worth it only
-/// for a width change the payload cannot catch itself. A change to the index
-/// record alone still rides on the length check.
-const INDEX_VERSION: u16 = 1;
+/// Which means a bump costs a full rebuild of the cells, and is worth it
+/// only for a width change the payload cannot catch itself. A change to the
+/// index record alone still rides on the length check.
+pub const INDEX_VERSION: u16 = 2;
+
+/// The version an index file's header claims, or [`None`] for bytes that are
+/// not an index file at all.
+///
+/// A payload block carries no header, so the width of its records is known
+/// only from the version beside them. A reader that [`Index`]'s decode
+/// refused asks this to say which format it met.
+pub fn index_version(bytes: &[u8]) -> Option<u16> {
+    let mut cur = bytes;
+    if <[u8; 4]>::decode(&mut cur)? != INDEX_MAGIC {
+        return None;
+    }
+    u16::decode(&mut cur)
+}
 
 impl Encode for Index {
     fn encode(&self, out: &mut Vec<u8>) {
@@ -347,11 +327,11 @@ mod tests {
         }
     }
 
-    /// A system survives the round trip through its bytes, to a hundredth of a
-    /// magnitude and exactly in every other field.
+    /// A system survives the round trip through its bytes exactly, every
+    /// field, the magnitude included.
     #[test]
     fn a_point_round_trips() {
-        for mag in [-6.0, -1.5, 0.0, 4.83, 15.0] {
+        for mag in [-6.0, -1.5, 0.0, 4.83, 4.831_234_5, 15.0] {
             let p = point(42, mag);
             let mut buf = Vec::new();
             p.encode(&mut buf);
@@ -362,8 +342,25 @@ mod tests {
             assert_eq!(back.pos, p.pos);
             assert_eq!(back.temp_bucket, p.temp_bucket);
             assert_eq!(back.updated_at, p.updated_at);
-            assert!((back.magnitude - p.magnitude).abs() <= 0.005);
+            assert_eq!(back.magnitude, p.magnitude);
         }
+    }
+
+    /// Two magnitudes closer together than a hundredth come back apart.
+    ///
+    /// The wire carried a fixed-point hundredth once, which rounded both of
+    /// these to the same number and cost 0.92 % of a system's flux. The
+    /// payload's own ordering is by the full value, so the encoding is the
+    /// only place the distinction could be lost.
+    #[test]
+    fn magnitudes_finer_than_a_centimag_stay_apart() {
+        let dim = point(1, 4.831);
+        let bright = point(2, 4.833);
+        let bytes = [bright, dim].as_slice().to_bytes();
+        let back = Vec::<Point>::from_bytes(&bytes).unwrap();
+        assert_eq!(back[0].magnitude, 4.833);
+        assert_eq!(back[1].magnitude, 4.831);
+        assert!(back[0].magnitude != back[1].magnitude);
     }
 
     /// A block is a whole number of fixed-width rows, and decodes back to the
@@ -380,7 +377,7 @@ mod tests {
             assert_eq!(a.pos, b.pos);
             assert_eq!(a.temp_bucket, b.temp_bucket);
             assert_eq!(a.updated_at, b.updated_at);
-            assert!((a.magnitude - b.magnitude).abs() <= 0.005);
+            assert_eq!(a.magnitude, b.magnitude);
         }
     }
 
@@ -443,10 +440,11 @@ mod tests {
             None
         );
     }
-    /// An index written when a record was a different width is refused
+
+    /// An index written when a *cell* record was a different width is refused
     ///
-    /// [`INDEX_VERSION`] stands at zero and does not move for a width change,
-    /// so a stale file carries the same magic and the same version and the
+    /// [`INDEX_VERSION`] does not move for a change to the index record, so
+    /// a stale file carries the same magic and the same version and the
     /// header cannot tell it apart. Only its length can. Without this the
     /// decoder reads one record's bytes as another's and hands back a tree of
     /// plausible nonsense — the wrong sky, drawn with no complaint.
@@ -470,5 +468,32 @@ mod tests {
 
         let narrower = &bytes[..bytes.len() - 32];
         assert_eq!(Index::from_bytes(narrower), None, "a narrower record read");
+    }
+
+    /// An index at another format version is refused, and says which.
+    ///
+    /// The payload's record width rides on this version and on nothing
+    /// else, a block of points carrying no header of its own. A directory
+    /// from before the magnitude went to `f32` is well-formed at every
+    /// other check, so this is the only thing standing between it and a
+    /// galaxy decoded out of the wrong bytes.
+    #[test]
+    fn an_index_at_another_version_is_refused() {
+        let cell = Cell {
+            id: CellId::ROOT,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0xFF,
+            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+        };
+        let bytes = Index::from_cells([cell]).to_bytes();
+        assert_eq!(index_version(&bytes), Some(INDEX_VERSION));
+
+        let mut stale = bytes.clone();
+        stale[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(index_version(&stale), Some(1));
+        assert_eq!(Index::from_bytes(&stale), None);
+
+        assert_eq!(index_version(b"nope, not an index at all"), None);
     }
 }

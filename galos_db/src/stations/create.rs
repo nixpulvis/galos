@@ -1,5 +1,5 @@
 use super::Station;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::travel::ApproachSettlement;
 use elite_journal::station::Station as JournalStation;
@@ -8,7 +8,7 @@ use elite_journal::{Allegiance, Government};
 
 impl Station {
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         station: &JournalStation,
@@ -79,7 +79,7 @@ impl Station {
             timestamp.naive_utc(),
             user,
         )
-        .fetch_optional(&db.pool)
+        .fetch_optional(&mut *conn)
         .await?;
 
         // Nothing comes back where the guard turned the update away, which is a
@@ -87,7 +87,8 @@ impl Station {
         // newer station, so that is what is answered with.
         let Some(row) = row else {
             crate::turned_away("station", timestamp);
-            return Self::fetch(db, system_address, &station.name).await;
+            return Self::fetch(&mut *conn, system_address, &station.name)
+                .await;
         };
 
         Ok(Station {
@@ -122,7 +123,7 @@ impl Station {
     /// say what kind of station this is, and coming up on a settlement that
     /// has already been docked at must not throw away what docking learned.
     pub async fn from_settlement(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         settlement: &ApproachSettlement,
@@ -176,7 +177,7 @@ impl Station {
             timestamp.naive_utc(),
             user,
         )
-        .execute(&db.pool)
+        .execute(&mut *conn)
         .await?;
 
         if done.rows_affected() == 0 {

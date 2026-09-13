@@ -3,8 +3,8 @@
 //! Both hand over the same shape: a system, where it is, and the political
 //! columns somebody read off it. Nothing below system level, so nothing here
 //! ever produces a scan, a station or a body — which is why it goes through
-//! [`Sink::system`](galos::sink::Sink::system) and not through the event path
-//! the journal and EDDN share.
+//! [`Sink::system`] and not through the event path the journal and EDDN
+//! share.
 //!
 //! Stamped `Utc::now()` rather than with a time from the dump, which is what
 //! this has always done: EDSM's files say when a system was last *updated in
@@ -54,7 +54,7 @@ impl Dump {
             }
         };
 
-        let by = format!("EDSM file: {}", self.path.display());
+        let by = crate::from::published("EDSM", &self.path);
         place(sink, shutdown, systems, &by, self.shard).await;
         true
     }
@@ -104,21 +104,28 @@ async fn place(
 ) {
     // The shard's own systems, not the file's: a bar counting up to the whole
     // file would stop at a fraction of itself and say nothing about why.
+    //
+    // Records, not bytes: `edsm::json` parses the whole array before
+    // anything walks it, so the count is known and a byte position is not.
+    // The line reads the same either way; see `bar::imported`.
     let read = systems.len() as u64;
-    let bar = bar::progress(match shard {
-        Some(shard) => shard.share(read),
-        None => read,
-    });
     let tag = match shard {
         Some(shard) => format!("EDSM {shard}"),
         None => "EDSM".to_string(),
     };
+    let mut bar = bar::imported(
+        &tag,
+        bar::Extent::Records(match shard {
+            Some(shard) => shard.share(read),
+            None => read,
+        }),
+    );
     for (at, system) in systems.into_iter().enumerate() {
         // A dump is millions of rows and the run may have been asked to
         // stop an hour into one. What has been written stands: every write
         // is its own guarded upsert and the next run re-reads the file.
         if shutdown.asked() {
-            bar.abandon_with_message("stopped");
+            bar.abandoned("stopped");
             return;
         }
         // Another process's system. Counted by position in the file, so the
@@ -128,29 +135,31 @@ async fn place(
                 continue;
             }
         }
-        bar.inc(1);
+        bar.through(1);
         // No id is nothing to key by; no coordinates is nothing to place.
         let (Some(id), Some(coords)) = (system.id, system.coords) else {
+            bar.missed();
             continue;
         };
-        bar.set_message(format!("[{tag}] {}", system.name));
-        sink.system(
-            &SystemReport {
-                name: Some(system.name),
-                position: Some(coords),
-                population: system.information.population,
-                security: system.information.security,
-                government: system.information.government,
-                allegiance: system.information.allegiance,
-                primary_economy: system.information.economy,
-                secondary_economy: system.information.second_economy,
-                ..SystemReport::new(id as i64, Utc::now())
-            },
-            by,
-        )
-        .await;
+        let landed = sink
+            .system(
+                &SystemReport {
+                    name: Some(system.name),
+                    position: Some(coords),
+                    population: system.information.population,
+                    security: system.information.security,
+                    government: system.information.government,
+                    allegiance: system.information.allegiance,
+                    primary_economy: system.information.economy,
+                    secondary_economy: system.information.second_economy,
+                    ..SystemReport::new(id as i64, Utc::now())
+                },
+                by,
+            )
+            .await;
+        bar.took(landed);
     }
-    bar.finish();
+    bar.done();
 }
 
 /// A nightly dump read off the disk, saying what stopped it.

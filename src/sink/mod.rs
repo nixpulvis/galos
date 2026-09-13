@@ -70,6 +70,12 @@ pub use db::Db;
 pub use index::Index;
 pub use relay::Relay;
 
+/// What a sink did with a reading of a system.
+///
+/// Sources count these as they read, to show how many systems a run has
+/// taken in and how many were new.
+pub use galos_db::systems::Landed;
+
 /// The whole of what a source says about a system, which is
 /// [`SystemReport`].
 ///
@@ -84,11 +90,11 @@ pub use galos_index::SystemReport;
 ///
 /// A string was not enough, and the way it was not enough is a bug that ran
 /// for a while. Both kinds of source name somebody — a journal names the
-/// commander flying, EDDN names the sender that forwarded the message — and
-/// the two are not the same claim. An uploader id is anonymised and is not a
-/// person, so the index will not file a scan under one; the database will,
-/// because `updated_by` is provenance and an id traces a row back to where
-/// it came from.
+/// commander flying, EDDN names the sender that forwarded the message, a
+/// dump names the file it was read out of — and the two are not the same
+/// claim: an uploader id is anonymised and is not a person. Both are
+/// provenance, which is what `updated_by` is, so both sinks keep whatever
+/// the source said.
 ///
 /// With one index worker serving every source, a `&str` meant the galaxy
 /// could not tell them apart: `--from eddn --from journal=DIR` filed
@@ -98,11 +104,9 @@ pub use galos_index::SystemReport;
 pub enum Reporter<'a> {
     /// A commander, as their own journal named them.
     Commander(&'a str),
-    /// An EDDN sender's uploader id.
+    /// An EDDN sender's uploader id, or the file a dump was read out of.
     Uploader(&'a str),
-    /// Nobody this reading can be filed under. What crosses the index's
-    /// channel for a message EDDN forwarded: the uploader id is dropped at
-    /// the boundary rather than carried to a sink that will not record it.
+    /// Nobody this reading can be filed under, nothing having named one.
     Nobody,
 }
 
@@ -112,14 +116,6 @@ impl Reporter<'_> {
         match self {
             Reporter::Commander(who) | Reporter::Uploader(who) => who,
             Reporter::Nobody => "",
-        }
-    }
-
-    /// The commander, where this is a claim about a person.
-    pub fn commander(&self) -> Option<&str> {
-        match self {
-            Reporter::Commander(who) => Some(who),
-            Reporter::Uploader(_) | Reporter::Nobody => None,
         }
     }
 
@@ -145,7 +141,15 @@ impl Reporter<'_> {
 #[async_trait]
 pub trait Sink: Send {
     /// One journal entry, and whoever wrote it.
-    async fn entry(&mut self, entry: Arc<Entry<Event>>, by: Reporter<'_>);
+    ///
+    /// Returns what happened to the system the entry names, or [`None`]
+    /// for the entries naming none — most of them, a market or a docking
+    /// saying nothing about a system's own columns.
+    async fn entry(
+        &mut self,
+        entry: Arc<Entry<Event>>,
+        by: Reporter<'_>,
+    ) -> Option<Landed>;
 
     /// A system as a source reported it: named, placed, and with whatever
     /// columns the report carried.
@@ -160,7 +164,15 @@ pub trait Sink: Send {
     /// Postgres' foreign key — the game writes events naming a system
     /// before the arrival that would have created it — and that is what
     /// this method does, so the two were one thing said twice.
-    async fn system(&mut self, report: &SystemReport, user: &str);
+    ///
+    /// Returns what happened to the reading, or [`None`] where the sink
+    /// wrote no row for it: a report no `systems` row can be made from, a
+    /// refused write, or a sink that only passes the reading along.
+    async fn system(
+        &mut self,
+        report: &SystemReport,
+        user: &str,
+    ) -> Option<Landed>;
 
     /// A commodity market, which EDDN sends under its own schema.
     async fn market(&mut self, at: DateTime<Utc>, user: &str, it: &Market);
@@ -258,16 +270,44 @@ impl Fan {
 impl Sink for Fan {
     /// The same reading to each, which is one refcount apiece rather than
     /// one copy of the event apiece.
-    async fn entry(&mut self, entry: Arc<Entry<Event>>, by: Reporter<'_>) {
+    ///
+    /// Answered by [`Landed::widest`]; see [`Sink::system`] below.
+    async fn entry(
+        &mut self,
+        entry: Arc<Entry<Event>>,
+        by: Reporter<'_>,
+    ) -> Option<Landed> {
+        let mut landed = None;
         for sink in &mut self.sinks {
-            sink.entry(Arc::clone(&entry), by.same()).await;
+            let said = sink.entry(Arc::clone(&entry), by.same()).await;
+            landed = Landed::widest(landed, said);
         }
+        landed
     }
 
-    async fn system(&mut self, report: &SystemReport, user: &str) {
+    /// Answers with the strongest landing any sink reported.
+    ///
+    /// The sinks are stores filled at different times, so they disagree:
+    /// the database calls a system it has held since the last dump an
+    /// update, while an index directory written from nothing this morning
+    /// calls it new. Both are right about themselves, so the fan reports
+    /// [`Landed::New`] — a reading that created a system somewhere created
+    /// one. Per-sink numbers are in [`Fan::said_each`], one line each at
+    /// the end of a run.
+    ///
+    /// A [`Relay`] reports nothing, since it passes readings to the index
+    /// worker instead of storing them: on a `--db --index` run the source's
+    /// bar shows the database's answer and the index worker counts its own.
+    async fn system(
+        &mut self,
+        report: &SystemReport,
+        user: &str,
+    ) -> Option<Landed> {
+        let mut landed = None;
         for sink in &mut self.sinks {
-            sink.system(report, user).await;
+            landed = Landed::widest(landed, sink.system(report, user).await);
         }
+        landed
     }
 
     async fn market(&mut self, at: DateTime<Utc>, user: &str, it: &Market) {

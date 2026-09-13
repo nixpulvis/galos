@@ -218,7 +218,13 @@ async fn station(
     extract::Path((address, name)): extract::Path<(i64, String)>,
 ) -> impl IntoResponse {
     if let Ok(db) = Database::new().await {
-        if let Ok(station) = Station::fetch(&db, address, &name).await {
+        // `Station::fetch` takes the connection it runs on, a write path
+        // reading it inside its own transaction.
+        let Ok(mut conn) = db.acquire().await else {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load DB.")
+                .into_response();
+        };
+        if let Ok(station) = Station::fetch(&mut conn, address, &name).await {
             let system =
                 System::fetch(&db, station.system_address).await.unwrap();
             HtmlTemplate(StationTemplate { system, station }).into_response()

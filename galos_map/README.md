@@ -2,21 +2,19 @@
 ![Galos Starmap Demo](./demo.gif)
 ![Galos Galaxy Zoom](./galaxy.png)
 
-The map is pointed at two directories, and reads no database of its own.
-`GALOS_INDEX_DIR` is the published index `galos-sync --db --index DIR` bakes,
-which is everyone else's galaxy; unset, the map reads `.galos_index` under
-wherever it was run from. `GALOS_JOURNAL_DIR` is where this game writes its
-own logs, and naming it draws the commander's own systems over the published
-ones; unset — the ordinary case — there is no journal layer at all, and `J`
-has nothing to show or hide.
+The map is pointed at one directory, and reads no database of its own.
+`--index DIR` is the index `galos-sync --index DIR` bakes, and `GALOS_INDEX`
+says the same thing for a machine that always draws the same one; with
+neither, the map reads `.galos_index` under wherever it was run from. A
+commander's own journal reaches the map the same way everything else does:
+`galos-sync --from journal=DIR --index DIR` writes it into the index the map
+reads.
 
 ```sh
 cargo run --release
-# The published index somewhere other than beside the working directory.
-GALOS_INDEX_DIR="$HOME/.galos_index" cargo run --release
-# And this commander's own journal drawn over it.
-GALOS_JOURNAL_DIR="$HOME/Saved Games/Frontier Developments/Elite Dangerous" \
-  cargo run --release
+# The index somewhere other than beside the working directory.
+cargo run --release -- --index "$HOME/.galos_index"
+GALOS_INDEX="$HOME/.galos_index" cargo run --release
 ```
 
 ## How it draws
@@ -119,7 +117,6 @@ open rail takes both, rather than asking to be pressed twice.
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
-| `J` | Show or hide your own journal's systems, where one is being read |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |

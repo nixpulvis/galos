@@ -11,7 +11,7 @@
 //! correctly rather than none of them, and re-running costs nothing. That is
 //! the property the whole import leans on.
 
-use crate::sink::{Reporter, Sink, SystemReport};
+use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
@@ -31,12 +31,33 @@ pub struct Db {
     db: Database,
     /// Entries and rows written, for the line at the end of a run.
     wrote: u64,
+    /// System rows created, and system rows this sink wrote over.
+    ///
+    /// Stale readings are in neither: the row kept what it had, and
+    /// counting that as an update would claim a system the run turned away.
+    ///
+    /// These count writes, not distinct systems: an entry writes the row
+    /// of the system it happened in, so a dump's ten bodies to a system
+    /// are ten more updates to it. The source counts systems once each;
+    /// see `Dump::read` in `bin/sync/spansh.rs`.
+    new: u64,
+    updated: u64,
 }
 
 impl Db {
     /// A sink onto `db`.
     pub fn new(db: Database) -> Db {
-        Db { db, wrote: 0 }
+        Db { db, wrote: 0, new: 0, updated: 0 }
+    }
+
+    /// Count a landing and pass it on.
+    fn counted(&mut self, landed: Option<Landed>) -> Option<Landed> {
+        match landed {
+            Some(Landed::New) => self.new += 1,
+            Some(Landed::Updated) => self.updated += 1,
+            Some(Landed::Stale) | None => {}
+        }
+        landed
     }
 }
 
@@ -46,15 +67,26 @@ impl Sink for Db {
     /// alike. `updated_by` is provenance here and an anonymised sender still
     /// traces a row back to where it came from, which is what the column is
     /// for.
-    async fn entry(&mut self, entry: Arc<Entry<Event>>, by: Reporter<'_>) {
-        record::entry(&self.db, &entry, by.named()).await;
+    async fn entry(
+        &mut self,
+        entry: Arc<Entry<Event>>,
+        by: Reporter<'_>,
+    ) -> Option<Landed> {
+        let landed = record::entry(&self.db, &entry, by.named()).await;
         self.wrote += 1;
+        self.counted(landed)
     }
 
-    async fn system(&mut self, report: &SystemReport, user: &str) {
-        if record::system(&self.db, report, user).await {
+    async fn system(
+        &mut self,
+        report: &SystemReport,
+        user: &str,
+    ) -> Option<Landed> {
+        let landed = record::system(&self.db, report, user).await;
+        if landed.is_some() {
             self.wrote += 1;
         }
+        self.counted(landed)
     }
 
     async fn market(&mut self, at: DateTime<Utc>, user: &str, it: &Market) {
@@ -98,6 +130,13 @@ impl Sink for Db {
     }
 
     fn said(&self) -> String {
-        format!("{} messages written to the database", self.wrote)
+        format!(
+            "{} messages written to the database, {} system writes: {} new, \
+             {} updated",
+            self.wrote,
+            self.new + self.updated,
+            self.new,
+            self.updated,
+        )
     }
 }

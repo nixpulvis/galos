@@ -20,7 +20,7 @@
 //!   A row that really should go is withdrawn by the derivation that can
 //!   tell: `galos_db::index` re-reads `population > 0` from the row itself,
 //!   on a catch-up or on `--only populated`.
-//! - **A thinner row merges over a richer one.** See [`over`].
+//! - **A thinner row merges over a richer one.** See `over`.
 //!
 //! Factions are the one table that is written and never derived. A journal
 //! names factions and numbers nothing — the ids are `galos_db`'s, minted on
@@ -28,7 +28,7 @@
 //! See `galos_index::galaxy`.
 
 use galos_index::meta::PopulatedSystem;
-use galos_index::sidecars::{Moved, Sidecars};
+use galos_index::sidecars::{Counts, Moved, Sidecars};
 use galos_index::Galaxy;
 use std::collections::HashSet;
 use std::io;
@@ -48,6 +48,23 @@ impl Wrote {
     /// Every table, whatever has changed.
     pub const EVERYTHING: Wrote =
         Wrote { name_chunks: 0, tables: Moved::EVERYTHING };
+
+    /// Every table a derivation from records can fill, whatever has
+    /// changed. What a build writing a directory from nothing owes it.
+    ///
+    /// Every one but the factions: a record names factions and numbers
+    /// none of them, so nothing derived from records can fill that table.
+    /// Written empty it would say the galaxy has no factions, where left
+    /// out it says this index cannot tell — and the second is the truth.
+    pub const DERIVED: Wrote = Wrote {
+        name_chunks: 0,
+        tables: Moved {
+            populated: true,
+            reaches: true,
+            boosts: true,
+            factions: false,
+        },
+    };
 }
 
 /// The metadata sidecars as this side of the program keeps them.
@@ -83,9 +100,29 @@ impl Tables {
         Ok(Tables { held, absent })
     }
 
+    /// Tables with nothing in them, for a build writing a whole directory.
+    ///
+    /// Nothing is resumed: such a build's tables stand for the systems it
+    /// read, and a row read back off the directory it is replacing would
+    /// stand for a system its new tree may not hold. Nothing is absent
+    /// either — what the build can fill it writes whole, which is
+    /// [`Wrote::DERIVED`].
+    ///
+    /// The names table is the build's own, written a chunk at a time as it
+    /// reads (`galos_index::names::Chunks`), so this holds none of it. See
+    /// [`Self::patch_tables`].
+    pub fn building() -> Tables {
+        Tables { held: Sidecars::empty(), absent: Moved::default() }
+    }
+
     /// How many systems the names table holds.
     pub fn names(&self) -> usize {
         self.held.counts().names
+    }
+
+    /// How many rows each table holds.
+    pub fn counts(&self) -> Counts {
+        self.held.counts()
     }
 
     /// Every address the names table holds.
@@ -127,13 +164,30 @@ impl Tables {
         galaxy: &Galaxy,
         touched: &HashSet<i64>,
     ) -> io::Result<Wrote> {
-        let mut moved = Moved::default();
-
         for &address in touched {
             if let Some(entry) = galaxy.name_of(address) {
                 self.held.name(entry);
             }
+        }
+        let tables = self.patch_tables(galaxy, touched);
+        Ok(Wrote { name_chunks: 0, tables })
+    }
 
+    /// Take what `galaxy` says about `touched` into the tables written
+    /// whole, leaving the names table alone, and answer what moved.
+    ///
+    /// What a cold build patches through. That build writes its own names
+    /// table a chunk at a time as it reads, so a second copy held here
+    /// would be a kilobyte a system over the galaxy — the one thing that
+    /// route exists not to hold — and would then be published over the
+    /// chunks the build had put in place.
+    pub fn patch_tables(
+        &mut self,
+        galaxy: &Galaxy,
+        touched: &HashSet<i64>,
+    ) -> Moved {
+        let mut moved = Moved::default();
+        for &address in touched {
             if let Some(said) = galaxy.populated_of(address) {
                 let row = over(self.held.published(address), said);
                 moved.populated |= self.held.populate(row);
@@ -147,7 +201,7 @@ impl Tables {
                 moved.boosts |= self.held.boost(address, boost);
             }
         }
-        Ok(Wrote { name_chunks: 0, tables: moved })
+        moved
     }
 
     /// Write the tables `moved` names, the ones the directory has no file
@@ -198,5 +252,48 @@ fn over(
         body_count: said.body_count.or(stood.body_count),
         non_body_count: said.non_body_count.or(stood.non_body_count),
         ..said
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use galos_index::source::{
+        boosts_path, factions_path, populated_path, reaches_path,
+    };
+
+    /// A build from records writes an empty table where it can and leaves
+    /// out the one it cannot fill
+    ///
+    /// The two say different things to a client: no supercharge table is
+    /// "this index cannot say where a jet cone is", where an empty one is
+    /// "there are none". A derivation from records can say the second of
+    /// the three tables it derives, and only the first of the factions,
+    /// whose ids are minted on a database write.
+    #[test]
+    fn a_build_from_records_leaves_the_factions_table_absent() {
+        let dir = std::env::temp_dir().join(format!(
+            "galos_sync_tables_derived_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut tables = Tables::building();
+        let wrote =
+            tables.write(&dir, Wrote::DERIVED).expect("the tables write");
+
+        assert!(populated_path(&dir).exists(), "no populated table");
+        assert!(reaches_path(&dir).exists(), "no reaches table");
+        assert!(
+            boosts_path(&dir).exists(),
+            "no supercharge table, which the map reads as a refusal to plot"
+        );
+        assert!(
+            !factions_path(&dir).exists(),
+            "an empty factions table says the galaxy has none"
+        );
+        assert!(!wrote.tables.factions, "the write claimed the factions");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

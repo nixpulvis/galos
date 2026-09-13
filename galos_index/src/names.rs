@@ -49,15 +49,28 @@ pub struct NameTable {
 }
 
 impl NameTable {
-    /// The table over `entries`, every chunk of it needing a write. What a full
-    /// build hands over.
+    /// The table over `entries`, every chunk of it needing a write. What a
+    /// caller with the whole list already in hand hands over.
     pub fn from_entries(entries: Vec<NameEntry>) -> NameTable {
         let mut table = NameTable::default();
         for entry in entries {
-            table.append(entry);
+            table.push(entry);
         }
-        table.dirty = (0..table.chunks.len()).collect();
         table
+    }
+
+    /// Put one more entry at the tail, for a caller reading them a row at a
+    /// time.
+    ///
+    /// What a cold build uses: the names come off the same database cursor
+    /// the systems do, and a galaxy of them collected into a `Vec` to be
+    /// handed over is thirteen gigabytes held beside the table they are
+    /// being copied into. No [`upsert`](Self::upsert), because a read of
+    /// `systems` names each address once and the slot lookup would be a
+    /// hash of the galaxy to prove it.
+    pub fn push(&mut self, entry: NameEntry) {
+        let chunk = self.append(entry);
+        self.dirty.insert(chunk);
     }
 
     /// The table as `dir` holds it, chunk boundaries and all, with nothing to
@@ -180,6 +193,113 @@ impl NameTable {
         self.slot.insert(entry.address, (c, i));
         self.chunks[c].push(entry);
         c
+    }
+}
+
+/// Where a build's chunks are written before its table is published.
+///
+/// A directory inside the one being built, holding a build directory's own
+/// names path, so putting a chunk in place is a rename within a filesystem
+/// and never a copy. Nothing reads it: [`read_chunks`] reads the numbered
+/// files of the names directory and nothing else.
+const BUILDING: &str = ".building";
+
+/// The names table written straight to disk, a chunk at a time.
+///
+/// What a cold build uses in place of a [`NameTable`], which holds every
+/// entry so that `upsert` can find a system's slot. A build has no use for
+/// that: it names each system once, in the order it reads them, and never
+/// looks one up. So entries go into a chunk, the chunk goes to disk when it
+/// is full, and the memory is one chunk of [`CHUNK`] entries.
+///
+/// The chunks are written into [`BUILDING`] and put in place by
+/// [`finish`](Self::finish). A build reads the galaxy for as long as that
+/// takes and the table beneath it is served the whole time, so a build
+/// [abandoned](Self::abandon) part way leaves the table that stood exactly
+/// as it found it.
+///
+/// What lands on disk is what [`NameTable::publish`] would have written
+/// from the same entries in the same order, which is what lets a watch read
+/// it back and carry on appending to the tail.
+pub struct Chunks {
+    dir: std::path::PathBuf,
+    /// Where the chunks are written until they are put in place.
+    building: std::path::PathBuf,
+    filling: Vec<NameEntry>,
+    written: usize,
+    named: usize,
+}
+
+impl Chunks {
+    /// Start writing the names of a build into `dir`.
+    pub fn writing(dir: &Path) -> Chunks {
+        Chunks {
+            dir: dir.to_owned(),
+            building: dir.join(BUILDING),
+            filling: Vec::with_capacity(CHUNK),
+            written: 0,
+            named: 0,
+        }
+    }
+
+    /// One more system's name, in the order the build read it.
+    pub fn push(&mut self, entry: NameEntry) -> io::Result<()> {
+        self.filling.push(entry);
+        self.named += 1;
+        if self.filling.len() >= CHUNK {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Write the part-filled tail, put every chunk in place and answer how
+    /// many chunks the table came to. A build that named nothing writes no
+    /// chunk at all, which reads back as the empty table it is.
+    ///
+    /// The one step of a build's names table that cannot be undone, and a
+    /// rename apiece: a chunk is [`CHUNK`] systems, so a galaxy is a few
+    /// thousand renames within one directory.
+    pub fn finish(mut self) -> io::Result<usize> {
+        if !self.filling.is_empty() {
+            self.flush()?;
+        }
+        if self.written > 0 {
+            std::fs::create_dir_all(names_dir(&self.dir))?;
+        }
+        for chunk in 0..self.written {
+            std::fs::rename(
+                names_chunk_path(&self.building, chunk),
+                names_chunk_path(&self.dir, chunk),
+            )?;
+        }
+        let _ = std::fs::remove_dir_all(&self.building);
+        Ok(self.written)
+    }
+
+    /// Drop what has been written without publishing any of it.
+    ///
+    /// The table that stood in the directory is untouched: nothing of this
+    /// build has been renamed over it.
+    pub fn abandon(self) -> io::Result<()> {
+        match std::fs::remove_dir_all(&self.building) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        }
+    }
+
+    /// How many systems have been named.
+    pub fn named(&self) -> usize {
+        self.named
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        write_meta(
+            &names_chunk_path(&self.building, self.written),
+            &std::mem::take(&mut self.filling),
+        )?;
+        self.filling = Vec::with_capacity(CHUNK);
+        self.written += 1;
+        Ok(())
     }
 }
 

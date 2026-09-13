@@ -1,44 +1,34 @@
 //! The serving metadata beside the cell tree, and how a watch keeps it current.
 //!
 //! The cells carry what the map draws. These carry what a click wants: the
-//! populated table the map colors and filters by, the names table a search and
-//! a route read, the faction names, and one file of bodies per system.
+//! populated table the map colors and filters by, the names table a search
+//! and a route read, the faction names, and one file of bodies per system.
 //!
-//! All four were derived wholesale from the database every time the index
-//! published, which a full build wants and a watch cannot afford: the names
-//! table alone is every positioned system, so a pass that had fifty arrivals to
-//! publish read two million rows and rewrote a hundred megabytes to say so. So
-//! a watch holds the three tables open here — [`Metadata`] — and
-//! [`patch`](Metadata::patch) reads only the systems that changed and moves
-//! them in, while [`publish_pass`](Metadata::publish_pass) writes only what
-//! that moved: the names chunks the arrivals landed in, the populated table
-//! when a political column really did change, the faction names when a new
-//! one is reported. The body files were already written per changed system
-//! and stay that way.
-//!
-//! The two are separate because a pass patches in chunks. A directory a week
-//! stale, or a nightly dump that re-stamps every row it read, leaves a changed
-//! set of millions, and every read here binds that set to `= ANY($1)`. So a
-//! pass patches a chunk at a time, and the three tables that are written whole
-//! are written once for the pass rather than once for each of its chunks.
+//! A full build derives all four wholesale; a watch cannot, the names table
+//! alone being every positioned system. So a watch holds the tables open
+//! here — [`Metadata`] — where [`patch`](Metadata::patch) reads only the
+//! systems that changed and [`publish_pass`](Metadata::publish_pass) writes
+//! only what that moved, once for the pass rather than once per chunk.
 //!
 //! Patching rests on the changed set being complete, which is
-//! [`changed_addresses`](super::changed_addresses)'s business, and on a table
-//! being able to tell that a system reported again says nothing new, which is
-//! each record's `PartialEq`. Where the feed does slip a change past the cursor
-//! — a write refused for being older than the row it would replace, which the
-//! sync counts — the system converges the next time anything touches it, since
-//! every patch rebuilds its whole record from the current row rather than
-//! editing what is held.
+//! [`changed_addresses`](super::changed_addresses)'s business, and on a
+//! record's `PartialEq` telling that a system reported again says nothing
+//! new. A change slipped past the cursor converges the next time anything
+//! touches the system, every patch rebuilding its record from the current
+//! row.
 
 use crate::barycenters::Barycenter;
-use crate::bodies::{composition, Body, Parent, Surface};
+use crate::bodies::{ancestry, composition, Body, Surface};
 use crate::index::Parts;
 use crate::stars::Star;
 use crate::{orbit, Database, Result};
+use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
-use galos_index::source::{read_meta, write_meta};
-use galos_index::{derive, meta, source, NameTable};
+use futures_core::stream::BoxStream;
+pub(super) use galos_index::sidecars::Moved;
+use galos_index::sidecars::Sidecars;
+use galos_index::source::write_meta;
+use galos_index::{derive, meta, source};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -46,16 +36,15 @@ use std::io;
 use std::path::Path;
 
 /// The columns a [`meta::NameEntry`] is read from.
-const NAMES_SELECT: &str = "SELECT address, name, \
+pub(super) const NAMES_SELECT: &str = "SELECT address, name, \
      ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
      FROM systems";
 
 /// The columns a [`meta::PopulatedSystem`] is read from.
 ///
-/// Only factions with a row in `factions` are carried: `system_factions` holds
-/// ids EDDN has reported a system for but never named, and the client can
-/// neither name nor filter by one, so it would only stand as an unreadable line
-/// in a panel. They are gathered here rather than by a query per system.
+/// Only factions with a row in `factions` are carried: `system_factions`
+/// holds ids EDDN has reported but never named, which the client can neither
+/// name nor filter by.
 const POPULATED_SELECT: &str = "SELECT address, name, \
      ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
      population, security, government, allegiance, \
@@ -72,14 +61,9 @@ const POPULATED_SELECT: &str = "SELECT address, name, \
 
 /// The metadata artifacts, and how much of each a publish wrote.
 ///
-/// The tables are counted whole, since that is what stands in the directory
-/// after the publish and what the build tool prints as proof each was written.
-/// `name_chunks` and `body_files` are what the publish actually touched, which
-/// is the whole point of a watch pass: a few files, not the galaxy.
-///
-/// Nothing where the publish was not asked for that part — see
-/// [`super::Parts`] — so a part left alone reads as left alone rather than as
-/// a count of nothing.
+/// The tables are counted whole; `name_chunks` and `body_files` are what the
+/// publish touched. [`None`] where the publish was not asked for that part —
+/// see [`super::Parts`].
 #[derive(Copy, Clone, Debug, Default)]
 pub struct MetaReport {
     pub populated: Option<usize>,
@@ -114,266 +98,114 @@ impl std::fmt::Display for MetaReport {
     }
 }
 
-/// What one pass's patches moved, gathered across the chunks it ran in.
+/// The metadata tables, held open across a watch, and the highest faction id
+/// read so far.
 ///
-/// Three of the tables are written whole or not at all, so which chunk of a
-/// paged pass dirtied one says nothing worth recording: what matters is that
-/// some chunk did. A pass accumulates this and writes each table it names
-/// once, after its last chunk, rather than rewriting a hundred megabytes a
-/// hundred times over. The body files are one file per system and written as
-/// each chunk goes, so that count is summed where the rest are or-ed.
-#[derive(Copy, Clone, Debug, Default)]
-pub(super) struct Moved {
-    populated: bool,
-    reaches: bool,
-    boosts: bool,
-    factions: bool,
-    body_files: usize,
-}
-
-impl Moved {
-    /// Take in what a further chunk of the same pass moved.
-    ///
-    /// A table stays dirty once any chunk has dirtied it. A later chunk that
-    /// moved nothing cannot unsay what an earlier one changed, and a pass that
-    /// let it would leave the published table standing for a galaxy the table
-    /// held in memory no longer agrees with, with nothing to put it right
-    /// until something else happens to move the same table.
-    pub(super) fn absorb(&mut self, other: Moved) {
-        self.populated |= other.populated;
-        self.reaches |= other.reaches;
-        self.boosts |= other.boosts;
-        self.factions |= other.factions;
-        self.body_files += other.body_files;
-    }
-}
-
-/// The four metadata tables, held open across a watch.
-///
-/// Each is the authority on what stands in the published directory: a patch
-/// reads the changed systems' current rows, moves the tables, and writes what
-/// moved. Held rather than re-derived, because deriving any of them is a read
-/// of the whole `systems` table.
+/// The tables are [`Sidecars`], shared with `galos-sync`'s event-sourced
+/// half. What is this crate's is where a row comes from and that a row which
+/// has stopped qualifying is *withdrawn*: it re-reads `population > 0` off
+/// the row, so it can tell a system that has emptied from one nothing has
+/// mentioned.
 pub(super) struct Metadata {
-    names: NameTable,
-    /// The populated table by address, materialised in address order when
-    /// written. Keyed rather than chunked: it is a fortieth of the names table,
-    /// and its rows change with the feed rather than only arriving, so there is
-    /// no tail for changes to cluster in.
-    populated: HashMap<i64, meta::PopulatedSystem>,
-    /// How far each scanned system reaches, by address. Keyed for the same
-    /// reason the populated table is, and more so: a reach moves whenever a
-    /// body is scanned, and the systems scanned in a pass are scattered across
-    /// the whole address space. Chunked alongside the names it would dirty
-    /// chunks all over the galaxy every pass, which is what chunking that
-    /// table was for.
-    reaches: HashMap<i64, f32>,
-    /// Which systems can supercharge a drive, by address. Keyed like the two
-    /// above, and the quietest of the three: a system's main star class
-    /// arrives with the scan that first names it and then stands, so a pass
-    /// moves this only where it has met a neutron star or a white dwarf it had
-    /// not met before.
-    boosts: HashMap<i64, meta::Boost>,
-    /// The faction names, in id order. Ids come from a sequence and a name is
-    /// never rewritten (`Faction::create` conflicts onto the name on record),
-    /// so this only ever grows, past `high`.
-    factions: Vec<meta::Faction>,
-    /// The highest faction id read.
+    held: Sidecars,
+    /// The highest faction id read. Ids come from a sequence and a name is
+    /// never rewritten, so one query past this answers a whole pass.
     high: i32,
 }
 
 impl Metadata {
-    /// Derive the tables from the database and write everything: every names
-    /// chunk, all three whole tables, and a body file for every system that
-    /// has anything on record. What a full build publishes.
-    ///
-    /// `names` comes from the caller rather than a read of its own, being the
-    /// other half of the read the cell tree was built from; see
-    /// [`read_galaxy`](super::read_galaxy).
-    pub(super) async fn build(
-        db: &Database,
-        dir: &Path,
-        names: Vec<meta::NameEntry>,
-    ) -> Result<(Metadata, MetaReport)> {
-        let names = NameTable::from_entries(names);
-        let populated = populated_of(db, None)
-            .await?
-            .into_iter()
-            .map(|system| (system.address, system))
-            .collect();
-        let grouped = bodies_of(db, None).await?;
-        let reaches = reaches_of(&grouped);
-        let boosts = boosts_of(db, None, &grouped).await?.into_iter().collect();
-        let factions = factions_above(db, 0).await?;
-        let high = factions.last().map(|f| f.id).unwrap_or(0);
-        let mut metadata =
-            Metadata { names, populated, reaches, boosts, factions, high };
-        let body_files = write_bodies(dir, &grouped, None)?;
-        let moved = Moved {
-            populated: true,
-            reaches: true,
-            boosts: true,
-            factions: true,
-            body_files,
-        };
-        let report = metadata.publish(dir, moved)?;
-        Ok((metadata, report))
-    }
-
     /// The tables as `dir` holds them, read back with no database at all.
     ///
-    /// What a `--watch` restart resumes onto. The names chunks come back with
-    /// their boundaries intact, so the next publish appends where the run before
-    /// it left off and rewrites nothing it already wrote.
+    /// What a `--watch` restart resumes onto. The names chunks come back
+    /// with their boundaries intact, so the next publish appends where the
+    /// run before it left off. A file missing is read back as empty, and the
+    /// first pass over a qualifying system puts it there.
     pub(super) fn resume(dir: &Path) -> io::Result<Metadata> {
-        let names = NameTable::read(dir)?;
-        let populated: Vec<meta::PopulatedSystem> =
-            read_meta(&source::populated_path(dir))?;
-        let reaches: Vec<meta::SystemReach> =
-            read_meta(&source::reaches_path(dir))?;
-        // A directory published before this table existed has none, and the
-        // first pass over a system with a jet cone puts it back. Only that:
-        // read as an empty table, a corrupt or truncated one would be
-        // republished from the handful of addresses one pass touches, and the
-        // hundred thousand rows already published would be gone with no error
-        // anywhere. Its siblings above say the same by using `?`.
-        let boosts: Vec<meta::SystemBoost> =
-            match read_meta(&source::boosts_path(dir)) {
-                Ok(table) => table,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(e),
-            };
-        let factions: Vec<meta::Faction> =
-            read_meta(&source::factions_path(dir))?;
-        let high = factions.iter().map(|f| f.id).max().unwrap_or(0);
-        Ok(Metadata {
-            names,
-            populated: populated
-                .into_iter()
-                .map(|system| (system.address, system))
-                .collect(),
-            reaches: reaches
-                .into_iter()
-                .map(|it| (it.address, it.reach))
-                .collect(),
-            boosts: boosts
-                .into_iter()
-                .map(|it| (it.address, it.boost))
-                .collect(),
-            factions,
-            high,
-        })
+        let (held, _absent) = Sidecars::resume(dir)?;
+        let high = held.highest_faction();
+        Ok(Metadata { held, high })
     }
 
-    /// How many systems the names table stands for: every positioned one, which
-    /// is what the served cell tree holds too.
+    /// How many systems the names table stands for: every positioned one,
+    /// which is what the served cell tree holds too.
     pub(super) fn names(&self) -> usize {
-        self.names.len()
+        self.held.counts().names
     }
 
     /// Patch in the systems of `touched` — one chunk of a pass — write their
     /// body files, and answer what that moved in the tables written whole.
     ///
-    /// Every one of `touched` is rebuilt from its current row, so applying the
-    /// same address twice lands in the same place and a system that has stopped
-    /// qualifying for a table — its position withdrawn, its population gone —
-    /// leaves it. A system whose record reads exactly as the one held changes
-    /// nothing and writes nothing, which is the common case: the feed reports
-    /// the same systems over and over.
+    /// Every one of `touched` is rebuilt from its current row, so applying
+    /// an address twice lands in the same place and a system that has
+    /// stopped qualifying for a table leaves it. A record reading as the one
+    /// held writes nothing.
     ///
-    /// Nothing is written here but the body files and the dirtied names
-    /// chunks' worth of bookkeeping: the tables written whole are the pass's
-    /// to write, once, through [`publish_pass`](Metadata::publish_pass).
+    /// Nothing is written here but the body files: the tables written whole
+    /// are the pass's, through [`publish_pass`](Metadata::publish_pass).
     pub(super) async fn patch(
         &mut self,
         db: &Database,
         dir: &Path,
         touched: &[i64],
-    ) -> Result<Moved> {
+    ) -> Result<(Moved, usize)> {
         let entries = names_for(db, touched).await?;
         let mut placed = HashSet::with_capacity(entries.len());
         for entry in entries {
             placed.insert(entry.address);
-            self.names.upsert(entry);
+            self.held.name(entry);
         }
 
         let systems = populated_of(db, Some(touched)).await?;
         let mut inhabited = HashSet::with_capacity(systems.len());
-        let mut moved = false;
+        let mut moved = Moved::default();
         for system in systems {
             inhabited.insert(system.address);
-            match self.populated.get(&system.address) {
-                Some(held) if *held == system => {}
-                _ => {
-                    self.populated.insert(system.address, system);
-                    moved = true;
-                }
-            }
+            moved.populated |= self.held.populate(system);
         }
 
-        // A scan is what moves a reach, so this is the table a watch pass
-        // really does move: a system reported again with nothing new scanned
-        // reads exactly as the one held and writes nothing. Worked out from
-        // the rows the body files are written from, which is what keeps the
-        // reach the map sizes a system by and the arrangement it draws inside
-        // that system the same answer.
-        let grouped = bodies_of(db, Some(touched)).await?;
-        let reached = reaches_of(&grouped);
+        // A scan is what moves a reach. Worked out from the rows the body
+        // files are written from, so the reach the map sizes a system by and
+        // the arrangement it draws inside that system agree.
+        let grouped = bodies_of(db, touched).await?;
+        let reached: HashMap<i64, f32> = grouped
+            .iter()
+            .filter_map(|(&address, rows)| {
+                Some((address, rows.extent(address)?))
+            })
+            .collect();
         let mut scanned = HashSet::with_capacity(reached.len());
-        let mut grew = false;
         for (address, reach) in reached {
             scanned.insert(address);
-            if self.reaches.get(&address) != Some(&reach) {
-                self.reaches.insert(address, reach);
-                grew = true;
-            }
-        }
-
-        for address in touched {
-            if !placed.contains(address) {
-                self.names.remove(*address);
-            }
-            if !inhabited.contains(address)
-                && self.populated.remove(address).is_some()
-            {
-                moved = true;
-            }
-            if !scanned.contains(address)
-                && self.reaches.remove(address).is_some()
-            {
-                grew = true;
-            }
+            moved.reaches |= self.held.reach(address, reach);
         }
 
         // The star class of each system reported, which says whether its
         // arrival star can supercharge a drive. Read off the same rows the
-        // reach above was measured over, so the two cannot disagree about
-        // which star a ship drops at.
-        let boosting = boosts_of(db, Some(touched), &grouped).await?;
+        // reach was measured over, so the two cannot disagree about which
+        // star a ship drops at.
+        let boosting = boosts_of(db, touched, &grouped).await?;
         let mut charged = HashSet::with_capacity(boosting.len());
-        let mut lit = false;
         for (address, boost) in boosting {
             charged.insert(address);
-            if self.boosts.get(&address) != Some(&boost) {
-                self.boosts.insert(address, boost);
-                lit = true;
-            }
+            moved.boosts |= self.held.boost(address, boost);
         }
+
         for address in touched {
-            if !charged.contains(address)
-                && self.boosts.remove(address).is_some()
-            {
-                lit = true;
+            if !placed.contains(address) {
+                self.held.unname(*address);
+            }
+            if !inhabited.contains(address) {
+                moved.populated |= self.held.depopulate(*address);
+            }
+            if !scanned.contains(address) {
+                moved.reaches |= self.held.unreach(*address);
+            }
+            if !charged.contains(address) {
+                moved.boosts |= self.held.unboost(*address);
             }
         }
 
-        Ok(Moved {
-            populated: moved,
-            reaches: grew,
-            boosts: lit,
-            factions: false,
-            body_files: write_bodies(dir, &grouped, Some(touched))?,
-        })
+        Ok((moved, write_bodies(dir, &grouped, touched)?))
     }
 
     /// Write everything one pass's chunks moved: the names chunks the
@@ -381,54 +213,43 @@ impl Metadata {
     /// factions named since the pass before.
     ///
     /// The faction sweep is here rather than in [`patch`](Metadata::patch)
-    /// because it is the one read that is not about the addresses that
-    /// changed. Ids come from a sequence and a name on record is never
-    /// rewritten, so one query past the highest id read answers the whole
-    /// pass, however many chunks it ran in.
+    /// because it is not about the addresses that changed: one query past
+    /// the highest id read answers the whole pass.
     pub(super) async fn publish_pass(
         &mut self,
         db: &Database,
         dir: &Path,
         mut moved: Moved,
+        body_files: usize,
     ) -> Result<MetaReport> {
         let named = factions_above(db, self.high).await?;
         if let Some(highest) = named.last() {
             self.high = highest.id;
-            self.factions.extend(named);
-            moved.factions = true;
+            moved.factions |= self.held.add_factions(named);
         }
-        self.publish(dir, moved)
+        self.publish(dir, moved, body_files)
     }
 
     /// Write the dirty names chunks and whichever whole tables `moved` names.
     ///
-    /// A watch always has the four tables in hand, so what it writes is
-    /// decided by what moved rather than by what was asked for. A build that
-    /// wants one part alone holds none of them and goes through
-    /// [`write_parts`] instead. The body files are already written by
-    /// whoever moved the tables — a chunk's patch, or the build — and their
-    /// count is carried here in `moved` rather than written again.
-    fn publish(&mut self, dir: &Path, moved: Moved) -> Result<MetaReport> {
-        let name_chunks = self.names.publish(dir)?;
-        if moved.populated {
-            write_populated(dir, &self.populated)?;
-        }
-        if moved.reaches {
-            write_reaches(dir, &self.reaches)?;
-        }
-        if moved.boosts {
-            write_boosts(dir, &self.boosts)?;
-        }
-        if moved.factions {
-            write_meta(&source::factions_path(dir), &self.factions)?;
-        }
+    /// A watch has the tables in hand, so what it writes is decided by what
+    /// moved; a build wanting one part goes through [`write_parts`]. The
+    /// body files are written by whoever moved the tables.
+    fn publish(
+        &mut self,
+        dir: &Path,
+        moved: Moved,
+        body_files: usize,
+    ) -> Result<MetaReport> {
+        let name_chunks = self.held.write(dir, moved)?;
+        let counts = self.held.counts();
         Ok(MetaReport {
-            populated: Some(self.populated.len()),
-            names: Some(self.names.len()),
-            factions: Some(self.factions.len()),
-            reaches: Some(self.reaches.len()),
-            boosts: Some(self.boosts.len()),
-            body_files: Some(moved.body_files),
+            populated: Some(counts.populated),
+            names: Some(counts.names),
+            factions: Some(counts.factions),
+            reaches: Some(counts.reaches),
+            boosts: Some(counts.boosts),
+            body_files: Some(body_files),
             name_chunks,
         })
     }
@@ -437,31 +258,19 @@ impl Metadata {
 /// Derive and write the metadata parts `parts` names, and nothing else.
 ///
 /// What a build asking for one part goes through, where a watch goes through
-/// [`Metadata::publish`]. The difference is what is in hand: a watch holds the
-/// tables and writes whichever moved, and this holds nothing, so each part it
-/// was asked for is read fresh and each part it was not is never read at all.
-/// The reaches, the body files and the boosts share one read of every scanned
-/// thing, which is the expensive half of a build and the half none of the
-/// three can skip: the reach is measured over those rows, the files are
-/// written from them, and the arrival star the boost is read off is one of
-/// them.
+/// [`Metadata::publish`]. This holds no tables, so each part asked for is
+/// read fresh. The reaches, the body files and the boosts share one read of
+/// every scanned thing.
 ///
-/// `names` is the other half of the read the cell tree comes out of, and is
-/// [`None`] exactly where the names table was not asked for.
+/// The names table is not among them: it comes out of the same read of
+/// `systems` the cell tree does, a chunk at a time, a galaxy of name entries
+/// held to be published afterwards being tens of gigabytes.
 pub(super) async fn write_parts(
     db: &Database,
     dir: &Path,
-    names: Option<Vec<meta::NameEntry>>,
     parts: Parts,
 ) -> Result<MetaReport> {
     let mut report = MetaReport::default();
-
-    if parts.names {
-        let entries = names.expect("the names read for the names table");
-        let mut table = NameTable::from_entries(entries);
-        report.name_chunks = table.publish(dir)?;
-        report.names = Some(table.len());
-    }
 
     if parts.populated {
         let populated: HashMap<i64, meta::PopulatedSystem> =
@@ -474,16 +283,40 @@ pub(super) async fn write_parts(
     }
 
     if parts.wants_bodies() {
-        let grouped = bodies_of(db, None).await?;
+        // One pass over everything scanned, in address order, holding one
+        // system's rows at a time. The two tables written whole are gathered
+        // as it goes; the body files go out as each system's rows arrive.
+        let mut reaches = HashMap::new();
+        let mut boosts = HashMap::new();
+        let mut body_files = 0;
+        each_scanned(db, |scanned| {
+            if parts.reaches {
+                if let Some(reach) = scanned.inside.extent(scanned.address) {
+                    reaches.insert(scanned.address, reach);
+                }
+            }
+            if parts.boosts {
+                if let Some(boost) = scanned.boost() {
+                    boosts.insert(scanned.address, boost);
+                }
+            }
+            if parts.bodies && scanned.anything() {
+                write_meta(
+                    &source::bodies_path(dir, scanned.address),
+                    &scanned.inside,
+                )?;
+                body_files += 1;
+            }
+            Ok(())
+        })
+        .await?;
         if parts.reaches {
-            report.reaches = Some(write_reaches(dir, &reaches_of(&grouped))?);
+            report.reaches = Some(write_reaches(dir, &reaches)?);
         }
         if parts.bodies {
-            report.body_files = Some(write_bodies(dir, &grouped, None)?);
+            report.body_files = Some(body_files);
         }
         if parts.boosts {
-            let boosts: HashMap<i64, meta::Boost> =
-                boosts_of(db, None, &grouped).await?.into_iter().collect();
             report.boosts = Some(write_boosts(dir, &boosts)?);
         }
     }
@@ -499,10 +332,10 @@ pub(super) async fn write_parts(
 
 /// The name and place of each of `addresses` that has one.
 ///
-/// Every positioned system belongs in the names table, not just the populated
-/// ones, since a search reaches any name and a route steps between any two
-/// places. An address that comes back with no row is a system that is not
-/// positioned, and the caller takes it out of the table it stands in.
+/// Every positioned system belongs in the names table, a search reaching any
+/// name and a route stepping between any two places. An address that comes
+/// back with no row is not positioned, and the caller takes it out of the
+/// table it stands in.
 async fn names_for(
     db: &Database,
     addresses: &[i64],
@@ -532,11 +365,9 @@ pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
 
 /// Every populated system with a place, or those of `addresses` alone.
 ///
-/// A population without a position is left out: the map only ever colors a
-/// system it draws, and it draws only positioned ones, so a
-/// [`meta::PopulatedSystem`] carries a fixed `[f32; 3]` and never an absent one.
-/// How far a system reaches has its own table, [`write_reaches`]: most systems
-/// with anything scanned in them are not populated at all.
+/// A population without a position is left out: the map colors only what it
+/// draws, so a [`meta::PopulatedSystem`] carries a fixed `[f32; 3]`. How far
+/// a system reaches has its own table, [`write_reaches`].
 async fn populated_of(
     db: &Database,
     addresses: Option<&[i64]>,
@@ -588,9 +419,8 @@ async fn populated_of(
 
 /// The factions named since id `above`, in id order.
 ///
-/// Ids come from a sequence, so a new faction is always a higher id than every
-/// one already read, and a name on record is never rewritten. The whole table is
-/// `above = 0`.
+/// Ids come from a sequence and a name on record is never rewritten, so a
+/// new faction is always a higher id. The whole table is `above = 0`.
 async fn factions_above(
     db: &Database,
     above: i32,
@@ -651,78 +481,40 @@ fn write_boosts(
 }
 
 /// Which of the positioned systems can supercharge a drive, over the rows
-/// already grouped for the body files, or those of `addresses` alone.
+/// already grouped for the body files.
 ///
 /// The arrival star's class, which is the one a ship can reach the jet cone
 /// of without crossing the system. Two places say what that is and the
-/// scanned one wins: a star on record is something somebody looked at, where
-/// `systems.primary_star_class` is only ever written by a plotted route
-/// (`galos-sync`'s `nav_route`), which names the class of a system nobody
-/// has necessarily been to. Reading the column alone published no
-/// supercharge at all for a neutron star a commander had flown to and
-/// scanned — the scan writes `stars`, and nothing writes that column back.
+/// scanned one wins: `systems.primary_star_class` is only ever written by a
+/// plotted route, naming the class of a system nobody has necessarily been
+/// to.
 ///
-/// Which star that is, is [`derive::arrival_class`] and not a query: nearest
-/// the drop point, ties broken by body id. It was a `DISTINCT ON
-/// (system_address) ... ORDER BY system_address, distance_from_arrival_ls,
-/// id` here and the same rule in Rust in `galos_journal`, two languages
-/// apart with nothing able to compare them, and the two derivations of this
-/// table have to answer the same thing about the same galaxy. So the rows
-/// this reads it from are [`bodies_of`]'s, which the caller has already read
-/// to write the body files and measure the reaches — the arrival star is in
-/// them, and asking the database for it again was asking a second time in a
-/// second language.
-///
-/// What is left for SQL is which systems are eligible and what the route
-/// said: positioned, since the map only ever draws a system it can place,
-/// and narrowed to those with a class to read at all — the column filled or
-/// a star on record — rather than to which classes those are. The
-/// classification is [`meta::Boost::of`] and only that, so a class that
-/// supercharges nothing is not in the result and the caller takes such a
-/// system out of the table it stands in. Written out in SQL as well, the two
-/// would agree until [`meta::Boost::of`] was widened, and then a full build
-/// would publish a short table that every watch pass patched systems into.
+/// Which star that is, is [`derive::arrival_class`] and not a query, over
+/// the rows the caller has already read for the body files and the reaches.
+/// SQL says only which systems are eligible: positioned, and with a class to
+/// read at all. The classification is [`meta::Boost::of`], so a class that
+/// supercharges nothing is left out and the caller takes such a system out
+/// of the table it stands in.
 async fn boosts_of(
     db: &Database,
-    addresses: Option<&[i64]>,
+    addresses: &[i64],
     grouped: &HashMap<i64, meta::SystemBodies>,
 ) -> Result<Vec<(i64, meta::Boost)>> {
-    let rows = match addresses {
-        // Every positioned system with either source of a class. The
-        // semi-join is what keeps a full build from carrying back the
-        // hundred million systems that have neither, which is nearly all of
-        // them.
-        None => {
-            sqlx::query(
-                "SELECT address, primary_star_class FROM systems s \
-                 WHERE s.position IS NOT NULL \
-                   AND (s.primary_star_class IS NOT NULL \
-                        OR EXISTS ( \
-                            SELECT 1 FROM stars st \
-                            WHERE st.system_address = s.address \
-                        ))",
-            )
-            .fetch_all(&db.pool)
-            .await?
-        }
-        // A handful of systems, which is a bound of its own: the ones with
-        // nothing to say are dropped below rather than by the query.
-        Some(addresses) => {
-            sqlx::query(
-                "SELECT address, primary_star_class FROM systems \
-                 WHERE address = ANY($1) AND position IS NOT NULL",
-            )
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
-        }
-    };
+    // The systems with nothing to say are dropped below rather than by the
+    // query.
+    let rows = sqlx::query(
+        "SELECT address, primary_star_class FROM systems \
+         WHERE address = ANY($1) AND position IS NOT NULL",
+    )
+    .bind(addresses)
+    .fetch_all(&db.pool)
+    .await?;
     let mut boosts = Vec::new();
     for row in rows {
         let address: i64 = row.try_get("address")?;
         let routed: Option<String> = row.try_get("primary_star_class")?;
-        let class = grouped
-            .get(&address)
+        let inside = grouped.get(&address);
+        let class = inside
             .and_then(derive::arrival_class)
             .or(routed.as_deref());
         if let Some(boost) = class.and_then(meta::Boost::of) {
@@ -732,189 +524,308 @@ async fn boosts_of(
     Ok(boosts)
 }
 
-/// Group `bodies/<address>.bin`'s worth of rows: one [`meta::SystemBodies`] per
-/// system that has any stars, bodies or barycenters on record.
+/// Group `bodies/<address>.bin`'s worth of rows for `addresses`: one
+/// [`meta::SystemBodies`] per system of them with anything on record.
 ///
-/// The three kinds are read in bulk, ordered by system and grouped in memory,
-/// so a system with a hundred bodies costs one row per body of one query rather
-/// than a query of its own. `addresses` is [`None`] for a full build, which
-/// reads every system, and [`Some`] for a watch pass, which reads only what
-/// changed.
+/// The three kinds are read in bulk, ordered by system and grouped in
+/// memory, so a system with a hundred bodies costs one row per body rather
+/// than a query of its own.
 ///
-/// Read once and used twice: [`write_bodies`] writes these out and
-/// [`reaches_of`] measures them. They were two passes over the same rows until
-/// the reach stopped being its own query.
+/// A watch pass's read, bounded by the chunk it is given; a full build goes
+/// through [`each_scanned`]. Read once and used three times: the body files
+/// are written out of it, the reach measured over it, the arrival star's
+/// class read off it.
 async fn bodies_of(
     db: &Database,
-    addresses: Option<&[i64]>,
+    addresses: &[i64],
 ) -> Result<HashMap<i64, meta::SystemBodies>> {
     let mut grouped: HashMap<i64, meta::SystemBodies> = HashMap::new();
     for star in all_stars(db, addresses).await? {
-        grouped
-            .entry(star.system_address)
-            .or_default()
-            .stars
-            .push(meta_star(star));
+        grouped.entry(star.system_address).or_default().stars.push(star.into());
     }
     for body in all_bodies(db, addresses).await? {
         grouped
             .entry(body.system_address)
             .or_default()
             .bodies
-            .push(meta_body(body));
+            .push(body.into());
     }
     for barycenter in all_barycenters(db, addresses).await? {
         grouped
             .entry(barycenter.system_address)
             .or_default()
             .barycenters
-            .push(meta_barycenter(barycenter));
+            .push(barycenter.into());
     }
     Ok(grouped)
 }
 
-/// Write the body files, and remove the file of any changed address left with
-/// nothing — so a system whose last scan was withdrawn stops reading as one
-/// that still has it.
+/// Write the body files of a pass's chunk, and remove the file of any
+/// changed address left with nothing — so a system whose last scan was
+/// withdrawn stops reading as one that still has it. Only a pass knows which
+/// addresses it asked about.
+///
+/// The removal goes through [`source::remove_bodies`], a directory published
+/// before the sharding still holding a flat file a read falls back onto.
 fn write_bodies(
     dir: &Path,
     grouped: &HashMap<i64, meta::SystemBodies>,
-    addresses: Option<&[i64]>,
+    addresses: &[i64],
 ) -> Result<usize> {
-    std::fs::create_dir_all(dir.join(source::BODIES_DIR))?;
     for (address, system_bodies) in grouped {
         write_meta(&source::bodies_path(dir, *address), system_bodies)?;
     }
 
-    if let Some(addresses) = addresses {
-        for &address in addresses {
-            if !grouped.contains_key(&address) {
-                let path = source::bodies_path(dir, address);
-                if path.exists() {
-                    std::fs::remove_file(path)?;
-                }
-            }
+    for &address in addresses {
+        if !grouped.contains_key(&address) {
+            source::remove_bodies(dir, address)?;
         }
     }
 
     Ok(grouped.len())
 }
 
-/// How far each system reaches from its arrival star, in metres, over the rows
-/// already grouped for the body files.
-///
-/// [`galos_index::inside`]'s answer and nobody else's. The map sizes every
-/// system in the sky by this table and draws the one it descends into from the
-/// same rows, and the two have to agree: a shell drawn smaller than the orbits
-/// inside it is the one thing a reach cannot be. This was a query of its own
-/// for a while — a `GREATEST(away, apoapsis) + radius` maxed per system — and
-/// it did not agree. It never added the displacement of what a thing goes
-/// round, so a star whose own orbit is measured about a point ten billion
-/// kilometres off came back reaching only as far as that orbit, and the shell
-/// cut through the far half of its own ellipse. Written twice, in two
-/// languages, it was never going to hold.
-///
-/// A system with nothing to say comes back with no entry at all, which is what
-/// leaves it out of the table: the map reads an absent reach as a system whose
-/// size is not on record and stands in for it.
-fn reaches_of(grouped: &HashMap<i64, meta::SystemBodies>) -> HashMap<i64, f32> {
-    grouped
-        .iter()
-        .filter_map(|(&address, rows)| Some((address, rows.extent(address)?)))
-        .collect()
+/// Everything one system has on record, as the three things read off it
+/// want it: the file to write, the reach to measure, the arrival star to
+/// classify.
+struct Scanned {
+    address: i64,
+    inside: meta::SystemBodies,
+    /// Whether anything has placed this system. A supercharge is published
+    /// only for one that has; see [`boosts_of`].
+    placed: bool,
+    /// What a plotted route said the system's primary is: the fallback where
+    /// nothing has been scanned.
+    routed: Option<String>,
 }
 
-/// Every star, grouped under its system by the caller: all of them for a full
-/// build, or those of `addresses` for a watch pass. Read in bulk and mapped the
-/// same way [`crate::stars`] maps a single-system read, so a star lands here
-/// exactly as it would through [`crate::stars::Star::fetch_all`].
-async fn all_stars(
-    db: &Database,
-    addresses: Option<&[i64]>,
-) -> Result<Vec<Star>> {
-    let rows = match addresses {
-        None => {
-            sqlx::query("SELECT * FROM stars ORDER BY system_address")
-                .fetch_all(&db.pool)
-                .await?
+impl Scanned {
+    /// Whether there is anything to write a body file out of. A system that
+    /// is only here because a route named its class has no file.
+    fn anything(&self) -> bool {
+        !self.inside.stars.is_empty()
+            || !self.inside.bodies.is_empty()
+            || !self.inside.barycenters.is_empty()
+    }
+
+    /// Whether this system's arrival star can supercharge a drive, by
+    /// [`boosts_of`]'s rule: the scanned arrival star, else the route's
+    /// class, and nothing for a system nothing has placed.
+    fn boost(&self) -> Option<meta::Boost> {
+        if !self.placed {
+            return None;
         }
-        Some(addresses) => {
-            sqlx::query(
-                "SELECT * FROM stars WHERE system_address = ANY($1) \
-             ORDER BY system_address",
-            )
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
+        derive::arrival_class(&self.inside)
+            .or(self.routed.as_deref())
+            .and_then(meta::Boost::of)
+    }
+}
+
+/// The columns each of the four ordered reads is made of, shared with the
+/// paged reads above so a build and a pass read a row the same way.
+const STARS_SELECT: &str = "SELECT * FROM stars";
+const BARYCENTERS_SELECT: &str = "SELECT * FROM barycenters";
+const BODIES_SELECT: &str = "SELECT b.*, \
+     COALESCE(ARRAY_AGG(m.name ORDER BY m.name) \
+         FILTER (WHERE m.name IS NOT NULL), '{}') AS material_names, \
+     COALESCE(ARRAY_AGG(m.percent ORDER BY m.name) \
+         FILTER (WHERE m.name IS NOT NULL), '{}') AS material_percents \
+     FROM bodies b \
+     LEFT JOIN body_materials m \
+         ON m.system_address = b.system_address AND m.body_id = b.id";
+/// Every positioned system with either source of an arrival class. The
+/// semi-join keeps a full build from carrying back the systems with neither.
+const BOOSTABLE_SELECT: &str =
+    "SELECT address AS system_address, primary_star_class FROM systems s \
+     WHERE s.position IS NOT NULL \
+       AND (s.primary_star_class IS NOT NULL \
+            OR EXISTS (SELECT 1 FROM stars st \
+                       WHERE st.system_address = s.address))";
+
+/// One ordered cursor over a table keyed by system, with the row read past
+/// the system it belongs to held back.
+///
+/// What merging costs in memory: one row per stream.
+struct ByAddress<'a, T> {
+    rows: BoxStream<'a, sqlx::Result<PgRow>>,
+    read: fn(&PgRow) -> Result<T>,
+    ahead: Option<(i64, T)>,
+}
+
+impl<'a, T> ByAddress<'a, T> {
+    /// Open the cursor and read its first row.
+    async fn open(
+        db: &'a Database,
+        query: &'a str,
+        read: fn(&PgRow) -> Result<T>,
+    ) -> Result<ByAddress<'a, T>> {
+        let mut cursor = ByAddress {
+            rows: sqlx::query(query).fetch(&db.pool),
+            read,
+            ahead: None,
+        };
+        cursor.step().await?;
+        Ok(cursor)
+    }
+
+    /// The system the held row belongs to, or [`None`] at the end.
+    fn at(&self) -> Option<i64> {
+        self.ahead.as_ref().map(|&(address, _)| address)
+    }
+
+    /// Take everything this cursor holds for `address`.
+    async fn take(&mut self, address: i64, into: &mut Vec<T>) -> Result<()> {
+        while self.at() == Some(address) {
+            let (_, row) = self.ahead.take().expect("a held row");
+            into.push(row);
+            self.step().await?;
         }
-    };
+        Ok(())
+    }
+
+    /// Read one more row.
+    async fn step(&mut self) -> Result<()> {
+        self.ahead = match self.rows.next().await {
+            None => None,
+            Some(row) => {
+                let row = row?;
+                let address: i64 = row.try_get("system_address")?;
+                Some((address, (self.read)(&row)?))
+            }
+        };
+        Ok(())
+    }
+}
+
+/// Every system with anything scanned in it, or any class to read off it,
+/// handed over one at a time in address order.
+///
+/// Four ordered cursors merged: the stars, the bodies with their materials,
+/// the barycenters, and the systems a supercharge could be published for.
+/// Each is a `fetch` ordered by the system column, so what is held at any
+/// moment is one system's rows and one row of each cursor beyond it.
+///
+/// A watch pass still reads its chunk through [`bodies_of`]: it is bounded
+/// by the chunk, and it needs the whole group to say which addresses came
+/// back with *nothing*.
+async fn each_scanned<F>(db: &Database, mut each: F) -> Result<()>
+where
+    F: FnMut(Scanned) -> Result<()>,
+{
+    // The merge wants each cursor ascending by system, and the reader wants
+    // a system's members in the order the game numbers them: a body file is
+    // written in the order the rows arrive, and heap order is not an order --
+    // an updated row moves, so a republish rewrites files whose contents did
+    // not change and the two derivations of one system disagree about the
+    // order of what is in it.
+    let stars_sql = format!("{STARS_SELECT} ORDER BY system_address, id");
+    let barycenters_sql =
+        format!("{BARYCENTERS_SELECT} ORDER BY system_address, id");
+    let bodies_sql = format!(
+        "{BODIES_SELECT} GROUP BY b.system_address, b.id \
+         ORDER BY b.system_address, b.id"
+    );
+    // One row per system, `systems.address` being its key, so the system is
+    // the whole of the order there is.
+    let placed_sql = format!("{BOOSTABLE_SELECT} ORDER BY system_address");
+
+    let mut stars =
+        ByAddress::open(db, &stars_sql, |row| star_from_row(row).map(Into::into))
+            .await?;
+    let mut bodies = ByAddress::open(db, &bodies_sql, |row| {
+        body_from_row(row).map(Into::into)
+    })
+    .await?;
+    let mut barycenters = ByAddress::open(db, &barycenters_sql, |row| {
+        barycenter_from_row(row).map(Into::into)
+    })
+    .await?;
+    let mut placed = ByAddress::open(db, &placed_sql, |row| {
+        Ok(row.try_get::<Option<String>, _>("primary_star_class")?)
+    })
+    .await?;
+
+    let mut routed = Vec::new();
+    loop {
+        // By value and not `into_iter`, this crate being on the 2018
+        // edition, where an array's `into_iter` is the reference's.
+        let next = IntoIterator::into_iter([
+            stars.at(),
+            bodies.at(),
+            barycenters.at(),
+            placed.at(),
+        ])
+        .flatten()
+        .min();
+        let Some(address) = next else { return Ok(()) };
+
+        let mut inside = meta::SystemBodies::default();
+        stars.take(address, &mut inside.stars).await?;
+        bodies.take(address, &mut inside.bodies).await?;
+        barycenters.take(address, &mut inside.barycenters).await?;
+        routed.clear();
+        placed.take(address, &mut routed).await?;
+
+        each(Scanned {
+            address,
+            inside,
+            placed: !routed.is_empty(),
+            routed: routed.first().cloned().flatten(),
+        })?;
+    }
+}
+
+/// Every star of `addresses`, grouped under its system by the caller, mapped
+/// as [`crate::stars::Star::fetch_all`] maps one system's.
+///
+/// By system and then by id, as [`each_scanned`] reads them: a pass and a
+/// build write the same body file for a system and cannot order what is in
+/// it differently.
+async fn all_stars(db: &Database, addresses: &[i64]) -> Result<Vec<Star>> {
+    let rows = sqlx::query(&format!(
+        "{STARS_SELECT} WHERE system_address = ANY($1) \
+         ORDER BY system_address, id"
+    ))
+    .bind(addresses)
+    .fetch_all(&db.pool)
+    .await?;
     rows.iter().map(star_from_row).collect()
 }
 
-/// Every body, with what it is made of gathered alongside, grouped under its
-/// system by the caller. The materials join and the grouping are [`crate::bodies`]'s
-/// own; only the `WHERE` differs, being over a set of systems rather than one.
-async fn all_bodies(
-    db: &Database,
-    addresses: Option<&[i64]>,
-) -> Result<Vec<Body>> {
-    let select = "SELECT b.*, \
-                COALESCE(ARRAY_AGG(m.name ORDER BY m.name) \
-                    FILTER (WHERE m.name IS NOT NULL), '{}') AS material_names, \
-                COALESCE(ARRAY_AGG(m.percent ORDER BY m.name) \
-                    FILTER (WHERE m.name IS NOT NULL), '{}') AS material_percents \
-         FROM bodies b \
-         LEFT JOIN body_materials m \
-             ON m.system_address = b.system_address AND m.body_id = b.id";
-    let rows = match addresses {
-        None => {
-            sqlx::query(&format!(
-            "{select} GROUP BY b.system_address, b.id ORDER BY b.system_address"
-        ))
-            .fetch_all(&db.pool)
-            .await?
-        }
-        Some(addresses) => {
-            sqlx::query(&format!(
-                "{select} WHERE b.system_address = ANY($1) \
-             GROUP BY b.system_address, b.id ORDER BY b.system_address"
-            ))
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
-        }
-    };
+/// Every body of `addresses`, with what it is made of gathered alongside,
+/// grouped under its system by the caller. The materials join and the
+/// grouping are [`crate::bodies`]'s own; only the `WHERE` differs.
+async fn all_bodies(db: &Database, addresses: &[i64]) -> Result<Vec<Body>> {
+    let rows = sqlx::query(&format!(
+        "{BODIES_SELECT} WHERE b.system_address = ANY($1) \
+         GROUP BY b.system_address, b.id \
+         ORDER BY b.system_address, b.id"
+    ))
+    .bind(addresses)
+    .fetch_all(&db.pool)
+    .await?;
     rows.iter().map(body_from_row).collect()
 }
 
-/// Every barycenter, grouped under its system by the caller, mapped as
-/// [`crate::barycenters::Barycenter::fetch_all`] maps one system's.
+/// Every barycenter of `addresses`, grouped under its system by the caller,
+/// mapped as [`crate::barycenters::Barycenter::fetch_all`] maps one
+/// system's.
 async fn all_barycenters(
     db: &Database,
-    addresses: Option<&[i64]>,
+    addresses: &[i64],
 ) -> Result<Vec<Barycenter>> {
-    let rows = match addresses {
-        None => {
-            sqlx::query("SELECT * FROM barycenters ORDER BY system_address")
-                .fetch_all(&db.pool)
-                .await?
-        }
-        Some(addresses) => {
-            sqlx::query(
-                "SELECT * FROM barycenters WHERE system_address = ANY($1) \
-                 ORDER BY system_address",
-            )
-            .bind(addresses)
-            .fetch_all(&db.pool)
-            .await?
-        }
-    };
+    let rows = sqlx::query(&format!(
+        "{BARYCENTERS_SELECT} WHERE system_address = ANY($1) \
+         ORDER BY system_address, id"
+    ))
+    .bind(addresses)
+    .fetch_all(&db.pool)
+    .await?;
     rows.iter().map(barycenter_from_row).collect()
 }
 
-/// One `stars` row as a [`Star`], reading the columns by name where the checked
-/// query reads them by macro. The orbit is whole or absent by [`orbit::read`],
-/// the primary going round nothing.
+/// One `stars` row as a [`Star`], read by column name. The orbit is whole or
+/// absent by [`orbit::read`], the primary going round nothing.
 fn star_from_row(row: &PgRow) -> Result<Star> {
     let parent_ids: Option<Vec<i16>> = row.try_get("parent_ids")?;
     let parent_types: Option<Vec<String>> = row.try_get("parent_types")?;
@@ -925,7 +836,7 @@ fn star_from_row(row: &PgRow) -> Result<Star> {
         system_address: row.try_get("system_address")?,
         id: row.try_get("id")?,
         name: row.try_get("name")?,
-        parents: Parent::rows(parent_ids, parent_types),
+        parents: ancestry(parent_ids, parent_types),
         updated_at: updated_at.and_utc(),
         updated_by: row.try_get("updated_by")?,
         absolute_magnitude: row.try_get("absolute_magnitude")?,
@@ -956,9 +867,8 @@ fn star_from_row(row: &PgRow) -> Result<Star> {
 }
 
 /// One `bodies` row, with its materials already gathered into the two arrays
-/// this reads, as a [`Body`]. The surface reads as absent where a gas giant
-/// carries none, and the body's orbit is always present, a body going round
-/// something by definition.
+/// this reads, as a [`Body`]. The surface is absent where a gas giant
+/// carries none; the orbit is always present.
 fn body_from_row(row: &PgRow) -> Result<Body> {
     let parent_ids: Option<Vec<i16>> = row.try_get("parent_ids")?;
     let parent_types: Option<Vec<String>> = row.try_get("parent_types")?;
@@ -976,7 +886,7 @@ fn body_from_row(row: &PgRow) -> Result<Body> {
     Ok(Body {
         system_address: row.try_get("system_address")?,
         id: row.try_get("id")?,
-        parents: Parent::rows(parent_ids, parent_types),
+        parents: ancestry(parent_ids, parent_types),
         name: row.try_get("name")?,
         body_type: body_type.map(|ty| ty.as_str().into()),
         distance_from_arrival: row.try_get("distance_from_arrival")?,
@@ -1041,155 +951,110 @@ fn barycenter_from_row(row: &PgRow) -> Result<Barycenter> {
     })
 }
 
-/// A [`Parent`] as its field-identical [`meta::Parent`]. The two say the same
-/// thing on either side of the transport and differ only in which crate names
-/// the type.
-fn meta_parent(parent: Parent) -> meta::Parent {
-    meta::Parent { ty: parent.ty, id: parent.id }
-}
+// The four projections below are `From` impls rather than private helpers
+// because the same projection is what `galos_db`'s conformance tests compare
+// a merged row against: the rule for merging a scan is stated once in
+// `galos_index::merge`.
 
-/// A [`Surface`] as its field-identical [`meta::Surface`]. The `elite_journal`
-/// types it carries are shared, so they pass through unchanged.
-fn meta_surface(surface: Surface) -> meta::Surface {
-    meta::Surface {
-        atmosphere_type: surface.atmosphere_type,
-        pressure: surface.pressure,
-        composition: surface.composition,
-        landable: surface.landable,
-        atmosphere: surface.atmosphere,
-        volcanism: surface.volcanism,
-        terraform_state: surface.terraform_state,
-        materials: surface.materials,
+/// A [`Surface`] as its field-identical [`meta::Surface`].
+impl From<Surface> for meta::Surface {
+    fn from(surface: Surface) -> meta::Surface {
+        meta::Surface {
+            atmosphere_type: surface.atmosphere_type,
+            pressure: surface.pressure,
+            composition: surface.composition,
+            landable: surface.landable,
+            atmosphere: surface.atmosphere,
+            volcanism: surface.volcanism,
+            terraform_state: surface.terraform_state,
+            materials: surface.materials,
+        }
     }
 }
 
 /// A [`Star`] as its field-identical [`meta::Star`].
-fn meta_star(star: Star) -> meta::Star {
-    meta::Star {
-        system_address: star.system_address,
-        id: star.id,
-        name: star.name,
-        parents: star.parents.into_iter().map(meta_parent).collect(),
-        updated_at: star.updated_at,
-        updated_by: star.updated_by,
-        absolute_magnitude: star.absolute_magnitude,
-        age_my: star.age_my,
-        distance_from_arrival_ls: star.distance_from_arrival_ls,
-        luminosity: star.luminosity,
-        star_class: star.star_class,
-        stellar_mass: star.stellar_mass,
-        subclass: star.subclass,
-        orbit: star.orbit,
-        spin: star.spin,
-        radius: star.radius,
-        temperature: star.temperature,
-        mapped: star.mapped,
-        discovered_at: star.discovered_at,
+impl From<Star> for meta::Star {
+    fn from(star: Star) -> meta::Star {
+        meta::Star {
+            system_address: star.system_address,
+            id: star.id,
+            name: star.name,
+            parents: star.parents,
+            updated_at: star.updated_at,
+            updated_by: star.updated_by,
+            absolute_magnitude: star.absolute_magnitude,
+            age_my: star.age_my,
+            distance_from_arrival_ls: star.distance_from_arrival_ls,
+            luminosity: star.luminosity,
+            star_class: star.star_class,
+            stellar_mass: star.stellar_mass,
+            subclass: star.subclass,
+            orbit: star.orbit,
+            spin: star.spin,
+            radius: star.radius,
+            temperature: star.temperature,
+            mapped: star.mapped,
+            discovered_at: star.discovered_at,
+        }
     }
 }
 
 /// A [`Body`] as its field-identical [`meta::Body`].
-fn meta_body(body: Body) -> meta::Body {
-    meta::Body {
-        system_address: body.system_address,
-        id: body.id,
-        parents: body.parents.into_iter().map(meta_parent).collect(),
-        name: body.name,
-        body_type: body.body_type,
-        distance_from_arrival: body.distance_from_arrival,
-        updated_at: body.updated_at,
-        updated_by: body.updated_by,
-        planet_class: body.planet_class,
-        tidal_lock: body.tidal_lock,
-        mass: body.mass,
-        radius: body.radius,
-        gravity: body.gravity,
-        temperature: body.temperature,
-        surface: body.surface.map(meta_surface),
-        orbit: body.orbit,
-        spin: body.spin,
-        mapped: body.mapped,
-        discovered_at: body.discovered_at,
+impl From<Body> for meta::Body {
+    fn from(body: Body) -> meta::Body {
+        meta::Body {
+            system_address: body.system_address,
+            id: body.id,
+            parents: body.parents,
+            name: body.name,
+            body_type: body.body_type,
+            distance_from_arrival: body.distance_from_arrival,
+            updated_at: body.updated_at,
+            updated_by: body.updated_by,
+            planet_class: body.planet_class,
+            tidal_lock: body.tidal_lock,
+            mass: body.mass,
+            radius: body.radius,
+            gravity: body.gravity,
+            temperature: body.temperature,
+            surface: body.surface.map(Into::into),
+            orbit: body.orbit,
+            spin: body.spin,
+            mapped: body.mapped,
+            discovered_at: body.discovered_at,
+        }
     }
 }
 
 /// A [`Barycenter`] as its field-identical [`meta::Barycenter`].
-fn meta_barycenter(barycenter: Barycenter) -> meta::Barycenter {
-    meta::Barycenter {
-        system_address: barycenter.system_address,
-        id: barycenter.id,
-        updated_at: barycenter.updated_at,
-        updated_by: barycenter.updated_by,
-        orbit: barycenter.orbit,
+impl From<Barycenter> for meta::Barycenter {
+    fn from(barycenter: Barycenter) -> meta::Barycenter {
+        meta::Barycenter {
+            system_address: barycenter.system_address,
+            id: barycenter.id,
+            updated_at: barycenter.updated_at,
+            updated_by: barycenter.updated_by,
+            orbit: barycenter.orbit,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A table one chunk of a pass moved is still written for the pass
-    ///
-    /// A pass over what changed runs in chunks, and the three tables written
-    /// whole are written once at the end of it, so what each chunk moved has
-    /// to be accumulated rather than answered. Letting a later chunk that
-    /// moved nothing overwrite what an earlier one moved would leave the
-    /// published table standing for a galaxy the table held in memory no
-    /// longer agrees with, and nothing would put it right until something
-    /// else happened to move the same table — a divergence no count in the
-    /// report would show. The body files are written as each chunk goes, so
-    /// theirs is a sum where the rest are or-ed.
-    #[test]
-    fn a_pass_keeps_every_table_one_of_its_chunks_moved() {
-        let mut pass = Moved::default();
-        pass.absorb(Moved {
-            populated: true,
-            reaches: false,
-            boosts: false,
-            factions: false,
-            body_files: 3,
-        });
-        pass.absorb(Moved {
-            populated: false,
-            reaches: true,
-            boosts: false,
-            factions: false,
-            body_files: 5,
-        });
-        pass.absorb(Moved::default());
-
-        assert!(
-            pass.populated,
-            "a chunk that moved nothing unsaid the first chunk's populated row"
-        );
-        assert!(
-            pass.reaches,
-            "a chunk that moved nothing unsaid the second chunk's reach"
-        );
-        assert!(!pass.boosts, "a table no chunk moved was written anyway");
-        assert!(!pass.factions, "a table no chunk moved was written anyway");
-        assert_eq!(
-            pass.body_files, 8,
-            "the body files of every chunk are the pass's"
-        );
-    }
+    use crate::testing::Scratch;
+    use galos_index::Parent;
 
     /// A system's bodies survive the trip out to disk and back through the
     /// same path helpers, format and reader the client uses.
     ///
-    /// No database: the galos_db values are built by hand, converted to their
-    /// metadata form, written with [`write_meta`] under [`source::bodies_path`],
-    /// and read back through a [`FsSource`], the way a click into the map reads
-    /// them. It proves the conversion is faithful and the two halves of the
-    /// transport agree on the layout and the encoding.
+    /// No database: the values are built by hand, written with [`write_meta`]
+    /// under [`source::bodies_path`], and read back through a [`FsSource`].
     ///
-    /// Both bodies make the full trip, the surfaced one on purpose: its
-    /// [`BodyType`] and its [`AtmosphereType`] are `#[serde(untagged)]` enums
-    /// with an `Unknown(String)` arm, and an untagged variant reads back only
-    /// from a self-describing format. MessagePack is one, which is the reason
-    /// it is the codec — see `galos_index::source::untagged_enums_round_trip`
-    /// — so those two fields are asserted after the read here rather than
-    /// only on the way out.
+    /// The surfaced body is here on purpose: its [`BodyType`] and its
+    /// [`AtmosphereType`] are `#[serde(untagged)]` enums with an
+    /// `Unknown(String)` arm, which read back only from a self-describing
+    /// format, so both fields are asserted after the read.
     #[async_std::test]
     async fn a_systems_bodies_round_trip_through_the_fs_source() {
         use elite_journal::body::{AtmosphereType, BodyType, Composition};
@@ -1261,9 +1126,9 @@ mod tests {
         };
 
         let want = meta::SystemBodies {
-            stars: vec![meta_star(star)],
-            bodies: vec![meta_body(gas_giant)],
-            barycenters: vec![meta_barycenter(barycenter)],
+            stars: vec![star.into()],
+            bodies: vec![gas_giant.into()],
+            barycenters: vec![barycenter.into()],
         };
 
         let dir = std::env::temp_dir().join(format!(
@@ -1326,7 +1191,7 @@ mod tests {
             discovered_at: None,
         };
         let surfaced_bodies = meta::SystemBodies {
-            bodies: vec![meta_body(surfaced)],
+            bodies: vec![surfaced.into()],
             ..Default::default()
         };
         write_meta(&source::bodies_path(&dir, address + 2), &surfaced_bodies)
@@ -1356,13 +1221,11 @@ mod tests {
 
     /// A corrupt supercharge table stops a resume rather than emptying it
     ///
-    /// [`Metadata::resume`] reads the table back so a watch pass can patch it
-    /// instead of rebuilding it, and a directory published before the table
-    /// existed has none — which is why the read tolerates an absence. Only an
-    /// absence: read as empty, a truncated file would be republished from the
-    /// handful of addresses one pass touches, and the hundred thousand rows
-    /// already published would be gone with nothing said. A refused resume is
-    /// a full rebuild, which is the recoverable answer.
+    /// [`Metadata::resume`] tolerates an absent table, a directory published
+    /// before it existed having none. Only an absence: read as empty, a
+    /// truncated file would be republished from the handful of addresses one
+    /// pass touches and the rows already published would be gone. A refused
+    /// resume is a full rebuild, which is recoverable.
     #[test]
     fn a_corrupt_boosts_table_refuses_a_resume() {
         let dir = std::env::temp_dir()
@@ -1402,44 +1265,18 @@ mod tests {
 
     /// A scanned neutron star supercharges, whatever a route said
     ///
-    /// The bug: `boosts_of` read `systems.primary_star_class`, and the only
-    /// thing that writes that column is a plotted route. Fly to a neutron
-    /// star and scan it and the `stars` row says `N` while the column stays
-    /// null, so the index published no supercharge for a system the
-    /// commander had personally stood in — and the map, which refuses a
-    /// route for a drive that takes a jet cone without a table, had nothing
-    /// to plot by.
+    /// The only thing that writes `systems.primary_star_class` is a plotted
+    /// route, so a scanned neutron star has `N` in `stars` and a null column.
+    /// Reading the column alone published no supercharge for it.
     ///
-    /// Needs a database of its own, named by `TEST_DATABASE_URL`, for the
-    /// reason `tests/write_path.rs` sets out. Stands down when nothing says
-    /// where to write, so CI passes with no database at all.
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
     #[async_std::test]
     async fn a_scanned_arrival_star_is_what_supercharges() {
-        dotenv::dotenv().ok();
-        let Ok(url) = std::env::var("TEST_DATABASE_URL") else {
-            eprintln!("no TEST_DATABASE_URL: standing down");
-            return;
-        };
-        let db = Database::from_url(&url)
-            .await
-            .expect("TEST_DATABASE_URL should connect");
+        let Some(db) = Scratch::new().await else { return };
 
-        // Addresses nothing else writes, cleared so the rows below are the
-        // only ones they can hold.
         let scanned = 0x0B00_5700_0000_0001_u64 as i64;
         let routed = 0x0B00_5700_0000_0002_u64 as i64;
-        for address in [scanned, routed] {
-            for statement in [
-                "DELETE FROM stars WHERE system_address = $1",
-                "DELETE FROM systems WHERE address = $1",
-            ] {
-                sqlx::query(statement)
-                    .bind(address)
-                    .execute(&db.pool)
-                    .await
-                    .expect("the address should be clearable");
-            }
-        }
 
         // One system nobody plotted a route to, holding a scanned neutron
         // star at the drop point and a white dwarf further out.
@@ -1488,13 +1325,16 @@ mod tests {
         .expect("the routed system should write");
 
         // Over the rows a full build has in hand, which is every scanned
-        // thing there is.
-        let all = bodies_of(&db, None).await.expect("every scanned thing");
-        let whole: HashMap<i64, meta::Boost> = boosts_of(&db, None, &all)
-            .await
-            .expect("a full read")
-            .into_iter()
-            .collect();
+        // thing there is, handed over a system at a time.
+        let mut whole: HashMap<i64, meta::Boost> = HashMap::new();
+        each_scanned(&db, |system| {
+            if let Some(boost) = system.boost() {
+                whole.insert(system.address, boost);
+            }
+            Ok(())
+        })
+        .await
+        .expect("a full read");
         assert_eq!(
             whole.get(&scanned),
             Some(&meta::Boost::Neutron),
@@ -1506,23 +1346,18 @@ mod tests {
             "a routed class is still what an unscanned system has",
         );
 
-        // A watch pass reads the same systems through the other query, over
-        // the rows one pass read rather than the galaxy's, and must answer
-        // the same, or a directory says different things about one galaxy
-        // depending on how it was built.
-        let some = bodies_of(&db, Some(&[scanned, routed]))
+        // A watch pass reads the same systems through the other query and
+        // must answer the same, or a directory says different things about
+        // one galaxy depending on how it was built.
+        let some = bodies_of(&db, &[scanned, routed])
             .await
             .expect("the scanned things of two systems");
         let touched: HashMap<i64, meta::Boost> =
-            boosts_of(&db, Some(&[scanned, routed]), &some)
+            boosts_of(&db, &[scanned, routed], &some)
                 .await
                 .expect("a read of what changed")
                 .into_iter()
                 .collect();
-        // Address by address, and not table against table: the database this
-        // runs against holds whatever every other test has written to it,
-        // and the pass asked about two systems where the build asked about
-        // all of them.
         for address in [scanned, routed] {
             assert_eq!(
                 touched.get(&address),
@@ -1530,5 +1365,139 @@ mod tests {
                 "the two reads disagree about {address}",
             );
         }
+
+        db.done().await;
+    }
+
+    /// A system's members come back in the order the game numbers them
+    ///
+    /// `ORDER BY system_address` alone leaves the rows within one system in
+    /// whatever order the heap holds, which is not an order: an updated row
+    /// is written somewhere else. A body file is written in the order the
+    /// rows arrive, so a republish rewrote files whose contents had not
+    /// changed, and a directory raised from the dump, where the rows are
+    /// read in ascending `bodyId`, disagreed with one raised from here
+    /// about the order of a system's barycenters.
+    ///
+    /// Written highest id first and then updated, so heap order and id
+    /// order are not the same order.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_systems_members_come_back_in_id_order() {
+        let Some(db) = Scratch::new().await else { return };
+
+        let address = 0x0B00_5700_0000_0003_u64 as i64;
+        sqlx::query(
+            "INSERT INTO systems (address, name, position, updated_at, \
+                                  updated_by) \
+             VALUES ($1, 'ORDERED', ST_MakePoint(7, 8, 9)::geometry, \
+                     now(), 'test')",
+        )
+        .bind(address)
+        .execute(&db.pool)
+        .await
+        .expect("the system should write");
+
+        for id in [3i16, 2, 1] {
+            sqlx::query(
+                "INSERT INTO stars (system_address, id, name, updated_at, \
+                     updated_by, absolute_magnitude, age_my, \
+                     distance_from_arrival_ls, luminosity, star_class, \
+                     stellar_mass, subclass, axial_tilt, radius, \
+                     rotation_period, temperature, was_mapped) \
+                 VALUES ($1, $2, $3, now(), 'test', 4.8, 100, 0, 'V', 'G', \
+                         1.0, 2, 0, 1.0, 0, 5000, false)",
+            )
+            .bind(address)
+            .bind(id)
+            .bind(format!("ORDERED {id}"))
+            .execute(&db.pool)
+            .await
+            .expect("the star should write");
+        }
+        for id in [6i16, 5, 4] {
+            sqlx::query(
+                "INSERT INTO barycenters (system_address, id, updated_at, \
+                     updated_by) \
+                 VALUES ($1, $2, now(), 'test')",
+            )
+            .bind(address)
+            .bind(id)
+            .execute(&db.pool)
+            .await
+            .expect("the barycenter should write");
+        }
+        for id in [9i16, 8, 7] {
+            sqlx::query(
+                "INSERT INTO bodies (system_address, id, name, updated_at, \
+                     updated_by, planet_class, tidal_lock, landable, mass, \
+                     radius, gravity, semi_major_axis, eccentricity, \
+                     orbital_inclination, periapsis, orbital_period, \
+                     rotation_period, axial_tilt, was_mapped) \
+                 VALUES ($1, $2, $3, now(), 'test', 'Rocky body', false, \
+                         false, 1.0, 1.0, 1.0, 1.0, 0, 0, 0, 1.0, 1.0, 0, \
+                         false)",
+            )
+            .bind(address)
+            .bind(id)
+            .bind(format!("ORDERED {id}"))
+            .execute(&db.pool)
+            .await
+            .expect("the body should write");
+        }
+
+        // What moves a row: the first one written is rewritten, so the
+        // order the rows were laid down in is no longer the order they lie
+        // in.
+        for statement in [
+            "UPDATE stars SET temperature = 6000 \
+             WHERE system_address = $1 AND id = 3",
+            "UPDATE barycenters SET updated_by = 'again' \
+             WHERE system_address = $1 AND id = 6",
+            "UPDATE bodies SET gravity = 2 \
+             WHERE system_address = $1 AND id = 9",
+        ] {
+            sqlx::query(statement)
+                .bind(address)
+                .execute(&db.pool)
+                .await
+                .expect("the row should update");
+        }
+
+        // What a full build reads, and what a watch pass reads: the same
+        // system, and the same order within it.
+        let mut built = meta::SystemBodies::default();
+        each_scanned(&db, |system| {
+            if system.address == address {
+                built = system.inside;
+            }
+            Ok(())
+        })
+        .await
+        .expect("a full read");
+        let mut passed = bodies_of(&db, &[address])
+            .await
+            .expect("the scanned things of one system");
+        let passed = passed.remove(&address).expect("the system was read");
+
+        for inside in [&built, &passed] {
+            let stars: Vec<i16> =
+                inside.stars.iter().map(|star| star.id).collect();
+            let bodies: Vec<i16> =
+                inside.bodies.iter().map(|body| body.id).collect();
+            let barycenters: Vec<i16> =
+                inside.barycenters.iter().map(|it| it.id).collect();
+            assert_eq!(stars, vec![1, 2, 3], "the stars are in heap order");
+            assert_eq!(bodies, vec![7, 8, 9], "the bodies are in heap order");
+            assert_eq!(
+                barycenters,
+                vec![4, 5, 6],
+                "the barycenters are in heap order",
+            );
+        }
+
+        db.done().await;
     }
 }

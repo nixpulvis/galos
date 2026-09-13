@@ -13,6 +13,10 @@ ab_glyph = "0.2"
 bevy = "0.19"
 bevy-inspector-egui = { version = "0.37", optional = true }
 bevy_egui = "0.40"
+# The map's own command line, clap 4 derive as every command line here is.
+# `env` is what lets a flag fall back to a variable without reading the
+# environment by hand.
+clap = { version = "4", features = ["derive", "env"] }
 # The face egui draws the chrome in, taken from the crate egui itself takes it
 # from rather than copied into `assets`. A name on the map and the same name in
 # the bar are then the one typeface, and stay so when egui moves.
@@ -31,11 +35,10 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index", default-features = false }
-# The commander's own journal as a second index layer, off `GALOS_JOURNAL_DIR`.
-# Default features off so the `galos-journal` command line and its clap do not
-# follow it into the map.
-galos_journal = { path = "../galos_journal", default-features = false }
 galos_photometry = { path = "../galos_photometry" }
 
 [dev-dependencies]
 log = "0.4"
+# `perf` drives the async `Source` from plain `#[test]`s, with no runtime
+# otherwise in the map.
+pollster = "0.4"

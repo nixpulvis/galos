@@ -4,9 +4,30 @@ use bevy::prelude::*;
 use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use clap::Parser;
 use galos_index::FsSource;
 use galos_map::*;
 use std::sync::Arc;
+
+/// Default index directory, matching `galos-sync --index` with no DIR.
+const INDEX_DIR: &str = ".galos_index";
+
+/// Draw Elite's galaxy from a built index directory.
+#[derive(Parser)]
+#[command(name = "galos-map", version, about)]
+struct Cli {
+    /// Index directory to draw, as built by `galos-sync --index DIR`.
+    ///
+    /// Falls back to GALOS_INDEX, then to `.galos_index`.
+    #[arg(
+        short = 'i',
+        long,
+        value_name = "DIR",
+        env = "GALOS_INDEX",
+        default_value = INDEX_DIR
+    )]
+    index: String,
+}
 
 fn main() {
     // The built index directory the map draws from: the cell tree and the
@@ -14,8 +35,7 @@ fn main() {
     // stands the window up first and reads it behind a loading screen: it runs
     // to a hundred and thirty megabytes, and a window that waits on it is a
     // launch that looks hung.
-    let dir = std::env::var("GALOS_INDEX_DIR")
-        .unwrap_or_else(|_| ".galos_index".to_string());
+    let dir = Cli::parse().index;
     let source = FsSource::new(&dir);
 
     let mut app = App::new();
@@ -59,18 +79,7 @@ fn main() {
     // through. Everything the read comes back with is handed over by
     // `loading` when it lands.
     app.insert_resource(IndexDir(dir));
-
-    // And the second layer, where one was asked for: the commander's own
-    // journal directory, read on this machine and served over the published
-    // index. Named here beside the index directory, the two being what the
-    // map is pointed at, and assembled by `journal` which is where the
-    // argument for the layering is written down. Unset is the ordinary case
-    // and stands nothing up at all.
-    let journal = std::env::var(journal::DIR).ok().map(journal::layer);
-    app.insert_resource(journal::transport(Arc::new(source), journal.as_ref()));
-    if let Some(journal) = journal {
-        app.insert_resource(journal);
-    }
+    app.insert_resource(Transport(Arc::new(source)));
 
     app.add_plugins(schedule::plugin);
     // Before the plugins it gates, so the state exists by the time their run
@@ -85,9 +94,6 @@ fn main() {
     // After the systems, whose descent into a star is what carries the ruled
     // plane from light years to light seconds.
     app.add_plugins(grid::plugin);
-    // After `loading`, whose state says when the names have been read: the
-    // journal cannot be followed until the claim has been answered from them.
-    app.add_plugins(journal::plugin);
     app.add_plugins(ui::plugin);
     app.add_plugins(search::plugin);
     app.add_plugins(keys::plugin);

@@ -15,15 +15,16 @@ use crate::geometry::CellId;
 use crate::walk::Needed;
 use std::collections::{HashMap, HashSet};
 
-/// One system as the payload carries it: its id, its exact position, the two
-/// photometric bytes, and when it was last updated.
+/// One system as the payload carries it: its id, its exact position, the
+/// two photometric fields, and when it was last updated.
 ///
 /// Position is three `f64` in light years, the system's own galactic
 /// coordinates carried through unchanged, so a system is drawn exactly where
-/// it sits however coarse the cell that owns it. The magnitude is the system's
-/// combined absolute magnitude, which its flux and the ordering are read from,
-/// and the temperature bucket is the blackbody tint, already binned so the
-/// client needs no per-star join.
+/// it sits however coarse the cell that owns it. The magnitude is the
+/// system's combined absolute magnitude, carried at the `f32` the catalogue
+/// holds it at, which its flux and the ordering are read from, and the
+/// temperature bucket is the blackbody tint, already binned so the client
+/// needs no per-star join.
 ///
 /// `updated_at` is Unix seconds, and the one field here that is not about
 /// where a system is or what it looks like. It is what the Recency filter
@@ -31,7 +32,7 @@ use std::collections::{HashMap, HashSet};
 /// answers that at a distance, counting systems per age bucket, but a bucket
 /// is a day at its finest and the filter's shortest span is a minute, so the
 /// per-system answer has to come from here. Four bytes on a record of
-/// thirty-five,
+/// thirty-seven,
 /// and the only table on the client's side of the wire that already rewrites
 /// per system rather than per chunk: the cell a report moves is a file of tens
 /// of kilobytes, where the names table's chunk is three megabytes and would go

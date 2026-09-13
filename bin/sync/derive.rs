@@ -7,6 +7,12 @@
 //! not a thing to do on an executor that is also supposed to be reading a
 //! feed at 31 messages a second.
 //!
+//! The beat belongs to a run that follows something: the feed, or a watched
+//! journal, where a map is reading the directory while it is written to. A
+//! run that reads a dump out has no beat, and [`Derive::publish`] is
+//! [`None`] for it: the tree is in memory either way and what reaches the
+//! disk is the whole directory, once, when the run ends.
+//!
 //! ## The handoff
 //!
 //! With `--db --index` the directory may be missing, or a week behind the
@@ -35,7 +41,7 @@ use async_channel::Receiver;
 use galos::sink::relay::{Dropped, Live, Reading};
 use galos::sink::{Index, Sink};
 use galos::Shutdown;
-use galos_db::index::{self, Parts};
+use galos_db::index::{self, Parts, Reached};
 use galos_db::Database;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -89,8 +95,10 @@ pub struct Derive {
     pub checkpoint: PathBuf,
     /// The derive side's own pool, where this run has a database at all.
     pub db: Option<Database>,
-    /// How often what has been read is written out.
-    pub publish: Duration,
+    /// How often what has been read is written out, where the run follows
+    /// something. [`None`] is a run with an end: nothing is published
+    /// until [`Sink::finish`] writes the directory whole.
+    pub publish: Option<Duration>,
     /// Readings from every source, in the order they were read.
     pub readings: Receiver<Reading>,
     /// Set once this worker is draining, so the relays stop dropping.
@@ -117,7 +125,11 @@ impl Derive {
     }
 
     async fn work(&self) -> Result<(), String> {
-        let mut sink = self.open().await?;
+        // Nothing was built, so there is nothing to open, drain into or
+        // close out. See [`Self::open`].
+        let Some(mut sink) = self.open().await? else {
+            return Ok(());
+        };
 
         // From here nothing may be dropped: this worker is the only reader
         // of the channel and it is reading it now, so a relay that finds it
@@ -134,22 +146,35 @@ impl Derive {
         self.follow(&mut sink).await
     }
 
-    /// An [`Index`] on a directory that is level with the database.
+    /// An [`Index`] on a directory that is level with the database, or
+    /// [`None`] where the run was asked to stop before there was one.
     ///
     /// The rounds of the handoff. Without a database there are none: there
     /// is nothing to be level with and the sink opens on the directory as
     /// it stands.
-    async fn open(&self) -> Result<Index, String> {
+    ///
+    /// The shutdown token reaches all of it: a catch-up ends between
+    /// passes, a cold build between the records it reads and the regions it
+    /// raises, and either open abandons a layout migration rather than hold
+    /// a stopping run up for a galaxy's worth of renames.
+    ///
+    /// A cold build cut short published nothing — no index file, no resume
+    /// point, no table — so there is nothing here to open and nothing to
+    /// close out. This run writes no directory at all, which is what it was
+    /// asked for and not a failure: the next one builds from nothing, which
+    /// is where this one started.
+    async fn open(&self) -> Result<Option<Index>, String> {
+        let stop = || self.shutdown.asked();
         let Some(db) = &self.db else {
-            return Index::open(&self.dir, &self.checkpoint, None);
+            return Index::open(&self.dir, &self.checkpoint, None, &stop)
+                .map(Some);
         };
 
         for round in 1.. {
             // Cleared before the round rather than after it, so what is
             // counted is what was dropped while this round ran.
             self.dropped.clear();
-            let stop = || self.shutdown.asked();
-            let cursor = index::catch_up(
+            let levelled = index::catch_up(
                 db,
                 &self.dir,
                 &self.checkpoint,
@@ -158,6 +183,20 @@ impl Derive {
             )
             .await
             .map_err(|err| format!("{err}"))?;
+            let cursor = match levelled {
+                Reached::End(cursor) => cursor,
+                Reached::Stopped(abandoned) => {
+                    info!(
+                        round = round,
+                        %abandoned,
+                        dir = %self.dir.display(),
+                        "asked to stop before the index was built; nothing \
+                         was published and the next run builds it from the \
+                         start",
+                    );
+                    return Ok(None);
+                }
+            };
             let dropped = self.dropped.count();
             info!(
                 round = round,
@@ -191,7 +230,8 @@ impl Derive {
             }
         }
 
-        Index::open(&self.dir, &self.checkpoint, self.db.clone())
+        Index::open(&self.dir, &self.checkpoint, self.db.clone(), &stop)
+            .map(Some)
     }
 
     /// Everything waiting on the channel right now, applied.
@@ -217,12 +257,14 @@ impl Derive {
         thrown
     }
 
-    /// Take readings as they arrive, publishing on the beat.
+    /// Take readings as they arrive, publishing on the beat where there is
+    /// one.
     ///
     /// Ends when every source has finished — the last sender dropped closes
     /// the channel — or when the run is asked to stop. Either way the
     /// directory is written whole and a resume point with it, which is the
-    /// difference between this and a killed process.
+    /// difference between this and a killed process. A run with no beat
+    /// writes there and nowhere else.
     async fn follow(&self, sink: &mut Index) -> Result<(), String> {
         let mut published = Instant::now();
         let mut ended = false;
@@ -234,11 +276,16 @@ impl Derive {
                 Err(_) => {}
             }
 
-            if published.elapsed() >= self.publish {
-                if let Err(said) = sink.flush().await {
-                    warn!(error = %said, "could not publish");
+            // A publish mid-run is for whoever is reading the directory
+            // while it is written to, which is nobody until the run that
+            // has an end has ended.
+            if let Some(beat) = self.publish {
+                if published.elapsed() >= beat {
+                    if let Err(said) = sink.flush().await {
+                        warn!(error = %said, "could not publish");
+                    }
+                    published = Instant::now();
                 }
-                published = Instant::now();
             }
 
             if self.shutdown.asked() {
@@ -289,6 +336,10 @@ impl Derive {
 /// The `--db --index` run with no `--from`: a rebuild, a repair of one part
 /// with `--only`, or a follower of the database with `--watch`. This is what
 /// `galos-sync db` was, under the flags that say which way it runs.
+///
+/// A build cut short is a run that did what it was asked and wrote nothing:
+/// it says what was abandoned and answers [`Ok`], so a Ctrl-C in the first
+/// minute of a cold build is a successful exit rather than a failed run.
 pub async fn from_database(
     db: &Database,
     dir: &Path,
@@ -297,19 +348,38 @@ pub async fn from_database(
     watch: Option<Duration>,
     shutdown: &Shutdown,
 ) -> Result<(), String> {
-    // Asked between chunks and between passes. Without it a `--watch` run
-    // has no way out but being killed, and a catch-up over a galaxy is an
-    // hour of not hearing the question.
+    // Asked between chunks, between passes and between the records of a
+    // cold build. Without it a `--watch` run has no way out but being
+    // killed, and a catch-up over a galaxy is an hour of not hearing the
+    // question.
     let stop = || shutdown.asked();
     match watch {
         Some(every) => index::watch(db, dir, checkpoint, every, &stop)
             .await
             .map_err(|err| format!("{err}")),
         None => {
-            let cursor = index::catch_up(db, dir, checkpoint, parts, &stop)
-                .await
-                .map_err(|err| format!("{err}"))?;
-            info!(cursor = %cursor, dir = %dir.display(), "the index is level");
+            let levelled =
+                index::catch_up(db, dir, checkpoint, parts, &stop)
+                    .await
+                    .map_err(|err| format!("{err}"))?;
+            match levelled {
+                Reached::End(cursor) => {
+                    info!(
+                        cursor = %cursor,
+                        dir = %dir.display(),
+                        "the index is level",
+                    );
+                }
+                Reached::Stopped(abandoned) => {
+                    info!(
+                        %abandoned,
+                        dir = %dir.display(),
+                        "asked to stop before the index was built; nothing \
+                         was published and the next run builds it from the \
+                         start",
+                    );
+                }
+            }
             Ok(())
         }
     }

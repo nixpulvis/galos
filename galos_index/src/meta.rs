@@ -18,6 +18,7 @@ use elite_journal::body::{
 };
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// A system that changes: its political columns, its name and where it sits.
@@ -177,6 +178,22 @@ impl Parent {
     /// known from the naming, and only its own orbit waits on its scan.
     pub fn is_barycenter(&self) -> bool {
         self.ty.as_deref() == Some("Null")
+    }
+
+    /// The ancestry a scan named, nearest first.
+    ///
+    /// A scan writes each ancestor as a one-entry map of kind to id, and the
+    /// walk back to the star is what places the thing, so the order and the
+    /// whole chain are kept. `galos_db::bodies::Parent::chain`'s rule, in
+    /// the index's own vocabulary.
+    pub fn chain(named: &[BTreeMap<String, i16>]) -> Vec<Parent> {
+        named
+            .iter()
+            .filter_map(|parent| {
+                let (ty, id) = parent.iter().next()?;
+                Some(Parent { ty: Some(ty.clone()), id: *id })
+            })
+            .collect()
     }
 }
 

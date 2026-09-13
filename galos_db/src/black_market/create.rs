@@ -1,6 +1,6 @@
 use super::BlackMarket;
 use crate::markets::Market;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::BlackMarket as JournalBlackMarket;
 
@@ -15,16 +15,14 @@ impl BlackMarket {
     /// that cannot name its market cannot be placed at a station, and the
     /// system and station names alone are not what anything here is keyed by.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         market_id: i64,
         sale: &JournalBlackMarket,
     ) -> Result<(), Error> {
-        let mut tx = db.pool.begin().await?;
-
         Market::touch(
-            &mut tx,
+            &mut *conn,
             timestamp,
             user,
             market_id,
@@ -55,14 +53,12 @@ impl BlackMarket {
             sale.prohibited,
             timestamp.naive_utc(),
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         if done.rows_affected() == 0 {
             crate::turned_away("black market price", timestamp);
         }
-
-        tx.commit().await?;
 
         Ok(())
     }

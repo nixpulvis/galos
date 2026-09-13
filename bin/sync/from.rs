@@ -9,11 +9,16 @@
 //! What a source names is the whole of how to reach it, so nothing here needs
 //! a second flag to make sense of. The per-source options that remain on the
 //! command line — `--user`, `--remote`, `--stall`, `--cube`, `--sphere` and
-//! `--shard` — qualify a reading rather than name one.
+//! `--shard` — qualify a reading rather than name one, and each is refused
+//! where the run reads no source it could qualify.
+//!
+//! The other thing a source says is whether it ends: see [`Source::follows`].
+//! A run of sources that all end writes its directory once, when it ends; a
+//! run that follows one writes on `--publish`'s beat as well.
 
 use galos::Shard;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// A publisher, and what it takes to reach it.
@@ -34,6 +39,27 @@ pub enum Source {
     Eddb(PathBuf),
     /// A Spansh galaxy dump: a system and every body in it, per line.
     Spansh(PathBuf),
+}
+
+impl Source {
+    /// Whether this source has no end of its own.
+    ///
+    /// `watching` is whether `--watch` was given, which is what the answer
+    /// turns on for a journal directory: read once it is an import of the
+    /// logs that are there, followed it is the game writing as it is
+    /// flown. The feed never ends however it was asked for, and a dump, a
+    /// saved dump and an API answer are all there when the run starts and
+    /// read out by the time it finishes.
+    pub fn follows(&self, watching: bool) -> bool {
+        match self {
+            Source::Eddn => true,
+            Source::Journal(_) => watching,
+            Source::Edsm(_)
+            | Source::EdsmApi(_)
+            | Source::Eddb(_)
+            | Source::Spansh(_) => false,
+        }
+    }
 }
 
 impl FromStr for Source {
@@ -60,17 +86,53 @@ impl FromStr for Source {
             ("eddn", Some(_)) => Err("`eddn` takes no path; the feed is \
                                       wherever --remote says"
                 .to_string()),
-            ("journal", arg) => Ok(Source::Journal(named(arg)?.into())),
-            ("edsm", arg) => Ok(Source::Edsm(named(arg)?.into())),
+            ("journal", arg) => Ok(Source::Journal(path(named(arg)?))),
+            ("edsm", arg) => Ok(Source::Edsm(path(named(arg)?))),
             ("edsm-api", arg) => Ok(Source::EdsmApi(named(arg)?)),
-            ("eddb", arg) => Ok(Source::Eddb(named(arg)?.into())),
-            ("spansh", arg) => Ok(Source::Spansh(named(arg)?.into())),
+            ("eddb", arg) => Ok(Source::Eddb(path(named(arg)?))),
+            ("spansh", arg) => Ok(Source::Spansh(path(named(arg)?))),
             (other, _) => Err(format!(
                 "unknown source `{other}`; expected `eddn`, \
                  `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` \
                  or `spansh=PATH`"
             )),
         }
+    }
+}
+
+/// A path as written, with a leading `~` standing for the home directory.
+///
+/// The shell expands `~` only at the start of a word, so `--from
+/// spansh=~/dumps/galaxy.json` arrives here with the tilde intact and no
+/// amount of quoting on the reader's part would have helped. Every source
+/// that names a file goes through this.
+///
+/// `~user` is not taken: this expands `~` and `~/…` and nothing else, so a
+/// directory genuinely called `~something` still reads as itself.
+fn path(said: String) -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    match said.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| said.into()),
+        Some(rest) if rest.starts_with('/') => match home() {
+            Some(home) => home.join(rest.trim_start_matches('/')),
+            None => said.into(),
+        },
+        _ => said.into(),
+    }
+}
+
+/// What a file a publisher put out is filed under: the publisher and the
+/// file's own name.
+///
+/// The name and not the path. `updated_by` is a column of a database and a
+/// field of every body an index publishes, so what a run writes there is
+/// read by people who have never seen the machine it ran on, and a
+/// directory off that machine says nothing to any of them. A path with no
+/// last component leaves the publisher standing alone.
+pub fn published(publisher: &str, path: &Path) -> String {
+    match path.file_name() {
+        Some(name) => format!("{publisher} {}", name.to_string_lossy()),
+        None => publisher.to_string(),
     }
 }
 
@@ -123,6 +185,30 @@ pub fn shard(said: &str) -> Result<Shard, String> {
 mod tests {
     use super::*;
 
+    /// `~` is the reader's home, since the shell will not have expanded it
+    #[test]
+    fn a_leading_tilde_is_the_home_directory() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+
+        // The shell expands `~` only at the start of a word, so this is
+        // exactly what `--from spansh=~/dumps/galaxy.json` hands over.
+        assert_eq!(
+            "spansh=~/dumps/galaxy.json".parse(),
+            Ok(Source::Spansh(home.join("dumps/galaxy.json"))),
+        );
+        assert_eq!("journal=~".parse(), Ok(Source::Journal(home.clone())));
+
+        // A tilde anywhere else is a character in a name.
+        assert_eq!(
+            "edsm=dumps/~odd/systems.json".parse(),
+            Ok(Source::Edsm(PathBuf::from("dumps/~odd/systems.json"))),
+        );
+        assert_eq!(
+            "eddb=~odd".parse(),
+            Ok(Source::Eddb(PathBuf::from("~odd"))),
+        );
+    }
+
     /// The six ways in, each naming what it takes
     #[test]
     fn a_source_is_named_with_what_it_takes() {
@@ -169,6 +255,33 @@ mod tests {
         assert!("journal=".parse::<Source>().is_err());
         assert!("eddn=somewhere".parse::<Source>().is_err());
         assert!("postgres".parse::<Source>().is_err());
+    }
+
+    /// A file has an end and a feed does not, and a journal is told by
+    /// `--watch`
+    ///
+    /// What the beat is decided by: a run of sources that all end has one
+    /// publish, at the end, and everything written mid-run would be a
+    /// directory rewritten whole for a dump that is still being read.
+    #[test]
+    fn only_a_source_with_no_end_is_followed() {
+        let journal = Source::Journal(PathBuf::from("journals"));
+        assert!(journal.follows(true), "--watch is what follows a journal");
+        assert!(!journal.follows(false), "read once, it is an import");
+
+        // The subscription never returns, asked for either way.
+        assert!(Source::Eddn.follows(false));
+        assert!(Source::Eddn.follows(true));
+
+        // Dumps and an API answer are all there when the run starts.
+        for source in [
+            Source::Edsm(PathBuf::from("systems.json")),
+            Source::EdsmApi("Sol".to_string()),
+            Source::Eddb(PathBuf::from("systems.csv")),
+            Source::Spansh(PathBuf::from("galaxy.json")),
+        ] {
+            assert!(!source.follows(true), "{} has an end", source);
+        }
     }
 
     /// A share is `I/N`, and only where I is one of N

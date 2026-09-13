@@ -11,9 +11,8 @@
 //!   shared with `galos_index::galaxy`.
 //! - [`Tree`] — the cell tree, held open and edited. `Tree::upsert` touches
 //!   the handful of cells on one system's path, so a scan costs the depth of
-//!   the tree rather than its size. `galos_map`'s journal source rebuilds
-//!   instead; this cannot, taking EDDN against a tree that for a resumed
-//!   `.galos_index` is the galaxy.
+//!   the tree rather than its size. Nothing here rebuilds: this takes EDDN
+//!   against a tree that for a resumed `.galos_index` is the galaxy.
 //! - [`Tables`] — the metadata sidecars, resumed off the directory and
 //!   patched per pass.
 //!
@@ -30,7 +29,7 @@
 //! entries before this sink was handed them — so a restart's catch-up covers
 //! exactly what the index missed. Without one the checkpoint carries `None`
 //! and says [`By::Events`] wrote it. The two derivations refuse to resume
-//! onto each other's work; see [`one_hand`].
+//! onto each other's work; see `one_hand`.
 //!
 //! ## Where the scanned bodies live
 //!
@@ -41,12 +40,13 @@
 //! yet written, which [`Sink::flush`] clears as it publishes.
 
 use crate::sink::tables::{Tables, Wrote};
-use crate::sink::{Reporter, Sink, SystemReport};
+use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use galos_db::Database;
+use galos_db::index::Stop;
 use galos_index::{
     BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
 };
@@ -152,8 +152,24 @@ pub struct Index {
     touched: HashSet<i64>,
     /// Entries and rows taken, for the line at the end of a run.
     took: u64,
-    /// Systems written into the tree, counted once per pass each moved in.
-    published: u64,
+    /// Readings of a system the store had not heard of, and of one it had.
+    ///
+    /// Readings, not distinct systems: one entry per body is one reading
+    /// of that system each, the first new and the rest updates. The source
+    /// counts systems once each.
+    ///
+    /// An index sets no reading aside, so these two add up to every
+    /// reading this sink took.
+    new: u64,
+    updated: u64,
+    /// Whether a publish of this run has reached the directory.
+    ///
+    /// What tells [`Sink::finish`] which extent it owes. A directory this
+    /// run has published into already holds every part of itself, so the
+    /// cells whose systems have not moved since hold the bytes they should
+    /// and a delta closes it out. One written from nothing holds nothing
+    /// but what [`Index::publish_whole`] puts there.
+    published_once: bool,
     /// The database this run is also writing, where there is one.
     ///
     /// Held for one thing: the clock a resume point's cursor is, sampled
@@ -167,31 +183,61 @@ impl Index {
     /// A directory that is not there is written from nothing, which is the
     /// ordinary first use. `db` decides two things: whether a resume point
     /// written here carries a cursor, and which derivation this is for
-    /// [`one_hand`].
+    /// `one_hand`.
+    ///
+    /// `stop` reaches the layout migration and nothing past it. A galaxy's
+    /// worth of loose body files is minutes of renames and a run asked to
+    /// stop is entitled to skip them; what this leaves the next open takes
+    /// up, a read falling back to the flat path meanwhile. Everything after
+    /// it has to run: the caller is about to publish this directory whole,
+    /// and a tree resumed part way stands for fewer systems than the
+    /// directory serves, which is the one state neither half can be
+    /// repaired from.
     pub fn open(
         dir: &Path,
         checkpoint: &Path,
         db: Option<Database>,
+        stop: &Stop<'_>,
     ) -> Result<Index, String> {
         // The layout first, before anything reads or writes a file: a
         // directory published before `bodies/` and `cells/` were sharded
         // still holds the flat files.
-        match galos_index::source::reshard_bodies(dir) {
-            Ok(0) => {}
-            Ok(moved) => info!(
-                files = moved,
-                dir = %dir.display(),
-                "moved the body files into their shards"
-            ),
-            Err(err) => return Err(format!("{}: {err}", dir.display())),
-        }
-        match galos_index::store::reshard_cells(dir) {
-            Ok(0) => {}
-            Ok(moved) => info!(
-                files = moved,
-                dir = %dir.display(),
-                "moved the cell payloads into their shards"
-            ),
+        let asked = || stop();
+        match galos_index::migrate(dir, &asked) {
+            Ok(done) => {
+                if done.bodies.moved > 0 {
+                    info!(
+                        files = done.bodies.moved,
+                        dir = %dir.display(),
+                        "moved the body files into their shards"
+                    );
+                }
+                if !done.bodies.finished {
+                    info!(
+                        files = done.bodies.moved,
+                        dir = %dir.display(),
+                        "asked to stop part way through sharding the body \
+                         files; the next run continues it"
+                    );
+                }
+                if let Some(cells) = done.cells {
+                    if cells.moved > 0 {
+                        info!(
+                            files = cells.moved,
+                            dir = %dir.display(),
+                            "moved the cell payloads into their shards"
+                        );
+                    }
+                    if !cells.finished {
+                        info!(
+                            files = cells.moved,
+                            dir = %dir.display(),
+                            "asked to stop part way through sharding the \
+                             cell payloads; the next run continues it"
+                        );
+                    }
+                }
+            }
             Err(err) => return Err(format!("{}: {err}", dir.display())),
         }
 
@@ -297,7 +343,9 @@ impl Index {
             tables,
             touched: HashSet::new(),
             took: 0,
-            published: 0,
+            new: 0,
+            updated: 0,
+            published_once: false,
             db,
         })
     }
@@ -327,6 +375,45 @@ impl Index {
         self.took += 1;
         self.touched.extend(self.galaxy.touched().iter().copied());
         self.galaxy.settle();
+    }
+
+    /// Whether the store already has this system, for the run's counts.
+    ///
+    /// The store is the tree plus what this pass has taken and not yet
+    /// published, since both end up in the directory: a second reading of
+    /// a system is an update to one already counted. A system nothing has
+    /// placed or named is in neither, and in no directory either —
+    /// whatever finally names it brings it in.
+    fn landing(&self, address: i64) -> Landed {
+        match self.tree.holds(address) || self.touched.contains(&address) {
+            true => Landed::Updated,
+            false => Landed::New,
+        }
+    }
+
+    /// Count a landing and pass it on.
+    fn counted(&mut self, landed: Option<Landed>) -> Option<Landed> {
+        match landed {
+            Some(Landed::New) => self.new += 1,
+            Some(Landed::Updated) => self.updated += 1,
+            Some(Landed::Stale) | None => {}
+        }
+        landed
+    }
+
+    /// The systems touched since the last publish that the directory can
+    /// name as well as draw, taken and cleared.
+    ///
+    /// `Galaxy::name_of` answers nothing for a system nothing named — a nav
+    /// beacon carries a place and an optional name — and a cell tree
+    /// standing over a system the names table has no row for is what
+    /// [`agrees`] refuses to reopen a directory over. Whatever names one
+    /// later touches it again.
+    fn nameable(&mut self) -> HashSet<i64> {
+        std::mem::take(&mut self.touched)
+            .into_iter()
+            .filter(|&address| self.galaxy.name_of(address).is_some())
+            .collect()
     }
 
     /// What a resume point written now would resume from.
@@ -400,17 +487,38 @@ fn by(db: &Option<Database>) -> By {
 
 #[async_trait]
 impl Sink for Index {
-    /// Filed under the commander the *source* named, and under nobody where
-    /// it could not name one.
+    /// Filed under whoever the *source* named, and under nobody where it
+    /// could name no one.
     ///
-    /// The galaxy tracks a commander from `Commander` and `LoadGame` events,
-    /// which is not enough here: one worker takes every source and EDDN
-    /// carries neither. An uploader id is an anonymised sender, and would
-    /// say the map knows who scanned a body.
-    async fn entry(&mut self, entry: Arc<Entry<Event>>, by: Reporter<'_>) {
-        self.galaxy.flying(by.commander().unwrap_or(UNKNOWN));
+    /// The galaxy tracks a commander from `Commander` and `LoadGame`
+    /// events, which is not enough here: one worker takes every source and
+    /// EDDN carries neither. What a source names may be no commander at
+    /// all — an anonymised sender, a published file — and it is still
+    /// provenance, which is what `updated_by` is and all a body file has
+    /// room to say. [`UNKNOWN`] is for a reading nothing named at all.
+    ///
+    /// Returns what happened to the systems the entry named — the
+    /// strongest of them, for an entry naming several (a plotted route).
+    async fn entry(
+        &mut self,
+        entry: Arc<Entry<Event>>,
+        by: Reporter<'_>,
+    ) -> Option<Landed> {
+        let named = by.named();
+        self.galaxy
+            .reported_by(if named.is_empty() { UNKNOWN } else { named });
         self.galaxy.read(&entry);
+        // Asked before `took`, which moves these onto this pass's set:
+        // after it, every address would look like one the store had.
+        let landed = self
+            .galaxy
+            .touched()
+            .iter()
+            .fold(None, |so_far, &address| {
+                Landed::widest(so_far, Some(self.landing(address)))
+            });
         self.took();
+        self.counted(landed)
     }
 
     /// Everything anything has said about a system, merged into the galaxy.
@@ -420,11 +528,21 @@ impl Sink for Index {
     /// names it first. A name is kept anyway, a system with no name being
     /// published by neither derivation.
     ///
-    /// `user` is dropped: the galaxy files what it holds under whoever the
-    /// journal's own `Commander` event named.
-    async fn system(&mut self, report: &SystemReport, _user: &str) {
+    /// `user` is dropped: the index has no `updated_by` above body level,
+    /// so a system report's provenance has nowhere to go.
+    ///
+    /// Never returns [`Landed::Stale`]: `Galaxy::hear` merges every
+    /// reading by the same rule the database's upsert uses, so even an
+    /// older one has been taken.
+    async fn system(
+        &mut self,
+        report: &SystemReport,
+        _user: &str,
+    ) -> Option<Landed> {
+        let landed = self.landing(report.address);
         self.galaxy.hear(report.clone());
         self.took();
+        self.counted(Some(landed))
     }
 
     /// Nothing. A market is a station's stock and the index has no station in
@@ -462,10 +580,6 @@ impl Sink for Index {
     /// A pass that touched nothing publishes and records nothing, which is
     /// what lets a follower call this on every beat.
     async fn flush(&mut self) -> Result<(), String> {
-        // Recency is against now, not whenever the process started: a run
-        // left up for a week would date every system by a week-old clock.
-        self.galaxy.dated(Utc::now());
-
         // Sampled before a single one of this pass's systems reaches the
         // tree, never after the publish. Every entry the batch below holds
         // was in Postgres before this sink was handed it; a clock read after
@@ -481,19 +595,98 @@ impl Sink for Index {
                 None
             }
         };
-        // What the directory can name as well as draw. `Galaxy::name_of`
-        // answers nothing for a system nothing named -- a nav beacon carries
-        // a place and an optional name -- and a cell tree standing over a
-        // system the names table has no row for is what [`agrees`] refuses
-        // to reopen a directory over.
-        let touched: HashSet<i64> = std::mem::take(&mut self.touched)
-            .into_iter()
-            .filter(|&address| self.galaxy.name_of(address).is_some())
-            .collect();
+        let touched = self.nameable();
         if touched.is_empty() {
             return Ok(());
         }
+        self.publish_delta(touched, resumable, "delta")
+    }
+
+    /// Whatever the last beat did not flush, the whole-file tables the
+    /// directory has no file for, and a compacted resume point.
+    ///
+    /// The three things a finish owes the directory, and all it owes where
+    /// this run has published into it already: the cells whose systems have
+    /// not moved since hold the bytes they should, so the first is a delta
+    /// publish and the second rides along with it — [`Tables::write`]
+    /// writes whatever the directory has no file for. A run that has
+    /// published nothing owes the whole of it; see
+    /// [`publish_whole`](Index::publish_whole).
+    ///
+    /// The cursor is sampled in the same order [`Sink::flush`] samples one,
+    /// and either road leaves the [`Pending`] log superseded and dropped.
+    ///
+    /// Not interruptible, and the one thing a stopping run waits for: the
+    /// cells, the tables and the resume point are three writes that stand
+    /// for one galaxy, and a publish abandoned between them leaves halves
+    /// the next open can only trim to what both hold. A commander who has
+    /// decided that is too long has the second Ctrl-C.
+    async fn finish(&mut self) -> Result<(), String> {
+        let cursor = self.cursor().await.unwrap_or_else(|err| {
+            warn!(
+                error = %err,
+                "the database clock would not be read; the resume point \
+                 this run closes with carries no cursor, so the next \
+                 catch-up rebuilds",
+            );
+            None
+        });
+        if !self.published_once {
+            return self.publish_whole(cursor);
+        }
+
+        let touched = self.nameable();
+        self.publish_delta(touched, cursor, "final")?;
+        // Over the frame that publish appended, which is what a run killed
+        // between the two leaves behind: the base is written from the tree
+        // the frame is already in, and the compaction drops the log.
+        Checkpoint::compact(
+            &self.checkpoint,
+            cursor,
+            by(&self.db),
+            self.tree.inputs(),
+        )
+        .map_err(failed("the resume point could not be written"))?;
+        Ok(())
+    }
+
+    fn said(&self) -> String {
+        format!(
+            "{} messages read, {} system writes to {}: {} new, {} updated \
+             ({} systems in the tree)",
+            self.took,
+            self.new + self.updated,
+            self.dir.display(),
+            self.new,
+            self.updated,
+            self.tree.len(),
+        )
+    }
+}
+
+impl Index {
+    /// Publish what has moved and nothing else.
+    ///
+    /// The body of [`Sink::flush`], and the first of the three things a
+    /// [`Sink::finish`] onto a directory this run has published into owes
+    /// it: the index file whole, the cells whose payloads differ, the body
+    /// files the pass scanned, the tables it patched together with any the
+    /// directory has no file for, and a [`Pending`] frame carrying what
+    /// went in at full precision.
+    ///
+    /// `touched` is what [`Self::nameable`] took, `cursor` what a resume
+    /// point written now would resume from, and `extent` what the line at
+    /// the end calls this publish.
+    fn publish_delta(
+        &mut self,
+        touched: HashSet<i64>,
+        cursor: Option<NaiveDateTime>,
+        extent: &'static str,
+    ) -> Result<(), String> {
         let start = Instant::now();
+        // Recency is against now, not whenever the process started: a run
+        // left up for a week would date every system by a week-old clock.
+        self.galaxy.dated(Utc::now());
 
         // Only the systems that have been placed. One named by an event that
         // carried no `StarPos` joins the tree when something places it.
@@ -527,16 +720,21 @@ impl Sink for Index {
         // What this publish put in the directory, at full precision, on the
         // log beside the resume point — and the whole base behind it where
         // the log has outgrown one. See [`Pending`].
-        self.record(resumable, &moving);
+        self.record(cursor, &moving);
 
-        self.published += placed as u64;
+        // One message for every extent, `wrote` saying which: a pass of a
+        // run's own, the last one of a run, or a directory written from
+        // nothing. `moved` is what reached the directory and `systems` is
+        // what the tree holds after.
+        self.published_once = true;
         info!(
+            wrote = extent,
             touched = touched.len(),
-            placed = placed,
+            moved = placed,
             systems = self.tree.len(),
             chunks = wrote.name_chunks,
             bodies = bodies,
-            cursor = resumable.is_some(),
+            cursor = cursor.is_some(),
             elapsed = ?start.elapsed(),
             // Which directory, for a log that carries the collect side's
             // lines as well.
@@ -546,49 +744,20 @@ impl Sink for Index {
         Ok(())
     }
 
-    /// Every part of the directory, written whole. See
-    /// [`publish_whole`](Index::publish_whole).
-    ///
-    /// The cursor is sampled in the same order [`Sink::flush`] samples one.
-    async fn finish(&mut self) -> Result<(), String> {
-        let cursor = self.cursor().await.unwrap_or_else(|err| {
-            warn!(
-                error = %err,
-                "the database clock would not be read; the directory is \
-                 written whole and its resume point carries no cursor, so \
-                 the next catch-up rebuilds",
-            );
-            None
-        });
-        self.publish_whole(cursor)
-    }
-
-    fn said(&self) -> String {
-        format!(
-            "{} messages read, {} system writes to {} ({} systems in the \
-             tree)",
-            self.took,
-            self.published,
-            self.dir.display(),
-            self.tree.len(),
-        )
-    }
-}
-
-impl Index {
     /// Write every part of the directory whole, whatever has changed.
     ///
-    /// What a one-shot run finishes with. [`Sink::flush`] writes only what a
-    /// pass moved, which is wrong for a directory written from nothing: the
-    /// factions table and the three whole-file tables would never be written
-    /// if nothing in them happened to change during the run.
+    /// What closes out a run that never published — a directory written
+    /// from nothing has no part of itself in place, and the factions table
+    /// and the three whole-file tables would never be written if nothing in
+    /// them happened to change during the run.
     ///
     /// `cursor` is the caller's, reading it being a query where this is not
     /// async. A test writing a directory by hand passes [`None`].
-    pub fn publish_whole(
+    fn publish_whole(
         &mut self,
         cursor: Option<NaiveDateTime>,
     ) -> Result<(), String> {
+        let start = Instant::now();
         // Against now, as [`Sink::flush`] dates its own pass: an hour-long
         // import would otherwise file every system by its starting clock.
         self.galaxy.dated(Utc::now());
@@ -626,7 +795,7 @@ impl Index {
             .tables
             .write(&self.dir, Wrote::EVERYTHING)
             .map_err(failed("the metadata could not be written"))?;
-        self.published = self.tree.len() as u64;
+        self.published_once = true;
 
         // A whole directory is written, so a whole resume point goes with
         // it: the log is superseded and dropped by the compaction.
@@ -639,11 +808,15 @@ impl Index {
         .map_err(failed("the resume point could not be written"))?;
 
         info!(
+            wrote = "whole",
+            moved = self.tree.len(),
             systems = self.tree.len(),
             chunks = wrote.name_chunks,
             bodies = bodies,
+            cursor = cursor.is_some(),
+            elapsed = ?start.elapsed(),
             dir = %self.dir.display(),
-            "index written",
+            "index published",
         );
         Ok(())
     }
@@ -655,7 +828,9 @@ mod tests {
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
     use galos_index::{FsSource, Source as _};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::time::SystemTime;
 
     /// A scratch pair of paths of this test's own: a directory and a resume
     /// file beside it.
@@ -665,6 +840,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("a scratch directory");
         (root.join("index"), root.join("checkpoint"))
+    }
+
+    /// A sink onto a scratch directory, with nothing asking it to stop.
+    fn opened(dir: &Path, checkpoint: &Path) -> Result<Index, String> {
+        Index::open(dir, checkpoint, None, galos_db::index::never())
     }
 
     fn jump(system: &str, address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {
@@ -743,7 +923,7 @@ mod tests {
     #[test]
     fn a_route_through_a_system_does_not_empty_it() {
         let (dir, checkpoint) = scratch("routed");
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        let mut sink = opened(&dir, &checkpoint).expect("it opens");
         pollster::block_on(sink.entry(
             settled("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -755,7 +935,7 @@ mod tests {
 
         // A second run, which knows nothing of Sol until a route names it.
         // The politics are on disk and not in the accumulator.
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        let mut sink = opened(&dir, &checkpoint).expect("resumed");
         pollster::block_on(sink.entry(
             routed("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -779,7 +959,7 @@ mod tests {
     #[test]
     fn an_arrival_keeps_what_only_a_build_could_say() {
         let (dir, checkpoint) = scratch("thinned");
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        let mut sink = opened(&dir, &checkpoint).expect("it opens");
         pollster::block_on(sink.entry(
             settled("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -799,7 +979,7 @@ mod tests {
         )
         .expect("the richer table writes");
 
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        let mut sink = opened(&dir, &checkpoint).expect("resumed");
         pollster::block_on(sink.entry(
             settled("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -827,7 +1007,7 @@ mod tests {
     #[test]
     fn an_arrival_that_says_nothing_leaves_the_politics_alone() {
         let (dir, checkpoint) = scratch("silent");
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("it opens");
+        let mut sink = opened(&dir, &checkpoint).expect("it opens");
         pollster::block_on(sink.entry(
             settled("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -836,7 +1016,7 @@ mod tests {
         drop(sink);
         let stood = politics(&dir, 10477373803).expect("Sol is populated");
 
-        let mut sink = Index::open(&dir, &checkpoint, None).expect("resumed");
+        let mut sink = opened(&dir, &checkpoint).expect("resumed");
         pollster::block_on(sink.entry(
             jump("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -853,19 +1033,15 @@ mod tests {
 
     /// One read fills every sink it was given
     ///
-    /// `--to db --index DIR` is the invocation this is for; two index
+    /// `--db --index DIR` is the invocation this is for; two index
     /// directories drive the same [`Fan`](crate::sink::Fan) without Postgres.
     #[test]
     fn a_fan_writes_every_sink_it_holds() {
         let (here, here_resume) = scratch("fanned_here");
         let (there, there_resume) = scratch("fanned_there");
         let mut fan = crate::sink::Fan::of(vec![
-            Box::new(
-                Index::open(&here, &here_resume, None).expect("one opens"),
-            ),
-            Box::new(
-                Index::open(&there, &there_resume, None).expect("two opens"),
-            ),
+            Box::new(opened(&here, &here_resume).expect("one opens")),
+            Box::new(opened(&there, &there_resume).expect("two opens")),
         ]);
 
         pollster::block_on(fan.entry(
@@ -899,7 +1075,7 @@ mod tests {
     fn a_flush_publishes_the_tables_the_directory_lacks() {
         let (dir, checkpoint) = scratch("sidecars");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         // A jump and nothing else: nothing populated, nothing scanned,
         // nothing supercharging.
         pollster::block_on(sink.entry(
@@ -930,7 +1106,7 @@ mod tests {
     fn events_become_a_readable_directory() {
         let (dir, checkpoint) = scratch("published");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -963,7 +1139,7 @@ mod tests {
         let (dir, checkpoint) = scratch("resumed");
 
         let mut first =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(first.entry(
             jump("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -972,7 +1148,7 @@ mod tests {
         assert_eq!(published(&dir), 1);
 
         let mut second =
-            Index::open(&dir, &checkpoint, None).expect("it reopens");
+            opened(&dir, &checkpoint).expect("it reopens");
         pollster::block_on(second.entry(
             jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]),
             Reporter::Commander("cmdr"),
@@ -995,7 +1171,7 @@ mod tests {
     fn a_flush_publishes_only_what_arrived() {
         let (dir, checkpoint) = scratch("flushed");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             sink.entry(
@@ -1035,7 +1211,7 @@ mod tests {
     fn a_run_killed_after_one_flush_reopens() {
         let (dir, checkpoint) = scratch("killed");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1047,7 +1223,7 @@ mod tests {
         drop(sink);
 
         assert_eq!(published(&dir), 1);
-        if let Err(said) = Index::open(&dir, &checkpoint, None) {
+        if let Err(said) = opened(&dir, &checkpoint) {
             panic!("a directory flushed once was orphaned: {}", said);
         }
 
@@ -1075,7 +1251,7 @@ mod tests {
     fn a_system_nothing_named_is_not_published() {
         let (dir, checkpoint) = scratch("nameless");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1094,7 +1270,7 @@ mod tests {
 
         assert_eq!(published(&dir), 1, "a system with no name was published");
         assert_eq!(names(&dir), vec!["SOL"]);
-        if let Err(said) = Index::open(&dir, &checkpoint, None) {
+        if let Err(said) = opened(&dir, &checkpoint) {
             panic!("the directory disagreed with itself: {}", said);
         }
 
@@ -1110,7 +1286,7 @@ mod tests {
     fn a_reported_system_is_placed_where_it_has_a_place() {
         let (dir, checkpoint) = scratch("dumped");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
 
         let report =
             |address: i64, name: &str, at: Option<Coordinate>| SystemReport {
@@ -1177,7 +1353,7 @@ mod tests {
     fn a_scan_after_a_flush_joins_what_is_on_the_disk() {
         let (dir, checkpoint) = scratch("merged");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             sink.entry(
@@ -1226,7 +1402,7 @@ mod tests {
     fn a_flush_leaves_no_bodies_held() {
         let (dir, checkpoint) = scratch("unheld");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1263,7 +1439,7 @@ mod tests {
     fn a_directory_without_its_resume_point_is_refused() {
         let (dir, checkpoint) = scratch("orphaned");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(sink.entry(
             jump("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -1274,7 +1450,7 @@ mod tests {
         std::fs::remove_file(&checkpoint).expect("the resume point goes");
         // `expect_err` wants the `Ok` side to be `Debug`, and a sink holding
         // a tree of the galaxy is not a thing to derive that on.
-        let Err(said) = Index::open(&dir, &checkpoint, None) else {
+        let Err(said) = opened(&dir, &checkpoint) else {
             panic!("an orphaned directory should be refused")
         };
         assert!(
@@ -1354,7 +1530,7 @@ mod tests {
     fn a_publish_after_the_last_checkpoint_is_not_lost() {
         let (dir, checkpoint) = scratch("lagging");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
 
         // The first flush of a run writes a resume point and clears the log.
         pollster::block_on(sink.entry(
@@ -1376,7 +1552,7 @@ mod tests {
         drop(sink);
 
         let reopened =
-            Index::open(&dir, &checkpoint, None).expect("it reopens");
+            opened(&dir, &checkpoint).expect("it reopens");
         assert_eq!(
             reopened.tree.len(),
             2,
@@ -1391,17 +1567,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
 
-    /// A feed's scan is not filed under whoever is flying locally
+    /// A scan is filed under whoever the source named
     ///
     /// One index worker takes every source, so `--from eddn --from
-    /// journal=DIR` hands this sink a commander's own scans and a stranger's
-    /// down the same channel. A scan the source cannot name a commander for
-    /// is filed under nobody.
+    /// journal=DIR --from spansh=FILE` hands this sink a commander's own
+    /// scans, a stranger's and a published file's down the same channel.
+    /// Each is provenance and each is kept as the source said it: the
+    /// galaxy's own `Commander` event never gets to name a reading the
+    /// source could name itself, and [`UNKNOWN`] is left for the reading
+    /// nothing named at all.
     #[test]
-    fn a_scan_nobody_can_be_named_for_is_filed_under_nobody() {
+    fn a_scan_is_filed_under_whoever_the_source_named() {
         let (dir, checkpoint) = scratch("attributed");
         let mut sink =
-            Index::open(&dir, &checkpoint, None).expect("a sink opens");
+            opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             // The journal's own `Commander` event, which is what the galaxy
@@ -1421,10 +1600,17 @@ mod tests {
             .await;
             sink.entry(scan(10477373803, 1, "G"), Reporter::Commander("cmdr"))
                 .await;
-            // The same galaxy, told by a feed that names only an anonymised
-            // sender. The source saying so is the whole of what keeps the
-            // two apart.
+            // The same galaxy, told by a relay that dropped the sender's id
+            // on the way here. The source saying so is the whole of what
+            // keeps the two apart.
             sink.entry(scan(10477373803, 2, "M"), Reporter::Nobody).await;
+            // And by a dump, which nobody flew: the file it was read out of
+            // is the only provenance there is, and it is not nobody.
+            sink.entry(
+                scan(10477373803, 3, "K"),
+                Reporter::Uploader("Spansh galaxy_7days.json"),
+            )
+            .await;
         });
 
         let inside = sink.galaxy.bodies(10477373803);
@@ -1440,8 +1626,216 @@ mod tests {
         assert_eq!(
             filed(2),
             "unknown",
-            "a stranger's scan was filed under the commander flying",
+            "a reading nothing named was filed under the commander flying",
         );
+        assert_eq!(
+            filed(3),
+            "Spansh galaxy_7days.json",
+            "a published file's own name was thrown away",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A system seen at a place, which is how a test fills a tree without a
+    /// journal entry per system.
+    fn spotted(address: i64, at: [f64; 3], when: &str) -> SystemReport {
+        SystemReport {
+            name: Some(format!("System {}", address)),
+            position: Some(Coordinate { x: at[0], y: at[1], z: at[2] }),
+            ..SystemReport::new(address, when.parse().expect("a moment"))
+        }
+    }
+
+    /// When each cell payload a directory publishes was last written, by
+    /// path.
+    fn payloads(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
+        let cells = dir.join(galos_index::store::PAYLOAD_DIR);
+        let mut found = BTreeMap::new();
+        for shard in std::fs::read_dir(&cells).expect("a cells directory") {
+            let shard = shard.expect("a shard").path();
+            for file in std::fs::read_dir(&shard).expect("a shard") {
+                let path = file.expect("a payload").path();
+                let when = path
+                    .metadata()
+                    .expect("a payload's metadata")
+                    .modified()
+                    .expect("a modification time");
+                found.insert(path, when);
+            }
+        }
+        found
+    }
+
+    /// The payload file of the cell holding `at` at `level`, named as
+    /// `galos_index::store` names one.
+    fn payload_of(dir: &Path, at: [f64; 3], level: u8) -> PathBuf {
+        let morton = galos_index::CellId::of_point(at, level).morton();
+        dir.join(galos_index::store::PAYLOAD_DIR)
+            .join(format!("{:03x}", morton & 0xfff))
+            .join(format!("{:02}-{:016x}.bin", level, morton))
+    }
+
+    /// A finish leaves the cells whose systems did not move
+    ///
+    /// A finish that writes the directory whole rewrites every payload file
+    /// with the bytes already in it, which for a follower that has been
+    /// publishing deltas for hours is the galaxy. What a finish owes is
+    /// what has moved since the last publish: the cells on the moved
+    /// system's own path, where it was and where it went, and no others.
+    ///
+    /// By modification time against cell identity rather than by content: a
+    /// cell on the path of a moved system is rewritten whether or not its
+    /// own slice came out different, so unchanged bytes are not what
+    /// separates a delta from a whole write.
+    #[test]
+    fn a_finish_rewrites_only_the_cells_that_moved() {
+        let (dir, checkpoint) = scratch("unmoved");
+        let mut sink =
+            opened(&dir, &checkpoint).expect("a sink opens");
+
+        // More systems than one leaf holds, spread over a cube so the tree
+        // splits: a directory of a single cell has nothing to leave alone.
+        let filling = galos_index::tree::LEAF_CAP as i64 + 200;
+        pollster::block_on(async {
+            for id in 0..filling {
+                let at = [
+                    (id % 16) as f64 * 500.0,
+                    ((id / 16) % 16) as f64 * 500.0,
+                    (id / 256) as f64 * 500.0,
+                ];
+                sink.system(
+                    &spotted(id + 1, at, "2026-08-08T12:00:00Z"),
+                    "a test",
+                )
+                .await;
+            }
+            sink.flush().await.expect("the first publish lands");
+        });
+        let before = payloads(&dir);
+        assert!(before.len() > 1, "the tree should hold more than one cell");
+
+        // Wider than any filesystem's modification-time granularity, so a
+        // rewrite cannot pass for a file nothing touched.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // One system moves, across the galaxy and out of the cube the rest
+        // of them are in, and the run closes out.
+        let was = [0.0, 0.0, 0.0];
+        let now = [-20000.0, -20000.0, -20000.0];
+        pollster::block_on(async {
+            sink.system(&spotted(1, now, "2026-08-09T12:00:00Z"), "a test")
+                .await;
+            sink.finish().await.expect("the run closes out");
+        });
+
+        let after = payloads(&dir);
+        let written: Vec<&PathBuf> = after
+            .iter()
+            .filter(|(path, when)| before.get(*path) != Some(when))
+            .map(|(path, _)| path)
+            .collect();
+        // The cells the moved system was in and is in, at every level the
+        // tree can reach.
+        let mine: HashSet<PathBuf> = (0..=galos_index::geometry::MAX_LEVEL)
+            .flat_map(|level| {
+                [payload_of(&dir, was, level), payload_of(&dir, now, level)]
+            })
+            .collect();
+        assert!(!written.is_empty(), "the system that moved reached no cell");
+        assert!(
+            after.keys().any(|path| !mine.contains(path)),
+            "the directory should hold a cell the moved system is not in",
+        );
+        for path in &written {
+            assert!(
+                mine.contains(*path),
+                "a cell no system moved in was rewritten: {}",
+                path.display(),
+            );
+        }
+
+        // What the smaller write still owes: a directory whose halves stand
+        // for the same systems, and a compacted resume point with no log
+        // left beside it.
+        drop(sink);
+        assert!(
+            !Pending::path(&checkpoint).exists(),
+            "the log outlived the compaction the finish ends with",
+        );
+        assert_eq!(published(&dir), filling as u64);
+        if let Err(said) = opened(&dir, &checkpoint) {
+            panic!("the delta-finished directory would not reopen: {}", said);
+        }
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A run that published nothing still finishes a whole directory
+    ///
+    /// The invariant a slimmer finish has to keep: after a finish the
+    /// directory is complete and its resume point is a compacted
+    /// checkpoint. A run that never flushed has a directory with no part of
+    /// itself in place, so that finish owes all of it.
+    #[test]
+    fn a_finish_without_a_publish_leaves_the_whole_directory() {
+        let (dir, checkpoint) = scratch("unflushed");
+        let mut sink =
+            opened(&dir, &checkpoint).expect("a sink opens");
+        pollster::block_on(async {
+            sink.entry(
+                settled("Sol", 10477373803, [0.0; 3]),
+                Reporter::Commander("cmdr"),
+            )
+            .await;
+            sink.entry(scan(10477373803, 0, "G"), Reporter::Commander("cmdr"))
+                .await;
+            sink.entry(
+                jump("Alpha Centauri", 3161824266978, [3.0, 0.0, 3.0]),
+                Reporter::Commander("cmdr"),
+            )
+            .await;
+            sink.finish().await.expect("the run closes out");
+        });
+        drop(sink);
+
+        // The four whole-file tables, the names chunks, the index file and
+        // the resume point, each a file a client or a restart reads.
+        for path in [
+            galos_index::source::populated_path(&dir),
+            galos_index::source::reaches_path(&dir),
+            galos_index::source::boosts_path(&dir),
+            galos_index::source::factions_path(&dir),
+            galos_index::source::names_chunk_path(&dir, 0),
+            dir.join(galos_index::store::INDEX_FILE),
+            checkpoint.clone(),
+        ] {
+            assert!(
+                path.exists(),
+                "a finished directory is missing {}",
+                path.display(),
+            );
+        }
+        assert!(!payloads(&dir).is_empty(), "no cell payload was published");
+        assert!(
+            !Pending::path(&checkpoint).exists(),
+            "the resume point was not compacted; the log stands beside it",
+        );
+
+        // And the reader the map uses gets back what the run was given.
+        assert_eq!(published(&dir), 2);
+        assert_eq!(names(&dir), vec!["ALPHA CENTAURI", "SOL"]);
+        let read = FsSource::new(&dir);
+        assert_eq!(
+            pollster::block_on(read.bodies(10477373803))
+                .expect("the body file reads")
+                .stars
+                .len(),
+            1,
+        );
+        if let Err(said) = opened(&dir, &checkpoint) {
+            panic!("the finished directory would not reopen: {}", said);
+        }
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }

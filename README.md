@@ -11,10 +11,10 @@ is measured from Earth, read from published star catalogs and compared against
 what the game says.
 
 The galaxy the index is built from is everyone else's game, forwarded through
-EDDN. A commander's own is written to a directory of journal files on their own
-machine, and [`galos_journal`](./galos_journal) reads that directory into the
-same index vocabulary — no database — so the map can draw both at once and turn
-either off.
+EDDN. A commander's own is written to a directory of journal files on their
+own machine, and `galos-sync` reads both into one place: naming the feed and
+the journal together merges the world and the commander as they are written,
+so the map draws the pair out of one directory with no database in the path.
 
 [ARCHITECTURE.md](./ARCHITECTURE.md) is the map of it: what each of the nine
 crates is for, which way the data runs, what crosses the seam between the
@@ -79,10 +79,10 @@ SQLX_OFFLINE=true cargo build
 
 `galos-sync` moves the galaxy from its publishers into somewhere it can be
 read, in one process. Sources are named with `--from`, which repeats:
-`eddn`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME` and `eddb=PATH`. Sinks
-are named with `--db` and `--index DIR`: Postgres, and a `galos_index`
-directory the map draws from with no server at all. Naming neither is
-refused; naming both reads each publisher once into the pair.
+`eddn`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` and
+`spansh=PATH`. Sinks are named with `--db` and `--index DIR`: Postgres, and a
+`galos_index` directory the map draws from with no server at all. Naming
+neither is refused; naming both reads each publisher once into the pair.
 
 ```sh
 # Populate the database. `galos-sync --help` lists the flags.
@@ -99,13 +99,28 @@ cargo run --release --bin galos-sync -- --db --index .galos_index --watch 5
 cargo run --release --bin galos-sync -- --db --index .galos_index --only reaches
 
 # The same sources into an index directory instead, with no database anywhere.
-cargo run --release --bin galos-sync -- \
-    --from journal="$JOURNAL" --index .galos_journal_index --watch
 cargo run --release --bin galos-sync -- --from eddn --index .galos_index
+cargo run --release --bin galos-sync -- \
+    --from journal="$JOURNAL" --index .galos_index --watch
+
+# Or both publishers into one directory: everybody else's galaxy and this
+# commander's, merged as they are written, which is what the map draws.
+cargo run --release --bin galos-sync -- \
+    --from eddn --from journal="$JOURNAL" --index .galos_index --watch
 
 # Or both at once: one read of the feed, written to the database and to a
 # directory, with the directory brought level with the database first.
 cargo run --release --bin galos-sync -- --from eddn --db --index .galos_index
+
+# A published dump, which is an import that can be re-run from its source:
+# --bulk leaves commits unflushed, and --shard I/N takes one process's share
+# of a file so N of them cover it exactly once between them.
+cargo run --release --bin galos-sync -- \
+    --from spansh=galaxy.json --db --bulk
+for i in 0 1 2 3; do
+    cargo run --release --bin galos-sync -- \
+        --from spansh=galaxy.json --db --bulk --shard "$i/4" &
+done; wait
 ```
 
 `$JOURNAL` is where the game writes its logs, typically
@@ -125,25 +140,24 @@ directory is whatever the feed has said since somebody started it. One
 process per directory: the run takes `<dir>.lock` and a second is refused.
 
 Ctrl-C asks the run to stop rather than killing it, so the last publish, the
-whole directory and its resume point are written before it exits. A second
-Ctrl-C stops it where it stands.
+whole directory and its resume point are written before it exits. A first
+full build has nothing published to keep: asked to stop, it leaves the
+directory as it found it and the next run builds it again. A second Ctrl-C
+stops it where it stands.
 
 ```sh
 # Query from the CLI.
 cargo run --bin galos -- --help
 
-# Open the 3D map. See galos_map/README.md. `GALOS_INDEX_DIR` names the
-# directory it draws from, `.galos_index` under the working directory
-# unless it is set.
+# Open the 3D map. See galos_map/README.md. `--index DIR` or GALOS_INDEX
+# names the directory it draws from, `.galos_index` under the working
+# directory with neither.
 cargo run --release -p galos_map
-GALOS_INDEX_DIR=/srv/galos_index cargo run --release -p galos_map
+cargo run --release -p galos_map -- --index /srv/galos_index
+GALOS_INDEX=/srv/galos_index cargo run --release -p galos_map
 
-# And with the commander's own journal drawn over the published index. `J`
-# takes that layer off and puts it back while the map runs.
-GALOS_JOURNAL_DIR="$JOURNAL" cargo run --release -p galos_map
-
-# What a journal directory holds, without writing anything anywhere.
-cargo run -p galos_journal -- info "$JOURNAL"
+# What a built index directory holds, without writing anything anywhere.
+cargo run -p galos_index -- info .galos_index
 ```
 
 `RUST_LOG` selects what the tools log (e.g. `RUST_LOG=debug`), info and above

@@ -10,14 +10,14 @@
 //! What it can do is not be the one holding them, and that is the whole of
 //! this module. Two stores, and which is right depends on what is reading:
 //!
-//! - [`Kept`] holds everything in memory. Right for
-//!   [`JournalSource`](crate::JournalSource), which has no directory to keep
-//!   them in: the map builds one straight out of the `.log` files and nothing
-//!   publishes an index unless somebody asks for one. It is also what that
-//!   type's shape wants — it rebuilds its tables whole on every poll, and
-//!   `Galaxy::reaches` walks every system with anything scanned, so a store
-//!   behind a disk would be a file read per scanned system per second where
-//!   a sink asks about the handful a pass touched.
+//! - [`Kept`] holds everything in memory. Right for a journal read straight
+//!   off the disk, which has no directory to keep them in: the map builds
+//!   one out of the `.log` files and nothing publishes an index unless
+//!   somebody asks for one. It is also what that arrangement wants — it
+//!   rebuilds its tables whole on every poll, and `Galaxy::reaches` walks
+//!   every system with anything scanned, so a store behind a disk would be
+//!   a file read per scanned system per second where a sink asks about the
+//!   handful a pass touched.
 //!
 //!   Not for the sake of a click: a click is answered by `Source::bodies`, and
 //!   the map already reads the published `bodies/<address>.bin` off the disk
@@ -51,20 +51,18 @@
 //! disk that has stopped taking writes is a process that grows, and that
 //! warning is the only place it is said.
 
-use galos_index::meta::SystemBodies;
-use galos_index::source::{bodies_path, read_meta, write_meta};
+use crate::meta::SystemBodies;
+use crate::source::{self, bodies_path, write_meta};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use tracing::warn;
 
 /// Where a system's scanned insides live.
 ///
-/// `Sync` as well as `Send`: a [`JournalSource`](crate::JournalSource) is a
-/// [`galos_index::Source`], which the map holds behind an `Arc` and reads
-/// from its task pool.
+/// `Sync` as well as `Send`: the journal's [`Source`](crate::Source) is held
+/// behind an `Arc` by the map and read from its task pool.
 pub trait Bodies: fmt::Debug + Send + Sync {
     /// What is on record inside the system at `address`.
     ///
@@ -94,6 +92,14 @@ pub trait Bodies: fmt::Debug + Send + Sync {
     /// it there.
     fn flush(&mut self) -> io::Result<usize> {
         Ok(0)
+    }
+
+    /// Files written since this was last asked.
+    ///
+    /// Not what a flush answers: a store may force one between a caller's
+    /// flushes, and a caller reporting what its publish wrote wants both.
+    fn written(&mut self) -> usize {
+        0
     }
 }
 
@@ -147,6 +153,12 @@ pub struct Published {
     dir: PathBuf,
     /// Systems edited since the last flush.
     dirty: HashMap<i64, SystemBodies>,
+    /// Files written since the count was last taken.
+    ///
+    /// A forced flush writes between one caller's flushes, so what the last
+    /// flush wrote is not what has been written since the caller last asked.
+    /// A caller reporting what a publish wrote wants this.
+    wrote: usize,
 }
 
 impl Published {
@@ -159,9 +171,8 @@ impl Published {
     /// point is that the number is bounded, not that it is large.
     pub const CARRIED: usize = 4096;
 
-    /// A store over the body files of the index directory at `dir`.
     pub fn new(dir: impl Into<PathBuf>) -> Published {
-        Published { dir: dir.into(), dirty: HashMap::new() }
+        Published { dir: dir.into(), dirty: HashMap::new(), wrote: 0 }
     }
 
     /// The directory being written to.
@@ -171,21 +182,17 @@ impl Published {
 
     /// What the file for `address` holds, empty where there is none.
     ///
-    /// A file that will not decode is warned and read as empty rather than
-    /// taken as an error. It is one system's insides; refusing the whole run
-    /// over it would lose the feed, and the next scan of that system writes
-    /// the file afresh.
+    /// [`source::read_bodies`] answers empty for a system with no file, in
+    /// either layout. A file that is there and will not decode is warned and
+    /// read as empty rather than taken as an error. It is one system's
+    /// insides; refusing the whole run over it would lose the feed, and the
+    /// next scan of that system writes the file afresh.
     fn on_disk(&self, address: i64) -> SystemBodies {
-        match read_meta(&bodies_path(&self.dir, address)) {
+        match source::read_bodies(&self.dir, address) {
             Ok(inside) => inside,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                SystemBodies::default()
-            }
             Err(err) => {
-                warn!(
-                    address = address,
-                    error = %err,
-                    "unreadable body file, read as empty",
+                eprintln!(
+                    "unreadable body file for {address}, read as empty: {err}"
                 );
                 SystemBodies::default()
             }
@@ -207,7 +214,7 @@ impl Bodies for Published {
             && !self.dirty.contains_key(&address)
         {
             if let Err(err) = self.flush() {
-                warn!(error = %err, "body files could not be written");
+                eprintln!("body files could not be written: {err}");
             }
         }
         // Read before the entry is taken: `on_disk` borrows `self`, and the
@@ -225,14 +232,37 @@ impl Bodies for Published {
     /// The directory listing is the answer for a store that has been running
     /// across restarts, and the held set covers what this run has scanned and
     /// not yet written.
+    ///
+    /// Two levels of listing, because the body files are sharded: what sits
+    /// a directory down is the published layout, and anything still loose in
+    /// `bodies/` is what an older builder wrote and the migration has not
+    /// moved yet. Missing either would report a system nobody has scanned.
     fn scanned(&self) -> Vec<i64> {
+        fn listed(dir: &Path, into: &mut Vec<i64>) -> Vec<PathBuf> {
+            let mut shards = Vec::new();
+            let Ok(read) = std::fs::read_dir(dir) else { return shards };
+            for entry in read.flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|it| it.is_dir()) {
+                    shards.push(path);
+                    continue;
+                }
+                if path.extension().is_some_and(|it| it == "bin")
+                    && let Some(address) = path
+                        .file_stem()
+                        .and_then(|it| it.to_str())
+                        .and_then(|it| it.parse::<i64>().ok())
+                {
+                    into.push(address);
+                }
+            }
+            shards
+        }
+
         let mut addresses: Vec<i64> = self.dirty.keys().copied().collect();
-        if let Ok(read) =
-            std::fs::read_dir(self.dir.join(galos_index::source::BODIES_DIR))
-        {
-            addresses.extend(read.filter_map(|entry| {
-                entry.ok()?.path().file_stem()?.to_str()?.parse::<i64>().ok()
-            }));
+        let bodies = self.dir.join(crate::source::BODIES_DIR);
+        for shard in listed(&bodies, &mut addresses) {
+            listed(&shard, &mut addresses);
         }
         addresses.sort_unstable();
         addresses.dedup();
@@ -258,17 +288,22 @@ impl Bodies for Published {
             }
         }
         self.dirty = kept;
+        self.wrote += wrote;
         match failed {
             Some(err) => Err(err),
             None => Ok(wrote),
         }
+    }
+
+    fn written(&mut self) -> usize {
+        std::mem::take(&mut self.wrote)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::meta::{Barycenter, Star};
+    use crate::meta::{Barycenter, Star};
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()
@@ -409,6 +444,38 @@ mod tests {
         );
         // And nothing was lost by the flush that bound forced.
         assert_eq!(store.read(0).stars.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What a publish wrote counts the flushes it did not ask for
+    ///
+    /// A dump import touches far more than [`Published::CARRIED`] systems
+    /// between publishes, so most files are written by the forced flush and
+    /// only the remainder by the publish's own. A count taken from the last
+    /// flush alone reported one file for a hundred thousand systems.
+    #[test]
+    fn the_count_covers_a_forced_flush() {
+        let dir = scratch("counted");
+        let mut store = Published::new(&dir);
+        let touched = Published::CARRIED as i64 + 16;
+        for address in 1..=touched {
+            store.edit(address, &mut |inside| inside.stars.push(star(0)));
+        }
+
+        // The last flush's own answer is the remainder, not the work.
+        let settled = store.flush().expect("the files write");
+        assert!(
+            settled < touched as usize,
+            "a forced flush should have written most of these already",
+        );
+
+        assert_eq!(
+            store.written(),
+            touched as usize,
+            "every file written between publishes should be counted",
+        );
+        assert_eq!(store.written(), 0, "the count is taken, not repeated");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

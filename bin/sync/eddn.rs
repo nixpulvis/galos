@@ -172,7 +172,8 @@ async fn place(
         // Shared rather than copied: with `--db --index` this same entry is
         // written to Postgres and handed to the index worker.
         Message::Journal(entry) => {
-            sink.entry(Arc::new(entry), Reporter::Uploader(user)).await
+            // The sink keeps its own counts; the feed reads on regardless.
+            sink.entry(Arc::new(entry), Reporter::Uploader(user)).await;
         }
         Message::Commodity(e) => sink.market(e.timestamp, user, &e.event).await,
 

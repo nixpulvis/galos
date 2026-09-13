@@ -1,5 +1,5 @@
 use super::Market;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
 
@@ -25,10 +25,11 @@ impl Market {
     /// otherwise put it back there. The stamp is the newest heard from any of
     /// the four kinds of trade message, so it says when the market was last
     /// placed and nothing about how fresh any one of its tables is.
-    /// Asked of the transaction rather than of the pool, which is what keeps a
-    /// caller to one connection. The pool hands out five, and a caller holding
-    /// its transaction while it waits for a second connection is a caller
-    /// waiting on a connection that the four beside it are already holding.
+    /// Asked of the connection handed in rather than of the pool, which is
+    /// what keeps a caller to one connection. The pool hands out five, and a
+    /// caller holding its transaction while it waits for a second connection
+    /// is a caller waiting on a connection that the four beside it are
+    /// already holding.
     ///
     /// Nothing found is a system this database has not heard of, which is the
     /// market waiting for one. A failure to answer is not an answer of no, and
@@ -43,7 +44,7 @@ impl Market {
     /// it: a trade message says a station is there and says nothing about what
     /// it is like, so `updated_at` goes on naming whoever last described it.
     pub(crate) async fn touch(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         market_id: i64,
@@ -54,7 +55,7 @@ impl Market {
             "SELECT address FROM systems WHERE name = $1",
             system_name.to_uppercase(),
         )
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut *conn)
         .await?;
 
         if let Some(address) = address {
@@ -70,7 +71,7 @@ impl Market {
                 timestamp.naive_utc(),
                 user,
             )
-            .execute(&mut **tx)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -105,7 +106,7 @@ impl Market {
             station_name,
             timestamp.naive_utc(),
         )
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Market {
@@ -118,18 +119,17 @@ impl Market {
     }
 
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         market: &JournalMarket,
     ) -> Result<Market, Error> {
         // The market and its commodities go in together. Between clearing the
         // old prices and writing the new ones the market holds nothing it
-        // trades, which is not a state any reader should be shown.
-        let mut tx = db.pool.begin().await?;
-
+        // trades, which is not a state any reader should be shown, so the
+        // caller's transaction is what has to cover the whole of this.
         let placed = Market::touch(
-            &mut tx,
+            &mut *conn,
             timestamp,
             user,
             market.market_id,
@@ -143,9 +143,8 @@ impl Market {
         // station has since moved on from. The market itself is placed above
         // and settled that on its own stamp, so that much of the message
         // stands.
-        if newer_on_record(&mut tx, market.market_id, timestamp).await? {
+        if newer_on_record(&mut *conn, market.market_id, timestamp).await? {
             crate::turned_away("market prices", timestamp);
-            tx.commit().await?;
             return Ok(placed);
         }
 
@@ -162,7 +161,7 @@ impl Market {
             "DELETE FROM commodities WHERE market_id = $1",
             market.market_id,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         // TODO: This sends one statement per commodity, and a market can name
@@ -209,11 +208,9 @@ impl Market {
                 commodity.stock_bracket,
                 timestamp.naive_utc(),
             )
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut *conn)
             .await?;
         }
-
-        tx.commit().await?;
 
         Ok(placed)
     }
@@ -225,7 +222,7 @@ impl Market {
 /// newest of any of the four kinds of trade message and so says nothing about
 /// how fresh the prices are.
 async fn newer_on_record(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    conn: &mut sqlx::PgConnection,
     market_id: i64,
     timestamp: DateTime<Utc>,
 ) -> Result<bool, Error> {
@@ -233,7 +230,7 @@ async fn newer_on_record(
         "SELECT MAX(listed_at) FROM commodities WHERE market_id = $1",
         market_id,
     )
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *conn)
     .await?;
 
     Ok(listed.is_some_and(|listed| listed > timestamp.naive_utc()))

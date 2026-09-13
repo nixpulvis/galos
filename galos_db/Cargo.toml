@@ -13,9 +13,25 @@ name = "galos-db"
 path = "src/bin/galos-db.rs"
 doc = false
 
+[features]
+# `galos_db::testing`, which hands a test a migrated database of its own and
+# drops it again. Not on by default: nothing in an ordinary build has any
+# business creating databases.
+testing = ["dep:libc"]
+
+[dev-dependencies]
+# The write-path tests are integration tests, which link the library as any
+# other caller does and see only what a feature turns on. A test target has
+# no other way to ask for a feature of the crate it tests.
+galos_db = { path = ".", features = ["testing"] }
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-# futures = "*"
+# The cold build reads `systems` and `stars` as two ordered cursors and
+# merges them, so neither is ever a buffer: `sqlx`'s streaming `fetch` hands
+# back a `BoxStream`, and this is where that type is named. Already in the
+# tree under sqlx; nothing new is pulled by asking for it.
+futures-core = "0.3"
 async-std = { version = "*", features = [ "attributes" ] }
 dotenv = "*"
 chrono = "*"
@@ -38,6 +54,9 @@ galos_photometry = { path = "../galos_photometry" }
 # The other dataset: read for the cross-comparison in `catalog`, which is the
 # only place this crate meets a survey that is not Elite.
 galos_catalog = { path = "../galos_catalog", default-features = false }
+# `testing`'s reaper asks whether the process that made a leftover database is
+# still running, which is a signal sent to nobody.
+libc = { version = "0.2", optional = true }
 
 [dependencies.sqlx]
 version = "^0.8"

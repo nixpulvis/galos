@@ -40,22 +40,29 @@ impl Eddb {
 
         // The shard's own rows, not the file's: a bar counting up to the whole
         // file would stop at a fraction of itself and say nothing about why.
+        //
+        // Records, not bytes: the CSV is counted before it is walked, so
+        // the count is known and a byte position is not. The line reads the
+        // same either way; see `bar::imported`.
         let rows = dump.len();
-        let bar = bar::progress(match self.shard {
-            Some(shard) => shard.share(rows),
-            None => rows,
-        });
         let by = match self.shard {
             Some(shard) => format!("EDDB {shard}"),
             None => "EDDB".to_string(),
         };
+        let mut bar = bar::imported(
+            &by,
+            bar::Extent::Records(match self.shard {
+                Some(shard) => shard.share(rows),
+                None => rows,
+            }),
+        );
         for (at, result) in dump.into_iter().enumerate() {
             // Stopped part way through is a dump half written, which is
             // exactly what an interrupted run of this always was: every
             // write is its own guarded upsert and the next run re-reads
             // the file from the top.
             if shutdown.asked() {
-                bar.abandon_with_message("stopped");
+                bar.abandoned("stopped");
                 return true;
             }
             // Another process's row. Counted by position in the file, so the
@@ -65,33 +72,40 @@ impl Eddb {
                     continue;
                 }
             }
-            bar.inc(1);
-            let Ok(system) = result else { continue };
+            bar.through(1);
+            let Ok(system) = result else {
+                bar.missed();
+                continue;
+            };
             // A row with no address is one nothing can be keyed by, here or
             // in a tree.
-            let Some(address) = system.ed_system_address else { continue };
+            let Some(address) = system.ed_system_address else {
+                bar.missed();
+                continue;
+            };
 
-            bar.set_message(format!("[{by}] {}", system.name));
-            sink.system(
-                &SystemReport {
-                    name: Some(system.name),
-                    position: Some(Coordinate {
-                        x: system.coords.x,
-                        y: system.coords.y,
-                        z: system.coords.z,
-                    }),
-                    population: system.population,
-                    security: system.security,
-                    government: system.government,
-                    allegiance: system.allegiance,
-                    primary_economy: system.primary_economy,
-                    ..SystemReport::new(address as i64, system.updated_at)
-                },
-                "EDDB dump",
-            )
-            .await;
+            let landed = sink
+                .system(
+                    &SystemReport {
+                        name: Some(system.name),
+                        position: Some(Coordinate {
+                            x: system.coords.x,
+                            y: system.coords.y,
+                            z: system.coords.z,
+                        }),
+                        population: system.population,
+                        security: system.security,
+                        government: system.government,
+                        allegiance: system.allegiance,
+                        primary_economy: system.primary_economy,
+                        ..SystemReport::new(address as i64, system.updated_at)
+                    },
+                    "EDDB dump",
+                )
+                .await;
+            bar.took(landed);
         }
-        bar.finish();
+        bar.done();
         true
     }
 }

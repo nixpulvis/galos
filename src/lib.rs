@@ -1,36 +1,26 @@
 //! # Architecture
 //!
+//! The library behind two binaries: `galos`, the query CLI (`bin/galos/`),
+//! and `galos-sync`, the ingest tool (`bin/sync/`). What they share lives
+//! here: the [`sink`]s they write through, the [`bar`] they report
+//! progress on, and the [`Shard`] and [`Shutdown`] that divide and end a
+//! run.
+//!
+//! The formats and the stores are in the crates it depends on:
+//!
 //! - [`elite_journal`] - Elite: Dangerous journal file parser
-//! - [`elite_dat`] - Elite: Dangerous visited star `.dat` parser
 //! - [`eddn`] - A [EDDN](https://eddn.edcd.io) subscriber
 //! - [`eddb`] - A [EDDB](https://eddb.io) data file parser (discontinued)
 //! - [`edsm`] - A [EDSM](https://edsm.net) API adapter and data file parser
+//! - [`spansh`] - A [Spansh](https://spansh.co.uk) galaxy dump reader
 //! - [`galos_db`] - PostgreSQL database and ORM
-//! - [`galos_map`] - A 3D galaxy map
-//! - [`galos_server`] - An HTTP server for [`galos_db`]
-//! - [`galos_gui`] - WIP
-//! - [`galos`](#galos) - Shared code and the user CLI, `galos`
+//! - [`galos_index`] - The index format, and the accumulator that fills it
 //!
-//! In order to run the this tool, [`galos-sync`], [`galos-map`],
-//! [`galos-server`], [`galos-gui`], a PostGIS database must be running and up
-//! to date. The [`galos_db`] crate provides tools to manage this.
+//! `galos`, and any run of `galos-sync` given `--db`, need a PostGIS
+//! database migrated up to date. The [`galos_db`] crate provides the tools
+//! to manage it.
 //!
-//! # `galos`
-//!
-//! To launch the interactive terminal application, simply run `galos`.
-//!```notrust
-//! -------------------------------------------
-//! | Current Location: Ngalinn, Fall Station |
-//! -------------------------------------------
-//! | Filter: +good:"Food and Water" -*M      |
-//! -------------------------------------------
-//! | [ ] Mannani                             |
-//! | [x] Aitvas                              |
-//! | [x] Sol                                 |
-//! -------------------------------------------
-//! | Totals: Hyperspace 453Ly,               |
-//! -------------------------------------------
-//!```
+//! # Commands
 //!
 //! ### `galos search [OPTIONS] <query>`
 //!

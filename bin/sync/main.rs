@@ -4,9 +4,8 @@
 //! Several sources and two sinks, in one process. A source knows how to read
 //! one publisher — journal files, the EDDN feed, an EDSM dump or API, a saved
 //! EDDB dump, a Spansh galaxy dump — and says what it read through
-//! [`sink::Sink`]. A sink knows what that means on its side: rows in
-//! Postgres, or a `galos_index` directory a client draws from with no server
-//! at all.
+//! [`Sink`]. A sink knows what that means on its side: rows in Postgres,
+//! or a `galos_index` directory a client draws from with no server at all.
 //!
 //! ```sh
 //! galos-sync --from journal=~/Saved\ Games/…            # to the database
@@ -36,33 +35,66 @@
 //! galaxy. The sources run at once, each with a sink of its own onto the
 //! same pool and the same channel.
 //!
+//! ## The two modes
+//!
+//! A run either **follows** something or **imports** something, and every
+//! per-source flag belongs to one of the two — `--help` groups them that
+//! way. A run follows where a source has no end: the feed, a journal under
+//! `--watch`, or `--db --index --watch`, which follows rows rather than a
+//! source. It is the following run that publishes the index on `--publish`'s
+//! beat, because something is reading the directory while it is written to.
+//!
+//! Everything else is an import: a dump, a saved dump, an API answer, a
+//! journal read once. It has an end, nothing is waiting on a half-written
+//! directory, and the whole of it is written at [`Sink::finish`] when the
+//! last record is read. See [`from::Source::follows`] and [`following`].
+//!
 //! The one thing worth knowing before reading any of it: **the sinks are not
 //! interchangeable and are not meant to be.** A database keeps stations,
 //! markets, signals and factions; an index keeps the sky and what is inside a
 //! system. A source hands over everything it read and each sink takes what it
 //! is for, saying in its own impl what it does with the rest and why. See
-//! [`sink`].
+//! [`galos::sink`].
+//!
+//! ## The cold route
+//!
+//! One import does not go through the sinks at all. A run that names a
+//! finite source, `--index DIR` and no `--db` has nothing to fan out to, and
+//! the index sink's price for holding one reading open — a live tree and the
+//! whole names table, a kilobyte a system — is what stops a two hundred
+//! million system dump from being importable at all. Such a run goes through
+//! [`cold`] instead, which cuts the galaxy into regions and builds them one
+//! at a time, holding one region rather than the sky. See [`cold_route`].
+//!
+//! [`region_budget`] is the memory dial of that route, and what it bounds
+//! is how many systems are held at once: a region's systems are read back
+//! off its spill, built, written and dropped. A region can be dropped
+//! because a cut is disjoint — every system in it is owned by a cell inside
+//! it — so once it is built there is nothing left to ask it.
 //!
 //! ## What `main` is
 //!
 //! A supervisor. It installs a SIGINT handler, holds the shutdown token both
 //! halves read, and joins them before it answers — so a Ctrl-C ends in the
-//! last publish, the whole-directory [`Sink::finish`](sink::Sink::finish) and
-//! a resume point, rather than in a killed process and a directory nothing
-//! can reopen. The status is `collect_ok && derive_ok`.
+//! last publish, the whole-directory [`Sink::finish`] and a resume point,
+//! rather than in a killed process and a directory nothing can reopen. The
+//! status is `collect_ok && derive_ok`.
 
+use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use from::Source;
 use galos::sink::index::INDEX_DIR;
 use galos::sink::relay::{Dropped, Live};
+use galos::sink::tables::{Tables, Wrote};
 use galos::sink::{Db, Fan, Index, Relay, Sink};
 use galos::{bar, Shard, Shutdown};
 use galos_db::index::Parts;
 use galos_db::Database;
+use galos_index::{Build, BuildParams, Built, By, region_budget};
 use std::io::{stderr, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 mod derive;
@@ -73,14 +105,25 @@ mod from;
 mod journal;
 mod spansh;
 
-/// How often the index sink is asked to write what it has taken.
+/// How often the index sink is asked to write what it has taken, where the
+/// run is following something.
 ///
 /// A database has written each message as it arrived and does nothing on a
 /// beat. An index has been editing a tree in memory, and this is how often
 /// that reaches the disk: a publish rewrites the index file whole, so doing
 /// it per message at thirty a second would be thirty rewrites a second to
 /// move one system. `--publish` says otherwise.
+///
+/// A run whose sources all end has no beat at all: there is nothing to see
+/// a half-written directory and it is written whole when the run finishes.
 const PUBLISH_EVERY: u64 = 5;
+
+/// The heading the flags of a run that never ends are listed under.
+const FOLLOWING: &str = "Following what is published";
+
+/// The heading the flags of a run that reads something finite are listed
+/// under.
+const IMPORTING: &str = "Importing what is already there";
 
 /// Sync Elite's galaxy from its publishers into a database and an index.
 #[derive(Parser)]
@@ -96,15 +139,24 @@ struct Cli {
     #[arg(long)]
     db: bool,
 
-    /// Open the database for a bulk import: commits left unflushed and a
-    /// higher connection ceiling. For an import that can be re-run from its
-    /// source, not for a live feed.
-    #[arg(long)]
-    bulk: bool,
-
     /// Write an index directory, `.galos_index` where DIR is left off.
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = INDEX_DIR)]
     index: Option<PathBuf>,
+
+    /// Resume file for the index, kept outside the served directory.
+    /// `DIR.checkpoint` beside the index directory by default.
+    #[arg(long, value_name = "FILE")]
+    checkpoint: Option<PathBuf>,
+
+    /// Whose journal this is, overriding what the files say. Only with
+    /// `--from journal=PATH`.
+    #[arg(short = 'u', long, value_name = "NAME")]
+    user: Option<String>,
+
+    /// Rebuild only these parts, leaving the rest of the directory as it
+    /// stands. Every part by default, and only for a one-shot derive.
+    #[arg(long, value_name = "PART", value_delimiter = ',', num_args = 1..)]
+    only: Vec<Part>,
 
     /// Keep following what was named rather than exiting, SECS apart. A
     /// second where SECS is left off.
@@ -113,49 +165,66 @@ struct Cli {
     /// writing to is left alone: the filesystem says when a log was written
     /// to, so a journal is read as soon as the game writes rather than SECS
     /// later. EDDN is a subscription and follows either way.
-    #[arg(long, value_name = "SECS", num_args = 0..=1, default_missing_value = "1")]
+    ///
+    /// Only where there is something to follow: a journal directory, or
+    /// `--db --index` with no `--from`. A dump has an end.
+    #[arg(
+        long,
+        value_name = "SECS",
+        num_args = 0..=1,
+        default_missing_value = "1",
+        help_heading = FOLLOWING,
+    )]
     watch: Option<u64>,
 
-    /// Seconds between index publishes, one at least.
-    #[arg(long, value_name = "SECS", default_value_t = PUBLISH_EVERY)]
-    publish: u64,
+    /// Seconds between index publishes, one at least, five by default. Only
+    /// for a run that follows something; a run with an end publishes once,
+    /// when it ends.
+    #[arg(long, value_name = "SECS", help_heading = FOLLOWING)]
+    publish: Option<u64>,
 
-    /// Rebuild only these parts, leaving the rest of the directory as it
-    /// stands. Every part by default, and only for a one-shot derive.
-    #[arg(long, value_name = "PART", value_delimiter = ',', num_args = 1..)]
-    only: Vec<Part>,
-
-    /// Resume file for the index, kept outside the served directory.
-    /// `DIR.checkpoint` beside the index directory by default.
-    #[arg(long, value_name = "FILE")]
-    checkpoint: Option<PathBuf>,
-
-    /// Whose journal this is, overriding what the files say.
-    #[arg(short = 'u', long, value_name = "NAME")]
-    user: Option<String>,
-
-    /// EDDN's ZMQ address.
-    #[arg(short = 'r', long, value_name = "URL", default_value = eddn::URL)]
-    remote: String,
+    /// EDDN's ZMQ address, the feed's own by default. Only with `--from
+    /// eddn`.
+    #[arg(short = 'r', long, value_name = "URL", help_heading = FOLLOWING)]
+    remote: Option<String>,
 
     /// Seconds of EDDN silence before the connection is replaced, or 0 to
-    /// leave it alone.
-    #[arg(long, value_name = "SECS")]
+    /// leave it alone. Only with `--from eddn`.
+    #[arg(long, value_name = "SECS", help_heading = FOLLOWING)]
     stall: Option<u64>,
 
-    /// EDSM's API: take everything in a cube this many light years across.
-    #[arg(long, short, value_name = "LY", conflicts_with = "sphere")]
-    cube: Option<u32>,
-
-    /// EDSM's API: take everything within this many light years.
-    #[arg(long, short, value_name = "LY")]
-    sphere: Option<u32>,
+    /// Open the database for a bulk import: commits left unflushed and a
+    /// higher connection ceiling. For an import that can be re-run from its
+    /// source, not for a live feed.
+    #[arg(long, help_heading = IMPORTING)]
+    bulk: bool,
 
     /// Read one share of a file: every Nth record, offset I, so N processes
     /// cover it exactly once between them. Every write is a guarded upsert
     /// keyed by an address, so shards that overlap cost only time.
-    #[arg(long, value_name = "I/N", value_parser = from::shard)]
+    #[arg(
+        long,
+        value_name = "I/N",
+        value_parser = from::shard,
+        help_heading = IMPORTING,
+    )]
     shard: Option<Shard>,
+
+    /// EDSM's API: take everything in a cube this many light years across.
+    /// Only with `--from edsm-api=NAME`.
+    #[arg(
+        long,
+        short,
+        value_name = "LY",
+        conflicts_with = "sphere",
+        help_heading = IMPORTING,
+    )]
+    cube: Option<u32>,
+
+    /// EDSM's API: take everything within this many light years. Only with
+    /// `--from edsm-api=NAME`.
+    #[arg(long, short, value_name = "LY", help_heading = IMPORTING)]
+    sphere: Option<u32>,
 }
 
 /// One part of what a built index directory holds
@@ -243,6 +312,48 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Whether this run is following something rather than reading it out.
+///
+/// The distinction the beat and half the per-source flags turn on. A run
+/// follows where any source it names follows — see [`Source::follows`] —
+/// or where it is the database into an index under `--watch`, which
+/// follows rows rather than a source.
+fn following(cli: &Cli) -> bool {
+    if cli.from.is_empty() {
+        return cli.watch.is_some() && cli.db && cli.index.is_some();
+    }
+    let watching = cli.watch.is_some();
+    cli.from.iter().any(|source| source.follows(watching))
+}
+
+/// The source a cold build would read, where this run is one.
+///
+/// The builder takes records pushed at it and writes the directory whole
+/// with no tree in memory in between, so a run takes the cold route where
+/// the reading ends and the directory is all it writes: no source follows —
+/// [`following`], which is [`Source::follows`] over every `--from` —
+/// `--index` is named, and `--db` is not, since the sinks are what fan one
+/// reading to two places.
+///
+/// One finite source, and the one with a reader that pushes. `edsm=PATH`
+/// and `eddb=PATH` are finite files that want exactly this treatment; what
+/// they lack is a read of their own into a [`Build`], and until one lands
+/// they keep the sink path and still work.
+///
+/// One source and not several. Two finite sources into one directory is two
+/// cold builds over the same directory, the second publishing its own
+/// galaxy over the first, so a run naming more than one keeps the fan-out
+/// that was written to carry them.
+fn cold_route(cli: &Cli) -> Option<&PathBuf> {
+    if cli.db || cli.index.is_none() || following(cli) {
+        return None;
+    }
+    match cli.from.as_slice() {
+        [Source::Spansh(path)] => Some(path),
+        _ => None,
+    }
+}
+
 /// Refuse the combinations of flags that cannot mean anything.
 ///
 /// Each of these is a run that would otherwise start, do something other
@@ -323,6 +434,108 @@ fn refused(cli: &Cli) -> Result<(), String> {
                 ));
             }
         }
+        // A cold build writes the whole of `dir`: the cut it counted, every
+        // cell payload under it, the names table and a resume point saying
+        // that is the galaxy. N processes each counting their own share
+        // would each write a whole index over the others, and the directory
+        // would end up holding whichever finished last. A share of a file is
+        // not a share of a directory.
+        if cold_route(cli).is_some() {
+            return Err("--shard divides a file between processes and a run \
+                        that builds an index from a dump alone writes the \
+                        whole directory, not a share of it: each process \
+                        would publish its own galaxy over the others. Name \
+                        --db as well to take the shared read, or read the \
+                        file whole"
+                .to_string());
+        }
+    }
+
+    // The flags that belong to one mode, or to one source, and would be
+    // read by nothing where the run is the other. Each of these is written
+    // by somebody who meant it — an import told to publish every two
+    // seconds, a feed's address given to a run that reads a dump — and a
+    // run that took them silently would do the opposite of what it was
+    // asked and say so nowhere.
+    let follows = following(cli);
+    let journal =
+        cli.from.iter().any(|it| matches!(it, Source::Journal(_)));
+    let api = cli.from.iter().any(|it| matches!(it, Source::EdsmApi(_)));
+
+    if cli.publish.is_some() {
+        if !follows {
+            return Err("--publish is the beat an index is written out on \
+                        and the run publishes when it ends; the beat is \
+                        for --from eddn, a journal under --watch, or --db \
+                        --index --watch"
+                .to_string());
+        }
+        if cli.from.is_empty() {
+            return Err("--publish is the beat events are written out on \
+                        and this run reads no source; a --db --index \
+                        derive republishes on --watch's own beat"
+                .to_string());
+        }
+    }
+
+    if cli.watch.is_some() && !follows {
+        return Err("--watch follows what is still being written and \
+                    nothing here is: a journal directory, or --db --index \
+                    with no --from. A dump is read out and the run ends"
+            .to_string());
+    }
+
+    if cli.user.is_some() && !journal {
+        return Err("--user is whose journal is being read and this run \
+                    reads none: --from journal=PATH"
+            .to_string());
+    }
+
+    if cli.remote.is_some() && !cli.from.contains(&Source::Eddn) {
+        return Err("--remote is where the feed is subscribed to and this \
+                    run does not read it: --from eddn"
+            .to_string());
+    }
+
+    if cli.stall.is_some() && !cli.from.contains(&Source::Eddn) {
+        return Err("--stall is how long the feed may carry nothing before \
+                    its connection is replaced and this run does not read \
+                    it: --from eddn"
+            .to_string());
+    }
+
+    if cli.cube.is_some() && !api {
+        return Err("--cube is how much of a neighbourhood EDSM's API is \
+                    asked for and this run does not ask it: --from \
+                    edsm-api=NAME"
+            .to_string());
+    }
+
+    if cli.sphere.is_some() && !api {
+        return Err("--sphere is how much of a neighbourhood EDSM's API is \
+                    asked for and this run does not ask it: --from \
+                    edsm-api=NAME"
+            .to_string());
+    }
+
+    // A file named on the command line and not there is a typo, and a run
+    // that carried on would publish a directory derived from nothing over
+    // one that had something in it. Checked before a sink is opened, so a
+    // refused run writes nothing at all.
+    for source in &cli.from {
+        let named = match source {
+            Source::Journal(path)
+            | Source::Edsm(path)
+            | Source::Eddb(path)
+            | Source::Spansh(path) => path,
+            Source::Eddn | Source::EdsmApi(_) => continue,
+        };
+        if !named.exists() {
+            return Err(format!(
+                "--from {source} is not there. A leading `~` is expanded \
+                 here, so a path that still cannot be found is the path"
+            ));
+        }
     }
 
     Ok(())
@@ -350,7 +563,11 @@ impl Options {
     fn of(cli: &Cli) -> Options {
         Options {
             user: cli.user.clone(),
-            remote: cli.remote.clone(),
+            // The feed's own address, where the run did not name one.
+            remote: match &cli.remote {
+                Some(url) => url.clone(),
+                None => eddn::URL.to_string(),
+            },
             // Nothing said is the default window; nought said is a
             // connection this leaves alone however quiet it goes.
             stall: match cli.stall {
@@ -388,6 +605,20 @@ async fn run(cli: Cli) -> Result<bool, String> {
         ),
         None => None,
     };
+
+    // A dump straight into a directory, with no tree in memory in between.
+    // See [`cold_route`] for which runs this is and why the rest are not.
+    if let Some(path) = cold_route(&cli) {
+        let dir = cli.index.as_deref().expect("an index, or this is None");
+        let checkpoint = Index::checkpoint(dir, cli.checkpoint.as_deref());
+        let source = spansh::Galaxy {
+            path: path.to_owned(),
+            dir: dir.to_owned(),
+            now: Utc::now(),
+            shutdown: shutdown.clone(),
+        };
+        return cold(&source, dir, &checkpoint);
+    }
 
     // Two pools, not one shared five connections. The collect side writes a
     // row per message and the derive side samples a clock and reads the
@@ -428,6 +659,16 @@ async fn run(cli: Cli) -> Result<bool, String> {
     let (live, dropped) = (Live::new(), Dropped::new());
     let readings = cli.index.as_ref().map(|_| Relay::channel());
 
+    // The beat, where there is anything to publish between the start and
+    // the end of the run. An import ends, and what it ends with is the
+    // whole directory `finish` writes; publishing it half-read is a rewrite
+    // of every changed cell and every table for a galaxy nobody can read
+    // yet, since a dump's directory carries no cursor to resume from.
+    let publish = following(&cli).then(|| {
+        let secs = cli.publish.unwrap_or(PUBLISH_EVERY).max(1);
+        Duration::from_secs(secs)
+    });
+
     // Its own thread and its own `block_on`: a publish is a whole-galaxy
     // `fs::write` and everything else here is waiting on a socket.
     let deriving = match (&cli.index, &readings) {
@@ -436,7 +677,7 @@ async fn run(cli: Cli) -> Result<bool, String> {
                 dir: dir.clone(),
                 checkpoint: Index::checkpoint(dir, cli.checkpoint.as_deref()),
                 db: deriving,
-                publish: Duration::from_secs(cli.publish.max(1)),
+                publish,
                 readings: receiver.clone(),
                 live: live.clone(),
                 dropped: dropped.clone(),
@@ -501,6 +742,108 @@ async fn run(cli: Cli) -> Result<bool, String> {
     };
 
     Ok(collect_ok && derive_ok)
+}
+
+/// Build `dir` from a finite source and leave a resume point beside it.
+///
+/// The regional build: every system is spilled to its bucket's file as the
+/// source pushes it, the buckets are formed into regions of
+/// [`region_budget`] systems, and the regions are built one at a time. What
+/// is held at once is one region's systems and, at the end, every cell in
+/// the galaxy — never a live tree over the sky, which is the whole reason
+/// this path is not the sink one.
+///
+/// The resume point says [`By::Events`] and carries no cursor. A cursor is a
+/// database clock — what a delta pass reads `received_at` against — and a
+/// file published last Tuesday has none to offer; a dump's own newest
+/// `updateTime` is a time out in the galaxy and not a time this program's
+/// database wrote a row, so recording it as one would have the next
+/// catch-up read back from a clock nothing here ever kept. `By::Events`
+/// says the directory was derived from records rather than from the
+/// database, which is what makes `galos_db::index` rebuild rather than
+/// resume from it.
+///
+/// Ctrl-C during the read is a clean exit: the builder publishes nothing —
+/// no cells, no names table, no resume point — so the next run reads the
+/// dump again from its first line. What it does leave is the body files
+/// [`spansh::Galaxy::read`] wrote as it went, each whole and each filed
+/// under its own address, which a later build writes again.
+///
+/// The metadata tables go in after [`Build::finish`] has answered, which
+/// is after the index file. A stop then leaves no table at all: up to the
+/// point of no return the directory is as the build found it, and past it
+/// the directory serves nothing until a build finishes, so a table written
+/// early would either break the first or stand for a galaxy nothing
+/// published. And the resume point `finish` leaves is what makes the next
+/// run resume rather than build, so tables short of the cells beside them
+/// would be a directory nothing ever repairs. `galos_db::index` writes its
+/// own parts at the same place, for the same reason.
+fn cold(
+    source: &spansh::Galaxy,
+    dir: &Path,
+    checkpoint: &Path,
+) -> Result<bool, String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("{}: {err}", dir.display()))?;
+    let start = Instant::now();
+    let budget = region_budget();
+    let failed = |err| format!("the index could not be built: {err}");
+    let stop = || source.shutdown.asked();
+    let mut build =
+        Build::begin(dir, checkpoint, BuildParams::default(), budget, &stop)
+            .map_err(failed)?;
+    let mut tables = Tables::building();
+    source.read(&mut build, &mut tables).map_err(failed)?;
+    let report = match build.finish(By::Events, None).map_err(failed)? {
+        Built::Index(report) => report,
+        Built::Stopped(abandoned) => {
+            info!(
+                %abandoned,
+                elapsed = ?start.elapsed(),
+                dir = %dir.display(),
+                "asked to stop before the index was built; nothing was \
+                 published and the next run reads the dump from the start",
+            );
+            return Ok(true);
+        }
+    };
+
+    // Every table the dump can fill, whole. Not the factions: the dump's
+    // own faction lists are passed over by `spansh::galaxy::System`, and
+    // nothing reading records could number a faction anyway — an empty
+    // table would say the galaxy has none where an absent one says this
+    // index cannot tell. See [`Wrote::DERIVED`].
+    tables.write(dir, Wrote::DERIVED).map_err(failed)?;
+    let counts = tables.counts();
+
+    // One line, in the shape the sink's own publish prints, so a directory
+    // written by either builder says what happened the same way.
+    info!(
+        wrote = "whole",
+        moved = report.systems,
+        systems = report.systems,
+        chunks = report.chunks,
+        cells = report.cells,
+        leaves = report.leaves,
+        deepest = report.deepest_level,
+        regions = report.regions,
+        budget,
+        named = report.named,
+        populated = counts.populated,
+        reaches = counts.reaches,
+        boosts = counts.boosts,
+        elapsed = ?start.elapsed(),
+        dir = %dir.display(),
+        "index published",
+    );
+    if !report.is_consistent() {
+        warn!(
+            systems = report.systems,
+            placed = report.points,
+            "the cut did not partition the galaxy",
+        );
+    }
+    Ok(true)
 }
 
 /// How many connections a bulk import may hold open
@@ -666,6 +1009,38 @@ mod tests {
         assert!(refused(&cli(&["--from", "eddn", "--index", "d"])).is_ok());
     }
 
+    /// A file that is not there is refused before anything is written
+    ///
+    /// The run that found this wrote an empty index over a directory that
+    /// had a galaxy in it: the dump could not be opened, the source read
+    /// nothing, and the worker published the nothing it was handed. So the
+    /// check is here, where a refusal costs nothing, and not in the source.
+    #[test]
+    fn a_source_that_is_not_there_is_refused() {
+        let missing = cli(&[
+            "--from",
+            "spansh=/tmp/no/such/galaxy.json",
+            "--index",
+            "d",
+        ]);
+        let Err(said) = refused(&missing) else {
+            panic!("a dump that does not exist was accepted")
+        };
+        assert!(
+            said.contains("galaxy.json") && said.contains("not there"),
+            "should name the path and what is wrong: {}",
+            said,
+        );
+
+        // The feed and the API name no file, so neither is checked for one.
+        assert!(refused(&cli(&["--from", "eddn", "--db"])).is_ok());
+        assert!(refused(&cli(&["--from", "edsm-api=Sol", "--db"])).is_ok());
+
+        // A directory that is there is a source, journals being directories.
+        let here = cli(&["--from", "journal=/tmp", "--db"]);
+        assert!(refused(&here).is_ok(), "a directory should be readable");
+    }
+
     /// The same source twice is one publisher read twice over
     ///
     /// Over EDDN that is two subscriptions carrying the same galaxy and
@@ -681,7 +1056,7 @@ mod tests {
         assert!(said.contains("twice"), "should say why: {}", said);
 
         let two =
-            cli(&["--from", "journal=one", "--from", "journal=two", "--db"]);
+            cli(&["--from", "journal=src", "--from", "journal=bin", "--db"]);
         assert!(
             refused(&two).is_ok(),
             "two journals are two directories, not one read twice",
@@ -759,11 +1134,13 @@ mod tests {
     /// anyway would be N processes each writing the whole of the same feed.
     #[test]
     fn a_share_belongs_to_a_source_that_reads_a_file() {
+        // Paths that are there, `refused` checking for a file it was
+        // pointed at; the flag under test is `--shard`.
         for said in [
-            &["--from", "spansh=galaxy.json", "--db", "--shard", "0/8"][..],
-            &["--from", "journal=logs", "--db", "--shard", "3/4"][..],
-            &["--from", "eddb=systems.csv", "--db", "--shard", "0/1"][..],
-            &["--from", "edsm=systems.json", "--db", "--shard", "1/2"][..],
+            &["--from", "spansh=Cargo.toml", "--db", "--shard", "0/8"][..],
+            &["--from", "journal=bin", "--db", "--shard", "3/4"][..],
+            &["--from", "eddb=README.md", "--db", "--shard", "0/1"][..],
+            &["--from", "edsm=Cargo.lock", "--db", "--shard", "1/2"][..],
         ] {
             assert!(refused(&cli(said)).is_ok(), "{:?} reads a file", said);
         }
@@ -791,5 +1168,193 @@ mod tests {
             "--from", "eddn", "--index", "d", "--bulk",
         ]))
         .is_err());
+    }
+
+    /// The beat belongs to a run something is reading while it writes
+    ///
+    /// An import holds its tree in memory and writes the directory whole
+    /// when it ends, so a publish halfway through is every changed cell and
+    /// every table rewritten for a galaxy that is still being read in — and
+    /// for a run with no database under it, one nothing can resume from
+    /// either.
+    #[test]
+    fn a_beat_belongs_to_a_run_that_follows_something() {
+        let import = cli(&[
+            "--from", "spansh=Cargo.toml", "--index", "d", "--publish", "2",
+        ]);
+        let Err(said) = refused(&import) else {
+            panic!("an import on a beat was accepted")
+        };
+        assert!(said.contains("--publish"), "should say why: {}", said);
+
+        // The feed and a followed journal are what the beat is for.
+        assert!(refused(&cli(&[
+            "--from", "eddn", "--index", "d", "--publish", "2",
+        ]))
+        .is_ok());
+        assert!(refused(&cli(&[
+            "--from", "journal=bin", "--index", "d", "--watch", "--publish",
+            "2",
+        ]))
+        .is_ok());
+
+        // The same journal read once is an import like any other.
+        assert!(
+            refused(&cli(&[
+                "--from", "journal=bin", "--index", "d", "--publish", "2",
+            ]))
+            .is_err(),
+            "a journal read once has an end",
+        );
+
+        // And the database into an index republishes on `--watch`'s beat,
+        // never on this one.
+        let derive =
+            cli(&["--db", "--index", "d", "--watch", "5", "--publish", "2"]);
+        assert!(refused(&derive).is_err(), "a derive took a second beat");
+    }
+
+    /// `--watch` follows what is still being written, so there must be one
+    ///
+    /// A dump is all there when the run starts: a run told to watch one
+    /// would read it out and exit anyway, which is the flag doing nothing.
+    #[test]
+    fn a_watch_belongs_to_something_still_being_written() {
+        let dump = cli(&["--from", "spansh=Cargo.toml", "--db", "--watch"]);
+        let Err(said) = refused(&dump) else {
+            panic!("a watched dump was accepted")
+        };
+        assert!(said.contains("--watch"), "should say why: {}", said);
+
+        assert!(refused(&cli(&["--from", "journal=bin", "--db", "--watch"]))
+            .is_ok());
+        assert!(
+            refused(&cli(&["--db", "--index", "d", "--watch"])).is_ok(),
+            "the database into an index follows rows",
+        );
+        assert!(
+            refused(&cli(&["--from", "eddn", "--db", "--watch"])).is_ok(),
+            "a subscription follows either way",
+        );
+    }
+
+    /// The feed's flags belong to a run that reads the feed
+    #[test]
+    fn the_feeds_flags_need_the_feed() {
+        let remote = cli(&[
+            "--from", "spansh=Cargo.toml", "--db", "--remote", "tcp://x:1",
+        ]);
+        let Err(said) = refused(&remote) else {
+            panic!("an address for a feed nothing reads was accepted")
+        };
+        assert!(said.contains("--remote"), "should say why: {}", said);
+
+        let stall =
+            cli(&["--from", "journal=bin", "--db", "--stall", "30"]);
+        let Err(said) = refused(&stall) else {
+            panic!("a stall window for a feed nothing reads was accepted")
+        };
+        assert!(said.contains("--stall"), "should say why: {}", said);
+
+        assert!(refused(&cli(&[
+            "--from", "eddn", "--db", "--remote", "tcp://x:1", "--stall",
+            "30",
+        ]))
+        .is_ok());
+    }
+
+    /// A neighbourhood is what EDSM's API is asked for, so a run must ask it
+    #[test]
+    fn a_neighbourhood_needs_the_api_to_ask() {
+        let cube = cli(&["--from", "edsm=Cargo.lock", "--db", "--cube", "50"]);
+        let Err(said) = refused(&cube) else {
+            panic!("a cube of a dump was accepted")
+        };
+        assert!(said.contains("--cube"), "should say why: {}", said);
+
+        let sphere = cli(&["--from", "eddn", "--db", "--sphere", "50"]);
+        assert!(refused(&sphere).is_err(), "a sphere of the feed");
+
+        assert!(refused(&cli(&[
+            "--from", "edsm-api=Sol", "--db", "--cube", "50",
+        ]))
+        .is_ok());
+    }
+
+    /// A commander is whose journal is read, so a run must read one
+    #[test]
+    fn a_commander_needs_a_journal_to_be_read() {
+        let named =
+            cli(&["--from", "eddn", "--db", "--user", "HRC-2"]);
+        let Err(said) = refused(&named) else {
+            panic!("a commander named over the feed was accepted")
+        };
+        assert!(said.contains("--user"), "should say why: {}", said);
+
+        assert!(refused(&cli(&[
+            "--from", "journal=bin", "--db", "--user", "HRC-2",
+        ]))
+        .is_ok());
+    }
+
+    /// The cold route is a finite read into a directory and nothing else
+    ///
+    /// The four conditions, one at a time. `--db` is the sinks fanning one
+    /// reading to two places, which is what they are for; a second `--from`
+    /// is two cold builds over one directory, the second publishing over the
+    /// first; a feed never ends, so nothing could be published as the whole
+    /// galaxy; and a source with no read of its own into a `Build` keeps the
+    /// path it had.
+    #[test]
+    fn a_dump_alone_into_a_directory_takes_the_cold_route() {
+        let alone = cli(&["--from", "spansh=Cargo.toml", "--index", "d"]);
+        assert_eq!(
+            cold_route(&alone),
+            Some(&PathBuf::from("Cargo.toml")),
+            "a dump with only a directory to write to",
+        );
+
+        for said in [
+            &["--from", "spansh=Cargo.toml", "--index", "d", "--db"][..],
+            &["--from", "spansh=Cargo.toml", "--db"][..],
+            &["--from", "spansh=Cargo.toml", "--from", "eddn", "--index", "d"]
+                [..],
+            &[
+                "--from", "spansh=Cargo.toml", "--from", "eddb=README.md",
+                "--index", "d",
+            ][..],
+            &["--from", "eddb=README.md", "--index", "d"][..],
+            &["--from", "eddn", "--index", "d"][..],
+        ] {
+            assert_eq!(
+                cold_route(&cli(said)),
+                None,
+                "{:?} is the sinks' run",
+                said,
+            );
+        }
+    }
+
+    /// A share of a file is not a share of a directory
+    ///
+    /// Every process of a sharded run writes the whole index it built from
+    /// its own share, so N of them leave the directory holding whichever
+    /// finished last rather than the galaxy. With `--db` the shares meet in
+    /// Postgres and the flag means what it always did.
+    #[test]
+    fn a_share_of_a_dump_cannot_build_an_index_alone() {
+        let shared =
+            cli(&["--from", "spansh=Cargo.toml", "--index", "d", "--shard",
+                  "0/8"]);
+        let Err(said) = refused(&shared) else {
+            panic!("a sharded cold build was accepted")
+        };
+        assert!(said.contains("--shard"), "should say why: {}", said);
+
+        assert!(refused(&cli(&[
+            "--from", "spansh=Cargo.toml", "--index", "d", "--db", "--shard",
+            "0/8",
+        ]))
+        .is_ok());
     }
 }

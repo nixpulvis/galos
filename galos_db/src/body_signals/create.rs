@@ -1,5 +1,5 @@
 use super::BodySignal;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::body::Signal;
 
@@ -16,7 +16,7 @@ impl BodySignal {
     /// deleted. An absent signal in one message is not evidence that it is
     /// gone, only that this message did not mention it.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         system_address: i64,
@@ -48,7 +48,7 @@ impl BodySignal {
                 timestamp.naive_utc(),
                 user,
             )
-            .execute(&db.pool)
+            .execute(&mut *conn)
             .await?;
 
             if done.rows_affected() == 0 {

@@ -91,13 +91,8 @@ fn info(dir: &Path) {
     // On-disk footprint, straight off the filesystem.
     if let Ok(meta) = std::fs::metadata(dir.join(store::INDEX_FILE)) {
         print!("  on disk       index.bin ({:.2} MB)", mib(meta.len()));
-        if let Ok(entries) = std::fs::read_dir(dir.join(store::PAYLOAD_DIR)) {
-            let (count, bytes) = entries
-                .flatten()
-                .filter_map(|e| e.metadata().ok())
-                .fold((0u64, 0u64), |(n, b), m| (n + 1, b + m.len()));
-            print!(", {count} payload files ({:.2} MB)", mib(bytes));
-        }
+        let (count, bytes) = payload_footprint(&dir.join(store::PAYLOAD_DIR));
+        print!(", {count} payload files ({:.2} MB)", mib(bytes));
         println!();
     }
 
@@ -107,6 +102,28 @@ fn info(dir: &Path) {
             println!("    L{level:<2}  {count}");
         }
     }
+}
+
+/// How many payload files a directory holds and how many bytes they take.
+///
+/// Payloads are sharded one directory deep, and a directory published
+/// before the sharding still has them loose, so both are walked.
+fn payload_footprint(dir: &Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };
+    let mut count = 0;
+    let mut bytes = 0;
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (n, b) = payload_footprint(&entry.path());
+            count += n;
+            bytes += b;
+        } else {
+            count += 1;
+            bytes += meta.len();
+        }
+    }
+    (count, bytes)
 }
 
 /// Bytes as mebibytes.

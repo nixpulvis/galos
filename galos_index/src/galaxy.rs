@@ -1,158 +1,127 @@
-//! What a journal says, as the index says it.
+//! Events, accumulated into what the index wants.
 //!
-//! The peer of `galos_db::index`, and it is worth being exact about what that
-//! means. That one reads Postgres — rows already merged from every commander
-//! EDDN carries — and derives the tree and the metadata from them. This one
-//! reads a directory of `.log` files, which is one commander's own game and
-//! nobody else's, and derives the same things from the events themselves.
-//! Between them sits `galos_index`, which knows neither.
+//! The index has two inputs and neither names a source.
+//! [`Build`](crate::Build) takes records - a database's rows, a dump's
+//! lines - and builds the whole tree at once. This takes events, one at a
+//! time, as they arrive: EDDN's feed, a commander's own `.log` files, a
+//! relay. What reaches it is an [`Entry<Event>`] and nothing about where it
+//! came from.
 //!
-//! The fan-out is deliberately the same one `galos-sync`'s `journal/record.rs`
-//! does, and for the reason stated there: a scan is a scan whether it arrives
-//! off a socket or off a disk. What differs is where it lands. `record.rs`
-//! writes fourteen tables and the index build reads them back; this keeps the
-//! two shapes the index actually wants — [`galos_index::System`] and the
-//! metadata records — and skips the round trip. So a body scanned in the game
-//! is on the map a second later without a database having been asked.
+//! The peer of `galos_db::index`, which derives the same tree and metadata
+//! from Postgres rows already merged from every commander. This derives them
+//! from the events themselves, so a body scanned in the game is on the map a
+//! second later without a database having been asked.
 //!
-//! Narrower, too. `record.rs` also records dockings, settlements, body
-//! signals and codex entries, and the index has a column for none of them: a
-//! signal is what is written on a surface and a settlement is a station, and
-//! the map draws neither. `Docked` is the near miss, being the one of them
-//! that names a system — but it carries no `StarPos`, which is what a system
-//! has to have to be drawn at all, and its government and allegiance are the
-//! station's rather than the system's. A carrier reads as a government of
-//! its own, and taking that for the system's would colour the sky by where
-//! the commander parked. Every system a ship can dock in was arrived in
-//! first, and an arrival states all six columns.
+//! The fan-out is not merely the same one `galos_db::record`
+//! does - it *is* that one. Both sides call [`SystemReport::of`], because a
+//! scan is a scan whether it arrives off a socket or off a disk, and the two
+//! derivations had already disagreed once about which events name a system.
+//! What differs is where it lands: `galos_db::record` writes fourteen tables and a
+//! build reads them back, while this keeps the two shapes the index wants -
+//! [`crate::System`] and the metadata records - and skips the round trip.
+//!
+//! Narrower below system level, and not above it. `galos_db::record` also records
+//! dockings, settlements, body signals and codex entries, and the index has
+//! a column for none of them: a signal is what is written on a surface, a
+//! codex entry is a sighting and a settlement is a station, and the map
+//! draws none of the three. But every one of those events names the system
+//! it happened in, which is what a [`SystemReport`] is, so this holds the
+//! system and drops the thing.
 //!
 //! ## What a second look does
 //!
-//! The write path's rule, which is stated column by column in its `ON
-//! CONFLICT DO UPDATE` clauses and once here, in [`put`]: a reading wins
-//! where a scan is one, what a scan does not state leaves what stands, and
-//! the two facts about history — whether a thing has been mapped and when
-//! it was found — only ever go one way. The same for a system's political
-//! columns, in [`Galaxy::govern`].
+//! Nothing here. Both rules live beside this one, where the database's side
+//! of the program can be held against them: [`SystemReport::over`] for a
+//! system's own columns and [`crate::merge`] for the things inside it.
+//! Between them they are the write path's `ON CONFLICT DO UPDATE` clauses
+//! stated in Rust — a reading wins where a scan is one, what a scan does
+//! not state leaves what stands, and the two facts about history only ever
+//! go one way.
 //!
-//! It is not enough to take the later scan. The game writes a basic
-//! `AutoScan` every time a ship re-enters a system it has already looked at
-//! closely, so the poorer reading arrives second in one commander's own
-//! ordered journal; EDDN carries scans from commanders in no order at all;
-//! and a journal directory holds sessions restored out of order, which is
-//! why a system's stamp is the later of two rather than the last one read.
-//!
-//! ## What a journal cannot say
+//! ## What an event cannot say
 //!
 //! Three gaps, all of them stated here rather than papered over, because a
 //! layer that quietly answered them wrongly would be worse than one that says
 //! nothing:
 //!
 //! - **Factions have no ids.** A faction's numeric id is `galos_db`'s, minted
-//!   when the row is first written; a journal names factions and numbers
+//!   when the row is first written; an event names factions and numbers
 //!   nothing. So [`Galaxy`] publishes no faction table and leaves
 //!   [`PopulatedSystem::factions`] empty, and a system's factions keep coming
 //!   from whatever is underneath. Filling that column with ids of its own
 //!   would collide with real ones and colour the map by the wrong faction.
-//! - **A system's own row is a visit.** EDDN hears about a system from
-//!   everyone; a journal hears about it from one ship. What is here is where
-//!   this commander has been, plus the stops on the route they last plotted.
+//! - **A system's own row is a sighting.** A database row is everything
+//!   anybody has reported about a system; a row here is what the events fed
+//!   in happened to say — one commander's travels off their own `.log`
+//!   files, everyone's off a feed — plus the stops on a route they plotted.
 //! - **Most systems have no scanned star.** The published build falls back to
-//!   a `primary_star_class` column when nothing is scanned. A journal has no
-//!   such column: it has the star classes it has scanned and the ones the
-//!   route file names, and past those the default stands in — exactly as it
-//!   does for a system EDDN knows nothing about either.
+//!   a `primary_star_class` column when nothing is scanned. No event
+//!   carries one: there are the classes that have been scanned and the ones
+//!   a plotted route names, and past those the default stands in — exactly
+//!   as it does for a system EDDN knows nothing about either.
 //!
 //! ## Time
 //!
-//! The Recency axis is measured from a clock this crate holds
+//! The Recency axis is measured from a clock this derivation holds
 //! ([`Galaxy::now`]) rather than from a database's. That is the same rule
 //! `galos_db::index` follows for the same reason — one clock compared against
 //! itself — and here it is simpler, the events carrying their own timestamps
 //! and no upsert standing between them and the reading.
 
 use crate::bodies::{Bodies, Kept};
-use chrono::{DateTime, Utc};
-use elite_journal::body::{
-    Body as JournalBody, Orbit, Star as JournalStar, Surface as JournalSurface,
-};
-use elite_journal::entry::incremental::exploration::{
-    Scan, ScanTarget, ScanType,
-};
-use elite_journal::entry::route::Destination;
-use elite_journal::entry::{Entry, Event};
-use elite_journal::prelude::{Allegiance, Economy, Government, Security};
-use elite_journal::system::{Coordinate, System as JournalSystem};
-use galos_index::System;
 // The Recency edges and the bucketing over them are kept once, in
-// [`galos_index::derive`], rather than named again here. How many buckets
+// [`crate::derive`], rather than named again here. How many buckets
 // there are is part of the published format — a cell aggregate is a count
 // per bucket and the client's Recency control indexes straight into them —
 // so this derivation and the database's must read the same edges or one
 // galaxy bins itself two ways.
-use galos_index::derive;
-use galos_index::meta::{
-    Barycenter, Body, Boost, NameEntry, Parent, PopulatedSystem, Star, Surface,
-    SystemBodies, SystemBoost, SystemReach,
+use crate::derive;
+use crate::merge;
+use crate::meta::{
+    Boost, NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
 };
+use crate::report::SystemReport;
+use crate::tree::System;
+use chrono::{DateTime, Utc};
+use elite_journal::entry::incremental::exploration::{Scan, ScanTarget};
+use elite_journal::entry::{Entry, Event};
 use galos_photometry::{Magnitude, Temperature};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-/// Who a journal's readings are filed under when nothing in it says.
+/// Who a reading is filed under when nothing names anybody.
 ///
 /// `galos-sync journal` files them under the same word, and for the same
-/// reason: these came from a journal and that is the whole of the claim.
+/// reason: nothing said who and that is the whole of the claim. Not what a
+/// reading nobody *flew* is filed under — a published file says which file
+/// it was, and `updated_by` is provenance rather than a claim about a
+/// person.
 pub const UNKNOWN: &str = "unknown";
 
-/// A system as the journal has described it, over however many events.
+/// Everything the events have said, in the shapes the index wants.
 ///
-/// Merged rather than replaced, in the same spirit the database's write path
-/// merges: a later event wins where it says anything, and where it says
-/// nothing what is already known stands. An `FSDJump` names a system's
-/// politics and a `Scan` in the same system names none of them, and the scan
-/// arriving second must not take the politics away.
-#[derive(Clone, Debug, Default)]
-struct Visit {
-    name: String,
-    /// Where the system is, in light years. [`None`] where every event naming
-    /// it left `StarPos` out, which the game does for events inside a system
-    /// it has already placed.
-    position: Option<[f64; 3]>,
-    /// The latest timestamp of any event about this system: what the Recency
-    /// axis reads and what the payload point carries.
-    updated_at: Option<DateTime<Utc>>,
-    population: u64,
-    security: Option<Security>,
-    government: Option<Government>,
-    allegiance: Option<Allegiance>,
-    primary_economy: Option<Economy>,
-    secondary_economy: Option<Economy>,
-    body_count: Option<i32>,
-    non_body_count: Option<i32>,
-    /// The arrival star's class, where the route file named it.
-    ///
-    /// A route is the one place a journal states a class for a system nobody
-    /// has scanned, which is what the published build's `primary_star_class`
-    /// column holds. A scan says it better and overrides this.
-    routed_class: Option<String>,
-}
-
-/// Everything a journal directory has said, in the shapes the index wants.
-///
-/// Held whole in memory. A commander's journal is thousands of systems where
-/// the galaxy is a hundred and twenty-nine million, so the tables here are
-/// megabytes rather than gigabytes and every derivation over them is a pass
-/// that costs nothing worth measuring — which is why the source over this
-/// rebuilds rather than editing, and why there is no checkpoint, no cursor
-/// and no incremental publish anywhere in this crate.
+/// The systems table is held whole in memory. A commander's journal is
+/// thousands of systems where the galaxy is a hundred and twenty-nine
+/// million, so it is megabytes rather than gigabytes and every derivation
+/// over it is a pass that costs nothing worth measuring — which is why a
+/// source over this rebuilds rather than editing, and why there is no
+/// checkpoint, no cursor and no incremental publish anywhere in this
+/// derivation. The bodies, which is the part a feed makes unbounded, are
+/// behind [`Bodies`] rather than here.
 #[derive(Debug)]
 pub struct Galaxy {
     /// What dates the Recency reading. Set once by the caller per pass, so
     /// every system in one publish is aged against the same moment.
     now: DateTime<Utc>,
-    /// Who is flying, as the last `Commander` or `LoadGame` said.
-    commander: String,
-    systems: HashMap<i64, Visit>,
+    /// Who what arrives is filed under: a commander, as the last
+    /// `Commander` or `LoadGame` said, or whoever a caller named.
+    by: String,
+    /// Every system anything has reported, merged down to one report each.
+    ///
+    /// The same type a source hands in, which is the point: what is held and
+    /// what arrives are one shape, so the merge is
+    /// [`SystemReport::over`] and there is no accumulator of this module's
+    /// own for the database's half to drift away from.
+    systems: HashMap<i64, SystemReport>,
     /// Where the things scanned inside a system are kept.
     ///
     /// Behind a trait because the answer differs by who is asking, and the
@@ -161,39 +130,6 @@ pub struct Galaxy {
     inside: Box<dyn Bodies>,
     /// Systems touched since the last [`Galaxy::settle`].
     touched: HashSet<i64>,
-}
-
-/// The political columns a system carries.
-///
-/// Named as a group because two very different things hand them over: an
-/// arrival event, where the commander is standing in the system reading them
-/// off, and a published dump, where somebody else read them off months ago.
-/// Both say the same six things and neither says any of them reliably, so
-/// every one is optional and every one merges the same way — a reading wins
-/// where it is a reading, and where it is blank what already stands is not
-/// contradicted by it.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Politics {
-    pub population: Option<u64>,
-    pub security: Option<Security>,
-    pub government: Option<Government>,
-    pub allegiance: Option<Allegiance>,
-    pub primary_economy: Option<Economy>,
-    pub secondary_economy: Option<Economy>,
-}
-
-impl Politics {
-    /// What an arrival event says about the system it names.
-    fn of(system: &JournalSystem) -> Politics {
-        Politics {
-            population: system.population,
-            security: system.security,
-            government: system.government,
-            allegiance: system.allegiance,
-            primary_economy: system.economy,
-            secondary_economy: system.second_economy,
-        }
-    }
 }
 
 impl Default for Galaxy {
@@ -217,20 +153,23 @@ impl Galaxy {
     pub fn keeping(now: DateTime<Utc>, inside: Box<dyn Bodies>) -> Galaxy {
         Galaxy {
             now,
-            commander: UNKNOWN.to_string(),
+            by: UNKNOWN.to_string(),
             systems: HashMap::new(),
             inside,
             touched: HashSet::new(),
         }
     }
 
-    /// Make durable whatever the store is holding, answering how many systems
-    /// moved.
+    /// Make durable whatever the store is holding, answering how many body
+    /// files were written since this was last called.
     ///
-    /// Nothing where the store is memory. Called on the beat whoever owns the
-    /// galaxy publishes on.
+    /// Nothing where the store is memory. Called on the beat whoever owns
+    /// the galaxy publishes on. A store that forced a flush of its own in
+    /// between is counted here too, so the answer is what the publish wrote
+    /// and not what was left to write at the end of it.
     pub fn settle_bodies(&mut self) -> std::io::Result<usize> {
-        self.inside.flush()
+        self.inside.flush()?;
+        Ok(self.inside.written())
     }
 
     /// Date the Recency reading from `now` from here on.
@@ -242,17 +181,35 @@ impl Galaxy {
         self.now = now;
     }
 
-    /// Who the journal says is flying.
-    pub fn commander(&self) -> &str {
-        &self.commander
+    /// Who a reading arriving now is filed under.
+    pub fn by(&self) -> &str {
+        &self.by
     }
 
-    /// How many systems the journal has named.
+    /// File what arrives from here on under `who`.
+    ///
+    /// For a caller that knows better than the events do. Reading a journal
+    /// directly, [`Self::read`] answers this out of the `Commander` and
+    /// `LoadGame` events the files carry; a caller taking several sources
+    /// into one galaxy has to say, because EDDN carries neither of those
+    /// events and an accumulator left to its own devices would go on filing
+    /// everybody's scans under whoever was flying locally.
+    ///
+    /// A publisher is a name as much as a commander is: nobody flew a dump
+    /// and the file it was read out of is what its bodies are filed under.
+    /// What nothing named at all is [`UNKNOWN`].
+    pub fn reported_by(&mut self, who: &str) {
+        if self.by != who {
+            self.by = who.to_string();
+        }
+    }
+
+    /// How many systems have been named.
     pub fn len(&self) -> usize {
         self.systems.len()
     }
 
-    /// Whether the journal has named nothing at all.
+    /// Whether nothing has been named at all.
     pub fn is_empty(&self) -> bool {
         self.systems.is_empty()
     }
@@ -271,247 +228,135 @@ impl Galaxy {
     /// anything.
     ///
     /// An entry with nothing in it for the index is passed over rather than
-    /// refused: a journal is mostly combat, cargo and docking, and none of
+    /// refused: the events are mostly combat, cargo and docking, and none of
     /// that is a fact about the sky.
+    ///
+    /// Which events name a system, and what each of them says about it, is
+    /// [`SystemReport::of`]'s answer rather than this function's — the same
+    /// answer `galos-sync`'s write path gets, which is what stops the two
+    /// derivations from disagreeing about which systems exist. What is left
+    /// here is the three things a report does not carry: a route's several
+    /// systems, the things scanned inside one, and who is flying.
     pub fn read(&mut self, entry: &Entry<Event>) -> bool {
         let at = entry.timestamp;
+        let reported = match SystemReport::of(entry) {
+            Some(report) => {
+                self.hear(report);
+                true
+            }
+            None => false,
+        };
+
         match &entry.event {
-            Event::FsdJump(jump) => self.visit(at, &jump.system),
-            Event::CarrierJump(jump) => self.visit(at, &jump.system),
-            Event::Location(location) => self.visit(at, &location.system),
+            // The one event that states a system per stop rather than one,
+            // which is the whole reason it is not an arm of
+            // [`SystemReport::of`].
+            Event::NavRoute(route) => {
+                for stop in &route.destinations {
+                    self.hear(SystemReport::plotted(at, stop));
+                }
+                return reported || !route.destinations.is_empty();
+            }
+            // What the scan looked at. The system it looked at it from is
+            // the report above.
             Event::Scan(scan) => self.scan(at, scan),
+            // A barycentre is not a body and is not drawn. It is kept so
+            // that a body naming it as an ancestor can be placed where it
+            // belongs rather than at the middle of its system.
             Event::ScanBaryCentre(center) => {
-                self.seen(
-                    at,
-                    center.system_address,
-                    &center.star_system,
-                    center.star_pos,
-                );
-                let address = center.system_address;
-                let by = self.commander.clone();
-                self.inside.edit(address, &mut |inside| {
-                    put(
+                let by = self.by.clone();
+                self.inside.edit(center.system_address, &mut |inside| {
+                    merge::put(
                         &mut inside.barycenters,
                         center.body_id,
                         |it| it.id,
-                        |held| Barycenter {
-                            system_address: address,
-                            id: center.body_id,
-                            updated_at: held
-                                .map_or(at, |held| held.updated_at.max(at)),
-                            updated_by: said_by(
-                                held.map(|held| {
-                                    (held.updated_by.as_str(), held.updated_at)
-                                }),
-                                &by,
-                                at,
-                            ),
-                            orbit: orbit_of(
-                                center.orbit.as_ref(),
-                                held.and_then(|held| held.orbit.as_ref()),
-                            ),
-                        },
+                        |held| merge::barycenter(center, at, &by, held),
                     )
                 });
-                true
             }
-            Event::FssDiscoveryScan(honk) => {
-                self.seen(
-                    at,
-                    honk.system_address,
-                    &honk.system_name,
-                    honk.star_pos,
-                );
-                let visit = self.visit_mut(honk.system_address);
-                visit.body_count = Some(honk.body_count);
-                visit.non_body_count = Some(honk.non_body_count);
-                true
-            }
-            Event::FssAllBodiesFound(all) => {
-                self.seen(
-                    at,
-                    all.system_address,
-                    &all.system_name,
-                    all.star_pos,
-                );
-                self.visit_mut(all.system_address).body_count = Some(all.count);
-                true
-            }
-            Event::NavBeaconScan(beacon) => {
-                // The one of the three counting events that names its system
-                // the way everything else does, and may name nothing at all.
-                self.seen(
-                    at,
-                    beacon.system_address,
-                    beacon.star_system.as_deref().unwrap_or(""),
-                    beacon.star_pos,
-                );
-                self.visit_mut(beacon.system_address).body_count =
-                    Some(beacon.num_bodies);
-                true
-            }
-            Event::NavRoute(route) => {
-                let mut said = false;
-                for stop in &route.destinations {
-                    said |= self.plotted(at, stop);
-                }
-                said
-            }
-            Event::Commander(who) => {
-                self.commander = who.name.clone();
-                false
-            }
+            // Who is flying, which is who a scan is filed under. Not a fact
+            // about the sky, so neither of these says anything on its own.
+            Event::Commander(who) => self.by = who.name.clone(),
             Event::LoadGame(game) => {
                 if let Some(who) = &game.commander {
-                    self.commander = who.name.clone();
+                    self.by = who.name.clone();
                 }
-                false
             }
-            _ => false,
+            _ => {}
+        }
+        reported
+    }
+
+    /// Take what a report says over whatever has been said about the system
+    /// before.
+    ///
+    /// Every way into this galaxy above body level. An event arrives as a
+    /// report through [`Self::read`]; EDSM's and EDDB's dumps arrive as one
+    /// straight from a sink, which is not an event and never was — nobody
+    /// flew anywhere, a file was published — and states the same columns
+    /// somebody else read off months ago.
+    ///
+    /// The merge is [`SystemReport::over`], which is the write path's `ON
+    /// CONFLICT DO UPDATE` stated in Rust: an arrival delivered after a scan
+    /// does not lose the politics only it carries, a dump does not overwrite
+    /// what a commander saw yesterday, and a docking moves nothing but the
+    /// clock.
+    ///
+    /// A report's own `at` is when the reading was taken rather than when it
+    /// arrived, which is what the Recency axis wants: an EDDB dump lands in
+    /// the oldest bucket where it belongs rather than looking like news.
+    pub fn hear(&mut self, said: SystemReport) {
+        let address = said.address;
+        self.touched.insert(address);
+        match self.systems.get_mut(&address) {
+            Some(held) => held.over(said),
+            None => {
+                self.systems.insert(address, said);
+            }
         }
     }
 
-    /// A system arrived in, which is the fullest thing a journal says about
-    /// one.
-    fn visit(&mut self, at: DateTime<Utc>, system: &JournalSystem) -> bool {
-        self.seen(at, system.address, &system.name, system.pos);
-        self.govern(system.address, Politics::of(system));
-        true
-    }
-
-    /// A system as a published dump gives it: named, placed, and with the
-    /// columns somebody else read off it, and nothing below system level.
+    /// Whatever a scan looked at, filed inside the system it was seen from.
     ///
-    /// Not an event and never was — nobody flew anywhere, a file was
-    /// published — so it does not touch a scan, a body or a star class. What
-    /// it does is exactly what an arrival does minus the visit: it puts a
-    /// system on the map with its politics, which for two thirds of the
-    /// galaxy is everything anyone knows.
-    ///
-    /// `at` is when the dump says the reading was taken, not when it was
-    /// read. That is what the Recency axis wants and it is why an EDDB dump
-    /// lands in the oldest bucket where it belongs rather than looking like
-    /// news.
-    pub fn place(
-        &mut self,
-        at: DateTime<Utc>,
-        address: i64,
-        name: &str,
-        position: Coordinate,
-        politics: Politics,
-    ) -> bool {
-        self.seen(at, address, name, Some(position));
-        self.govern(address, politics);
-        true
-    }
-
-    /// Merge political columns into what a system already carries.
-    ///
-    /// A reading wins where it is one; a blank leaves what stands. The rule
-    /// the database's own write path states, kept here because the two have
-    /// to agree about what a `Scan` arriving after an `FSDJump` does to a
-    /// system's population, which is nothing.
-    fn govern(&mut self, address: i64, said: Politics) {
-        let visit = self.visit_mut(address);
-        visit.population = said.population.unwrap_or(visit.population);
-        visit.security = said.security.or(visit.security);
-        visit.government = said.government.or(visit.government);
-        visit.allegiance = said.allegiance.or(visit.allegiance);
-        visit.primary_economy = said.primary_economy.or(visit.primary_economy);
-        visit.secondary_economy =
-            said.secondary_economy.or(visit.secondary_economy);
-    }
-
-    /// A stop on the route the ship last plotted.
-    ///
-    /// A system nobody has been to, named, placed and with the class of the
-    /// star at the middle of it — which is everything the tree needs and the
-    /// only place a journal states a class for an unscanned system. It is not
-    /// a visit, so it moves nothing but the name, the place and the class.
-    fn plotted(&mut self, at: DateTime<Utc>, stop: &Destination) -> bool {
-        let address = stop.system_address as i64;
-        self.seen(at, address, &stop.star_system, Some(stop.star_pos));
-        self.visit_mut(address).routed_class = Some(stop.star_class.clone());
-        true
-    }
-
-    /// Whatever a scan looked at, and the system it looked at it from.
-    fn scan(&mut self, at: DateTime<Utc>, scan: &Scan) -> bool {
-        self.seen(at, scan.system_address, &scan.star_system, scan.star_pos);
+    /// The rule is [`crate::merge`]'s, which is the write path's:
+    /// a reading wins where the scan is one, and what a basic `AutoScan`
+    /// does not mention leaves what a closer look found.
+    fn scan(&mut self, at: DateTime<Utc>, scan: &Scan) {
         let address = scan.system_address;
-        let by = self.commander.clone();
-        let found = discovered_at(scan, at);
+        let by = self.by.clone();
+        let found = merge::discovered_at(scan, at);
         match &scan.target {
             ScanTarget::Star(star) => {
                 self.inside.edit(address, &mut |inside| {
-                    put(
+                    merge::put(
                         &mut inside.stars,
                         star.id,
                         |it| it.id,
-                        |held| star_of(address, star, at, &by, found, held),
+                        |held| merge::star(address, star, at, &by, found, held),
                     )
                 })
             }
             ScanTarget::Body(body) => {
                 self.inside.edit(address, &mut |inside| {
-                    put(
+                    merge::put(
                         &mut inside.bodies,
                         body.id,
                         |it| it.id,
-                        |held| body_of(address, body, at, &by, found, held),
+                        |held| merge::body(address, body, at, &by, found, held),
                     )
                 })
             }
             // A belt cluster and a ring are numbered bodies of the system and
             // neither has a record in [`SystemBodies`], which carries what the
             // map draws inside a system. The scan still counts as having been
-            // in the system, which `seen` has already recorded.
+            // in the system, which its report has already recorded.
             ScanTarget::Cluster(_) | ScanTarget::Ring(_) => {}
         }
-        true
-    }
-
-    /// A system named by any event at all: its name, its place if the event
-    /// carried one, and the moment.
-    ///
-    /// The name is upper-cased, which is the index's spelling of a system
-    /// because it is `galos_db`'s: every write of a `systems` row goes
-    /// through `UPPER($2)`, so that is what the published names table
-    /// holds and what a client comparing against it sees. A journal read
-    /// into the same vocabulary has to agree, or a directory written both
-    /// ways holds two spellings of one galaxy and the overlay's names read
-    /// differently from the ones under them.
-    fn seen(
-        &mut self,
-        at: DateTime<Utc>,
-        address: i64,
-        name: &str,
-        pos: Option<Coordinate>,
-    ) {
-        self.touched.insert(address);
-        let visit = self.systems.entry(address).or_default();
-        if !name.is_empty() {
-            visit.name = name.to_uppercase();
-        }
-        if let Some(pos) = pos {
-            visit.position = Some([pos.x, pos.y, pos.z]);
-        }
-        // The latest event about a system is what the Recency axis reads, and
-        // journal files are read in order but a directory holds sessions
-        // restored out of order often enough to be worth the max.
-        visit.updated_at =
-            Some(visit.updated_at.map_or(at, |held| held.max(at)));
-    }
-
-    /// The system's record, for an event that has already been `seen`.
-    fn visit_mut(&mut self, address: i64) -> &mut Visit {
-        self.touched.insert(address);
-        self.systems.entry(address).or_default()
     }
 
     /// Every placed system, as the tree takes them.
     ///
-    /// A system with no `StarPos` anywhere in the journal is left out: the
+    /// A system nothing ever carried a `StarPos` for is left out: the
     /// tree is built on position and there is nowhere to put one. That is
     /// rarer than it sounds — the game writes `StarPos` on the arrival event
     /// and on every scan — and a system named only by an event that omitted
@@ -529,9 +374,8 @@ impl Galaxy {
     /// pass touched, rather than deriving the whole galaxy to publish fifty
     /// systems. [`Self::systems`] is this over everything.
     pub fn system_of(&self, address: i64) -> Option<System> {
-        let visit = self.systems.get(&address)?;
-        let position = visit.position?;
-        Some(self.system(address, visit, position))
+        let report = self.systems.get(&address)?;
+        Some(self.system(report, report.placed()?))
     }
 
     /// One system's name and place, where it has been named and placed.
@@ -542,14 +386,11 @@ impl Galaxy {
     /// in whatever searches it, which the map does. The tree still draws it
     /// out of the position it did carry.
     pub fn name_of(&self, address: i64) -> Option<NameEntry> {
-        let visit = self.systems.get(&address)?;
-        if visit.name.is_empty() {
-            return None;
-        }
-        let at = visit.position?;
+        let report = self.systems.get(&address)?;
+        let at = report.placed()?;
         Some(NameEntry {
             address,
-            name: visit.name.clone(),
+            name: report.named()?,
             position: [at[0] as f32, at[1] as f32, at[2] as f32],
         })
     }
@@ -565,26 +406,11 @@ impl Galaxy {
     }
 
     /// One system's political columns, where anybody lives in it.
+    ///
+    /// [`SystemReport::populated`], which is the projection both
+    /// derivations publish through.
     pub fn populated_of(&self, address: i64) -> Option<PopulatedSystem> {
-        let visit = self.systems.get(&address)?;
-        if visit.population == 0 {
-            return None;
-        }
-        let at = visit.position?;
-        Some(PopulatedSystem {
-            address,
-            name: visit.name.clone(),
-            position: [at[0] as f32, at[1] as f32, at[2] as f32],
-            population: visit.population,
-            security: visit.security,
-            government: visit.government,
-            allegiance: visit.allegiance,
-            primary_economy: visit.primary_economy,
-            secondary_economy: visit.secondary_economy,
-            factions: Vec::new(),
-            body_count: visit.body_count,
-            non_body_count: visit.non_body_count,
-        })
+        self.systems.get(&address)?.populated()
     }
 
     /// One system's photometry and place, by the same fallback chain the
@@ -594,13 +420,8 @@ impl Galaxy {
     /// index answer with: its scanned stars if it has any, failing that the
     /// arrival star's class, which only a plotted route states here, failing
     /// that the default M dwarf the galaxy is mostly made of.
-    fn system(
-        &self,
-        address: i64,
-        visit: &Visit,
-        position: [f64; 3],
-    ) -> System {
-        let inside = self.inside.read(address);
+    fn system(&self, report: &SystemReport, position: [f64; 3]) -> System {
+        let inside = self.inside.read(report.address);
         // The scanned magnitude is bolometric — the star's whole output as
         // one figure — so it is turned into the visual magnitude the sky
         // sees before anything sums it. That is where a white dwarf keeps
@@ -613,12 +434,11 @@ impl Galaxy {
             (m.visual(Temperature(t)).0, t)
         });
         let (absolute_magnitude, temperature) =
-            derive::lit(stars, visit.routed_class.as_deref().unwrap_or(""));
-        let at = visit.updated_at.unwrap_or(self.now);
+            derive::lit(stars, report.star_class.as_deref().unwrap_or(""));
         let (age_bucket, updated_at) =
-            derive::updated(at.naive_utc(), self.now.naive_utc());
+            derive::updated(report.at.naive_utc(), self.now.naive_utc());
         System {
-            id64: address as u64,
+            id64: report.address as u64,
             position,
             absolute_magnitude,
             temperature,
@@ -637,7 +457,7 @@ impl Galaxy {
 
     /// How far each scanned system reaches, in metres.
     ///
-    /// [`galos_index::inside`]'s answer, which is the same call the published
+    /// [`crate::inside`]'s answer, which is the same call the published
     /// build makes: the map sizes a system by this and draws the inside of it
     /// from the same records, and a shell smaller than the orbits it contains
     /// is the one thing a reach cannot be.
@@ -673,16 +493,16 @@ impl Galaxy {
         table
     }
 
-    /// The class of the star a ship drops in at, as far as the journal says.
+    /// The class of the star a ship drops in at, as far as anything says.
     ///
     /// [`derive::arrival_class`] over what has been scanned, and where
-    /// nothing has been the class a plotted route named, that being this
-    /// crate's only other statement about the same star.
+    /// nothing has been the class a plotted route named, that being the only
+    /// other statement about the same star.
     fn arrival_class(&self, address: i64) -> Option<String> {
         let inside = self.inside.read(address);
         derive::arrival_class(&inside)
             .map(str::to_owned)
-            .or_else(|| self.systems.get(&address)?.routed_class.clone())
+            .or_else(|| self.systems.get(&address)?.star_class.clone())
     }
 
     /// The systems anybody lives in, with the political columns a colour and a
@@ -707,275 +527,11 @@ impl Galaxy {
     }
 }
 
-/// File what a scan says under its key, over whatever is filed there.
-///
-/// The database's write path states the rule column by column and this is
-/// the whole of it in one place: a reading wins where the scan is one, what
-/// a scan does not state leaves what stands, and the two facts about a
-/// body's history — whether it has been mapped and when it was found — only
-/// ever go one way.
-///
-/// It used to replace the record outright, on the argument that a body is
-/// scanned honk, then properly, then mapped, so the last look is the fullest.
-/// It is not: the game writes a basic `AutoScan` every time a ship re-enters
-/// a system it has already looked at closely, which is a poorer scan arriving
-/// later in one commander's own ordered journal. EDDN is worse — the same
-/// accumulator reads scans from commanders in no order at all — and a journal
-/// directory holds sessions restored out of order, which is why
-/// [`Galaxy::seen`] takes the later of two stamps rather than the last one
-/// read.
-///
-/// `make` is handed the held record where there is one, and is a `Fn` rather
-/// than a `FnOnce` because [`Bodies::edit`](crate::Bodies::edit) takes an
-/// `FnMut` and may in principle call it twice.
-fn put<T, K: Eq>(
-    table: &mut Vec<T>,
-    key: K,
-    keyed: impl Fn(&T) -> K,
-    make: impl Fn(Option<&T>) -> T,
-) {
-    match table.iter().position(|held| keyed(held) == key) {
-        Some(at) => {
-            let made = make(Some(&table[at]));
-            table[at] = made;
-        }
-        None => table.push(make(None)),
-    }
-}
-
-/// The earliest claim on record, which is `LEAST`'s rule.
-///
-/// A scan that says nothing about when a thing was found leaves what stands,
-/// rather than its silence winning.
-fn earliest(
-    held: Option<DateTime<Utc>>,
-    said: Option<DateTime<Utc>>,
-) -> Option<DateTime<Utc>> {
-    match (held, said) {
-        (Some(held), Some(said)) => Some(held.min(said)),
-        (held, said) => held.or(said),
-    }
-}
-
-/// Who a record is filed under, which is whoever spoke latest.
-///
-/// `>=` as the database's `CASE WHEN $7 >= updated_at` is: a tie goes to the
-/// scan that has just arrived, there being nothing to choose between them and
-/// one of the two having to win.
-fn said_by(
-    held: Option<(&str, DateTime<Utc>)>,
-    by: &str,
-    at: DateTime<Utc>,
-) -> String {
-    match held {
-        Some((who, when)) if at < when => who.to_string(),
-        _ => by.to_string(),
-    }
-}
-
-/// An orbit as a rescan leaves it.
-///
-/// The two elements a scan may leave out are filled from what stands, and a
-/// scan naming no orbit at all — which is what a primary star's scan is —
-/// keeps the one already on record rather than taking it away.
-fn orbit_of(said: Option<&Orbit>, held: Option<&Orbit>) -> Option<Orbit> {
-    let Some(said) = said else { return held.cloned() };
-    Some(Orbit {
-        ascending_node: said
-            .ascending_node
-            .or_else(|| held.and_then(|it| it.ascending_node)),
-        mean_anomaly: said
-            .mean_anomaly
-            .or_else(|| held.and_then(|it| it.mean_anomaly)),
-        ..said.clone()
-    })
-}
-
-/// When a scan says what it looked at was found, where it says at all.
-///
-/// `galos-sync`'s rule, stated there at length and repeated in one line here:
-/// `WasDiscovered` clear means this scan *is* the discovery and the entry's
-/// own time is when it happened; set means somebody was there earlier and the
-/// scan says nothing about when. A nav beacon is not read for it — it answers
-/// for every body in the system out of what it holds rather than out of a
-/// look anybody took.
-fn discovered_at(scan: &Scan, at: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let beacon = scan.scan_type.as_ref().is_some_and(ScanType::is_beacon);
-    (!beacon && !scan.target.discovery().discovered).then_some(at)
-}
-
-/// The ancestry a scan named, nearest first.
-///
-/// A scan writes each ancestor as a one-entry map of kind to id, and the walk
-/// back to the star is what places the thing, so the order and the whole
-/// chain are kept. `galos_db::bodies::Parent::chain`'s rule, in the index's
-/// own vocabulary.
-fn chain(named: &[BTreeMap<String, i16>]) -> Vec<Parent> {
-    named
-        .iter()
-        .filter_map(|parent| {
-            let (ty, id) = parent.iter().next()?;
-            Some(Parent { ty: Some(ty.clone()), id: *id })
-        })
-        .collect()
-}
-
-/// A scanned star as the index's record of one, over what stands.
-///
-/// Plain assignment for everything a scan always states, which is what the
-/// database does with those columns too. The rest is [`put`]'s rule: the
-/// orbit a primary's scan does not carry, the stamp that only goes forward,
-/// the mapping that only goes up, and the discovery that only goes back.
-fn star_of(
-    address: i64,
-    star: &JournalStar,
-    at: DateTime<Utc>,
-    by: &str,
-    found: Option<DateTime<Utc>>,
-    held: Option<&Star>,
-) -> Star {
-    let parents = chain(&star.parents);
-    Star {
-        system_address: address,
-        id: star.id,
-        name: star.name.clone(),
-        parents: match (parents.is_empty(), held) {
-            (true, Some(held)) => held.parents.clone(),
-            (_, _) => parents,
-        },
-        updated_at: held.map_or(at, |held| held.updated_at.max(at)),
-        updated_by: said_by(
-            held.map(|held| (held.updated_by.as_str(), held.updated_at)),
-            by,
-            at,
-        ),
-        absolute_magnitude: star.absolute_magnitude,
-        age_my: star.age_my,
-        distance_from_arrival_ls: star.distance_from_arrival_ls,
-        luminosity: star.luminosity.clone(),
-        star_class: star.star_class.clone(),
-        stellar_mass: star.stellar_mass,
-        subclass: star.subclass,
-        orbit: orbit_of(
-            star.orbit.as_ref(),
-            held.and_then(|held| held.orbit.as_ref()),
-        ),
-        spin: star.spin.clone(),
-        radius: star.radius,
-        temperature: star.temperature,
-        mapped: star.discovery.mapped || held.is_some_and(|held| held.mapped),
-        discovered_at: earliest(
-            held.and_then(|held| held.discovered_at),
-            found,
-        ),
-    }
-}
-
-/// A scanned body as the index's record of one, over what stands.
-///
-/// Same rule as [`star_of`], and one more: a body's surface is a block the
-/// game writes only where it looked at one, so a basic scan arriving after a
-/// detailed one keeps the surface, the materials and the readings it does
-/// not mention rather than taking them away.
-fn body_of(
-    address: i64,
-    body: &JournalBody,
-    at: DateTime<Utc>,
-    by: &str,
-    found: Option<DateTime<Utc>>,
-    held: Option<&Body>,
-) -> Body {
-    let parents = chain(&body.parents);
-    let stood = held.and_then(|held| held.surface.as_ref());
-    Body {
-        system_address: address,
-        id: body.id,
-        parents: match (parents.is_empty(), held) {
-            (true, Some(held)) => held.parents.clone(),
-            (_, _) => parents,
-        },
-        name: body.name.clone(),
-        body_type: body
-            .ty
-            .clone()
-            .or_else(|| held.and_then(|held| held.body_type.clone())),
-        distance_from_arrival: body
-            .distance_from_arrival
-            .or_else(|| held.and_then(|held| held.distance_from_arrival)),
-        updated_at: held.map_or(at, |held| held.updated_at.max(at)),
-        updated_by: said_by(
-            held.map(|held| (held.updated_by.as_str(), held.updated_at)),
-            by,
-            at,
-        ),
-        planet_class: body.planet_class.clone(),
-        // A basic scan does not report it, so what a closer look found
-        // stands; a body nothing has looked at closely is not tidally
-        // locked as far as anything can say.
-        tidal_lock: body
-            .tidal_lock
-            .unwrap_or_else(|| held.is_some_and(|held| held.tidal_lock)),
-        mass: body.mass,
-        radius: body.radius,
-        gravity: body.gravity,
-        temperature: body
-            .temperature
-            .or_else(|| held.and_then(|held| held.temperature)),
-        surface: match &body.surface {
-            Some(said) => Some(surface_of(said, stood)),
-            None => stood.cloned(),
-        },
-        orbit: orbit_of(Some(&body.orbit), held.map(|held| &held.orbit))
-            .expect("a scan states a body's orbit"),
-        spin: body.spin.clone(),
-        mapped: body.discovery.mapped || held.is_some_and(|held| held.mapped),
-        discovered_at: earliest(
-            held.and_then(|held| held.discovered_at),
-            found,
-        ),
-    }
-}
-
-/// What a body with a surface has, as the index records it.
-///
-/// A scan that looked at a surface states the whole of what it measured —
-/// the pressure, the atmosphere type, whether it can be landed on, what it
-/// is made of and what can be collected there — so those are taken as they
-/// come, the materials included: a list the scan does not repeat is a list
-/// the body no longer carries. The three the game writes as an empty string
-/// where it has nothing to say are the exception, being absences rather
-/// than readings.
-///
-/// The one field that differs from the journal's shape: the index's
-/// composition is optional, a body stored before the fractions were kept
-/// having a surface and no reading of what it is made of. A scan always
-/// carries one.
-fn surface_of(surface: &JournalSurface, held: Option<&Surface>) -> Surface {
-    Surface {
-        atmosphere_type: surface.atmosphere_type.clone(),
-        pressure: surface.pressure,
-        composition: Some(surface.composition.clone()),
-        landable: surface.landable,
-        atmosphere: surface
-            .atmosphere
-            .clone()
-            .or_else(|| held.and_then(|held| held.atmosphere.clone())),
-        volcanism: surface
-            .volcanism
-            .clone()
-            .or_else(|| held.and_then(|held| held.volcanism.clone())),
-        terraform_state: surface
-            .terraform_state
-            .clone()
-            .or_else(|| held.and_then(|held| held.terraform_state.clone())),
-        materials: surface.materials.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use elite_journal::entry::Entry;
+    use elite_journal::prelude::{Allegiance, Economy};
     use galos_photometry::ClassLight;
 
     /// One entry, read the way the follower hands it over: tag and all.
@@ -1393,7 +949,7 @@ mod tests {
         assert!(galaxy.names().is_empty());
     }
 
-    /// A scanned system reaches as far as `galos_index::inside` says
+    /// A scanned system reaches as far as [`crate::inside`] says
     ///
     /// The map sizes a system by this and draws the inside of it from the same
     /// records, so the two have to be one answer. Asked here only for the
@@ -1444,5 +1000,231 @@ mod tests {
         )));
         assert_eq!(galaxy.systems().len(), 1, "the beacon's place was lost");
         assert!(galaxy.names().is_empty(), "a system was named blank");
+    }
+
+    /// A codex sighting puts a system on the map nobody has been to
+    ///
+    /// The divergence this closes. `galos_db::record` writes a positioned
+    /// `systems` row for one of these and the accumulator used to fall
+    /// through it, so a run filling both sinks off one feed disagreed with
+    /// itself about which systems exist — and an `--index` with no `--db`
+    /// under it was simply short of them, the honk that finds a codex entry
+    /// being often the first thing anybody sends about a place.
+    ///
+    /// Names the system `System` and no other event does, which is the
+    /// other half of what would go wrong quietly.
+    #[test]
+    fn a_codex_sighting_is_a_system() {
+        let mut galaxy = galaxy();
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T12:00:00Z",
+                "event": "CodexEntry",
+                "System": "Deciat",
+                "SystemAddress": 6681123623626,
+                "StarPos": [122.625, -0.8125, -47.28125],
+                "EntryID": 2100201,
+                "Name": "$Codex_Ent_L_Dwarf_Name;"
+            }"#,
+        )));
+
+        let systems = galaxy.systems();
+        assert_eq!(systems.len(), 1, "a codex sighting placed no system");
+        assert_eq!(systems[0].id64, 6681123623626);
+        assert_eq!(systems[0].position, [122.625, -0.8125, -47.28125]);
+        assert_eq!(galaxy.names()[0].name, "DECIAT");
+    }
+
+    /// A surface scan names its body without describing one
+    ///
+    /// `SAASignalsFound` says which body the signals were on and nothing
+    /// else about it — no orbit, no class, no radius. A record made from
+    /// that would be a body the reach and the arrival star are derived
+    /// from, which is a system drawn the wrong size around a star it does
+    /// not have. The signals themselves are the database's to keep; the
+    /// index has no column for them.
+    #[test]
+    fn a_surface_scan_makes_no_body() {
+        let mut galaxy = galaxy();
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T12:00:00Z",
+                "event": "SAASignalsFound",
+                "StarSystem": "Sol",
+                "SystemAddress": 10477373803,
+                "StarPos": [0.0, 0.0, 0.0],
+                "BodyName": "Sol 3",
+                "BodyID": 3,
+                "Signals": [{ "Type": "$SAA_SignalType_Biological;", "Count": 3 }]
+            }"#,
+        )));
+
+        assert_eq!(galaxy.systems().len(), 1, "the signals placed no system");
+        let inside = galaxy.bodies(10477373803);
+        assert!(inside.bodies.is_empty(), "a body was invented from signals");
+        assert!(inside.stars.is_empty());
+        assert!(
+            galaxy.reaches().is_empty(),
+            "a system with nothing scanned in it was given a size",
+        );
+    }
+
+    /// A settlement is a station, and a station's politics are not the
+    /// system's
+    ///
+    /// `ApproachSettlement` carries a government, an allegiance and a
+    /// faction, and every one of them belongs to the station rather than to
+    /// the system it stands in. Taken for the system's they would colour
+    /// the sky by where the commander happened to land — a carrier or a
+    /// rescue ship reads as a government of its own. The write path does
+    /// not take them either: `ensure_system` is handed a name and a
+    /// position and nothing else.
+    #[test]
+    fn a_settlement_does_not_govern_its_system() {
+        let mut galaxy = galaxy();
+        galaxy.read(&entry(JUMP));
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T12:01:00Z",
+                "event": "ApproachSettlement",
+                "Name": "Ross Installation",
+                "StarSystem": "Sol",
+                "SystemAddress": 10477373803,
+                "StarPos": [0.0, 0.0, 0.0],
+                "BodyID": 3,
+                "BodyName": "Sol 3",
+                "StationGovernment": "$government_Corporate;",
+                "StationAllegiance": "Independent",
+                "StationEconomies": [
+                    { "Name": "$economy_Rescue;", "Proportion": 1 }
+                ]
+            }"#,
+        )));
+
+        let populated = galaxy.populated();
+        assert_eq!(populated.len(), 1);
+        assert_eq!(
+            populated[0].allegiance,
+            Some(Allegiance::Federation),
+            "a station's allegiance was taken for its system's",
+        );
+        assert!(
+            populated[0].government.is_none(),
+            "a station's government was taken for its system's",
+        );
+        assert_eq!(
+            populated[0].primary_economy,
+            Some(Economy::Refinery),
+            "a station's economy was taken for its system's",
+        );
+    }
+
+    /// A signal batch naming only an address publishes nothing
+    ///
+    /// One rule for every report now, and it is the one a nav beacon
+    /// already needed: what a report says is recorded, and publishing a
+    /// system takes both a name and a place. So the position this carried is
+    /// kept for whatever names the system later, and until then the system
+    /// is in no table the map reads.
+    ///
+    /// The database cannot even do that much — `INSERT`ing a `systems` row
+    /// wants a name, so `SystemReport`'s write path drops a nameless report
+    /// where this one keeps it. The two agree on everything published,
+    /// which is what has to be true; they differ on what they hold back,
+    /// because one of them has a `NOT NULL` and the other does not.
+    #[test]
+    fn a_signal_batch_naming_no_system_publishes_nothing() {
+        let mut galaxy = galaxy();
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T12:00:00Z",
+                "event": "FSSSignalDiscovered",
+                "SystemAddress": 42,
+                "StarPos": [1.0, 2.0, 3.0],
+                "signals": [{ "SignalName": "$MULTIPLAYER_SCENARIO42_TITLE;" }]
+            }"#,
+        )));
+        assert_eq!(galaxy.len(), 1, "the place the signal carried was lost");
+        assert!(galaxy.names().is_empty(), "a system was named blank");
+        assert!(
+            galaxy.populated().is_empty(),
+            "a system with no name was published as populated",
+        );
+    }
+
+    /// A docking moves the clock and nothing else
+    ///
+    /// The write path's `systems` upsert stamps `updated_at =
+    /// GREATEST(systems.updated_at, $n)` on every write including this one,
+    /// so a docking moves the system's Recency and a catch-up re-derives
+    /// it. Nothing else: a docking carries no position, so a system nothing
+    /// has placed stays unplaced and unpublished on both sides.
+    #[test]
+    fn a_docking_moves_only_the_clock() {
+        let mut galaxy = galaxy();
+        let week_ago = JUMP.replace("2026-08-08", "2026-08-01");
+        galaxy.read(&entry(&week_ago));
+        let stale = galaxy.systems()[0];
+
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T11:00:00Z",
+                "event": "Docked",
+                "StarSystem": "Sol",
+                "SystemAddress": 10477373803,
+                "StationName": "Abraham Lincoln",
+                "StationType": "Orbis",
+                "MarketID": 128016640,
+                "StationGovernment": "$government_Corporate;",
+                "StationAllegiance": "Independent"
+            }"#,
+        )));
+
+        let docked_at: DateTime<Utc> =
+            "2026-08-08T11:00:00Z".parse().expect("the docking's moment");
+        let fresh = galaxy.systems()[0];
+        assert_eq!(
+            fresh.updated_at,
+            docked_at.timestamp() as u32,
+            "a docking did not move the system's clock",
+        );
+        assert!(
+            fresh.age_bucket < stale.age_bucket,
+            "a week-old system dock-visited today stayed a week old",
+        );
+        assert_eq!(fresh.position, stale.position);
+        assert_eq!(
+            galaxy.populated()[0].government,
+            None,
+            "a station's government was taken for its system's",
+        );
+    }
+
+    /// A docking is not a place
+    ///
+    /// It carries no position, so a system a docking is the whole of what
+    /// anybody has said about waits for whatever places it. The published
+    /// build holds the same row and leaves it out of the map by the same
+    /// rule, its every system query reading `position IS NOT NULL`.
+    #[test]
+    fn a_docking_places_nothing() {
+        let mut galaxy = galaxy();
+        assert!(galaxy.read(&entry(
+            r#"{
+                "timestamp": "2026-08-08T11:00:00Z",
+                "event": "Docked",
+                "StarSystem": "Colonia",
+                "SystemAddress": 3238296097059,
+                "StationName": "Jaques Station",
+                "StationType": "Orbis",
+                "MarketID": 3510250752
+            }"#,
+        )));
+        assert_eq!(galaxy.len(), 1, "the docking was not recorded at all");
+        assert!(
+            galaxy.systems().is_empty(),
+            "a system a docking never placed was placed",
+        );
+        assert!(galaxy.names().is_empty());
     }
 }

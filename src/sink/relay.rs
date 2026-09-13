@@ -26,7 +26,7 @@
 //! the database sink beside this one wrote the entry before this saw it, and
 //! the worker answers a nonzero count by discarding what it buffered and
 //! running another catch-up round, which reads it back. See
-//! [`crate::derive::buffered`].
+//! `derive::buffered` in `galos-sync`.
 //!
 //! Once the worker is live there is no next round to recover a drop, so a
 //! full channel is waited on instead. That is backpressure onto the source:
@@ -38,7 +38,7 @@
 //! from both sinks, and a message dropped at the edge is gone from a feed
 //! that will report the same system again.
 
-use crate::sink::{Reporter, Sink, SystemReport};
+use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_channel::{Receiver, Sender, TrySendError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -58,27 +58,73 @@ use tracing::debug;
 /// copied.
 pub const BUFFERED: usize = 50_000;
 
-/// Whoever wrote an entry, as far as the index is concerned.
+/// Who a system report is said to be by on the other side.
 ///
-/// Nobody. [`Index::entry`](crate::sink::Index::entry) files nothing under a
-/// commander and says why — an EDDN uploader id is an anonymised sender
-/// rather than a person, and the galaxy tracks a journal's commander from the
-/// journal's own events. So the name a collect-side sink was handed is not
-/// carried across, and a reading is one pointer rather than a pointer and a
-/// string allocated per message.
+/// Nobody. [`Index::system`](crate::sink::Index::system) records no
+/// provenance above body level — an index has no `updated_by` for a
+/// system — so the name a collect-side sink was handed is not carried for
+/// one.
 const NOBODY: &str = "";
+
+/// Whoever a source named, owned so it can cross a thread.
+///
+/// A [`Reporter`] borrows its name from the source that read it and a
+/// reading outlives that borrow by a channel's worth of time, so the name
+/// is held behind an [`Arc`] and shared with the last reading that carried
+/// the same one.
+///
+/// Which of the two it is crosses as well as the name. `updated_by` is
+/// provenance and both kinds are some, but only one of them is a claim
+/// about a person, and a boundary that forgot which would be the one place
+/// in the program where an anonymised sender becomes a commander.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Named {
+    /// A commander, as their own journal named them.
+    Commander(Arc<str>),
+    /// An EDDN sender's uploader id, or the file a dump was read out of.
+    Uploader(Arc<str>),
+    /// Nothing named anybody: the id was dropped before this.
+    Nobody,
+}
+
+impl Named {
+    /// This name, for the sink on the other side.
+    fn same(&self) -> Reporter<'_> {
+        match self {
+            Named::Commander(who) => Reporter::Commander(who),
+            Named::Uploader(who) => Reporter::Uploader(who),
+            Named::Nobody => Reporter::Nobody,
+        }
+    }
+
+    /// Whether `by` is the name this already is, allocation and all.
+    fn is(&self, by: &Reporter<'_>) -> bool {
+        match (self, by) {
+            (Named::Commander(held), Reporter::Commander(who))
+            | (Named::Uploader(held), Reporter::Uploader(who)) => {
+                held.as_ref() == *who
+            }
+            (Named::Nobody, Reporter::Nobody) => true,
+            _ => false,
+        }
+    }
+
+    /// Whoever `by` named, owned.
+    fn of(by: Reporter<'_>) -> Named {
+        match by {
+            Reporter::Commander(who) => Named::Commander(Arc::from(who)),
+            Reporter::Uploader(who) => Named::Uploader(Arc::from(who)),
+            Reporter::Nobody => Named::Nobody,
+        }
+    }
+}
 
 /// One thing an index derives from, owned so it can cross a thread.
 #[derive(Clone, Debug)]
 pub enum Reading {
     /// An event, shared with whatever other sink was handed the same one,
-    /// and the commander whose journal carried it where a source could name
-    /// one.
-    ///
-    /// [`None`] for everything EDDN forwards. The id in its header is an
-    /// anonymised sender rather than a person, so it is dropped here rather
-    /// than carried to a sink that will not record it — see [`NOBODY`].
-    Entry(Arc<Entry<Event>>, Option<Arc<str>>),
+    /// and whoever the source that read it named.
+    Entry(Arc<Entry<Event>>, Named),
     /// A system as a source reported it, which is the one shape that is not
     /// an event.
     System(SystemReport),
@@ -86,16 +132,18 @@ pub enum Reading {
 
 impl Reading {
     /// Give this to the sink on the other side.
+    ///
+    /// Drops what that sink made of it: this is the far end of a channel
+    /// and nobody here is waiting to hear. The worker's sink keeps its own
+    /// counts and says them at the end of the run.
     pub async fn apply(self, sink: &mut dyn Sink) {
         match self {
-            Reading::Entry(entry, flying) => {
-                let by = match &flying {
-                    Some(who) => Reporter::Commander(who),
-                    None => Reporter::Nobody,
-                };
-                sink.entry(entry, by).await
+            Reading::Entry(entry, named) => {
+                sink.entry(entry, named.same()).await;
             }
-            Reading::System(report) => sink.system(&report, NOBODY).await,
+            Reading::System(report) => {
+                sink.system(&report, NOBODY).await;
+            }
         }
     }
 }
@@ -157,15 +205,15 @@ pub struct Relay {
     dropped: Dropped,
     /// Readings that reached the channel, for the line at the end of a run.
     sent: u64,
-    /// The commander last handed over, so that a source naming the same one
+    /// The name last handed over, so that a source naming the same one
     /// every message pays a comparison and a refcount rather than a string.
     ///
     /// It cannot be sent once per batch instead. Every source clones this
     /// sender into the one channel, so two of them interleave arbitrarily
-    /// and a "who is flying now" message would apply to whatever happened to
-    /// arrive next — which is the bug this exists to fix, one indirection
-    /// further out.
-    flying: Option<Arc<str>>,
+    /// and a "who is reporting now" message would apply to whatever
+    /// happened to arrive next — which is the bug this exists to fix, one
+    /// indirection further out.
+    named: Named,
 }
 
 impl Relay {
@@ -182,17 +230,16 @@ impl Relay {
         live: Live,
         dropped: Dropped,
     ) -> Relay {
-        Relay { readings, live, dropped, sent: 0, flying: None }
+        Relay { readings, live, dropped, sent: 0, named: Named::Nobody }
     }
 
-    /// The commander to send alongside an entry, shared with the last one
-    /// where it is the same name.
-    fn flying(&mut self, by: Reporter<'_>) -> Option<Arc<str>> {
-        let who = by.commander()?;
-        if self.flying.as_deref() != Some(who) {
-            self.flying = Some(Arc::from(who));
+    /// The name to send alongside an entry, shared with the last one where
+    /// it is the same name.
+    fn named(&mut self, by: Reporter<'_>) -> Named {
+        if !self.named.is(&by) {
+            self.named = Named::of(by);
         }
-        self.flying.clone()
+        self.named.clone()
     }
 
     /// Put a reading on the channel, or account for why it did not go.
@@ -221,13 +268,32 @@ impl Relay {
 
 #[async_trait]
 impl Sink for Relay {
-    async fn entry(&mut self, entry: Arc<Entry<Event>>, by: Reporter<'_>) {
-        let flying = self.flying(by);
-        self.place(Reading::Entry(entry, flying)).await;
+    /// Whoever the source named crosses with the entry, both kinds of name
+    /// alike: `updated_by` is provenance, and a body filed under a dump's
+    /// own file is the only provenance a dump has.
+    ///
+    /// Returns [`None`]: nothing has been stored when this returns — the
+    /// reading is on a channel, and the worker's own
+    /// [`Index`](crate::sink::Index) is what stores and counts it. So a
+    /// source's running total comes from the database where there is one,
+    /// and the index reports its own at the end of the run.
+    async fn entry(
+        &mut self,
+        entry: Arc<Entry<Event>>,
+        by: Reporter<'_>,
+    ) -> Option<Landed> {
+        let named = self.named(by);
+        self.place(Reading::Entry(entry, named)).await;
+        None
     }
 
-    async fn system(&mut self, report: &SystemReport, _user: &str) {
+    async fn system(
+        &mut self,
+        report: &SystemReport,
+        _user: &str,
+    ) -> Option<Landed> {
         self.place(Reading::System(report.clone())).await;
+        None
     }
 
     /// The four station schemas, which an index has nowhere to put. Dropped
@@ -277,5 +343,59 @@ impl Sink for Relay {
 
     fn said(&self) -> String {
         format!("{} readings handed to the index worker", self.sent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One scan, as a journal or a dump states one.
+    fn scan() -> Arc<Entry<Event>> {
+        Arc::new(
+            serde_json::from_str(
+                r#"{"timestamp":"2026-08-08T12:00:00Z","event":"Scan",
+                    "ScanType":"Detailed","StarSystem":"Sol",
+                    "SystemAddress":10477373803,"BodyName":"Sol",
+                    "BodyID":1,"StarType":"G","Subclass":2,
+                    "StellarMass":1.0,"Radius":696000000.0,
+                    "AbsoluteMagnitude":4.83,"Age_MY":4600,
+                    "SurfaceTemperature":5778.0,"Luminosity":"Va",
+                    "RotationPeriod":0.0,"AxialTilt":0.0,
+                    "WasDiscovered":true,"WasMapped":false,
+                    "DistanceFromArrivalLS":0.0}"#,
+            )
+            .expect("the scan should parse"),
+        )
+    }
+
+    /// Whoever a source named crosses the channel, uploader and all
+    ///
+    /// Every source of a `--from` run reaches the index through here, so a
+    /// name dropped at this boundary is a name no index ever sees. A dump's
+    /// is the file it was read out of, which is all the provenance a
+    /// published file has.
+    #[test]
+    fn the_name_a_source_gave_crosses_the_channel() {
+        let (sender, readings) = Relay::channel();
+        let mut relay = Relay::new(sender, Live::new(), Dropped::new());
+        let live = Named::Commander("cmdr".into());
+        let dumped = Named::Uploader("Spansh galaxy_7days.json".into());
+
+        pollster::block_on(async {
+            relay.entry(scan(), Reporter::Commander("cmdr")).await;
+            relay
+                .entry(scan(), Reporter::Uploader("Spansh galaxy_7days.json"))
+                .await;
+            relay.entry(scan(), Reporter::Nobody).await;
+        });
+
+        let crossed = |said: &str| match readings.try_recv() {
+            Ok(Reading::Entry(_, named)) => named,
+            other => panic!("{}: {:?}", said, other),
+        };
+        assert_eq!(crossed("the commander did not cross"), live);
+        assert_eq!(crossed("the published file did not cross"), dumped);
+        assert_eq!(crossed("nobody did not cross"), Named::Nobody);
     }
 }

@@ -30,13 +30,23 @@ async fn run() {
 
     // Read every body file back, which is where the untagged BodyType and
     // AtmosphereType enums have to decode. A single decode failure aborts.
+    // Two levels, since the files are sharded: `bodies/<shard>/<address>.bin`
+    // for a published directory, and loose in `bodies/` for one an older
+    // builder wrote that has not been resharded yet.
     let bodies_dir = Path::new(&dir).join("bodies");
     let mut files = 0usize;
     let mut stars = 0usize;
     let mut bodies = 0usize;
     let mut surfaced = 0usize;
-    if let Ok(entries) = std::fs::read_dir(&bodies_dir) {
+    let mut dirs = vec![bodies_dir];
+    while let Some(next) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else { continue };
         for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
             let name = entry.file_name();
             let stem = name.to_string_lossy();
             let Some(address) = stem.strip_suffix(".bin") else { continue };

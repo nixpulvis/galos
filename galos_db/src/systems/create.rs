@@ -1,8 +1,9 @@
-use super::{Economies, System};
+use super::{Economies, Landed, System};
 use crate::factions::{Conflict, Faction, SystemFaction};
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
+use galos_index::SystemReport;
 use geozero::wkb;
 
 impl System {
@@ -19,9 +20,11 @@ impl System {
     /// to when it was sent.
     ///
     /// [`Self::from_journal`] asks the same, and must: the two write one row.
+    ///
+    /// Returns what the write did to the row; see [`Landed`].
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         address: i64,
         name: &str,
         position: Option<Coordinate>,
@@ -33,8 +36,8 @@ impl System {
         economies: Option<Economies>,
         updated_at: DateTime<Utc>,
         updated_by: &str,
-    ) -> Result<(), Error> {
-        sqlx::query!(
+    ) -> Result<Landed, Error> {
+        let did = sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -90,6 +93,17 @@ impl System {
                 -- session's zone, because what reads it keeps its cursor in
                 -- UTC and the two have to be the one clock.
                 received_at = clock_timestamp() AT TIME ZONE 'utc'
+            RETURNING
+                -- Did this statement insert the row? The conflict path
+                -- locks the row it is about to update and the new version
+                -- carries that lock, so an update returns a live xmax and
+                -- an insert returns 0.
+                (xmax = 0) AS "inserted!",
+                -- Did this reading win? `updated_at` above is
+                -- `GREATEST(systems.updated_at, $11)`, which equals `$11`
+                -- exactly when `$11 >= updated_at` -- the condition every
+                -- `CASE` arm uses.
+                (updated_at = $11) AS "took!"
             "#,
             address as i64,
             name,
@@ -104,13 +118,15 @@ impl System {
             updated_at.naive_utc(),
             updated_by
         )
-        .execute(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
-        Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
-            .await?;
+        Self::adopt_waiting_markets(
+            &mut *conn, address, name, updated_at, updated_by,
+        )
+        .await?;
 
-        Ok(())
+        Ok(Landed::of(did.inserted, did.took))
     }
 
     /// Link up any markets that named this system before it existed
@@ -123,7 +139,7 @@ impl System {
     /// foreign key onto it stops being satisfied by a null the instant the
     /// address is filled in.
     async fn adopt_waiting_markets(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         address: i64,
         name: &str,
         updated_at: DateTime<Utc>,
@@ -131,7 +147,7 @@ impl System {
     ) -> Result<(), Error> {
         // This runs on every system write, including the inner loop of the
         // bulk importers, and almost always there is nothing waiting. Ask
-        // the partial index before opening a transaction for no reason.
+        // the partial index before writing two statements for no reason.
         let waiting = sqlx::query_scalar!(
             r#"
             SELECT EXISTS (
@@ -141,14 +157,12 @@ impl System {
             "#,
             name,
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         if !waiting {
             return Ok(());
         }
-
-        let mut tx = db.pool.begin().await?;
 
         sqlx::query!(
             r#"
@@ -163,7 +177,7 @@ impl System {
             updated_at.naive_utc(),
             updated_by,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
         sqlx::query!(
@@ -174,112 +188,170 @@ impl System {
             address,
             name,
         )
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
 
-        tx.commit().await?;
         Ok(())
     }
 
+    /// Write what a report says about a system.
+    ///
+    /// The one way in for everything above body level. `galos-sync` hands
+    /// this whatever [`SystemReport::of`](galos_index::SystemReport::of)
+    /// made of an event and whatever a published dump gave it, so the
+    /// fifteen events that name a system reach Postgres through one call
+    /// rather than through a call apiece.
+    ///
+    /// A report is written for what it says, part by part, and no field is
+    /// read as evidence about another:
+    ///
+    /// - Where it names the system, [`Self::create`] writes the name, the
+    ///   place and the politics. Every political column there is
+    ///   `COALESCE`d, so a report stating none leaves what stands.
+    /// - Where it carries body counts, [`Self::set_body_counts`] writes
+    ///   them — deliberately not stamp-guarded, for the reason stated
+    ///   there. Asked by address: `create` has left the row wherever there
+    ///   was a name, and naming it again would weigh the name and the
+    ///   place against the stamps under a second copy of the rule.
+    ///
+    /// A dump's row says both, so it costs two statements where it cost
+    /// one. `galos_db::record` runs the pair inside the one transaction,
+    /// so a system cannot land with its counts and without its politics.
+    ///
+    /// A report that names no system writes nothing and is not an error. The
+    /// `systems.name` column cannot take a null, and the arrival that had to
+    /// come first is what writes that row; where it has not, the foreign key
+    /// onto `systems` is what says so. The index's half of the program keeps
+    /// such a report — it has no `NOT NULL` to answer to, and a position now
+    /// is a position for whatever names the place later — and the two agree
+    /// on everything either of them publishes.
+    ///
+    /// Returns the wider of what the two did, a run counting systems and
+    /// not statements: [`Landed::New`] where either made the row, else
+    /// [`Landed::Updated`] where either moved it, else [`Landed::Stale`].
+    /// [`None`] where no row was written: a report naming no system, or a
+    /// count for a system nothing has named.
+    pub async fn report(
+        conn: &mut sqlx::PgConnection,
+        report: &SystemReport,
+        by: &str,
+    ) -> Result<Option<Landed>, Error> {
+        let politics = match report.name.as_deref() {
+            Some(name) => Some(
+                Self::create(
+                    &mut *conn,
+                    report.address,
+                    name,
+                    report.position,
+                    report.star_class.clone(),
+                    report.population,
+                    report.security,
+                    report.government,
+                    report.allegiance,
+                    Economies::new(
+                        report.primary_economy,
+                        report.secondary_economy,
+                    ),
+                    report.at,
+                    by,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+
+        let counts = match report.body_count {
+            Some(bodies) => {
+                Self::set_body_counts(
+                    &mut *conn,
+                    report.address,
+                    None,
+                    report.position,
+                    bodies,
+                    report.non_body_count,
+                    report.at,
+                    by,
+                )
+                .await?
+            }
+            None => None,
+        };
+
+        Ok(Landed::widest(politics, counts))
+    }
+
+    /// Write a system as an arrival event states it, factions and all.
+    ///
+    /// [`Self::create`] for the columns — one copy of the merge rule, not
+    /// two — and then the rows only a journal ever carries. A faction and a
+    /// conflict are rows of their own, each with a stamp of its own and its
+    /// own say in whether a message is worth taking, which is why they are
+    /// asked whatever became of the system's row above.
+    ///
+    /// Drops what the write did: `galos_db::record` has already written
+    /// this system's row from [`Self::report`], so that is the landing a
+    /// run counts and this second write of it is always an update.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         system: &JournalSystem,
     ) -> Result<(), Error> {
-        let position =
-            system.pos.map(|p| Coordinate { x: p.x, y: p.y, z: p.z });
-        let economies = Economies::new(system.economy, system.second_economy);
-        sqlx::query!(
-            r#"
-            INSERT INTO systems
-                (address,
-                 name,
-                 position,
-                 population,
-                 security,
-                 government,
-                 allegiance,
-                 primary_economy,
-                 secondary_economy,
-                 updated_at,
-                 updated_by)
-            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7, $8, $9, $10, $11)
-            ON CONFLICT (address)
-            DO UPDATE SET
-                name = CASE WHEN $10 >= systems.updated_at
-                    THEN UPPER($2) ELSE systems.name END,
-                position = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($3, systems.position)
-                    ELSE COALESCE(systems.position, $3) END,
-                population = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($4, systems.population)
-                    ELSE COALESCE(systems.population, $4) END,
-                security = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($5, systems.security)
-                    ELSE COALESCE(systems.security, $5) END,
-                government = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($6, systems.government)
-                    ELSE COALESCE(systems.government, $6) END,
-                allegiance = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($7, systems.allegiance)
-                    ELSE COALESCE(systems.allegiance, $7) END,
-                primary_economy = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($8, systems.primary_economy)
-                    ELSE COALESCE(systems.primary_economy, $8) END,
-                secondary_economy = CASE WHEN $10 >= systems.updated_at
-                    THEN COALESCE($9, systems.secondary_economy)
-                    ELSE COALESCE(systems.secondary_economy, $9) END,
-                updated_at = GREATEST(systems.updated_at, $10),
-                updated_by = CASE WHEN $10 >= systems.updated_at
-                    THEN $11 ELSE systems.updated_by END,
-                received_at = clock_timestamp() AT TIME ZONE 'utc'
-            "#,
-            system.address as i64,
-            system.name,
-            position.map(|p| wkb::Encode(p)) as _,
-            system.population.map(|n| n as i64),
-            system.security as _,
-            system.government as _,
-            system.allegiance as _,
-            economies.map(|economies| economies.primary) as _,
-            economies.and_then(|economies| economies.secondary) as _,
-            timestamp.naive_utc(),
-            user
+        Self::create(
+            &mut *conn,
+            system.address,
+            &system.name,
+            system.pos,
+            None,
+            system.population,
+            system.security,
+            system.government,
+            system.allegiance,
+            Economies::new(system.economy, system.second_economy),
+            timestamp,
+            user,
         )
-        .execute(&db.pool)
         .await?;
+        Self::factions(&mut *conn, system, timestamp).await
+    }
 
-        // Asked whatever became of the row above. A faction and a conflict are
-        // rows of their own, each with a stamp of its own and its own say in
-        // whether a message is worth taking, and a market waiting on this
-        // system waits on the system existing rather than on this message
-        // being the newest thing said about it.
+    /// The rows only an arrival ever carries: who is present and who is at
+    /// war.
+    ///
+    /// Apart from [`Self::report`] because they are apart from a system's own
+    /// columns in every other way. A faction and a conflict are rows of their
+    /// own, each with a stamp of its own and its own say in whether a message
+    /// is worth taking, so they are asked whatever became of the system's row
+    /// — and nothing else here derives them: a faction's numeric id is this
+    /// crate's, minted when the row is first written, and the index publishes
+    /// no faction it has not been handed one for.
+    pub async fn factions(
+        conn: &mut sqlx::PgConnection,
+        system: &JournalSystem,
+        timestamp: DateTime<Utc>,
+    ) -> Result<(), Error> {
         for faction in &system.factions {
-            let faction_id = Faction::create(db, &faction.name).await?.id;
+            let faction_id =
+                Faction::create(&mut *conn, &faction.name).await?.id;
             SystemFaction::from_journal(
-                db,
+                &mut *conn,
                 system.address,
                 faction_id as u32,
-                &faction,
+                faction,
                 timestamp,
             )
             .await?;
         }
 
         for conflict in &system.conflicts {
-            Conflict::from_journal(db, system.address, &conflict, timestamp)
-                .await?;
+            Conflict::from_journal(
+                &mut *conn,
+                system.address,
+                conflict,
+                timestamp,
+            )
+            .await?;
         }
-
-        Self::adopt_waiting_markets(
-            db,
-            system.address,
-            &system.name,
-            timestamp,
-            user,
-        )
-        .await?;
 
         Ok(())
     }
@@ -291,12 +363,12 @@ impl System {
     /// which only the honk counts; the others pass [`None`] and leave
     /// whatever is there alone.
     ///
-    /// A named system need not be on record. A honk is often the first thing
-    /// heard about somewhere, and carries a name and a position, which is
-    /// enough to write the row it belongs to. A nav beacon names only an
-    /// address as the game writes it, and a row cannot be created from that,
-    /// so the count is set on the system if it is there and dropped if it is
-    /// not. The arrival that had to come first is what writes that row.
+    /// A named system need not be on record: a name and a position are
+    /// enough to write the row the count belongs to. [`Self::report`] names
+    /// nothing here, [`Self::create`] having left that row already, and a
+    /// nav beacon names only an address as the game writes it — so under
+    /// either the count is set on the system if it is there and dropped if
+    /// it is not. The arrival that had to come first is what writes it.
     ///
     /// Unlike [`System::create`] this does not refuse an older message. A
     /// count does not go stale -- a system does not gain or lose bodies --
@@ -304,9 +376,14 @@ impl System {
     /// system busy enough to be honked at is busy enough to have been written
     /// more recently by something else. What an older message does not do is
     /// put the system's reading back to when it was sent.
+    ///
+    /// So this returns [`Landed::New`] or [`Landed::Updated`] and never
+    /// [`Landed::Stale`]: the count is written whatever the stamps say.
+    /// [`None`] means nothing was written, which is a count for a system
+    /// nothing has named.
     #[allow(clippy::too_many_arguments)]
     pub async fn set_body_counts(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         address: i64,
         name: Option<&str>,
         position: Option<Coordinate>,
@@ -314,7 +391,7 @@ impl System {
         non_body_count: Option<i32>,
         updated_at: DateTime<Utc>,
         updated_by: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<Landed>, Error> {
         let Some(name) = name else {
             let done = sqlx::query!(
                 r#"
@@ -336,7 +413,7 @@ impl System {
                 updated_at.naive_utc(),
                 updated_by,
             )
-            .execute(&db.pool)
+            .execute(&mut *conn)
             .await?;
 
             if done.rows_affected() == 0 {
@@ -344,12 +421,13 @@ impl System {
                     address,
                     "body counts for a system nothing has named",
                 );
+                return Ok(None);
             }
 
-            return Ok(());
+            return Ok(Some(Landed::Updated));
         };
 
-        sqlx::query!(
+        let did = sqlx::query!(
             r#"
             INSERT INTO systems
                 (address,
@@ -364,7 +442,12 @@ impl System {
             DO UPDATE SET
                 name = CASE WHEN $6 >= systems.updated_at
                     THEN UPPER($2) ELSE systems.name END,
-                position = COALESCE($3, systems.position),
+                -- Weighed by the stamps as `create` weighs it, the two
+                -- statements being one rule about where a system is. The
+                -- counts below are the exception and say why.
+                position = CASE WHEN $6 >= systems.updated_at
+                    THEN COALESCE($3, systems.position)
+                    ELSE COALESCE(systems.position, $3) END,
                 body_count = $4,
                 non_body_count =
                     COALESCE($5, systems.non_body_count),
@@ -372,6 +455,7 @@ impl System {
                 updated_by = CASE WHEN $6 >= systems.updated_at
                     THEN $7 ELSE systems.updated_by END,
                 received_at = clock_timestamp() AT TIME ZONE 'utc'
+            RETURNING (xmax = 0) AS "inserted!"
             "#,
             address,
             name,
@@ -381,13 +465,15 @@ impl System {
             updated_at.naive_utc(),
             updated_by,
         )
-        .execute(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
-        Self::adopt_waiting_markets(db, address, name, updated_at, updated_by)
-            .await?;
+        Self::adopt_waiting_markets(
+            &mut *conn, address, name, updated_at, updated_by,
+        )
+        .await?;
 
-        Ok(())
+        Ok(Some(Landed::of(did.inserted, true)))
     }
 
     /// Record the class of the star a ship arrives at.
@@ -413,7 +499,7 @@ impl System {
     /// column already says this, which on a feed reporting the same system
     /// over and over is nearly all of them.
     pub async fn set_primary_star_class(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         address: i64,
         class: &str,
     ) -> Result<bool, Error> {
@@ -425,7 +511,7 @@ impl System {
             address,
             class,
         )
-        .execute(&db.pool)
+        .execute(&mut *conn)
         .await?;
 
         Ok(done.rows_affected() > 0)

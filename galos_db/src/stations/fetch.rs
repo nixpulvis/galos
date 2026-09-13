@@ -4,8 +4,12 @@ use elite_journal::station::{EconomyShare, LandingPads, Service, StationType};
 use elite_journal::{Allegiance, Government};
 
 impl Station {
+    /// The station of this name in this system
+    ///
+    /// On the connection handed in, since [`Station::from_journal`] reads
+    /// back through it inside its caller's transaction.
     pub async fn fetch(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         system_address: i64,
         name: &str,
     ) -> Result<Self, Error> {
@@ -35,7 +39,7 @@ impl Station {
             system_address,
             name
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Station {

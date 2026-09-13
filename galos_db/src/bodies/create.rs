@@ -1,5 +1,5 @@
-use super::{composition, Body, Parent, Surface};
-use crate::{Database, Error};
+use super::{ancestry, composition, Body, Parent, Surface};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::body::{Body as JournalBody, Material, Orbit, Spin};
 
@@ -9,7 +9,7 @@ impl Body {
     /// so the reading is the enclosing entry's timestamp, and only something
     /// holding that entry can say which that is.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         body: &JournalBody,
@@ -63,9 +63,9 @@ impl Body {
             materials.iter().map(|m| m.percent).collect();
 
         // The body and what it is made of go in together, so nothing reads a
-        // body that is briefly made of nothing.
-        let mut tx = db.pool.begin().await?;
-
+        // body that is briefly made of nothing. These statements and the read
+        // back below run on the connection handed in, so the caller's
+        // transaction is what holds them together.
         let row = sqlx::query!(
             "
             INSERT INTO bodies (
@@ -199,7 +199,7 @@ impl Body {
             body.discovery.mapped,
             discovered_at.map(|at| at.naive_utc())
         )
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
 
         // Only where the scan looked at a surface. One that did states the
@@ -213,7 +213,7 @@ impl Body {
                 system_address,
                 body.id,
             )
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
 
             sqlx::query!(
@@ -234,7 +234,7 @@ impl Body {
                 &material_names,
                 &material_percents,
             )
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
         }
 
@@ -252,20 +252,18 @@ impl Body {
             system_address,
             body.id,
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut *conn)
         .await?
         .into_iter()
         .map(|row| Material { name: row.name, percent: row.percent })
         .collect::<Vec<_>>();
-
-        tx.commit().await?;
 
         Ok(Body {
             system_address: row.system_address,
             id: row.id,
             // Read back rather than answered with, since the row may hold an
             // ancestry this scan did not name.
-            parents: Parent::rows(row.parent_ids, row.parent_types),
+            parents: ancestry(row.parent_ids, row.parent_types),
             name: row.name,
             body_type: row.body_type.map(|ty| ty.as_str().into()),
             distance_from_arrival: row.distance_from_arrival,

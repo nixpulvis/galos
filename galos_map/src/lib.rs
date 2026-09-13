@@ -26,9 +26,10 @@ use std::sync::Arc;
 pub mod camera;
 pub mod dev;
 pub mod grid;
-pub mod journal;
 pub mod keys;
 pub mod loading;
+#[cfg(test)]
+mod perf;
 pub mod refresh;
 pub(crate) mod ruled;
 pub mod schedule;

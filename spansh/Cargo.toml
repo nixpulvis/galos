@@ -1,0 +1,17 @@
+[package]
+name = "spansh"
+version = "0.0.1"
+authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
+edition = "2021"
+
+# One publisher's file format and nothing else, the way `edsm` and `eddb` are:
+# no database, no index, no path dependency on anything in the workspace, so
+# whatever reads a dump can link this without linking Postgres.
+[dependencies]
+# The game's own vocabulary: a position is `system::Coordinate` and a star
+# class is `body::StarClass`. By version, as `edsm` and `eddb` take it; the
+# workspace patches it to a path.
+elite_journal = "0.7"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+chrono = { version = "*", features = ["serde"] }

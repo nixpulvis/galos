@@ -1,29 +1,40 @@
 use super::Star;
-use crate::bodies::Parent;
+use crate::bodies::{ancestry, columns, Parent};
 use crate::orbit;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::body::{Spin, Star as JournalStar};
+use tracing::debug;
 
 impl Star {
     /// `discovered_at` is worked out by the caller rather than read off the
     /// scan. A scan reporting the star undiscovered is itself the discovery,
     /// so the reading is the enclosing entry's timestamp, and only something
     /// holding that entry can say which that is.
+    ///
+    /// Answers the star on record, which is not always the one handed in:
+    /// a system already holding a star of this name holds this star, and
+    /// [`settle`] says which of the two records is kept.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         star: &JournalStar,
         system_address: i64,
         discovered_at: Option<DateTime<Utc>>,
     ) -> Result<Star, Error> {
+        // A name already answered to in this system is this star written
+        // twice, and only one of the two records is kept.
+        if let Some(kept) = settle(&mut *conn, system_address, star).await? {
+            return Ok(kept);
+        }
+
         // Kept where a scan names none, as a body's and a ring's are. A
         // primary star has no ancestor to name, and nothing tells that apart
         // from a scan that left the field out, so the two are stored the same
         // way and read back the same way.
         let parents = Parent::chain(&star.parents);
-        let (parent_ids, parent_types) = Parent::columns(&parents);
+        let (parent_ids, parent_types) = columns(&parents);
         let parent_id = parent_ids.first().copied();
         let orbit = star.orbit.as_ref();
 
@@ -142,41 +153,109 @@ impl Star {
             star.discovery.mapped,
             discovered_at.map(|at| at.naive_utc()),
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
-        Ok(Star {
-            system_address: row.system_address,
-            id: row.id,
-            name: row.name,
-            // Read back rather than answered with, since the row may hold an
-            // ancestry this scan did not name.
-            parents: Parent::rows(row.parent_ids, row.parent_types),
-            updated_at: row.updated_at.and_utc(),
-            updated_by: row.updated_by,
-
-            absolute_magnitude: row.absolute_magnitude,
-            age_my: row.age_my,
-            distance_from_arrival_ls: row.distance_from_arrival_ls,
-            luminosity: row.luminosity,
-            star_class: row.star_class,
-            stellar_mass: row.stellar_mass,
-            subclass: row.subclass,
-
-            orbit: orbit::read(
-                row.semi_major_axis,
-                row.eccentricity,
-                row.orbital_inclination,
-                row.periapsis,
-                row.orbital_period,
-                row.ascending_node,
-                row.mean_anomaly,
-            ),
-            spin: Spin { period: row.rotation_period, tilt: row.axial_tilt },
-            radius: row.radius,
-            temperature: row.temperature,
-            mapped: row.was_mapped,
-            discovered_at: row.discovered_at.map(|at| at.and_utc()),
-        })
+        Ok(star!(row))
     }
+}
+
+/// Settle the name a star is coming in under against one already on record
+///
+/// Elite names a body uniquely within its system, so two stars of one
+/// system under one name are one star written twice -- which is what
+/// `UNIQUE (system_address, name)` on the table says. What the dump carries
+/// is a pair of records differing in nothing but `bodyId` and
+/// `distanceToArrival`.
+///
+/// The record kept is the nearer of the two to the arrival point, ties
+/// broken by the lower id. That is the order
+/// `galos_index::derive::arrival_class` picks the arrival star in and the
+/// same comparison, so the row this keeps is the row the index derived from
+/// a dump keeps, and the arrival class both read off it is the one star.
+///
+/// Answers the row on record where that record wins: the caller has nothing
+/// left to write and that row is its answer. [`None`] where the write is to
+/// go ahead, either because no other row answers to the name or because the
+/// one that did has been dropped in favour of what is coming in.
+///
+/// # Under concurrent writers
+///
+/// The read is made safe by an advisory lock on the system and the name,
+/// held for the rest of the transaction. Every write to `stars` comes
+/// through here, and the key is the name the write carries, so any two
+/// writes that could collide on that unique index wait on the same lock and
+/// the second sees what the first committed. Without it two writers of one
+/// new name both read nothing, both insert, and the unique index turns the
+/// second away -- which costs the whole entry, this being one transaction.
+///
+/// The lock is taken in a statement of its own because a statement's
+/// snapshot is taken before it runs: a lock acquired inside the same
+/// statement as the read would leave the read looking at the galaxy as it
+/// was before the writer ahead of it committed.
+///
+/// Transaction-scoped, so commit and rollback both release it and there is
+/// no unlock to leak. A transaction writing several stars holds one per
+/// name; the order they are taken in is the order the source lists them,
+/// and two sources listing one system's stars in opposite orders deadlock,
+/// which Postgres detects and reports as the refusal of one entry.
+async fn settle(
+    conn: &mut sqlx::PgConnection,
+    system_address: i64,
+    star: &JournalStar,
+) -> Result<Option<Star>, Error> {
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, $2))",
+        star.name,
+        system_address,
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    let twin = sqlx::query!(
+        "
+        SELECT *
+        FROM stars
+        WHERE system_address = $1 AND name = $2 AND id <> $3
+        ",
+        system_address,
+        star.name,
+        star.id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(row) = twin else { return Ok(None) };
+
+    // `total_cmp` and not `<`, so the rule is the one comparison
+    // `arrival_class` makes rather than one that reads a pair of equal
+    // distances differently.
+    let on_record_wins = row
+        .distance_from_arrival_ls
+        .total_cmp(&star.distance_from_arrival_ls)
+        .then(row.id.cmp(&star.id))
+        .is_le();
+    debug!(
+        system = system_address,
+        star = %star.name,
+        kept = if on_record_wins { row.id } else { star.id },
+        dropped = if on_record_wins { star.id } else { row.id },
+        "one star written twice",
+    );
+    if on_record_wins {
+        return Ok(Some(star!(row)));
+    }
+
+    // The row kept is the one coming in, and it is coming in under another
+    // id, so the record it supersedes is deleted rather than updated. That
+    // also clears the way for the insert below: a star renamed into a name
+    // this system already holds would otherwise break the primary key
+    // instead.
+    sqlx::query!(
+        "DELETE FROM stars WHERE system_address = $1 AND id = $2",
+        system_address,
+        row.id,
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(None)
 }

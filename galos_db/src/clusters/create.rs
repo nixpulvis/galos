@@ -1,5 +1,5 @@
 use super::Cluster;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::Cluster as JournalCluster;
 
@@ -9,7 +9,7 @@ impl Cluster {
     /// discovery, so the reading is the enclosing entry's timestamp, and only
     /// something holding that entry can say which that is.
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         cluster: &JournalCluster,
@@ -80,7 +80,7 @@ impl Cluster {
             (!parent_types.is_empty()).then_some(&parent_types[..]),
             discovered_at.map(|at| at.naive_utc()),
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Cluster {

@@ -1,25 +1,24 @@
 //! What a cell carries for its whole subtree, held so it composes exactly.
 //!
-//! A cell stands for every system beneath it, and it has to say something true
-//! about them whether or not their records are loaded. So it carries totals,
-//! the count, the flux, the two weighted centroids, the brightest magnitude,
-//! and those totals are the aggregate `T(c)`. With the payload absent the total
-//! is drawn as it stands; with the payload present the residual, the total less
-//! the moments of the slice that arrived, is drawn instead, so no system counts
-//! twice.
+//! A cell stands for every system beneath it, and says something true about
+//! them whether or not their records are loaded: the count, the flux, the two
+//! weighted centroids, the brightest magnitude — the aggregate `T(c)`. With
+//! the payload absent the total is drawn as it stands; with the payload
+//! present the residual, the total less the moments of the slice that
+//! arrived, is drawn instead, so no system counts twice.
 //!
-//! Everything additive is kept as a sum, because sums compose and the things
-//! read off them do not. Flux per temperature bucket, counts, and age buckets
-//! add. The centroids and spreads come out of [`Moments`], which keeps the
-//! moments they are read from rather than the answers. Two weightings run at
-//! once and diverge wherever the bright stars sit off centre: the glow follows
-//! the light and the density follows the count.
+//! Everything additive is kept as a sum, sums composing where the things read
+//! off them do not: flux per temperature bucket, counts, age buckets. The
+//! centroids and spreads come out of [`Moments`], which keeps the moments
+//! they are read from rather than the answers. Two weightings run at once and
+//! diverge wherever the bright stars sit off centre: the glow follows the
+//! light and the density follows the count.
 //!
-//! One field does not compose by adding, and does not need to. `m_min`, the
-//! brightest absolute magnitude in the subtree, composes by taking the smaller
-//! of two, which is why it is stored and not derived from the flux, a sum that
-//! has lost the single brightest star. It answers the photometric cull on the
-//! stored total, never on a residual, so [`Aggregate::remove`] leaves it be.
+//! `m_min`, the brightest absolute magnitude in the subtree, composes by
+//! taking the smaller of two rather than by adding, and is stored because a
+//! summed flux has lost the single brightest star. It answers the photometric
+//! cull on the stored total, never on a residual, so [`Aggregate::remove`]
+//! leaves it be.
 
 use crate::geometry::CellId;
 use crate::moments::Moments;
@@ -33,20 +32,16 @@ pub const TEMP_BUCKETS: usize = 6;
 /// Age buckets for the Recency axis, which a prefix sum answers any span from.
 pub const AGE_BUCKETS: usize = 8;
 
-/// The temperature range the buckets span, log-spaced between them.
-///
-/// The coolest star worth coloring and the hottest whose blue has stopped
-/// moving; [`temp_bucket`] bins the range and [`bucket_temperature`] names a
-/// point back out of a bucket.
+/// The temperature range the buckets span, log-spaced between them: the
+/// coolest star worth coloring and the hottest whose blue has stopped moving.
+/// [`temp_bucket`] bins the range and [`bucket_temperature`] names a point
+/// back out of a bucket.
 const TEMP_LO: f64 = 2000.0;
 const TEMP_HI: f64 = 50000.0;
 
 /// Which temperature bucket a star falls in, log-spaced across the stellar
-/// range and clamped at both ends.
-///
-/// The ends are the coolest star worth coloring and the hottest whose blue has
-/// stopped moving; between them the buckets are even in log temperature, which
-/// is where color is even.
+/// range and clamped at both ends. The buckets are even in log temperature,
+/// which is where color is even.
 pub fn temp_bucket(temperature_k: f64) -> usize {
     let t = temperature_k.clamp(TEMP_LO, TEMP_HI);
     let f = (t.ln() - TEMP_LO.ln()) / (TEMP_HI.ln() - TEMP_LO.ln());
@@ -69,8 +64,8 @@ pub fn bucket_temperature(bucket: usize) -> f64 {
 ///
 /// Built from single systems with [`of_system`](Self::of_system), rolled up
 /// with [`merge`](Self::merge), and drawn over its own loaded slice through
-/// [`remove`](Self::remove). Everything but `m_min` is a sum, so a set split any
-/// way and rejoined is the same aggregate.
+/// [`remove`](Self::remove). Everything but `m_min` is a sum, so a set split
+/// any way and rejoined is the same aggregate.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Aggregate {
     /// Brightest absolute magnitude in the subtree, the smallest number, or
@@ -82,7 +77,8 @@ pub struct Aggregate {
     flux: [f64; TEMP_BUCKETS],
     /// Position moments weighted by flux, for the glow's centroid and spread.
     light: Moments,
-    /// Position moments weighted by count, for the count-weighted centroid and extent.
+    /// Position moments weighted by count, for the count-weighted centroid
+    /// and extent.
     mass: Moments,
     /// Counts per age bucket, a column of the record so a Recency span can be
     /// answered by prefix sum off the aggregates alone. Every build writes it
@@ -90,15 +86,10 @@ pub struct Aggregate {
     /// the `updated_at` the payload carries, which is the same clock binned
     /// finer.
     ///
-    /// `u32` rather than `u64`, which halves what the column costs and loses
-    /// nothing: a bucket counts systems, the buckets of one cell sum to its
-    /// `count`, and the root's count is the galaxy's — 129 million against the
-    /// four billion a `u32` holds, so there are five doublings of headroom
-    /// over every system on record. Eight buckets at four bytes is thirty-two
-    /// bytes a cell. Halving that again by storing each bucket as a `u16`
-    /// share of `count` rounds the smallest buckets away to nothing over a
-    /// real build, and the smallest bucket is the recently-changed one the
-    /// axis exists to show. Exact at twice the width is the better trade.
+    /// `u32`, and exact: a bucket counts systems and the buckets of a cell
+    /// sum to its `count`, so four billion is ample over the galaxy's 129
+    /// million, where a `u16` share of `count` would round the smallest
+    /// bucket — the recently-changed one the axis exists to show — away.
     aged: [u32; AGE_BUCKETS],
 }
 
@@ -117,20 +108,21 @@ impl Aggregate {
     ///
     /// Its flux is `10^(-0.4*M)`, the linear form magnitudes sum in, dropped
     /// into the bucket its temperature falls in. Its position enters the glow
-    /// weighted by that flux and the density weighted by one, and its magnitude is
-    /// the brightest the aggregate has seen until something brighter merges in.
+    /// weighted by that flux and the density weighted by one, and its
+    /// magnitude is the brightest the aggregate has seen until something
+    /// brighter merges in.
     pub fn of_system(
         position: [f64; 3],
         absolute_magnitude: f64,
         temperature: f64,
-        age_bucket: usize,
+        age_bucket: u32,
     ) -> Aggregate {
         let f = Magnitude(absolute_magnitude).flux().0;
         let mut flux_by_bucket = [0.0; TEMP_BUCKETS];
         flux_by_bucket[temp_bucket(temperature)] = f;
         let mut aged = [0; AGE_BUCKETS];
-        if age_bucket < AGE_BUCKETS {
-            aged[age_bucket] = 1;
+        if (age_bucket as usize) < AGE_BUCKETS {
+            aged[age_bucket as usize] = 1;
         }
         Aggregate {
             m_min: Some(absolute_magnitude as f32),
@@ -170,7 +162,7 @@ impl Aggregate {
     /// The additive fields subtract exactly, being the inverse of
     /// [`merge`](Self::merge). `m_min` is left untouched: a residual splat is
     /// never culled on it, and the brightest single star cannot be recovered
-    /// from a flux that has already summed it away.
+    /// from a summed flux.
     pub fn remove(self, slice: Aggregate) -> Aggregate {
         let mut flux = self.flux;
         let mut aged = self.aged;
@@ -296,10 +288,10 @@ fn min_opt(a: Option<f32>, b: Option<f32>) -> Option<f32> {
 /// children it has, and the totals it stands for.
 ///
 /// A node at level `L` owns ranks `[rank_lo, rank_hi)` of its subtree's
-/// magnitude order, holding only what its ancestors did not, so drawing a node
-/// with its loaded ancestors is exactly the union with no system twice. The
-/// `aggregate` is the total over the whole subtree, not the slice; with the
-/// slice absent it is drawn as it stands, and with the slice present the
+/// magnitude order, holding only what its ancestors did not, so drawing a
+/// node with its loaded ancestors is exactly the union with no system twice.
+/// The `aggregate` is the total over the whole subtree, not the slice; with
+/// the slice absent it is drawn as it stands, and with the slice present the
 /// residual is drawn instead.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Cell {
@@ -413,7 +405,7 @@ mod tests {
     }
 
     /// The two centroids diverge: a bright star and a dim one meet in the
-    /// middle by count, but the glow leans hard toward the bright one.
+    /// middle by count, where the glow leans toward the bright one.
     #[test]
     fn the_glow_and_the_map_centre_differ() {
         let bright = Aggregate::of_system([0.0, 0.0, 0.0], -1.0, 15000.0, 0);
@@ -430,7 +422,7 @@ mod tests {
     #[test]
     fn a_split_conserves_the_subtree() {
         let systems = [
-            ([10.0, 0.0, 0.0], 3.0, 6000.0, 1usize),
+            ([10.0, 0.0, 0.0], 3.0, 6000.0, 1u32),
             ([0.0, 10.0, 0.0], 7.0, 3500.0, 2),
             ([0.0, 0.0, 10.0], -1.0, 20000.0, 0),
             ([-5.0, -5.0, -5.0], 5.0, 4800.0, 3),
@@ -469,14 +461,14 @@ mod tests {
     #[test]
     fn remove_leaves_the_residual() {
         let slice: Aggregate = [
-            ([1.0, 0.0, 0.0], 2.0, 6000.0, 0usize),
+            ([1.0, 0.0, 0.0], 2.0, 6000.0, 0u32),
             ([0.0, 1.0, 0.0], 4.0, 4000.0, 1),
         ]
         .iter()
         .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
         .collect();
         let rest: Aggregate = [
-            ([5.0, 5.0, 5.0], 6.0, 3500.0, 2usize),
+            ([5.0, 5.0, 5.0], 6.0, 3500.0, 2u32),
             ([-2.0, 3.0, 1.0], 8.0, 3200.0, 3),
             ([0.0, 0.0, 9.0], 1.0, 12000.0, 0),
         ]

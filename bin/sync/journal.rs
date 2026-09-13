@@ -1,10 +1,10 @@
 //! Importing what the game wrote while it was being played
 //!
 //! A journal directory read once, in the order it happened, and handed to
-//! whatever `--to` names -- the database through [`galos_db::record`], or an
-//! index directory, which the events reach without going near a row. The same
-//! events the EDDN subscriber carries, read from the files rather than off
-//! the wire.
+//! whatever `--db` and `--index DIR` name -- the database through
+//! [`galos_db::record`], or an index directory, which the events reach
+//! without going near a row. The same events the EDDN subscriber carries,
+//! read from the files rather than off the wire.
 //
 // TODO: Publishing, which is the direction this does not go yet. Everything
 // read here is something EDDN wants and is not getting from this commander,
@@ -368,52 +368,58 @@ impl Journal {
             })
             .collect();
 
+        // The bar's total is entries, since that is what this read gets
+        // through; the tally is systems, which the pre-pass below states.
+        // Every entry of every log is already in hand here, so the count
+        // is known and a byte position is not.
+        let mut bar = bar::imported(
+            "Journal",
+            bar::Extent::Records(
+                journals.iter().map(|(_, e)| e.len() as u64).sum(),
+            ),
+        );
+
         // Every system the directory names, written before anything points
         // at one. Four of the events the game writes name only an address,
         // and the game writes them ahead of the arrival that would have made
         // the row, so without this the foreign key turns them all away.
+        //
+        // This is the only place the import states a system, so it is all
+        // the bar counts: the entries replayed below write the system they
+        // happened in again, which is the same row a second time.
         let names = gather_names(&journals);
         for (address, (journal, entry, name, pos)) in &names {
             let user = users[*journal].as_deref().unwrap_or(UNKNOWN);
-            sink.system(
-                &SystemReport {
-                    name: Some((*name).to_owned()),
-                    position: *pos,
-                    ..SystemReport::new(*address, entry.timestamp)
-                },
-                user,
-            )
-            .await;
+            let landed = sink
+                .system(
+                    &SystemReport {
+                        name: Some((*name).to_owned()),
+                        position: *pos,
+                        ..SystemReport::new(*address, entry.timestamp)
+                    },
+                    user,
+                )
+                .await;
+            bar.took(landed);
         }
-
-        let bar =
-            bar::progress(journals.iter().map(|(_, e)| e.len() as u64).sum());
 
         for run in replay(&journals).chunk_by(|(a, _), (b, _)| a == b) {
             let journal = run[0].0;
             let user = users[journal].as_deref().unwrap_or(UNKNOWN);
 
-            bar.set_message(
-                journals[journal]
-                    .0
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            );
             for (_, entry) in run {
                 // A directory of years is millions of entries, so the run
                 // is asked here rather than once a file: what has been
                 // written stands, and the next import re-reads the rest.
                 if shutdown.asked() {
-                    bar.abandon_with_message("stopped");
+                    bar.abandoned("stopped");
                     return refused == 0;
                 }
                 sink.entry(Arc::clone(entry), Reporter::Commander(user)).await;
-                bar.inc(1);
+                bar.through(1);
             }
         }
-        bar.finish();
+        bar.done();
 
         // Whatever is beside the logs, whether one of them or all of them
         // were asked for. The route is where the ship is going now and there
@@ -683,7 +689,7 @@ async fn sidecars(sink: &mut dyn Sink, dir: &Path, user: &str) {
                 }),
                 Reporter::Commander(user),
             )
-            .await
+            .await;
         }
         Err(err) => {
             warn!(file = %route.display(), error = %err, "unreadable nav route")
@@ -747,6 +753,7 @@ mod tests {
     use elite_journal::entry::market::{
         BlackMarket, Market, Outfitting, Shipyard,
     };
+    use galos::sink::Landed;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1066,10 +1073,21 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Sink for Counted {
-        async fn entry(&mut self, _: Arc<Entry<Event>>, _: Reporter<'_>) {
+        async fn entry(
+            &mut self,
+            _: Arc<Entry<Event>>,
+            _: Reporter<'_>,
+        ) -> Option<Landed> {
             self.0.fetch_add(1, Ordering::Relaxed);
+            None
         }
-        async fn system(&mut self, _: &SystemReport, _: &str) {}
+        async fn system(
+            &mut self,
+            _: &SystemReport,
+            _: &str,
+        ) -> Option<Landed> {
+            None
+        }
         async fn market(&mut self, _: DateTime<Utc>, _: &str, _: &Market) {}
         async fn outfitting(
             &mut self,

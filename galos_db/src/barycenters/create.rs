@@ -1,12 +1,12 @@
 use super::Barycenter;
 use crate::orbit;
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::ScanBaryCentre;
 
 impl Barycenter {
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         scan: &ScanBaryCentre,
@@ -58,7 +58,7 @@ impl Barycenter {
             scanned.and_then(|orbit| orbit.ascending_node),
             scanned.and_then(|orbit| orbit.mean_anomaly),
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Barycenter {

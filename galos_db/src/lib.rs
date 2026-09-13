@@ -7,11 +7,18 @@
 //! Upon calling [`Database::new`] a `.env` file will also be loaded to set
 //! that variable. Having no such file is not an error.
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::Executor;
 use std::env;
 
 pub mod catalog;
 pub mod error;
 pub use self::error::{Error, Result};
+
+/// The `sqlx` this crate speaks, for callers naming its types
+///
+/// Every write below system level takes a [`sqlx::PgConnection`], and a
+/// caller that has no `sqlx` of its own still has to name one.
+pub use sqlx;
 
 #[derive(Clone)]
 pub struct Database {
@@ -39,6 +46,63 @@ impl Database {
         let pool = PgPoolOptions::new().max_connections(5).connect(url).await?;
 
         Ok(Database { pool })
+    }
+
+    /// A pool for bulk work, with `synchronous_commit` off
+    ///
+    /// A commit returns without waiting for the write-ahead log to reach the
+    /// disk, so a crash loses the last of what was committed; the rows are
+    /// re-derivable from the file being imported. `max_connections` is the
+    /// ceiling, which a sharded import wants above the ordinary five.
+    pub async fn bulk(max_connections: u32) -> Result<Self> {
+        match dotenv::dotenv() {
+            Ok(_) => {}
+            Err(e) if e.not_found() => {}
+            Err(e) => return Err(Error::Dotenv(e)),
+        }
+        let url = env::var("DATABASE_URL")?;
+
+        Self::bulk_from_url(&url, max_connections).await
+    }
+
+    /// [`Self::bulk`] against a named database
+    pub async fn bulk_from_url(
+        url: &str,
+        max_connections: u32,
+    ) -> Result<Self> {
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    conn.execute("SET synchronous_commit = off").await?;
+                    Ok(())
+                })
+            })
+            .connect(url)
+            .await?;
+
+        Ok(Database { pool })
+    }
+
+    /// A connection for a run of writes that belong together
+    ///
+    /// Everything written on it lands or none of it does. Each write below
+    /// system level takes the connection it is to run on, so what one
+    /// transaction covers is the caller's to say.
+    pub async fn begin(
+        &self,
+    ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+        Ok(self.pool.begin().await?)
+    }
+
+    /// A connection for a write that stands alone
+    ///
+    /// The same connection the writes below system level take, without a
+    /// transaction around it: each statement stands on its own.
+    pub async fn acquire(
+        &self,
+    ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>> {
+        Ok(self.pool.acquire().await?)
     }
 
     /// What the database's clock says
@@ -106,9 +170,21 @@ pub mod index;
 pub mod markets;
 mod orbit;
 pub mod outfitting;
+pub mod record;
 pub mod rings;
 pub mod shipyard;
 pub mod stars;
 pub mod stations;
 pub mod system_signals;
 pub mod systems;
+/// A database of a test's own, made and dropped by the test
+///
+/// Out of an ordinary build, this being a module that makes and drops
+/// databases. `cfg(test)` alone would not do: the tests that want it are
+/// mostly integration tests, which link this library exactly as any other
+/// caller does and see only what a feature turns on. The feature alone would
+/// do, this crate asking for it of itself as a dev-dependency, but then the
+/// unit tests in `index` would be one resolver decision away from not
+/// compiling.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

@@ -1,4 +1,4 @@
-use super::{composition, Body, Parent, Surface};
+use super::{ancestry, composition, Body, Surface};
 use crate::{Database, Error};
 use chrono::NaiveDateTime;
 use elite_journal::body::{Material, Orbit, Spin};
@@ -53,7 +53,7 @@ struct Row {
 
 impl From<Row> for Body {
     fn from(row: Row) -> Self {
-        let parents = Parent::rows(row.parent_ids, row.parent_types);
+        let parents = ancestry(row.parent_ids, row.parent_types);
 
         let materials = row
             .material_names

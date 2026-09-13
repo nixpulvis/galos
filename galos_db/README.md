@@ -27,15 +27,22 @@ extensions, so the connecting role must be allowed to `CREATE EXTENSION`.
 
 ## Testing
 
-The write-path tests need a database of their own, named by
-`TEST_DATABASE_URL`, so a database in use for anything else cannot be reached
-from them. They stand down when it is unset, which is how CI passes without a
-database (building `SQLX_OFFLINE=true` against the cached query metadata).
+The tests that write get a migrated database of their own, made and dropped
+by `galos_db::testing` behind the `testing` feature. `TEST_DATABASE_URL`
+names the *server*; whichever database on it the url happens to name is only
+somewhere to connect while the real one is made, so `postgres` will do.
+`DATABASE_URL` is never read, so a database in use for anything else cannot
+be reached from a test.
 
 ```sh
-createdb galos_test
-DATABASE_URL=postgresql://…/galos_test \
-    cargo sqlx migrate run --source galos_db/migrations/
-TEST_DATABASE_URL=postgresql://…/galos_test \
-    cargo test -p galos_db --test write_path
+TEST_DATABASE_URL=postgresql://localhost/postgres cargo test -p galos_db
 ```
+
+The migrations are run once into `galos_test_template` and each test's
+database is a copy of it. That template persists between runs as a cache; a
+test's own database is dropped as the test ends, and one left by a test that
+panicked is dropped by the next run.
+
+They stand down when there is no server to reach -- the variable unset, or
+nothing listening where it points -- which is how CI passes without one
+(building `SQLX_OFFLINE=true` against the cached query metadata).

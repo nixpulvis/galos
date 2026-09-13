@@ -31,8 +31,12 @@ impl Faction {
         Ok(Faction { id: row.id, name: row.name })
     }
 
+    /// The faction with this name, whatever its case
+    ///
+    /// On the connection handed in, since what asks is a write that may have
+    /// minted the row in its own transaction moments ago.
     pub async fn fetch_by_name(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         name: &str,
     ) -> Result<Self, Error> {
         let row = sqlx::query!(
@@ -43,7 +47,7 @@ impl Faction {
             ",
             name.to_lowercase()
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Faction { id: row.id, name: row.name })

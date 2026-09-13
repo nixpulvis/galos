@@ -1,10 +1,13 @@
 use super::{Conflict, Faction, State, SystemFaction};
-use crate::{Database, Error};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{faction::State as JournalState, prelude::*};
 
 impl Faction {
-    pub async fn create(db: &Database, name: &str) -> Result<Self, Error> {
+    pub async fn create(
+        conn: &mut sqlx::PgConnection,
+        name: &str,
+    ) -> Result<Self, Error> {
         let row = sqlx::query!(
             "
             INSERT INTO factions (name)
@@ -16,7 +19,7 @@ impl Faction {
             ",
             name
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Faction { id: row.id, name: row.name })
@@ -25,7 +28,7 @@ impl Faction {
 
 impl SystemFaction {
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         system_address: i64,
         faction_id: u32,
         faction_info: &FactionInfo,
@@ -78,15 +81,15 @@ impl SystemFaction {
             faction_info.allegiance as _,
             timestamp.naive_utc()
         )
-        .fetch_optional(&db.pool)
+        .fetch_optional(&mut *conn)
         .await?;
 
         if let Some(r) = row {
-            State::clear(db, system_address, faction_id).await?;
+            State::clear(&mut *conn, system_address, faction_id).await?;
 
             for state_trend in &faction_info.pending_states {
                 State::from_journal(
-                    db,
+                    &mut *conn,
                     system_address,
                     faction_id,
                     state_trend.state,
@@ -97,7 +100,7 @@ impl SystemFaction {
 
             for state_trend in &faction_info.active_states {
                 State::from_journal(
-                    db,
+                    &mut *conn,
                     system_address,
                     faction_id,
                     state_trend.state,
@@ -108,7 +111,7 @@ impl SystemFaction {
 
             for state_trend in &faction_info.recovering_states {
                 State::from_journal(
-                    db,
+                    &mut *conn,
                     system_address,
                     faction_id,
                     state_trend.state,
@@ -133,7 +136,7 @@ impl SystemFaction {
 
 impl State {
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         system_address: i64,
         faction_id: u32,
         state: JournalState,
@@ -158,7 +161,7 @@ impl State {
             state as _,
             status as _
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(State {
@@ -170,7 +173,7 @@ impl State {
     }
 
     pub async fn clear(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         system_address: i64,
         faction_id: u32,
     ) -> Result<(), Error> {
@@ -182,7 +185,7 @@ impl State {
             system_address as i64,
             faction_id as i32
         )
-        .execute(&db.pool)
+        .execute(&mut *conn)
         .await?;
 
         Ok(())
@@ -191,15 +194,17 @@ impl State {
 
 impl Conflict {
     pub async fn from_journal(
-        db: &Database,
+        conn: &mut sqlx::PgConnection,
         system_address: i64,
         conflict: &FactionConflict,
         timestamp: DateTime<Utc>,
     ) -> Result<Self, Error> {
         let faction_1 =
-            Faction::fetch_by_name(db, &conflict.faction_1.name).await?;
+            Faction::fetch_by_name(&mut *conn, &conflict.faction_1.name)
+                .await?;
         let faction_2 =
-            Faction::fetch_by_name(db, &conflict.faction_2.name).await?;
+            Faction::fetch_by_name(&mut *conn, &conflict.faction_2.name)
+                .await?;
 
         let row = sqlx::query!(
             r#"
@@ -247,7 +252,7 @@ impl Conflict {
             conflict.faction_2.won_days as i32,
             timestamp.naive_utc()
         )
-        .fetch_one(&db.pool)
+        .fetch_one(&mut *conn)
         .await?;
 
         Ok(Conflict {
