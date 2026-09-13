@@ -230,8 +230,9 @@ impl Reading {
 
     /// The same, carrying on from where a stopped read left off.
     ///
-    /// The bar is put straight to the byte the previous run reached, so
-    /// what it draws is the file rather than this run's share of it.
+    /// The bar is put straight to the byte the previous run reached and
+    /// its tally to the systems that run took, so what it draws and what
+    /// it counts are both the file rather than this run's share of it.
     fn opened(
         path: &Path,
         shard: Option<Shard>,
@@ -251,8 +252,11 @@ impl Reading {
         // find its own, so it covers the whole file either way.
         let size = std::fs::metadata(path).map(|it| it.len()).ok();
         let extent = bar::Extent::Bytes(size.unwrap_or(0));
-        let bar = bar::imported(&tag, extent);
+        let mut bar = bar::imported(&tag, extent);
         bar.through(at);
+        if let Some(place) = from {
+            bar.taken_up(place.systems);
+        }
         Ok(Reading {
             path: path.to_owned(),
             lines,
@@ -556,11 +560,13 @@ impl Galaxy {
         }
 
         reading.unparsed();
+        let elapsed = started.elapsed();
         info!(
             systems,
             taken_up,
             bodies,
-            elapsed = ?started.elapsed(),
+            per_min = bar::per_minute(systems - taken_up, elapsed),
+            elapsed = ?elapsed,
             dir = %self.dir.display(),
             "read the dump and wrote the body files",
         );

@@ -47,6 +47,8 @@ use indicatif::{
 };
 use std::io::{self, stderr, IsTerminal, Write};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+use tracing::info;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Every bar this run is drawing, and what the log is printed through.
@@ -131,6 +133,13 @@ const BEFORE: &str = "[{elapsed_precise}/{eta_precise}] {bar:40} ";
 /// And after it
 const AFTER: &str = " ({percent}%) {msg}";
 
+/// How many systems a read gets through between rate lines
+///
+/// A minute's reading at the rate a dump import falls to, and a couple of
+/// seconds at the rate a cold one holds — so a slow run says something
+/// often enough to watch and a fast one does not fill the log with it.
+const REPORTED: u64 = 100_000;
+
 /// The line one bulk import draws
 ///
 /// Every bulk source draws this and nothing else, so a run reading
@@ -156,13 +165,18 @@ pub fn imported(tag: &str, of: Extent) -> Import {
             .progress_chars("##-"),
     );
 
+    let now = Instant::now();
     let import = Import {
         bar: BARS.add(bar),
         tag: tag.to_owned(),
         systems: 0,
+        taken_up: 0,
         new: 0,
         updated: 0,
         skipped: 0,
+        started: now,
+        marked: 0,
+        marked_at: now,
     };
     // Drawn before the first record, so a source that has opened a file
     // and read nothing yet still names itself.
@@ -181,6 +195,15 @@ pub struct Import {
     tag: String,
     /// Systems the source has stated, however they landed.
     systems: u64,
+    /// Systems a run before this one read, where this read is being
+    /// carried on from where that one stopped.
+    ///
+    /// Counted in the total and in nothing else: what a previous run made
+    /// of its systems is not this run's tally, and a resumed read starts
+    /// at the byte the last one reached, so a bar that began its count at
+    /// zero would report a tenth of the galaxy while drawn at 90 % of the
+    /// file.
+    taken_up: u64,
     /// Of those, how many the store did not have and how many it did.
     ///
     /// These need not sum to `systems`: a stale reading is in neither, and
@@ -189,6 +212,12 @@ pub struct Import {
     updated: u64,
     /// Records nothing could parse, so systems missed.
     skipped: u64,
+    /// When this read began, and when the last rate line was written:
+    /// what the two rates in [`Import::report`] are measured over.
+    started: Instant,
+    marked_at: Instant,
+    /// What `systems` stood at when that line was written.
+    marked: u64,
 }
 
 impl Import {
@@ -205,6 +234,51 @@ impl Import {
             Some(Landed::Stale) | None => {}
         }
         self.draw();
+        if self.systems - self.marked >= REPORTED {
+            self.report();
+        }
+    }
+
+    /// Seed the tally with what a stopped run had already read.
+    ///
+    /// Said once, before the first record: a resumed read's bar is put
+    /// straight to the byte that run reached, and this is the count that
+    /// goes with it.
+    pub fn taken_up(&mut self, systems: u64) {
+        self.taken_up = systems;
+        self.draw();
+    }
+
+    /// Every system the run stands for: what it has read and what it took
+    /// up.
+    fn total(&self) -> u64 {
+        self.taken_up + self.systems
+    }
+
+    /// Say how fast the read is going, and how fast it has been
+    ///
+    /// The bar says this to a terminal and a day-long read is not watched
+    /// on one: redirected, the bars are hidden and the log is all there
+    /// is. Two rates, because they answer different questions — what the
+    /// last [`REPORTED`] systems cost is what a run slowing down shows,
+    /// and the mean is what the rest of the file is divided by.
+    fn report(&mut self) {
+        let now = Instant::now();
+        let recent =
+            per_minute(self.systems - self.marked, now - self.marked_at);
+        let mean = per_minute(self.systems, now - self.started);
+        let elapsed = now - self.started;
+        self.marked = self.systems;
+        self.marked_at = now;
+        info!(
+            source = %self.tag,
+            systems = self.total(),
+            read = self.systems,
+            per_min = recent,
+            mean_per_min = mean,
+            elapsed = ?elapsed,
+            "reading",
+        );
     }
 
     /// One record nothing could parse.
@@ -249,16 +323,49 @@ impl Import {
         self.bar.set_message(self.message());
     }
 
-    /// The tag, then the counts.
+    /// The tag, the counts and the rate
+    ///
+    /// The systems a stopped run read are in the total and nowhere else,
+    /// the line that took them up having already said how many there
+    /// were. The rate is this run's own — a second rather than the log's
+    /// minute because the bar is what a run is watched by while it goes,
+    /// and it is the mean since this run began rather than the moment's,
+    /// which at a line redrawn several times a second is a number nobody
+    /// can read.
     fn message(&self) -> String {
         format!(
-            "[{}] {} systems, {} new, {} updated, {} skipped",
+            "[{}] {} systems ({}/s), {} new, {} updated, {} skipped",
             self.tag,
-            HumanCount(self.systems),
+            HumanCount(self.total()),
+            HumanCount(per_second(self.systems, self.started.elapsed())),
             HumanCount(self.new),
             HumanCount(self.updated),
             HumanCount(self.skipped),
         )
+    }
+}
+
+/// Systems a minute, which is the rate a long read is watched by
+///
+/// A minute rather than a second because the number that matters over a
+/// 610 GB file is the one that divides into what is left: at 1,740 systems
+/// a second the remaining 196 M are 31 hours, which is easier to see in
+/// 104,400 a minute than in a rate that has to be multiplied first. Zero
+/// over no time at all, rather than an infinity.
+pub fn per_minute(systems: u64, over: Duration) -> u64 {
+    let seconds = over.as_secs_f64();
+    match seconds > 0.0 {
+        true => (systems as f64 * 60.0 / seconds) as u64,
+        false => 0,
+    }
+}
+
+/// Systems a second, which is the rate the bar has room for.
+fn per_second(systems: u64, over: Duration) -> u64 {
+    let seconds = over.as_secs_f64();
+    match seconds > 0.0 {
+        true => (systems as f64 / seconds) as u64,
+        false => 0,
     }
 }
 
