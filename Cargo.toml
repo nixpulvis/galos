@@ -41,6 +41,11 @@ elite_journal = { path = "./elite_journal", features = ["watch"] }
 prettytable-rs = "*"
 serde_json = "*"
 serde = "1"
+# Where a stopped cold build's place in the dump is written: `Build::mark`
+# carries a caller's bytes and `galos_index` writes its own metadata as
+# MessagePack, so the one caller with a place to keep encodes it the same
+# way.
+rmp-serde = "1"
 # `galos-sync`'s `Sink` is a boxed trait with async methods on it.
 async-trait = "0.1"
 # The EDDN subscription parks the OS thread it runs on, so it runs on one of

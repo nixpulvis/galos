@@ -85,12 +85,13 @@ use clap::{Parser, ValueEnum};
 use from::Source;
 use galos::sink::index::INDEX_DIR;
 use galos::sink::relay::{Dropped, Live};
-use galos::sink::tables::{Tables, Wrote};
 use galos::sink::{Db, Fan, Index, Relay, Sink};
 use galos::{bar, Shard, Shutdown};
 use galos_db::index::Parts;
 use galos_db::Database;
-use galos_index::{Build, BuildParams, Built, By, region_budget};
+use galos_index::{
+    Build, BuildParams, Built, By, Rows, Start, region_budget,
+};
 use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -611,13 +612,13 @@ async fn run(cli: Cli) -> Result<bool, String> {
     if let Some(path) = cold_route(&cli) {
         let dir = cli.index.as_deref().expect("an index, or this is None");
         let checkpoint = Index::checkpoint(dir, cli.checkpoint.as_deref());
-        let source = spansh::Galaxy {
+        let mut source = spansh::Galaxy {
             path: path.to_owned(),
             dir: dir.to_owned(),
             now: Utc::now(),
             shutdown: shutdown.clone(),
         };
-        return cold(&source, dir, &checkpoint);
+        return cold(&mut source, dir, &checkpoint);
     }
 
     // Two pools, not one shared five connections. The collect side writes a
@@ -763,11 +764,13 @@ async fn run(cli: Cli) -> Result<bool, String> {
 /// database, which is what makes `galos_db::index` rebuild rather than
 /// resume from it.
 ///
-/// Ctrl-C during the read is a clean exit: the builder publishes nothing —
-/// no cells, no names table, no resume point — so the next run reads the
-/// dump again from its first line. What it does leave is the body files
-/// [`spansh::Galaxy::read`] wrote as it went, each whole and each filed
-/// under its own address, which a later build writes again.
+/// Ctrl-C during the read is a clean exit that keeps its place: the builder
+/// publishes nothing — no cells, no names table, no resume point — but the
+/// spills of every system it has read stay where they are, and the next run
+/// over the same file takes them up and reads on from the line it stopped
+/// at. The body files it wrote as it went stand too, each whole and each
+/// filed under its own address. A run over a different dump, or over one
+/// that has changed length, reads from the start and says so.
 ///
 /// The metadata tables go in after [`Build::finish`] has answered, which
 /// is after the index file. A stop then leaves no table at all: up to the
@@ -779,7 +782,7 @@ async fn run(cli: Cli) -> Result<bool, String> {
 /// would be a directory nothing ever repairs. `galos_db::index` writes its
 /// own parts at the same place, for the same reason.
 fn cold(
-    source: &spansh::Galaxy,
+    source: &mut spansh::Galaxy,
     dir: &Path,
     checkpoint: &Path,
 ) -> Result<bool, String> {
@@ -788,12 +791,47 @@ fn cold(
     let start = Instant::now();
     let budget = region_budget();
     let failed = |err| format!("the index could not be built: {err}");
+
+    // What a stopped build left, where it was reading this same file. The
+    // clock comes back with it: a build ages every system against one
+    // moment, and a resumed run taking its own would bin half the galaxy's
+    // Recency against another.
+    let (taking_up, place) = match galos_index::left_off(checkpoint) {
+        Some(kept) => match spansh::Place::of(&kept, &source.path) {
+            Some(place) => {
+                info!(
+                    systems = kept.systems(),
+                    at = place.at(),
+                    dir = %dir.display(),
+                    "taking up the read a stopped build left",
+                );
+                source.now = place.now;
+                (Start::Resuming(kept), Some(place))
+            }
+            None => (Start::Fresh, None),
+        },
+        None => (Start::Fresh, None),
+    };
+
     let stop = || source.shutdown.asked();
-    let mut build =
-        Build::begin(dir, checkpoint, BuildParams::default(), budget, &stop)
-            .map_err(failed)?;
-    let mut tables = Tables::building();
-    source.read(&mut build, &mut tables).map_err(failed)?;
+    let mut build = Build::begin(
+        dir,
+        checkpoint,
+        BuildParams::default(),
+        budget,
+        taking_up,
+        &stop,
+    )
+    .map_err(failed)?;
+    // Beside the build's own scratch rather than in it: `Build::finish`
+    // clears that when it publishes, and these have to stand until the
+    // tables have been written off them.
+    let mut rows = Rows::writing(
+        &rows_dir(checkpoint),
+        place.as_ref().map_or([0; 3], spansh::Place::rows),
+    )
+    .map_err(failed)?;
+    source.read(&mut build, &mut rows, place).map_err(failed)?;
     let report = match build.finish(By::Events, None).map_err(failed)? {
         Built::Index(report) => report,
         Built::Stopped(abandoned) => {
@@ -801,20 +839,21 @@ fn cold(
                 %abandoned,
                 elapsed = ?start.elapsed(),
                 dir = %dir.display(),
-                "asked to stop before the index was built; nothing was \
-                 published and the next run reads the dump from the start",
+                "asked to stop before the index was built; nothing of the \
+                 index was published, and the body files the read wrote \
+                 stand",
             );
             return Ok(true);
         }
     };
 
-    // Every table the dump can fill, whole. Not the factions: the dump's
+    // Every table the dump can fill, read back off the rows the read
+    // spilled and written in address order. Not the factions: the dump's
     // own faction lists are passed over by `spansh::galaxy::System`, and
     // nothing reading records could number a faction anyway — an empty
     // table would say the galaxy has none where an absent one says this
-    // index cannot tell. See [`Wrote::DERIVED`].
-    tables.write(dir, Wrote::DERIVED).map_err(failed)?;
-    let counts = tables.counts();
+    // index cannot tell.
+    let counts = rows.finish(dir).map_err(failed)?;
 
     // One line, in the shape the sink's own publish prints, so a directory
     // written by either builder says what happened the same way.
@@ -844,6 +883,17 @@ fn cold(
         );
     }
     Ok(true)
+}
+
+/// Where a cold build's table rows are spilled: beside the resume point,
+/// as the build's own scratch is.
+///
+/// A run starting over opens them at zero bytes, which is the clearing,
+/// and [`Rows::finish`] removes them once the tables have been written.
+fn rows_dir(checkpoint: &Path) -> PathBuf {
+    let mut name = checkpoint.as_os_str().to_owned();
+    name.push(".rows");
+    PathBuf::from(name)
 }
 
 /// How many connections a bulk import may hold open

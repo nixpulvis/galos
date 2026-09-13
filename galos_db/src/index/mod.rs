@@ -14,7 +14,7 @@ use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
 use galos_index::{
     derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, Chunks,
-    ColdReport, Index, Pending, System, Taking, Tree,
+    ColdReport, Index, Pending, Start, System, Taking, Tree,
 };
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
@@ -220,6 +220,10 @@ async fn changed_addresses(
 /// `stop` is asked per row, which is where the read's time goes, and again
 /// inside [`Build::finish`]. A build that was stopped published nothing:
 /// see [`Built`].
+///
+/// Always [`Start::Fresh`]: a stopped read is taken up again by re-reading
+/// the cursors, which is minutes over a database where it is hours over a
+/// 610 GB dump, and the rows may have moved under it meanwhile.
 async fn build_cells(
     db: &Database,
     dir: &Path,
@@ -230,7 +234,8 @@ async fn build_cells(
     stop: &Stop<'_>,
 ) -> Result<Built> {
     let asked = || stop();
-    let mut build = Build::begin(dir, checkpoint, params, budget, &asked)?;
+    let mut build =
+        Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
 
     let mut stars = sqlx::query(
         "SELECT system_address, absolute_magnitude, temperature \

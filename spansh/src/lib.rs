@@ -28,7 +28,7 @@
 //! star, planet and barycentre anybody has looked at.
 
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Seek};
 use std::path::Path;
 
 /// One system as the full dump gives it, and the scans it stands for.
@@ -57,21 +57,48 @@ pub struct Lines {
     reader: BufReader<File>,
     line: String,
     at: u64,
+    bytes: u64,
 }
 
 impl Lines {
     /// Open a dump.
     pub fn open(path: &Path) -> io::Result<Lines> {
+        Lines::open_at(path, 0, 0)
+    }
+
+    /// Open a dump at a byte already read up to, on the line already read
+    /// up to.
+    ///
+    /// `at` is a figure [`bytes`](Self::bytes) answered, which is only ever
+    /// the end of a line — every line is read whole or not at all — so the
+    /// read carries on at the start of the next object and never inside
+    /// one. A build that stopped part way through a 610 GB file takes up
+    /// where it left off with this.
+    pub fn open_at(path: &Path, at: u64, line: u64) -> io::Result<Lines> {
+        let mut file = File::open(path)?;
+        if at > 0 {
+            file.seek(io::SeekFrom::Start(at))?;
+        }
         Ok(Lines {
-            reader: BufReader::with_capacity(BUFFER, File::open(path)?),
+            reader: BufReader::with_capacity(BUFFER, file),
             line: String::new(),
-            at: 0,
+            at: line,
+            bytes: at,
         })
     }
 
     /// Which line the reader is on, for saying where a bad one was.
     pub fn at(&self) -> u64 {
         self.at
+    }
+
+    /// How much of the file has been read, in bytes.
+    ///
+    /// Always a line boundary, so it is what [`open_at`](Self::open_at)
+    /// takes to carry on from. Bytes rather than lines because seeking to
+    /// a line means counting them.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
     }
 
     /// The next object's text, or [`None`] at the end of the file.
@@ -82,8 +109,9 @@ impl Lines {
         loop {
             self.line.clear();
             self.at += 1;
-            if self.reader.read_line(&mut self.line)? == 0 {
-                return Ok(None);
+            match self.reader.read_line(&mut self.line)? {
+                0 => return Ok(None),
+                read => self.bytes += read as u64,
             }
             // The object's bounds within the line, so what is returned is a
             // slice of the buffer.

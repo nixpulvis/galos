@@ -242,6 +242,57 @@ impl Chunks {
         }
     }
 
+    /// Take up the chunks a stopped build staged, at the cut it recorded.
+    ///
+    /// `written` complete chunks stand as they are, and the part-filled
+    /// tail beside them — which [`stage`](Self::stage) put there — is read
+    /// back into the buffer it was written from, cut to the `tail` entries
+    /// the mark stands for. Anything past that was named after the mark and
+    /// is named again by the resumed read.
+    ///
+    /// A name is pushed for every system pushed, so the table and the
+    /// spills are cut at the same place or the directory's two halves stand
+    /// for different galaxies.
+    pub fn resuming(
+        dir: &Path,
+        written: usize,
+        tail: usize,
+    ) -> io::Result<Chunks> {
+        let building = dir.join(BUILDING);
+        let mut filling = match tail {
+            0 => Vec::new(),
+            _ => read_meta::<Vec<NameEntry>>(&names_chunk_path(
+                &building, written,
+            ))?,
+        };
+        filling.truncate(tail);
+        filling.reserve(CHUNK - filling.len().min(CHUNK));
+        Ok(Chunks {
+            dir: dir.to_owned(),
+            building,
+            named: written * CHUNK + filling.len(),
+            filling,
+            written,
+        })
+    }
+
+    /// Put the part-filled tail on disk without closing it, and say how
+    /// many entries it holds.
+    ///
+    /// What a build does when it marks where its caller has read to: the
+    /// chunk is written where the next [`flush`](Self::flush) would write
+    /// it anyway, so a resumed build reads it back and carries on filling
+    /// it, and a build that is never resumed overwrites it.
+    pub fn stage(&mut self) -> io::Result<usize> {
+        write_meta(&names_chunk_path(&self.building, self.written), &self.filling)?;
+        Ok(self.filling.len())
+    }
+
+    /// How many chunks are complete behind the one being filled.
+    pub fn complete(&self) -> usize {
+        self.written
+    }
+
     /// One more system's name, in the order the build read it.
     pub fn push(&mut self, entry: NameEntry) -> io::Result<()> {
         self.filling.push(entry);

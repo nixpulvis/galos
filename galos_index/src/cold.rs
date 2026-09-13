@@ -16,14 +16,17 @@
 
 use crate::bucket::{self, Buckets, Formed};
 use crate::checkpoint::{By, Compaction};
+use crate::geometry::CellId;
 use crate::meta::NameEntry;
 use crate::names::Chunks;
 use crate::region::{self, Crown, Offer};
+use crate::source::{read_meta, write_meta};
 use crate::spill::Spilled;
 use crate::store::INDEX_FILE;
 use crate::tree::{BuildParams, Snapshot, System};
 use crate::walk::Index;
 use chrono::NaiveDateTime;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -55,6 +58,85 @@ pub fn region_budget() -> u64 {
         Some(budget) => budget,
         None => REGION_BUDGET,
     }
+}
+
+/// What a build has read, so that a stopped one can be taken up.
+///
+/// The spills are the work: every system read, on disk, in the bucket it
+/// belongs to. What they do not say is where in its own source the caller
+/// had got to, and without that a resumed read either starts over or
+/// spills a second copy of what it already has.
+///
+/// So a mark is the caller's place and the cut the spills stand at: the
+/// bytes of each bucket's file at the moment the mark was taken, and the
+/// names chunks beside them. The buffers flush on their own, so a spill
+/// runs on past its figure between one mark and the next; the figures are
+/// what a resume cuts back to. See [`Buckets::resume`](crate::bucket::Buckets::resume).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Mark {
+    /// The caller's place in its own source, opaque here.
+    cursor: Vec<u8>,
+    /// Each bucket, as level and Morton key, and the bytes of its spill.
+    buckets: Vec<(u8, u64, u64)>,
+    /// Complete name chunks, and entries in the tail staged beside them.
+    chunks: usize,
+    tail: usize,
+    /// Systems the mark stands for.
+    systems: u64,
+}
+
+/// A stopped build's work, and where its caller had read to.
+///
+/// Answered by [`left_off`] and handed back to [`Build::begin`] as
+/// [`Start::Resuming`]. The cursor is the caller's own: this carries it and
+/// does not read it.
+#[derive(Clone, Debug)]
+pub struct LeftOff(Mark);
+
+impl LeftOff {
+    /// What the caller wrote when it last marked its place.
+    pub fn cursor(&self) -> &[u8] {
+        &self.0.cursor
+    }
+
+    /// Systems already spilled, which a resumed read does not read again.
+    pub fn systems(&self) -> u64 {
+        self.0.systems
+    }
+}
+
+/// Where a build starts.
+#[derive(Clone, Debug)]
+pub enum Start {
+    /// From nothing: whatever a previous build left is cleared first.
+    Fresh,
+    /// From what a stopped build left, at the cut its mark names.
+    Resuming(LeftOff),
+}
+
+/// What a stopped build left beside `checkpoint`, where it left anything.
+///
+/// [`None`] where no build has stopped part way, where one finished (the
+/// scratch goes with it), or where what is there cannot be read — a mark
+/// that will not decode is a build starting over, not a run failing.
+pub fn left_off(checkpoint: &Path) -> Option<LeftOff> {
+    read_meta::<Mark>(&mark_path(&spill_dir(checkpoint))).ok().map(LeftOff)
+}
+
+/// Where a build's mark sits: in the scratch, so clearing one clears both.
+fn mark_path(scratch: &Path) -> PathBuf {
+    scratch.join("mark.bin")
+}
+
+/// Where a build's own scratch is: beside the resume point, cleared when
+/// the build finishes and left standing by a stop that can be taken up.
+///
+/// A caller with working files of its own — the rows of the tables a
+/// record fills, which are cut at the same place the spills are — puts
+/// them here, so that one directory removed is the whole of a build's
+/// scratch and a fresh build cannot read a stopped one's leavings.
+pub fn scratch(checkpoint: &Path) -> PathBuf {
+    spill_dir(checkpoint)
 }
 
 /// A cold build a caller pushes into: the galaxy read once, as it arrives.
@@ -92,6 +174,8 @@ pub struct Build<'a> {
     buckets: Buckets,
     /// The names table, written as the names arrive.
     names: Chunks,
+    /// Systems this build took up from a stopped one, of what it holds.
+    kept: u64,
     /// Whether whoever asked for this build has stopped wanting it.
     stop: &'a dyn Fn() -> bool,
 }
@@ -133,18 +217,28 @@ pub struct Abandoned {
     /// Whether the directory is as the build found it.
     ///
     /// True for a stop up to and including the offer pass: the spills are
-    /// scratch and the names table was staged, so both are simply removed.
+    /// scratch and the names table was staged, so neither is published.
     /// False from the first payload written: those payloads are this
     /// build's and nothing here holds the galaxy it would take to put the
     /// others back, so the index file that stood over them comes down with
     /// them and the directory serves nothing until a build finishes.
+    ///
+    /// It says nothing about the body files, which are the caller's and
+    /// are written as the read goes.
     pub intact: bool,
+    /// Systems the spills hold for the next run, which it does not read
+    /// again.
+    ///
+    /// What the build's last [`mark`](Build::mark) stands for, and zero
+    /// where the read has to start over: a caller that never marked, or a
+    /// stop past the point where the buckets are consumed.
+    pub kept: u64,
 }
 
 impl Abandoned {
     /// A build that was never begun, the run being already stopping.
     pub fn unstarted() -> Abandoned {
-        Abandoned { systems: 0, raised: 0, regions: 0, intact: true }
+        Abandoned { systems: 0, raised: 0, regions: 0, intact: true, kept: 0 }
     }
 }
 
@@ -159,9 +253,13 @@ impl fmt::Display for Abandoned {
             )?;
         }
         match self.intact {
-            true => write!(f, "; the directory is as it was found"),
+            true => write!(f, "; the directory is as it was found")?,
             false => write!(f, "; the directory serves nothing until a \
-                                build finishes"),
+                                build finishes")?,
+        }
+        match self.kept {
+            0 => write!(f, " and the next run reads from the start"),
+            kept => write!(f, " and the next run takes up {kept} systems"),
         }
     }
 }
@@ -186,17 +284,74 @@ impl<'a> Build<'a> {
         checkpoint: &Path,
         params: BuildParams,
         budget: u64,
+        start: Start,
         stop: &'a dyn Fn() -> bool,
     ) -> io::Result<Build<'a>> {
+        let scratch = spill_dir(checkpoint);
+        let (buckets, names, kept) = match start {
+            Start::Fresh => {
+                (Buckets::create(&scratch)?, Chunks::writing(dir), 0)
+            }
+            Start::Resuming(LeftOff(mark)) => {
+                let cut: Vec<(CellId, u64)> = mark
+                    .buckets
+                    .iter()
+                    .map(|&(level, morton, bytes)| {
+                        (CellId::from_morton(level, morton), bytes)
+                    })
+                    .collect();
+                (
+                    Buckets::resume(&scratch, &cut)?,
+                    Chunks::resuming(dir, mark.chunks, mark.tail)?,
+                    mark.systems,
+                )
+            }
+        };
         Ok(Build {
             dir: dir.to_owned(),
             checkpoint: checkpoint.to_owned(),
             params,
             budget,
-            buckets: Buckets::create(&spill_dir(checkpoint))?,
-            names: Chunks::writing(dir),
+            buckets,
+            names,
+            kept,
             stop,
         })
+    }
+
+    /// Write down where the caller has read to, and cut the spills to
+    /// match.
+    ///
+    /// `cursor` is the caller's own place in its own source and is carried
+    /// rather than read. Everything pushed before this call is on disk when
+    /// it returns, and a build that stops after it leaves a scratch the
+    /// next run takes up with [`left_off`] — so what a stop costs is
+    /// whatever has been read since the last mark, and a caller that marks
+    /// when it is told to stop loses nothing at all.
+    ///
+    /// Not free: every buffer is flushed and the part-filled names chunk is
+    /// written, which over a galaxy's worth of buckets is a few thousand
+    /// small writes and a megabyte. Marking per record would cost more than
+    /// the read. The caller decides how much of a read it is prepared to
+    /// lose to a kill.
+    pub fn mark(&mut self, cursor: &[u8]) -> io::Result<()> {
+        let buckets = self
+            .buckets
+            .lengths()?
+            .into_iter()
+            .map(|(id, bytes)| (id.level, id.morton(), bytes))
+            .collect();
+        let tail = self.names.stage()?;
+        let mark = Mark {
+            cursor: cursor.to_vec(),
+            buckets,
+            chunks: self.names.complete(),
+            tail,
+            systems: self.buckets.count(),
+        };
+        write_meta(&mark_path(&spill_dir(&self.checkpoint)), &mark)?;
+        self.kept = mark.systems;
+        Ok(())
     }
 
     /// One more system, with the name the names table is to carry.
@@ -239,6 +394,12 @@ impl<'a> Build<'a> {
     ///
     /// Nothing of the directory is replaced until the crown's payloads are
     /// written, which is where [`Abandoned::intact`] stops holding.
+    ///
+    /// A stop before the buckets are formed into regions leaves them, and
+    /// the mark beside them, for the next run: see [`Build::mark`]. A stop
+    /// after it does not — `form` renames, concatenates and divides the
+    /// bucket files, so what is on disk from there on is regions and no
+    /// longer the cut a read could be taken up at.
     pub fn finish(
         self,
         by: By,
@@ -251,27 +412,29 @@ impl<'a> Build<'a> {
             budget,
             buckets,
             names,
+            kept,
             stop,
         } = self;
         let named = names.named();
         let taken = buckets.count();
         let scratch = spill_dir(&checkpoint);
-        let abandoned = |raised, regions, intact| Abandoned {
+        let abandoned = |raised, regions, intact, kept| Abandoned {
             systems: taken,
             raised,
             regions,
             intact,
+            kept,
         };
 
         if stop() {
-            return stopped(&scratch, names, abandoned(0, 0, true));
+            return stopped(&scratch, names, abandoned(0, 0, true, kept));
         }
         let formed =
             bucket::form(&scratch, buckets.finish()?, budget, &params)?;
         let regions = formed.cut.regions().len();
 
         let Some(offered) = offers(&formed, &params, stop)? else {
-            return stopped(&scratch, names, abandoned(0, regions, true));
+            return stopped(&scratch, names, abandoned(0, regions, true, 0));
         };
         let systems: u64 = offered.iter().map(Offer::count).sum();
         let allowed = budget.max(params.leaf_cap as u64);
@@ -301,7 +464,7 @@ impl<'a> Build<'a> {
                 return stopped(
                     &scratch,
                     names,
-                    abandoned(raised, regions, false),
+                    abandoned(raised, regions, false, 0),
                 );
             }
             let spilled = Spilled::open(&formed.spills[&region])?;
@@ -337,13 +500,25 @@ impl<'a> Build<'a> {
     }
 }
 
-/// Everything a stopped build wrote that nothing will read, removed: the
-/// scratch spills, and the names table it had staged.
+/// What a stopped build leaves on disk, which is what its report says.
+///
+/// A stop the next run can take up — [`Abandoned::kept`] systems, a mark
+/// standing for them — leaves the scratch spills and the staged names
+/// exactly where a resume looks for them. Nothing of the served directory
+/// is theirs: the chunks are in `.building` and the spills are beside the
+/// resume point, so a directory that was being read into still serves what
+/// it served.
+///
+/// A stop nothing can take up removes both, there being no reader for
+/// either.
 fn stopped(
     scratch: &Path,
     names: Chunks,
     abandoned: Abandoned,
 ) -> io::Result<Built> {
+    if abandoned.kept > 0 {
+        return Ok(Built::Stopped(abandoned));
+    }
     names.abandon()?;
     let _ = std::fs::remove_dir_all(scratch);
     Ok(Built::Stopped(abandoned))
@@ -631,6 +806,7 @@ mod tests {
             &at.join(&format!("{name}.checkpoint")),
             params,
             budget,
+            Start::Fresh,
             &never,
         )?;
         for &system in systems {
@@ -842,7 +1018,7 @@ mod tests {
         let pushed = Cell::new(0u64);
         let stop = || pushed.get() >= 66_000;
         let mut build =
-            Build::begin(&dir, &checkpoint, params, 6_000, &stop)
+            Build::begin(&dir, &checkpoint, params, 6_000, Start::Fresh, &stop)
                 .expect("a build");
         for &system in &systems {
             match build.push(system, entry(&system)).expect("a push") {
@@ -863,6 +1039,7 @@ mod tests {
                 raised: 0,
                 regions: 0,
                 intact: true,
+                kept: 0,
             },
         );
         assert_eq!(contents(&dir), before, "the directory was written to");
@@ -920,7 +1097,7 @@ mod tests {
         let systems = galaxy(3_000);
         let stop = || !dir.join(INDEX_FILE).exists();
         let mut build =
-            Build::begin(&dir, &checkpoint, params, 500, &stop)
+            Build::begin(&dir, &checkpoint, params, 500, Start::Fresh, &stop)
                 .expect("a build");
         for &system in &systems {
             assert_eq!(
@@ -968,5 +1145,141 @@ mod tests {
             NameTable::read(&dir).expect("the names table").len(),
             systems.len(),
         );
+    }
+
+    /// A stopped read is taken up where it left off, and comes to the
+    /// directory a build that was never stopped comes to
+    ///
+    /// The whole claim of [`Build::mark`], and the one worth a test: the
+    /// spills a stop leaves stand for exactly the systems the mark names,
+    /// so the second run reads on from there and neither loses a system nor
+    /// spills one twice. A system in two cells is not a tree, and a system
+    /// in none is a name the map cannot draw, so both failures are silent
+    /// in the directory and loud here.
+    ///
+    /// The payloads and the names chunks are compared byte for byte; the
+    /// index file by its cells' integers, `rank_lo`, `rank_hi`,
+    /// `child_mask` and the count, since the floats beside them are summed
+    /// in the order a cell map iterates and move in the last bit between
+    /// one build and the next whatever is done to them.
+    #[test]
+    fn a_resumed_build_is_the_build_that_was_never_stopped() {
+        let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
+        let at = Scratch::new("resumed");
+        // More than the 64Ki entries a names chunk holds, so the tail
+        // chunk the mark stages is a chunk the resume reads back.
+        let systems = lumpy(70_000);
+
+        built(&at, "whole", params, 6_000, &systems).expect("a cold build");
+
+        let (dir, checkpoint) =
+            (at.join("halved"), at.join("halved.checkpoint"));
+        let pushed = Cell::new(0u64);
+        let stop = || pushed.get() >= 40_000;
+        let mut build =
+            Build::begin(&dir, &checkpoint, params, 6_000, Start::Fresh, &stop)
+                .expect("a build");
+        let mut took = 0usize;
+        for &system in &systems {
+            match build.push(system, entry(&system)).expect("a push") {
+                Taking::More => {
+                    pushed.set(pushed.get() + 1);
+                    took += 1;
+                }
+                // The record was refused, so the mark stands for what went
+                // in before it — which is what the caller counted.
+                Taking::Stopped => {
+                    build.mark(took.to_string().as_bytes()).expect("a mark");
+                    break;
+                }
+            }
+        }
+        let Built::Stopped(abandoned) =
+            build.finish(By::Database, None).expect("a stopped build")
+        else {
+            panic!("it ran to its end")
+        };
+        assert_eq!(abandoned.kept, 40_000, "{abandoned}");
+        assert!(
+            spill_dir(&checkpoint).exists(),
+            "the spills a resume reads were removed: {abandoned}",
+        );
+
+        let left = left_off(&checkpoint).expect("a mark to take up");
+        assert_eq!(left.systems(), 40_000);
+        let from: usize = std::str::from_utf8(left.cursor())
+            .expect("the cursor is the caller's")
+            .parse()
+            .expect("a count");
+        assert_eq!(from, took);
+
+        let never = || false;
+        let mut build = Build::begin(
+            &dir,
+            &checkpoint,
+            params,
+            6_000,
+            Start::Resuming(left),
+            &never,
+        )
+        .expect("a resumed build");
+        for &system in &systems[from..] {
+            assert_eq!(
+                build.push(system, entry(&system)).expect("a push"),
+                Taking::More,
+            );
+        }
+        let Built::Index(report) =
+            build.finish(By::Database, None).expect("a build")
+        else {
+            panic!("the resumed build stopped")
+        };
+        assert_eq!(report.systems, systems.len(), "{report}");
+        assert!(report.is_consistent(), "{report}");
+
+        let whole = at.join("whole");
+        let mine = contents(&dir);
+        let theirs = contents(&whole);
+        for (path, bytes) in &theirs {
+            if path == Path::new(INDEX_FILE) {
+                continue;
+            }
+            assert_eq!(
+                mine.get(path).map(Vec::len),
+                Some(bytes.len()),
+                "{}: the resumed build wrote it differently",
+                path.display(),
+            );
+            assert!(
+                mine[path] == *bytes,
+                "{}: the resumed build wrote other bytes",
+                path.display(),
+            );
+        }
+        assert_eq!(
+            mine.keys().collect::<Vec<_>>(),
+            theirs.keys().collect::<Vec<_>>(),
+            "the two builds wrote different files",
+        );
+
+        let counted = |dir: &Path| {
+            let index = Index::read(dir).expect("an index file");
+            let mut cells: Vec<(u8, u64, u64, u64, u8, u64)> = index
+                .cells()
+                .map(|cell| {
+                    (
+                        cell.id.level,
+                        cell.id.morton(),
+                        cell.rank_lo,
+                        cell.rank_hi,
+                        cell.child_mask,
+                        cell.aggregate.count(),
+                    )
+                })
+                .collect();
+            cells.sort_unstable();
+            cells
+        };
+        assert_eq!(counted(&dir), counted(&whole), "the trees differ");
     }
 }

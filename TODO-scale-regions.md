@@ -107,7 +107,17 @@ route needs a 43-minute import first.
 body-file reshard of 559,582 files ignored the stop flag. It is 0.05 s. A
 SIGINT 0.9 s into a cold build exits in 0.023 s with code 0. A `finish`
 that takes the delta road is 3.4 ms where the whole-directory rewrite was
-26 s over 240,000 systems.
+26 s over 240,000 systems. A stop during the read keeps its place: the
+spills stand and the next run takes them up — item 2b.
+
+**One file a system, which is what the import costs.** 91 % of a dump
+import's wall clock was body files: three `open`s and a `rename` a system,
+two of the opens for names no directory holds. Over 50,000 systems, 26,992
+of them scanned, 7.13 s to 4.65 s and 3.20 s of kernel time to 1.48 s with
+those gone (`Published::raising`). What is left is the file count: at
+3.16 M body files the live 200 M import had fallen from 7,012 systems a
+second to **1,740**, and 188 M files at 4.4 KB allocated apiece is ~830 GB.
+That is the packing, not the write path.
 
 **The client, against `test2/`.** `walk_screen` 96–104 µs at every zoom; the
 read 158 ms cold and 11–14 ms warm; the route graph 42.9 ms over 730,544
@@ -198,27 +208,30 @@ reporter — the three shapes whose absence let all of this pass.
 
 ## What is left
 
-### 1. The sidecars the cold route holds
+### 1. The sidecars the cold route holds — half done
 
 `Build::finish` writes the names chunks, the cell payloads, the index file
 and the checkpoint. `bin/sync/main.rs::cold` writes `populated.bin`,
-`reaches.bin` and `boosts.bin` beside it, out of a `galos::sink::Tables`
-held across the read: patched per line from the same one-system
-`galos_index::Galaxy` the tree's system comes from, before the bodies are
-settled so the reach and the boost are read off what is still held rather
-than off the file just written. `factions.bin` stays unwritten — nothing
-reading records can number a faction, and an empty table would say the
-galaxy has none where an absent one says this index cannot tell.
+`reaches.bin` and `boosts.bin` beside it. Those three used to come out of a
+`galos::sink::Tables` held across the read — one row a system, reaches one
+per *scanned* system, **measured 22.4 MiB over the seven-day slice** and
+some 6 GiB at 200 M. `factions.bin` stays unwritten: nothing reading
+records can number a faction, and an empty table would say the galaxy has
+none where an absent one says this index cannot tell.
 
-What is left is the holding. Each is one row a system, reaches one per
-*scanned* system, and the rows accumulate for the length of the read:
-**measured 22.4 MiB over the seven-day slice** — 52,908 populated, 277,550
-reaches and 34,472 boosts, 208,224,256 B peak against 184,696,832 B with
-the patch taken out, at 64.9 s against 67.5 s — which is some 6 GiB at
-200 M systems on the same proportions. So each wants what the names table
-already gets: spilled as it arrives, written in address order at the end.
-Doing this is also what collapses the last two writers into one (see item
-6).
+**The holding is gone.** `galos_index::Rows` writes a row to a file as it
+is derived, the way a name goes to a chunk, in `<checkpoint>.rows/`; the
+tables are made from those files once the build has published. The rows are
+length-framed, so the files are cut at a row boundary, which is what lets a
+stopped build be taken up — see item 2b.
+
+**What is left is the sort.** The tables are written in address order, so
+`Rows::finish` reads the rows back into maps and sorts them: the galaxy's
+worth of rows in memory once, at the end, rather than throughout. The peak
+is therefore unchanged at 200 M and the read's profile is flat. Finishing
+this is an external sort — sorted runs and a k-way merge, or a spill
+bucketed by address — and it is what collapses the last two writers into
+one (see item 6).
 
 ### 2. The 200 M import has not been run
 
@@ -267,6 +280,46 @@ Held until the 200 M import and a follow have been run: it is a
 served-format migration, and the evidence for it should come from the
 galaxy rather than from a seven-day slice. A test should assert the
 ≤0.002 ly bound on the truncated cases rather than leaving it implicit.
+
+### 2b. A stopped import is taken up rather than thrown away
+
+Found by running it. A 610 GB read is not something anybody gets through
+without stopping once, and a stop used to remove the spills, the staged
+names and the mark: 26 minutes and 7,585,860 systems, gone, with 4.2 M
+body files left behind in a directory the run reported as "as it was
+found".
+
+`Build::mark(cursor)` writes down where the caller has read to and cuts the
+spills to match: every bucket's buffer flushed, the part-filled names chunk
+staged, and the byte count of each file recorded beside the caller's own
+cursor, which this crate carries and does not read. `left_off(checkpoint)`
+answers what a stopped build left, and `Start::Resuming` takes it up —
+every spill cut back to its figure, since the buffers flush on their own
+and a file runs on past its mark between one and the next.
+
+`bin/sync/spansh.rs` marks every `MARKED` = 1,000,000 systems, and again at
+the exact line a stop lands on, so a Ctrl-C costs nothing and a kill costs
+the systems since the last mark. What it writes into the mark is a
+`Place`: the file, its length, the byte and line it had read to, the row
+files' lengths, and the clock the run dated its Recency by — because a
+build ages every system against one moment and a resumed run taking its
+own would bin half the galaxy against another. A mark taken against a
+different dump, or a dump that has changed length, is refused and the read
+starts over.
+
+Measured over 50,000 systems of the seven-day slice, stopped at 18,504 and
+taken up: all **27,045 files byte-identical** to a build that was never
+stopped — every body file, every cell payload, the names chunk and all
+three tables — and `index.bin` identical in every integer column, the
+floats beside them moving in the last bit with the order a cell map
+iterates. `cold::tests::a_resumed_build_is_the_build_that_was_never_stopped`
+is the same claim over a lumpy galaxy at a 6,000-system budget.
+
+A stop *after* the buckets are formed into regions is not resumable and
+says so: `bucket::form` renames, concatenates and divides the bucket files,
+so what is on disk from there on is regions and no longer a cut a read
+could be taken up at. The read is what takes the hours, so that is where
+the resume is.
 
 ### 3. Flags
 

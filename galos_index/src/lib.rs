@@ -55,7 +55,10 @@ pub use aggregate::{Aggregate, Cell};
 pub use bodies::{Bodies, Kept, Published};
 pub use cache::{Point, Resident, ResidentCell};
 pub use checkpoint::{By, Checkpoint, Compaction, Pending};
-pub use cold::{Abandoned, Build, Built, ColdReport, Taking, region_budget};
+pub use cold::{
+    Abandoned, Build, Built, ColdReport, LeftOff, Start, Taking, left_off,
+    region_budget, scratch,
+};
 pub use galaxy::Galaxy;
 pub use geometry::{Aabb, CellId};
 pub use inside::STAND_IN;
@@ -69,7 +72,7 @@ pub use names::{Chunks, NameTable};
 pub use orbit::{Orbit, Orbits, Spacing};
 pub use report::SystemReport;
 pub use serialization::{Codec, Decode, Encode, FixedCodec};
-pub use sidecars::Sidecars;
+pub use sidecars::{Rows, Sidecars};
 pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{

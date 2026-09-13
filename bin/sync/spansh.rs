@@ -45,11 +45,11 @@
 use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
 use galos::bar;
-use galos::sink::tables::Tables;
 use galos::sink::{Landed, Reporter, Sink, SystemReport};
 use galos::{Shard, Shutdown};
 use galos_index::bodies::Published;
-use galos_index::{Build, Taking};
+use galos_index::{Build, LeftOff, Rows, Taking};
+use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -125,6 +125,94 @@ enum Next {
     Failed { at: u64, error: io::Error },
 }
 
+/// Systems between one mark and the next, for a read that is not stopped
+/// but killed.
+///
+/// A mark flushes every bucket's buffer and stages the part-filled names
+/// chunk, so it costs a few thousand small writes; at a million systems
+/// that is once every few minutes of reading, and what a kill costs is the
+/// systems since. A clean stop marks where it stopped and costs nothing.
+const MARKED: u64 = 1_000_000;
+
+/// Where a stopped read had got to, as the build carries it.
+///
+/// [`Build::mark`] takes a caller's place as bytes and does not read them;
+/// this is what this caller puts in them. The file and its size are the
+/// check: a scratch full of spills means nothing beside a dump that has
+/// been replaced since, and a dump that has grown is a new galaxy rather
+/// than a longer one.
+///
+/// `now` rides along because a build ages every system against one moment.
+/// A resumed run that took its own clock would bin half the galaxy's
+/// Recency against one hour and half against another, and the two halves
+/// would be a directory nobody could tell had been built twice.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Place {
+    /// The dump these bytes are an offset into, as it was named.
+    file: String,
+    /// Its length when the mark was taken.
+    size: u64,
+    /// Bytes read, always the end of a line.
+    at: u64,
+    /// Lines read, so a warning names the line the file holds.
+    line: u64,
+    /// Systems and body files the stopped run had taken, for the one line
+    /// at the end of the read.
+    systems: u64,
+    bodies: usize,
+    /// How many bytes of each of the three row files the place stands for,
+    /// in the order [`galos_index::Rows::lengths`] answers them. A row is
+    /// derived from the same line a system is, so the two are cut at the
+    /// same system or the tables stand for a galaxy the tree does not.
+    rows: [u64; 3],
+    /// The clock the stopped run dated its Recency by.
+    pub now: DateTime<Utc>,
+}
+
+impl Place {
+    /// What a stopped build left, where it was reading this same file.
+    ///
+    /// [`None`] for a mark this cannot read, or one taken against another
+    /// file or another length of it — a read that cannot be taken up is a
+    /// read that starts over, never a run that fails.
+    pub fn of(kept: &LeftOff, path: &Path) -> Option<Place> {
+        let place: Place = rmp_serde::from_slice(kept.cursor()).ok()?;
+        let size = std::fs::metadata(path).ok()?.len();
+        let named = path.to_string_lossy();
+        match place.file == named && place.size == size {
+            true => Some(place),
+            false => {
+                warn!(
+                    file = %named,
+                    was = %place.file,
+                    "a stopped build's spills are of another dump; \
+                     reading this one from the start",
+                );
+                None
+            }
+        }
+    }
+
+    /// How far into the file this is, in bytes.
+    pub fn at(&self) -> u64 {
+        self.at
+    }
+
+    /// How much of each row file the place stands for, for the [`Rows`]
+    /// that takes up writing them.
+    pub fn rows(&self) -> [u64; 3] {
+        self.rows
+    }
+
+    /// This place as the bytes [`Build::mark`] carries.
+    ///
+    /// Infallible: a struct of scalars and one string, and MessagePack has
+    /// no encoding failure for it, so a mark is never lost to one.
+    fn bytes(&self) -> Vec<u8> {
+        rmp_serde::to_vec(self).unwrap_or_default()
+    }
+}
+
 /// One reading of a dump, pulled a system at a time
 ///
 /// What a read of the file needs whichever way it is going: the lines, the
@@ -157,7 +245,21 @@ impl Reading {
         shard: Option<Shard>,
         shutdown: &Shutdown,
     ) -> io::Result<Reading> {
-        let lines = spansh::Lines::open(path)?;
+        Reading::opened(path, shard, shutdown, None)
+    }
+
+    /// The same, carrying on from where a stopped read left off.
+    ///
+    /// The bar is put straight to the byte the previous run reached, so
+    /// what it draws is the file rather than this run's share of it.
+    fn opened(
+        path: &Path,
+        shard: Option<Shard>,
+        shutdown: &Shutdown,
+        from: Option<&Place>,
+    ) -> io::Result<Reading> {
+        let (at, line) = from.map_or((0, 0), |it| (it.at, it.line));
+        let lines = spansh::Lines::open_at(path, at, line)?;
         let tag = match shard {
             Some(shard) => format!("Spansh {shard}"),
             None => "Spansh".to_string(),
@@ -169,15 +271,48 @@ impl Reading {
         // find its own, so it covers the whole file either way.
         let size = std::fs::metadata(path).map(|it| it.len()).ok();
         let extent = bar::Extent::Bytes(size.unwrap_or(0));
+        let bar = bar::imported(&tag, extent);
+        bar.through(at);
         Ok(Reading {
             path: path.to_owned(),
             lines,
-            bar: bar::imported(&tag, extent),
+            bar,
             shard,
             shutdown: shutdown.clone(),
-            read: 0,
+            read: line,
             skipped: 0,
         })
+    }
+
+    /// The byte and the line the read has reached, which is always the end
+    /// of a line and so a place another read can start at.
+    fn here(&self) -> (u64, u64) {
+        (self.lines.bytes(), self.lines.at())
+    }
+
+    /// Where the read stands, for the build to mark.
+    ///
+    /// `at` is a point [`here`](Self::here) answered — this one or the one
+    /// before the line being read, which is what a stop part way through a
+    /// line wants.
+    fn place(
+        &self,
+        at: (u64, u64),
+        now: DateTime<Utc>,
+        systems: u64,
+        bodies: usize,
+        rows: [u64; 3],
+    ) -> Place {
+        Place {
+            file: self.path.to_string_lossy().into_owned(),
+            size: std::fs::metadata(&self.path).map(|it| it.len()).unwrap_or(0),
+            at: at.0,
+            line: at.1,
+            systems,
+            bodies,
+            rows,
+            now,
+        }
     }
 
     /// The next system, or why there is not one.
@@ -323,10 +458,14 @@ impl Galaxy {
     /// publish a prefix of the galaxy and a resume point saying it was the
     /// whole of it.
     ///
-    /// A run asked to stop ends the read where it is. Nothing is published
-    /// by that: the flag [`Reading`] asks between lines is the one
-    /// [`Build`] asks per record, so the build behind this answers
-    /// `Built::Stopped` and leaves the directory as it found it.
+    /// A run asked to stop ends the read where it is and marks the place,
+    /// so the next run over the same file takes up the spills rather than
+    /// reading the galaxy again; see [`Build::mark`] and [`Place`]. The
+    /// place is marked every [`MARKED`] systems as well, which is what a
+    /// kill rather than a Ctrl-C falls back to. Nothing of the directory is
+    /// published either way: the flag [`Reading`] asks between lines is the
+    /// one [`Build`] asks per record, so the build behind this answers
+    /// `Built::Stopped`.
     ///
     /// One system's worth of galaxy per line: the accumulator the fan-out
     /// feeds, fed the same report and the same scans and then asked what it
@@ -340,24 +479,45 @@ impl Galaxy {
     /// a build from nothing can only be told back what it has just said, so
     /// nothing is read from the directory it is writing.
     ///
-    /// The metadata tables ride in `tables`, patched out of the same
-    /// galaxy the tree's system came from and written once the build has
-    /// finished. Each is a row a system, so what this holds beyond the
-    /// line it is on is those rows; item 1 of `TODO-scale-regions.md` is
-    /// the chunking that would end that.
+    /// The metadata tables ride in `rows`, which is the same
+    /// [`galos_index::Rows`] the mark is cut against: a row a system,
+    /// written as it is derived and made into the three tables when the
+    /// read is over, so that neither the read nor a stop holds a galaxy's
+    /// worth of them.
     pub fn read(
         &self,
         build: &mut Build<'_>,
-        tables: &mut Tables,
+        rows: &mut Rows,
+        from: Option<Place>,
     ) -> io::Result<()> {
-        let mut reading = Reading::open(&self.path, None, &self.shutdown)?;
+        let mut reading =
+            Reading::opened(&self.path, None, &self.shutdown, from.as_ref())?;
         let started = Instant::now();
-        let (mut systems, mut bodies) = (0u64, 0);
+        let (mut systems, mut bodies) =
+            from.as_ref().map_or((0u64, 0), |it| (it.systems, it.bodies));
+        let taken_up = systems;
         let by = crate::from::published("Spansh", &self.path);
+        let mut marked = systems;
         loop {
+            // Where the line about to be read begins. A stop part way
+            // through one is marked here rather than after it: the build
+            // refuses the record it was asked to stop on, so a mark past
+            // that line would stand for a system nothing ever spilled.
+            let began = reading.here();
             let (report, scans) = match reading.next() {
                 Next::System(report, scans) => (report, scans),
-                Next::Ended | Next::Stopped => break,
+                Next::Ended => break,
+                Next::Stopped => {
+                    let place = reading.place(
+                        began,
+                        self.now,
+                        systems,
+                        bodies,
+                        rows.lengths()?,
+                    );
+                    build.mark(&place.bytes())?;
+                    break;
+                }
                 Next::Failed { error, .. } => return Err(error),
             };
             systems += 1;
@@ -390,7 +550,17 @@ impl Galaxy {
                         reading.took(Some(Landed::New));
                         true
                     }
-                    Taking::Stopped => break,
+                    Taking::Stopped => {
+                        let place = reading.place(
+                            began,
+                            self.now,
+                            systems - 1,
+                            bodies,
+                            rows.lengths()?,
+                        );
+                        build.mark(&place.bytes())?;
+                        break;
+                    }
                 },
                 _ => false,
             };
@@ -400,14 +570,27 @@ impl Galaxy {
             // bodies are settled, the reach and the boost being read off
             // what is still held rather than off the file just written.
             if took {
-                tables.patch_tables(&galaxy, galaxy.touched());
+                rows.take(&galaxy, galaxy.touched())?;
             }
             bodies += galaxy.settle_bodies()?;
+
+            if systems - marked >= MARKED {
+                let place = reading.place(
+                    reading.here(),
+                    self.now,
+                    systems,
+                    bodies,
+                    rows.lengths()?,
+                );
+                build.mark(&place.bytes())?;
+                marked = systems;
+            }
         }
 
         reading.unparsed();
         info!(
             systems,
+            taken_up,
             bodies,
             elapsed = ?started.elapsed(),
             dir = %self.dir.display(),

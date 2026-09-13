@@ -3999,6 +3999,7 @@ dependencies = [
  "itertools",
  "pollster 0.3.0",
  "prettytable-rs",
+ "rmp-serde",
  "serde",
  "serde_json",
  "spansh",
