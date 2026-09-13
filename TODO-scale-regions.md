@@ -8,22 +8,34 @@ worth doing.
 Everything here was measured on one machine (M5 Pro, 18 cores) against
 Spansh's seven-day slice: `galaxy_7days.json`, 19,947,189,475 bytes,
 **730,544 systems and 3,119,799 bodies**. The full `galaxy.json` is 610 GB
-and about 200 M systems, and **has not been run**.
+and about 200 M systems; it has been started three times and **not yet run
+to the end** — see items 2 and 2a for what stopped it.
 
 ## State of the tree, 2026-09-13
 
-Branch `scale-regions`, nothing committed. 58 files modified, 1,176 deleted
-(`galos_journal` dissolved, and `src/bin/` moved to `bin/`), `spansh/` is a
-new untracked crate, and the `elite_journal` submodule is modified — it
-gained `body::{StarClass, StarSize}` and the `journal` module.
+Branch `scale-regions`, **committed**, working tree clean:
 
-**Index directories on disk.** `test2/` is the current dump-built index:
-730,544 systems, 907 cells, payload format **version 2**, with
-`populated.bin`, `reaches.bin` and `boosts.bin`. `7day/` is a second build
-of the same shape. **`.galos_index` is format version 1 and is refused** —
-`index format version 1, this build reads 2: the payload record changed
-width, so rebuild the directory`. That is the intended behaviour, not a
-fault; see item 2a's note on the version bump.
+| | |
+|---|---|
+| `2116e72` | Stop carrying a built index directory in the repository |
+| `c3fcfed` | Build the index a region at a time, from a dump or a database |
+| `4a470fb` | Stop asking a directory being raised what it already holds |
+| `d401796` | Take up a stopped import where it left off |
+| `4b51a2a` | Publish what a stopped read has read, and carry on from it |
+
+`d401796` is superseded by `4b51a2a` and is history rather than code: the
+spill-cutting it added — `Buckets::resume`, the mark's byte counts,
+`Chunks::resuming`, the row files' lengths — is gone, replaced by one file
+holding one cursor. The `elite_journal` submodule carries two commits of
+its own (`2a89aa5` star classes, `77dfb45` the journal reader), and the
+parent's gitlink names the second.
+
+**Index directories on disk.** `.index/full` is the 200 M import, part
+read. `.index/7day` is the seven-day slice. `.galos_index` is the feed's
+own and is **format version 1, so it is refused** — `index format version
+1, this build reads 2: the payload record changed width, so rebuild the
+directory`. That is the intended behaviour, not a fault; see item 2c's note
+on the version bump.
 
 **Databases.** `galos_development` and `galos_postimport_backup` remain,
 plus `galos_test_template`, which is the test harness's cache and is
@@ -41,28 +53,25 @@ comparison.
 has to be created by hand and nothing is left behind.
 
 ```sh
-# the suite: 1,505 tests, needs no database created by hand
+# the suite: 1,507 tests, needs no database created by hand
 TEST_DATABASE_URL=postgresql://localhost/postgres cargo test --workspace
 
-# an index from a dump, no Postgres in the path
+# an index from a dump, no Postgres in the path. Ctrl-C publishes what has
+# been read; running it again carries on from there.
 cargo build --release --bin galos-sync
-./target/release/galos-sync --from spansh=~/Downloads/galaxy_7days.json \
+./target/release/galos-sync --from spansh=~/Downloads/galaxy.json \
     --index DIR                      # GALOS_REGION_BUDGET is the memory dial
 
 # the same, into Postgres, eight readers over one file
 ./target/release/galos-sync --from spansh=FILE --db --bulk --shard 0/8
 
 # the client guard, against a built directory
-GALOS_PERF_DIR=$PWD/test2 \
+GALOS_PERF_DIR=$PWD/.index/7day \
   cargo test --release -p galos_map --lib perf -- --nocapture
 
 # what a directory holds
 ./target/release/galos-index info DIR
 ```
-
-`~/Downloads` became unreadable from a tool shell partway through the
-session (macOS TCC), so anything reading `galaxy_7days.json` or
-`galaxy.json` has to be run by hand.
 
 ## Measured
 
@@ -222,9 +231,9 @@ none where an absent one says this index cannot tell.
 
 **The holding is gone.** `galos_index::Rows` writes a row to a file as it
 is derived, the way a name goes to a chunk, in `<checkpoint>.rows/`; the
-tables are made from those files once the build has published. The rows are
-length-framed, so the files are cut at a row boundary, which is what lets a
-stopped build be taken up — see item 2b.
+tables are made from those files once the build has published, and
+`Rows::onto` seeds them from the tables a directory already publishes where
+a read is being carried on — see item 2b.
 
 **What is left is the sort.** The tables are written in address order, so
 `Rows::finish` reads the rows back into maps and sorts them: the galaxy's
@@ -234,7 +243,7 @@ this is an external sort — sorted runs and a k-way merge, or a spill
 bucketed by address — and it is what collapses the last two writers into
 one (see item 6).
 
-### 2. The 200 M import has not been run
+### 2. The 200 M import has not been run to the end
 
 Every number above is the seven-day slice. The full file is 610 GB. Two
 things to watch when it runs: the bucket split, which has never met the
@@ -248,39 +257,99 @@ Worth doing in the same sitting: import the same file into a database and
 diff the two indexes. That comparison is what caught every bug in the list
 above, and it is cheap next to the build.
 
-### 2a. Positions as `f32`, after the 200 M run
+**What the first attempts met**, and it is all the body files (item 2a):
 
-A payload record is 41 B and **24 of them are the position**, three `f64`.
-Elite's coordinates are on a 1/32 ly grid, and a 1/32 grid over the
-galaxy's extent needs 2,088,632 steps at the far end (Beagle Point,
-65,269.75 ly) against `f32`'s 16,777,216 exactly-representable integers —
-so an `f32` position is exact for every coordinate the game produces.
+| read | systems | rate | where |
+|---|---|---|---|
+| 26 min | 7,585,860 | 6,465/s average, **1,740/s** by the end | 3.16 M body files, 14 GB |
+| 8 s | 114,333 | ~14,000/s into an empty directory | — |
 
-Measured over 730,544 real positions: **65 do not round-trip through
-`f32`**, and each is an upstream truncation rather than finer precision —
-`42140.78` beside `-124.71875`, a 1/32 value printed to seven significant
-digits and short of its tail. Storing those as `f32` moves them by
-≤0.002 ly, against a grid step of 0.031 ly.
+At 1,740 systems a second and still falling, the remaining 196 M systems
+are **31 hours**, and 188 M body files at 4.4 KB allocated apiece is
+**~830 GB** against 943 GB free. Neither number is the region build's: the
+tree, the names and the spills are 30 GB of the total and the read is 30,000
+systems a second when nothing is writing a file a system.
 
-Worth 12 B a system: the magnitude is `f32` as of format version 2, so the
-record goes from 41 B to 29 B, **5.8 GB rather than 8.2 GB at 200 M**, and a
-zoom reads a quarter less. Measured at 2,885,249 systems: payloads are
-118,295,209 B, exactly 41 B a system. `CellId::of_point` and the distance
-arithmetic take `[f64; 3]` and would widen on read, so the arithmetic does
-not change, only the storage.
+So **item 2a comes first**. It changes how every body is written, and a
+read started before it is a read done twice.
 
-The precedent for the migration is format 2 itself: `INDEX_VERSION` was
-bumped and an older directory is **refused with a message naming both
-versions**, because a payload block carries no magic, no version and no
-count, so a 39 B file and a 41 B file cannot be told apart by inspection and
-an interrupted re-encode would leave a directory nothing could read. A
-rebuild is the established fallback — `bring_level` already does one when a
-resume fails.
+### 2a. One file a system — next, and it blocks the 200 M run
 
-Held until the 200 M import and a follow have been run: it is a
-served-format migration, and the evidence for it should come from the
-galaxy rather than from a seven-day slice. A test should assert the
-≤0.002 ly bound on the truncated cases rather than leaving it implicit.
+A body file is a file: `bodies/{shard:03x}/{address}.bin`, 2.4 KB of
+MessagePack in 4.4 KB of allocated disk, written whole and read whole. At
+200 M systems that is **188 M files and ~830 GB**, and it is what makes the
+import slow down as it runs rather than run at a rate.
+
+**Measured.** `sample` over the live import: **91 %** of the wall clock in
+body files — 1,300 samples of 4,053 in `open`, 548 in `rename`, 479 in
+`write`, against 152 in `serde_json`. Three opens and a rename a system,
+two of the opens for names no directory holds.
+
+`4a470fb` took those two away. `Published::raising` is the store a build
+raising a directory from nothing uses: a file it is not holding is one it
+has not written, so nothing is read back, and nothing underneath needs
+keeping, so `raise_meta` puts the file straight on its path rather than
+beside it and over. Over 50,000 systems, 26,992 of them scanned: **7.13 s →
+4.65 s**, kernel time 3.20 s → 1.48 s, and the two directories byte-equal
+in all 27,045 files.
+
+What is left is the file count, and no write path fixes that. The shape:
+
+```text
+bodies/{shard:03x}.idx            header, a sorted base, an unsorted tail
+bodies/{shard:03x}.{gen:04x}.dat  the records, appended
+```
+
+- **A write is two appends**, neither a directory operation: the record
+  (`[u32 len][MessagePack]`) onto the data file, and the entry (`[i64
+  address][u64 offset][u32 len]`, 20 B) onto the index. A length of zero is
+  a tombstone, which is what a withdrawal is, and it has to beat the base
+  behind it rather than be an absence.
+- **A read** binary-searches the base of the mapped index and scans the
+  tail newest-first, then reads the record at the offset. Nothing is
+  resident.
+- **A fold** merges the tail into the base and writes the whole index
+  beside the old one and renames it over, so a reader sees one file or the
+  other and never half of each. Bound the tail at `(base / 8).clamp(8 Ki,
+  52 Ki)` entries: linear in the writes, and a megabyte of scanning at
+  worst. Over a 200 M import that is ~10 GB of index rewriting, 0.04 % of
+  the run.
+- **A compaction** is the same fold with the data file rewritten, when more
+  than half of it is records nothing points at — a feed's 30 systems a
+  second leave ~6 GB of dead records a day over the galaxy, which reaches
+  half a shard in a couple of months. It writes the **next generation's**
+  file rather than rewriting in place, because a reader holding offsets
+  into the old bytes must not be handed new ones; the index naming the new
+  generation is renamed over in the same step, and a reader that finds its
+  data file gone reads the index again. That retry is the whole of the
+  concurrency, there being one writer (the directory's `Lock`) and any
+  number of readers.
+- **Writes buffer per shard**, `BUFFERED` bytes each, flushed with one
+  handle open at a time — the arrangement `bucket::Buckets` already uses.
+  At 16 KiB over 4,096 shards that is 64 MiB held and one open per seven
+  bodies, against one open, one rename and an inode apiece today.
+
+At 200 M: 4,096 files rather than 188 M, **~450 GB rather than ~830 GB**
+(the difference is the block a small file rounds up to), and the import's
+writes become sequential.
+
+**The seam is already right.** `galos_map` never builds a body path — it
+asks `Source::bodies(address)` — so the change lands in `FsSource`,
+`source::{read_bodies, remove_bodies}`, `bodies::Published`,
+`Published::scanned`, and the two `write_meta(&bodies_path(..))` calls in
+`galos_db::index::metadata`. A `pack(dir, stop)` migration walks the loose
+files into the shards the way `reshard_bodies` walked the flat ones, and
+`read` falls back to the loose and flat paths until it has, so a directory
+part way through answers from either.
+
+**The follow does not care which layout it is**, which is why this is an
+import decision. EDDN is ~30 systems a second: 30 point reads and 30 point
+writes, free either way. What it does care about is the 830 GB and the
+hours any whole-tree sweep over 188 M files costs — `Published::scanned`,
+a backup, an `rsync`.
+
+One piece was written and pulled back out rather than left half done:
+`galos_index/src/pack.rs`. Start it again from this.
 
 ### 2b. A stopped import publishes what it read, and is carried on
 
@@ -335,6 +404,40 @@ database's derivation ends `Ending::Abandon` instead: its directory already
 stands for every row Postgres has, and a read cut short must not replace it
 with the prefix it reached.
 
+### 2c. Positions as `f32`, after the 200 M run
+
+A payload record is 41 B and **24 of them are the position**, three `f64`.
+Elite's coordinates are on a 1/32 ly grid, and a 1/32 grid over the
+galaxy's extent needs 2,088,632 steps at the far end (Beagle Point,
+65,269.75 ly) against `f32`'s 16,777,216 exactly-representable integers —
+so an `f32` position is exact for every coordinate the game produces.
+
+Measured over 730,544 real positions: **65 do not round-trip through
+`f32`**, and each is an upstream truncation rather than finer precision —
+`42140.78` beside `-124.71875`, a 1/32 value printed to seven significant
+digits and short of its tail. Storing those as `f32` moves them by
+≤0.002 ly, against a grid step of 0.031 ly.
+
+Worth 12 B a system: the magnitude is `f32` as of format version 2, so the
+record goes from 41 B to 29 B, **5.8 GB rather than 8.2 GB at 200 M**, and a
+zoom reads a quarter less. Measured at 2,885,249 systems: payloads are
+118,295,209 B, exactly 41 B a system. `CellId::of_point` and the distance
+arithmetic take `[f64; 3]` and would widen on read, so the arithmetic does
+not change, only the storage.
+
+The precedent for the migration is format 2 itself: `INDEX_VERSION` was
+bumped and an older directory is **refused with a message naming both
+versions**, because a payload block carries no magic, no version and no
+count, so a 39 B file and a 41 B file cannot be told apart by inspection and
+an interrupted re-encode would leave a directory nothing could read. A
+rebuild is the established fallback — `bring_level` already does one when a
+resume fails.
+
+Held until the 200 M import and a follow have been run: it is a
+served-format migration, and the evidence for it should come from the
+galaxy rather than from a seven-day slice. A test should assert the
+≤0.002 ly bound on the truncated cases rather than leaving it implicit.
+
 ### 3. Flags
 
 - `--shard`'s doc says "every Nth record"; a journal shards by *file*
@@ -354,15 +457,41 @@ system is stamped `Utc::now()`, so all of them land in one Recency bucket.
 
 ### 5. Following a feed over 200 M
 
-`TODO-scale.md` item 3, and the last wall. A follower still raises the
-editable tree: 1.04 KB a system, 208 GB at 200 M. The plan, with the
-arithmetic, is in that file; the short form is that the decision an insert
-makes needs **one scalar a cell** — the cell's faintest owned magnitude, a
-2 B column on `index.bin`, ~740 KB at 370 k cells — after which a payload is
-read only where a system actually displaces something. Resident becomes
+`TODO-scale.md` item 3, and the last wall. **The tree is not the whole of
+it**, which a count of what a follow run holds says:
+
+| held by a follow | at 200 M | what ends it |
+|---|---|---|
+| `Tree` — `records`, `owner`, `leaf`, the slices | **208 GB** | the paged tree, below |
+| `NameTable`, 235 B an entry measured | **47 GB** | names keyed by cell |
+| `populated` + `reaches` + `boosts` | **3.3 GB** | the sidecars keyed by cell |
+| the checkpoint base rewritten per fold | 11 GB of I/O | resuming from the directory |
+
+So item 5 alone does not get a follow under budget, and the three below it
+are one change: the cell is the unit of storage, of transport and of edit.
+`Source::names()`/`reaches()`/`boosts()` can go on answering whole tables
+by concatenation, so `galos_map` need not move at the same time.
+
+**The paged tree.** The decision an insert makes needs **one scalar a
+cell** — the cell's faintest owned magnitude, a column on `index.bin`,
+which by the crate's own rule (`serialization.rs:280-296`) needs no
+`INDEX_VERSION` bump, the exact-length check catching a stale index. After
+it a payload is read only where a system actually displaces something.
+`Cell::slice_len` and `is_leaf` already answer "is this cell full", so the
+faintest owner is the only thing missing; carry its `id64` beside the
+magnitude and a tie needs no payload read either. Resident becomes
 `index.bin` (198 B a cell, measured; ≈73 MB at 200 M) plus an LRU of
 payloads, and the publish beat amortises the paging by settling a minute's
 arrivals together.
+
+Two things fall out of the tree's own arithmetic and are worth writing
+down before the work starts. A cell's aggregates depend on **physical**
+membership and not on ownership, so an ownership move dirties payloads and
+`rank_lo` alone and no aggregate at all. And a leaf's physical members are
+its own payload plus whatever its ancestors claimed from inside it — at
+most `level × internal_slice` systems, which is the same bound
+`region::Offer` is built on — so a leaf can be re-summed from twelve payload
+reads and no per-system map.
 
 Prerequisite, mostly done: the payload has to be the record. The magnitude
 is `f32` as of format 2, the temperature's bucket is exact for every
