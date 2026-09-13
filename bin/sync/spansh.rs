@@ -336,7 +336,9 @@ impl Galaxy {
     ///
     /// The body files are written per system rather than held: a dump names
     /// each system once, so a system's file is whole the moment its line has
-    /// been read.
+    /// been read. The store is [`Published::raising`] for the same reason —
+    /// a build from nothing can only be told back what it has just said, so
+    /// nothing is read from the directory it is writing.
     ///
     /// The metadata tables ride in `tables`, patched out of the same
     /// galaxy the tree's system came from and written once the build has
@@ -362,7 +364,7 @@ impl Galaxy {
             let address = report.address;
             let mut galaxy = galos_index::Galaxy::keeping(
                 self.now,
-                Box::new(Published::new(self.dir.as_path())),
+                Box::new(Published::raising(self.dir.as_path())),
             );
             galaxy.hear(report);
             // Nobody flew here and a file was published, so the file's own

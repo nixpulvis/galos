@@ -285,14 +285,36 @@ pub fn reshard_bodies(
 /// that touches `path`, so a builder killed mid-write leaves the table it
 /// published last intact.
 pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = rmp_serde::to_vec(value)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let bytes = encoded(value)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
+}
+
+/// The same file, written where nothing stands to be kept.
+///
+/// [`write_meta`]'s guarantee costs a second directory entry made and
+/// unmade for every file written, which over a galaxy of one small file a
+/// system is most of what writing one costs: measured against Spansh's
+/// dump, the rename alone was an eighth of the whole read. A build raising
+/// a directory from nothing overwrites nothing and is abandoned whole if it
+/// fails, so it is paying for a guarantee it cannot use. See
+/// [`crate::bodies::Published::raising`], which is the one caller.
+pub fn raise_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    let bytes = encoded(value)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, bytes)
+}
+
+/// One metadata value's bytes, for either writer.
+fn encoded<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
+    rmp_serde::to_vec(value)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Read a metadata value back from a file, MessagePack-decoded. The reader
