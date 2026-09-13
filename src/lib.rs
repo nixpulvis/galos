@@ -72,8 +72,22 @@
 //!
 //! `--from` repeats, and `--from eddn` subscribes to its ZMQ service and
 //! processes events until the run is asked to stop.
+//!
+//! Its write path is here rather than in the binary: [`sink`] is the seam
+//! the sources write through, and it is what an integration test has to be
+//! able to reach. An event becomes rows in [`galos_db::record`]. What lives
+//! in `bin/sync` is the command line, the sources — the journal reader
+//! among them — and the supervisor that joins them.
 
 use galos_db::Database;
+
+pub mod bar;
+pub mod shard;
+pub mod shutdown;
+pub mod sink;
+
+pub use shard::Shard;
+pub use shutdown::Shutdown;
 
 pub trait Run {
     // TODO: Reture Error
