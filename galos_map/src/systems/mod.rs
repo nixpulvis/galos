@@ -785,6 +785,14 @@ pub(crate) fn system_to_vec(entry: &NameEntry) -> DVec3 {
     )
 }
 
+/// The same, for a place read out of the packed table without its name.
+///
+/// What the table answers where only the position is wanted — which is
+/// everything that measures rather than labels. See [`crate::names`].
+pub(crate) fn place_to_vec(at: [f32; 3]) -> DVec3 {
+    DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64)
+}
+
 impl From<&NameEntry> for System {
     /// A system as the names table alone gives it: named and placed, with no
     /// political columns. Those come from the populated table once a fetch

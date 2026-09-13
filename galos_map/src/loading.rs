@@ -27,8 +27,9 @@
 //! read the tables -- [`crate::ui::chrome`] and [`crate::dev::diagnostics`] --
 //! and those carry the gate themselves.
 
+use crate::names;
 use crate::refresh::Held;
-use crate::systems::route::graph::{JumpGraph, Jumps};
+use crate::systems::route::graph::Jumps;
 use crate::{
     Boosts, Factions, IndexDir, Names, Populated, ResidentIndex, Transport,
 };
@@ -36,7 +37,7 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::meta::{Faction, NameEntry, PopulatedSystem, SystemReach};
+use galos_index::meta::{Faction, PopulatedSystem};
 use galos_index::{Index, SystemBoost};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -196,20 +197,33 @@ async fn read(
     at(Step::Populated);
     let populated = source.populated().await.unwrap_or_default();
     at(Step::Names);
-    let names = source.names().await.unwrap_or_default();
+    // A chunk at a time, packed as each one lands and dropped after: the
+    // whole table is 5.66 GiB of MessagePack over 2,004 chunks at 131 M
+    // systems, and decoding it into one `Vec<NameEntry>` to build the packed
+    // table from is the peak the packing exists to remove. See
+    // [`crate::names`].
+    let mut packing = names::Packing::default();
+    for chunk in 0.. {
+        let entries = source.names_chunk(chunk).await.unwrap_or_default();
+        if entries.is_empty() {
+            break;
+        }
+        packing.extend(entries);
+    }
+    let named = packing.len();
+    let table = packing.build();
     at(Step::Reaches);
-    let reaches = source.reaches().await.unwrap_or_default();
+    let reaches =
+        names::Reaches::of(source.reaches().await.unwrap_or_default());
     at(Step::Boosts);
     let boosts = source.boosts().await.unwrap_or_default();
     at(Step::Factions);
     let factions = source.factions().await.unwrap_or_default();
 
-    // Not read but built, out of the two largest tables there are. On this
-    // side of the gate because it is the same seconds of work either way, and
-    // over here they are seconds the loading screen is already saying
-    // something about rather than a frame the map hangs for.
     at(Step::Jumps);
-    Ok(stood_up(dir, held, index, populated, names, reaches, boosts, factions))
+    Ok(stood_up(
+        dir, held, index, populated, named, table, reaches, boosts, factions,
+    ))
 }
 
 /// Take the read in once it lands, and let the map draw
@@ -259,17 +273,17 @@ fn stood_up(
     held: Held,
     index: Index,
     populated: Vec<PopulatedSystem>,
-    names: Vec<NameEntry>,
-    reaches: Vec<SystemReach>,
+    named: usize,
+    table: names::Table,
+    reaches: names::Reaches,
     boosts: Option<Vec<SystemBoost>>,
     factions: Vec<Faction>,
 ) -> Loaded {
     info!(
-        "index {dir} has {} cells, {} populated, {} names, {} reaches, \
+        "index {dir} has {} cells, {} populated, {named} names, {} reaches, \
          {} supercharging, {} factions",
         index.len(),
         populated.len(),
-        names.len(),
         reaches.len(),
         boosts.as_ref().map_or(0, Vec::len),
         factions.len(),
@@ -277,7 +291,7 @@ fn stood_up(
     // A cell tree with no metadata beside it is a stale or half-written build:
     // the map would draw every system uncolored and unnamed rather than say so.
     // Loud, rather than a plausible-but-wrong sky.
-    if !index.is_empty() && (populated.is_empty() || names.is_empty()) {
+    if !index.is_empty() && (populated.is_empty() || table.is_empty()) {
         warn!(
             "{dir} has cells but no metadata sidecars; systems will be \
              uncolored and unnamed. Rebuild the index with \
@@ -303,13 +317,15 @@ fn stood_up(
 
     Loaded {
         held,
-        // The jump graph the router walks, bucketed once from the names.
-        jumps: Jumps(Arc::new(JumpGraph::new(&names, &boosts))),
+        // Nothing until a route is asked for: the router's own bucketing of
+        // the galaxy is gigabytes, and a session that only looks at the sky
+        // never wants it. See [`Jumps`].
+        jumps: Jumps::default(),
         index: ResidentIndex(index),
         populated: Populated(Arc::new(
             populated.into_iter().map(|s| (s.address, s)).collect(),
         )),
-        names: Names::reaching(names, reaches),
+        names: Names::packed(table, reaches),
         boosts,
         factions: Factions(
             factions.into_iter().map(|f| (f.id, f.name)).collect(),

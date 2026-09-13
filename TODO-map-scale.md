@@ -1,52 +1,72 @@
-# The map at 131 million systems
+# The map at two hundred million systems
 
 Why loading, searching and routing fell over between 2.6 M systems and
-131 M, what the numbers actually are, and the order the work is worth doing
-in. Measured on 2026-09-13 against `.index/full` while the 200 M import was
-still writing it.
+200 M, what the numbers actually are, and the order the work is worth doing
+in. Measured on 2026-09-13 against `.index/full`, which the 200 M import
+finished the same afternoon: **200,071,629 systems**, 204,466 cells, levels
+0..13.
 
 ## The one-line answer
 
-**The map's resident set is now larger than the machine.** It reads three
-whole-galaxy tables at startup and builds three whole-galaxy hash structures
-out of them — about **43 GB against 24 GiB of RAM** — so every later
-operation runs against swap. Nothing about the LOD path is wrong, which is
-exactly why LOD fetch still feels fine: it is the only path whose work is
+**The map's resident set was larger than the machine.** It read three
+whole-galaxy tables at startup and built three whole-galaxy hash structures
+out of them — the user measured **45 GB against 24 GiB of RAM** — so every
+later operation ran against swap. Nothing about the LOD path is wrong, which
+is exactly why LOD fetch still felt fine: it is the only path whose work is
 proportional to what is on screen.
+
+**The names table is packed now** (`galos_map/src/names.rs`): measured over
+the real 200,071,629-name table, **7.2 GB peak resident, read and packed in
+33 s**, against the ~47 GB the old form would want at 235 B an entry. The
+router's bucketing is built on the first route rather than at startup, so a
+session that only looks at the sky never pays it. What is left is in item 0
+and item 1 below.
 
 | | measured |
 |---|---|
 | machine | **24 GiB RAM**, Apple M5 Pro |
-| `.index/full` | 131,285,663 systems, 134,185 cells, `index.bin` 25.34 MB |
-| names on disk | **5.66 GiB** over 2,004 chunks (~45 B an entry) |
-| `reaches.bin` | 751 MiB (~62 M rows) |
+| `.index/full` | **200,071,629 systems**, 204,466 cells, `index.bin` 38 MB |
+| names on disk | 5.66 GiB over 2,004 chunks at 131 M; ~8.6 GiB at 200 M |
+| `reaches.bin` | 751 MiB at 131 M; **76,044,388 rows** at 200 M |
 | `boosts.bin` / `populated.bin` | 39 MiB / 11 MiB |
-| cell payloads | 5,134 MB over 134,041 files, read per cell on demand |
+| cell payloads | read per cell on demand, which is why they cost nothing |
 
-## What is held, and what it costs
+## What was held, and what is held now
 
-`galos_map/src/loading.rs:171-212` reads, sequentially, on one task:
-`index`, `populated`, `names`, `reaches`, `boosts`, `factions`. Then
-`stood_up` (`:245-320`) builds the resident structures.
+`loading::read` reads, sequentially, on one task: the stamps, the index,
+`populated`, the names, `reaches`, `boosts`, `factions`.
 
-| structure | where | at 131.29 M |
+| structure | was, at 200 M | is now |
 |---|---|---|
-| `Names::entries: Arc<Vec<NameEntry>>` | `lib.rs:83` | 48 B a struct + the name's heap block → **≥8 GB**; at the 235 B an entry measured in `TODO-scale-regions.md` item 5, **~31 GB** |
-| `Names::by_address: HashMap<i64, usize>` | `lib.rs:85` | ~24 B an entry → **~3 GB** |
-| `Names::reaches: HashMap<i64, f32>` | `lib.rs:107` | ~62 M rows → **~1.4 GB** (its doc comment says "six megabytes") |
-| `Places::points: Vec<(i64, [f64; 3])>` | `route/graph.rs:731` | 32 B × 131 M = **4.2 GB** |
-| `Places::by_address` | `route/graph.rs:732` | **~3 GB** — a second copy of the same index |
-| `Places::buckets: HashMap<[i32;3], Vec<usize>>` | `route/graph.rs:733` | ~47 M cells at 2.8 systems a cell measured → **~3.8 GB and ~47 M allocations** |
-| `best` + `came`, per route leg | `route/graph.rs:1176` | **1.05 GB** a leg (`Shortest`: 1.57 GB), allocated before the first expansion |
+| the names table | `Vec<NameEntry>`: 48 B a struct plus a heap block a name, ~235 B an entry measured → **~47 GB** | four arrays and a blob, **7.2 GB measured**, `galos_map/src/names.rs` |
+| address → entry | `HashMap<i64, usize>`, ~24 B an entry → **~4.8 GB** | gone: the addresses are sorted, so it is a binary search |
+| the reaches | `HashMap<i64, f32>` over 76 M rows → **~2 GB** | two sorted arrays, 12 B a row → **912 MB** |
+| the read itself | the whole table decoded into one `Vec` before packing anything → the peak again | a chunk in, packed, dropped: 64 Ki entries at a time |
+| `Places` (the router's grid) | built at startup whether or not anything routed: 32 B a point, an address map beside it, a bucket per occupied cell → **~16 GB and ~72 M allocations at 200 M** | built on the first route asked for, from `Names::points` |
+| `best` + `came`, per route leg | 1.6 GB a leg at 200 M, allocated before the first expansion | unchanged — item 2 |
 
-Three of those are *second copies*: `Places` holds every position again
-(the payloads already hold them, 41 B a record) and every address again
-(`Names::by_address` already has it).
+The old doc comments were all written against 2.6 M — "a hundred megabytes
+and two and a half million entries", "six megabytes", "a hundred and fifty
+megabytes". Every one of them was off by nearly a hundred, and they are
+rewritten with the arithmetic.
 
-The doc comments are all written against 2.6 M — "a hundred megabytes and
-two and a half million entries" (`lib.rs:80`), "six megabytes"
-(`lib.rs:104`), "a hundred and fifty megabytes" (`graph.rs:704`). Every one
-of them is off by fifty.
+**Measured, on the real 200,071,629-system table** (a throwaway harness
+reading `.index/full` through `FsSource`, peak RSS off `getrusage`):
+
+```
+packed: 200071629 names read in 17.0s, table 200071629 entries,
+        76044388 reaches, peak RSS 7.2 GB, total 32.7s
+1001 of 1001 addresses found in 322.7ms (322.3µs each)
+search: 1 hits in 11.3s
+```
+
+Two things to read out of the last two lines. The address lookups are ~28
+random touches into a 1.6 GB array, and 322 µs each says those touches are
+faulting rather than hitting — memory pressure on a machine holding 7 GB of
+fresh arrays with a 610 GB import still running, not the arithmetic. And
+**a search is still a scan of the whole blob**: 11.3 s at 200 M, against
+minutes when it allocated a lowercased `String` per entry, but still O(N).
+That is what item 1's sorted by-name part is for.
 
 ## Search: one scan, 131 M allocations
 

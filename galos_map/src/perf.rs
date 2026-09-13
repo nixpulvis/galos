@@ -61,7 +61,6 @@ use galos_index::meta::NameEntry;
 use galos_index::walk::{Mode, View};
 use galos_index::{FixedCodec as _, FsSource, Index, Point, Source as _};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// The directory to measure against, or [`None`] to stand down.
@@ -179,10 +178,10 @@ fn routing_stays_quick() {
     let start = nearest([0.0, 0.0, 0.0]);
     let end = nearest([700.0, 0.0, 700.0]);
 
-    let held = Names { entries: Arc::new(entries), ..Names::default() };
+    let held = Names::reaching(entries, Vec::new());
 
     let at = Instant::now();
-    let graph = JumpGraph::new(&held.entries, &boosts);
+    let graph = JumpGraph::new(held.points(), &boosts);
     let built = at.elapsed();
     println!("route graph: {} systems in {built:.2?}", graph.len());
     assert!(

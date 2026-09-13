@@ -352,9 +352,7 @@ fn apply(
         held.factions = stamp;
     }
     if let Some((read, stamp)) = found.reaches {
-        names.reaches = Arc::new(
-            read.into_iter().map(|it| (it.address, it.reach)).collect(),
-        );
+        names.reaches = Arc::new(crate::names::Reaches::of(read));
         held.reaches = stamp;
     }
 
@@ -395,7 +393,7 @@ fn apply(
     for (chunk, entries, stamp) in found.chunks {
         if gone.is_none_or(|gone| chunk < gone) {
             for entry in entries {
-                if names.get(entry.address) != Some(&entry) {
+                if names.get(entry.address).as_ref() != Some(&entry) {
                     held.filed.insert(entry.address, chunk);
                     arrived.push(entry);
                 }
@@ -443,7 +441,13 @@ fn apply(
     // route already searching holds the graph it started on and finishes
     // against that.
     if named || departed || found_boosts {
-        jumps.0 = Arc::new(jumps.0.extended(names.fresh.values(), &boosts));
+        // Only where a route has already been asked for. Unbuilt, the graph
+        // takes the arrivals in when it is built, `Names::points` chaining
+        // the overlay onto the table.
+        if let Some(held) = &jumps.0 {
+            jumps.0 =
+                Some(Arc::new(held.extended(names.fresh.values(), &boosts)));
+        }
     }
 
     // A replaced payload is a new set of points in the same cell, so whatever
@@ -544,7 +548,11 @@ mod tests {
             .ok()
             .flatten()
             .map_or_else(Boosts::absent, Boosts::of);
-        app.insert_resource(Jumps(Arc::new(JumpGraph::new(&named, &boosts))));
+        let table: crate::names::Table = named.iter().cloned().collect();
+        app.insert_resource(Jumps(Some(Arc::new(JumpGraph::new(
+            table.points(),
+            &boosts,
+        )))));
         app.insert_resource(boosts);
         app.insert_resource(Names::reaching(named, reaches));
         app.insert_resource(ResidentIndex(
@@ -733,7 +741,7 @@ mod tests {
         let names = app.world().resource::<Names>();
         assert_eq!(names.len(), 3, "three systems named, each counted once");
         assert_eq!(
-            names.find("First").len(),
+            names.find("First", 25).len(),
             1,
             "a renamed system is listed once, under its new name"
         );
@@ -806,6 +814,8 @@ mod tests {
             app.world()
                 .resource::<Jumps>()
                 .0
+                .as_ref()
+                .expect("a graph, a route having been asked for")
                 .route(1, 9, 500., Routing::Direct, Drive::Unaided, None)
                 .map(|path| path.iter().map(|(a, _)| *a).collect::<Vec<_>>())
         };
@@ -862,7 +872,12 @@ mod tests {
             "the arrival was never picked up"
         );
         let overlay = Arc::clone(&app.world().resource::<Names>().fresh);
-        let graph = Arc::clone(&app.world().resource::<Jumps>().0);
+        let graph = app
+            .world()
+            .resource::<Jumps>()
+            .0
+            .clone()
+            .expect("a graph the pass can rebucket");
 
         // The same chunk published again, holding exactly what it held: the
         // stamp moves, so the pass reads it, and finds nothing to take.
@@ -880,7 +895,10 @@ mod tests {
             "the overlay was rebuilt to take in nothing"
         );
         assert!(
-            Arc::ptr_eq(&graph, &app.world().resource::<Jumps>().0),
+            matches!(
+                &app.world().resource::<Jumps>().0,
+                Some(now) if Arc::ptr_eq(&graph, now)
+            ),
             "the router's graph was re-bucketed to take in nothing"
         );
         assert!(
@@ -967,7 +985,7 @@ mod tests {
             "the named system was never picked up",
         );
         assert_eq!(
-            app.world().resource::<Jumps>().0.len(),
+            app.world().resource::<Jumps>().0.as_ref().map_or(0, |it| it.len()),
             2,
             "and the router has it as a place to jump from"
         );
@@ -991,7 +1009,7 @@ mod tests {
         assert_eq!(names.address("S7"), None, "the search cannot reach it");
         assert_eq!(names.len(), 1, "and it is not counted");
         assert_eq!(
-            app.world().resource::<Jumps>().0.len(),
+            app.world().resource::<Jumps>().0.as_ref().map_or(0, |it| it.len()),
             1,
             "and the router has let go of it"
         );

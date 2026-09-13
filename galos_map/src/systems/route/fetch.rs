@@ -34,9 +34,10 @@ pub fn fetch_route(
     tasks: &mut ResMut<FetchTasks>,
     searching: &mut ResMut<Frontiers>,
     time: &Res<Time<Real>>,
-    jumps: &Res<Jumps>,
+    jumps: &mut ResMut<Jumps>,
     how: Routing,
     names: &Res<Names>,
+    boosts: &Res<crate::Boosts>,
     populated: &Res<Populated>,
 ) {
     // Every leg this trip is made of, in the order flown. The key is the leg
@@ -120,7 +121,9 @@ pub fn fetch_route(
         // Cheap Arc handles onto the resident graph and tables, so the hops
         // are walked, named and colored on the task's own thread rather than
         // on the main one.
-        let graph = jumps.0.clone();
+        // Built here if this is the session's first route: the bucketing is
+        // gigabytes and nothing but a route wants it. See [`Jumps`].
+        let graph = jumps.built(names, boosts);
         let names = Names::clone(names);
         let populated = Populated::clone(populated);
 

@@ -693,8 +693,38 @@ impl Sampler {
 }
 
 /// The jump graph, held behind an [`Arc`] so a route task takes a cheap handle.
-#[derive(Resource, Clone)]
-pub struct Jumps(pub Arc<JumpGraph>);
+/// The router's graph, once something has asked for a route.
+///
+/// [`None`] until then, and that is the point: the bucketing is the map's
+/// largest structure after the names table — 32 bytes a system of points, an
+/// address map beside them and a grid bucket per occupied cell, which over
+/// 131 M systems is gigabytes and about 47 M allocations — and a session that
+/// only looks at the sky never asks a routing question. Built on the first
+/// one, from [`crate::Names::points`], and rebucketed by a refresh only if it
+/// has been built.
+#[derive(Resource, Clone, Default)]
+pub struct Jumps(pub Option<Arc<JumpGraph>>);
+
+impl Jumps {
+    /// The graph, building it if this is the first route of the session.
+    pub fn built(
+        &mut self,
+        names: &crate::Names,
+        boosts: &Boosts,
+    ) -> Arc<JumpGraph> {
+        let held = self.0.get_or_insert_with(|| {
+            let at = std::time::Instant::now();
+            let graph = Arc::new(JumpGraph::new(names.points(), boosts));
+            info!(
+                "bucketed {} systems for routing in {:.2?}",
+                graph.len(),
+                at.elapsed(),
+            );
+            graph
+        });
+        Arc::clone(held)
+    }
+}
 
 /// Every system's place, bucketed in space for neighbour queries.
 ///
@@ -798,9 +828,12 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 impl JumpGraph {
     /// Build the graph from the resident names table and the supercharge
     /// table beside it.
-    pub fn new(entries: &[NameEntry], boosts: &Boosts) -> JumpGraph {
+    pub fn new(
+        points: impl IntoIterator<Item = (i64, [f64; 3])>,
+        boosts: &Boosts,
+    ) -> JumpGraph {
         JumpGraph {
-            base: Arc::new(Places::of(entries.iter().map(placed))),
+            base: Arc::new(Places::of(points)),
             fresh: Arc::default(),
             boosts: boosts.clone(),
         }
@@ -1270,7 +1303,7 @@ mod tests {
     fn a_range_too_small_to_estimate_does_not_overflow() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [100., 0., 0.])];
         let boosts = Boosts::default();
-        let graph = JumpGraph::new(&entries, &boosts);
+        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
 
         assert!(
             graph
@@ -1345,7 +1378,8 @@ mod tests {
             entries.push(at(k, [400.0 * k as f32, 0., 0.]));
         }
         entries.push(at(9, [2000., 0., 0.]));
-        let graph = JumpGraph::new(&entries, &Boosts::default());
+        let graph =
+            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1379,7 +1413,8 @@ mod tests {
         // Two long ones, over the same ground.
         entries.push(at(50, [450., 0., 0.]));
         entries.push(at(9, [900., 0., 0.]));
-        let graph = JumpGraph::new(&entries, &Boosts::default());
+        let graph =
+            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1418,7 +1453,7 @@ mod tests {
         // what a leg has to be measured against, and what a search reaching
         // by the wrong one of the two would be caught by below.
         let boosts = Boosts::holding(HashMap::from([(15, Boost::Neutron)]));
-        let graph = JumpGraph::new(&entries, &boosts);
+        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
         let drive = Drive::Standard;
 
         let fewest = graph
@@ -1472,7 +1507,8 @@ mod tests {
             at(3, [1350., 0., 0.]),
             at(9, [1800., 0., 0.]),
         ];
-        let graph = JumpGraph::new(&entries, &Boosts::default());
+        let graph =
+            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1491,7 +1527,8 @@ mod tests {
     #[test]
     fn a_gap_wider_than_the_range_is_no_route() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [600., 0., 0.])];
-        let graph = JumpGraph::new(&entries, &Boosts::default());
+        let graph =
+            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             assert!(
@@ -1514,7 +1551,8 @@ mod tests {
     fn a_range_wider_than_a_bucket_still_finds_its_neighbours() {
         let far = BUCKET_LY as f32 * 6.;
         let entries = vec![at(0, [0., 0., 0.]), at(1, [far, 0., 0.])];
-        let graph = JumpGraph::new(&entries, &Boosts::default());
+        let graph =
+            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
 
         assert_eq!(
             graph.neighbors(0, far as f64 + 1., Drive::Unaided),
@@ -1536,7 +1574,7 @@ mod tests {
         // Two ends 900 ly apart, too far for one 500 ly jump, with nothing
         // between them when the table was read.
         let base = vec![at(0, [0., 0., 0.]), at(9, [900., 0., 0.])];
-        let graph = JumpGraph::new(&base, &Boosts::default());
+        let graph = JumpGraph::new(base.iter().map(placed), &Boosts::default());
         for how in BOTH {
             assert!(
                 graph.route(0, 9, 500., how, Drive::Unaided, None).is_none(),
@@ -1588,7 +1626,7 @@ mod tests {
     #[test]
     fn a_rename_does_not_double_a_system() {
         let base = vec![at(0, [0., 0., 0.]), at(1, [450., 0., 0.])];
-        let graph = JumpGraph::new(&base, &Boosts::default());
+        let graph = JumpGraph::new(base.iter().map(placed), &Boosts::default());
 
         let renamed = vec![NameEntry {
             address: 1,
@@ -1659,7 +1697,7 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(2, Boost::Neutron)]));
-        let graph = JumpGraph::new(&entries, &boosts);
+        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(
@@ -1693,7 +1731,7 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(9, Boost::Neutron)]));
-        let graph = JumpGraph::new(&entries, &boosts);
+        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(
@@ -1712,7 +1750,7 @@ mod tests {
     fn a_white_dwarf_carries_what_the_drive_allows() {
         let entries = vec![at(1, [0., 0., 0.]), at(9, [250., 0., 0.])];
         let boosts = Boosts::holding(HashMap::from([(1, Boost::WhiteDwarf)]));
-        let graph = JumpGraph::new(&entries, &boosts);
+        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(

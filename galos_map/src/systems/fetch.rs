@@ -19,6 +19,13 @@ pub fn plugin(app: &mut App) {
 
     app.init_resource::<LastFetchedAt>();
     app.init_resource::<FetchTasks>();
+    // The router's graph, and the table it is weighted by: both are read
+    // when a route is first asked for, which may be before a read has
+    // landed. An absent supercharge table is what the map says where it
+    // cannot say where a jet cone is, which is exactly the right answer
+    // before the read — see [`crate::Boosts::absent`].
+    app.init_resource::<crate::Boosts>();
+    app.init_resource::<crate::systems::route::graph::Jumps>();
 
     // The region fetch is the spyglass source's own, and stands down while the
     // walk is the one loading systems.
@@ -395,8 +402,9 @@ pub fn fetch_searched(
     mut tasks: ResMut<FetchTasks>,
     mut searching: ResMut<crate::systems::route::frontier::Frontiers>,
     time: Res<Time<Real>>,
-    jumps: Res<crate::systems::route::graph::Jumps>,
+    mut jumps: ResMut<crate::systems::route::graph::Jumps>,
     names: Res<Names>,
+    boosts: Res<crate::Boosts>,
     populated: Res<Populated>,
 ) {
     for event in search_events.read() {
@@ -416,9 +424,10 @@ pub fn fetch_searched(
                     &mut tasks,
                     &mut searching,
                     &time,
-                    &jumps,
+                    &mut jumps,
                     *how,
                     &names,
+                    &boosts,
                     &populated,
                 );
             }
@@ -723,12 +732,13 @@ pub(crate) mod tests {
         app.init_resource::<crate::systems::bounded::LodFetch>();
         app.init_resource::<crate::systems::route::graph::Routing>();
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
-        app.insert_resource(crate::systems::route::graph::Jumps(
+        let table: crate::names::Table = entries.iter().cloned().collect();
+        app.insert_resource(crate::systems::route::graph::Jumps(Some(
             std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
-                &entries,
+                table.points(),
                 &crate::Boosts::default(),
             )),
-        ));
+        )));
         app.insert_resource(Names::reaching(entries, Vec::new()));
         app.insert_resource(Populated::default());
         // What the region fetch needs to exist, so the source can be turned

@@ -537,8 +537,8 @@ fn frame_trip(
         let places: Vec<DVec3> = stops
             .iter()
             .filter_map(|stop| names.address(stop))
-            .filter_map(|address| names.get(address))
-            .map(super::system_to_vec)
+            .filter_map(|address| names.position(address))
+            .map(super::place_to_vec)
             .collect();
         let Some((middle, extent)) = super::route::spawn::framing(&places)
         else {

@@ -28,6 +28,7 @@ pub mod dev;
 pub mod grid;
 pub mod keys;
 pub mod loading;
+pub mod names;
 #[cfg(test)]
 mod perf;
 pub mod refresh;
@@ -68,43 +69,41 @@ pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 ///
 /// Held whole rather than fetched, since a search reaches any name, a route
 /// steps between any two positions, and every system in the sky is drawn at
-/// the size its reach says. The positions here are the graph the router walks,
-/// so routing needs nothing loaded past this.
-/// Cheap to clone: the tables sit behind [`Arc`]s so a fetch task can take a
-/// handle and name and color its systems off the main thread.
+/// the size its reach says. The positions here are the graph the router
+/// walks, so routing needs nothing loaded past this.
+///
+/// **Packed**, which at 131 M systems is the difference between 7 GB and
+/// 34 GB — see [`names`] for the layout and the arithmetic. Cheap to clone:
+/// the tables sit behind [`Arc`]s so a fetch task can take a handle and name
+/// and colour its systems off the main thread.
 #[derive(Resource, Default, Clone)]
 pub struct Names {
-    /// Every entry, the order the table was written in.
+    /// The table as it was read, address-sorted and never written to.
     ///
-    /// The table as it was read, and never written to afterwards: a hundred
-    /// megabytes and two and a half million entries, which is not a thing to
-    /// rebuild because fifty systems were named. What has changed since is
-    /// [`Self::fresh`].
-    pub entries: Arc<Vec<NameEntry>>,
-    /// Address to its entry, for the O(1) lookup a selection wants.
-    pub by_address: Arc<HashMap<i64, usize>>,
+    /// What has changed since is [`Self::fresh`].
+    pub table: Arc<names::Table>,
     /// What the feed has named or renamed since the table was read
     ///
     /// The names table is published in chunks and a pass moves one of them —
-    /// arrivals land in the tail — so a refresh reads that chunk and puts what
-    /// differs here rather than rebuilding the table around it. Small by
+    /// arrivals land in the tail — so a refresh reads that chunk and puts
+    /// what differs here rather than rebuilding the table around it. Small by
     /// construction: the systems named since the map started, which is what a
     /// feed adds in a session and not what a galaxy holds.
     ///
-    /// Read before [`Self::entries`], so a corrected name answers over the one
+    /// Read before [`Self::table`], so a corrected name answers over the one
     /// the base was read with.
     pub fresh: Arc<HashMap<i64, NameEntry>>,
     /// How far each scanned system reaches, in metres, by address.
     ///
-    /// Its own table on disk (`reaches.bin`) and its own map here, since it
-    /// covers a fifth of the index against the name table's whole: a system
-    /// with nothing scanned in it is absent, which is how the map tells "small"
-    /// from "not on record" and stands in for the second.
+    /// Its own table on disk (`reaches.bin`) and its own packing here, since
+    /// it covers a fifth of the index against the name table's whole: a
+    /// system with nothing scanned in it is absent, which is how the map
+    /// tells "small" from "not on record" and stands in for the second.
     ///
-    /// Six megabytes, so a refresh replaces this whole rather than patching
-    /// it: a scan arrives and the system it is about grows, which is the one
-    /// thing in here that really changes with the feed.
-    pub reaches: Arc<HashMap<i64, f32>>,
+    /// Replaced whole by a refresh rather than patched: a scan arrives and
+    /// the system it is about grows, which is the one thing in here that
+    /// really changes with the feed.
+    pub reaches: Arc<names::Reaches>,
 }
 
 /// Which systems can supercharge a drive, and on what, by address.
@@ -176,82 +175,114 @@ impl Populated {
 }
 
 impl Names {
-    /// Build the resident table and its address index from the raw entries,
-    /// with the reaches keyed by address alongside them.
+    /// Build the resident table and the reaches beside it from the raw
+    /// published rows.
+    ///
+    /// What a test and a small directory use. A galaxy's worth is read a
+    /// chunk at a time and packed as it goes — see
+    /// [`names::Packing`] and `loading::read` — because the whole point of
+    /// the packing is not to hold the raw form to build it from.
     pub fn reaching(
         entries: Vec<NameEntry>,
         reaches: Vec<galos_index::SystemReach>,
     ) -> Names {
-        let by_address =
-            entries.iter().enumerate().map(|(i, e)| (e.address, i)).collect();
-
         Names {
-            entries: Arc::new(entries),
-            by_address: Arc::new(by_address),
+            table: Arc::new(entries.into_iter().collect()),
             fresh: Arc::default(),
-            reaches: Arc::new(
-                reaches.into_iter().map(|it| (it.address, it.reach)).collect(),
-            ),
+            reaches: Arc::new(names::Reaches::of(reaches)),
+        }
+    }
+
+    /// The same, with the table already packed.
+    pub fn packed(table: names::Table, reaches: names::Reaches) -> Names {
+        Names {
+            table: Arc::new(table),
+            fresh: Arc::default(),
+            reaches: Arc::new(reaches),
         }
     }
 
     /// How far the system at `address` reaches, in metres, where anything in
     /// it has been scanned.
     pub fn reach(&self, address: i64) -> Option<f32> {
-        self.reaches.get(&address).copied()
+        self.reaches.get(address)
     }
 
     /// The entry for an address, if the table holds it.
     ///
     /// What the feed has named since is read first, so a system that arrived
-    /// after the table did is found and a corrected name answers over the one
-    /// on record when the map started. See [`Self::fresh`].
-    pub fn get(&self, address: i64) -> Option<&NameEntry> {
-        self.fresh.get(&address).or_else(|| {
-            self.by_address.get(&address).map(|&i| &self.entries[i])
-        })
+    /// after the table did is found and a corrected name answers over the
+    /// one on record when the map started. See [`Self::fresh`].
+    ///
+    /// Owned, the name being bytes in a blob rather than a `String` of its
+    /// own: what a caller holds it has to be given a copy of. Everything
+    /// that only reads a name goes through the table directly.
+    pub fn get(&self, address: i64) -> Option<NameEntry> {
+        match self.fresh.get(&address) {
+            Some(entry) => Some(entry.clone()),
+            None => {
+                self.table.index_of(address).map(|at| self.table.entry_at(at))
+            }
+        }
     }
 
-    /// Every entry the table names, the fresh ones in place of what they
-    /// replace
+    /// Where the system at `address` sits, if the table holds it.
     ///
-    /// One pass over the base skipping whatever the overlay has an answer for,
-    /// then the overlay itself, so a system named twice is listed once and it
-    /// is the later name that shows.
-    ///
-    /// The skip is a hash lookup per entry over two and a half million of
-    /// them, so it is not paid while the overlay is empty — which is every
-    /// session until the feed names something, and every search in a session
-    /// with no refresh behind it.
-    pub fn iter(&self) -> impl Iterator<Item = &NameEntry> {
-        let replaced = !self.fresh.is_empty();
-        self.entries
-            .iter()
-            .filter(move |entry| {
-                !replaced || !self.fresh.contains_key(&entry.address)
-            })
-            .chain(self.fresh.values())
+    /// The half of [`Self::get`] that costs nothing: a position is three
+    /// floats out of an array, where a name is a copy.
+    pub fn position(&self, address: i64) -> Option<[f32; 3]> {
+        match self.fresh.get(&address) {
+            Some(entry) => Some(entry.position),
+            None => self
+                .table
+                .index_of(address)
+                .map(|at| self.table.position_at(at)),
+        }
     }
 
-    /// The systems whose name contains `query`.
+    /// Every system's address and place, for the router to bucket.
+    ///
+    /// The base and then the overlay, which is what the graph is built over.
+    pub fn points(&self) -> impl Iterator<Item = (i64, [f64; 3])> + '_ {
+        self.table.points().chain(self.fresh.values().map(|entry| {
+            let p = entry.position;
+            (entry.address, [p[0] as f64, p[1] as f64, p[2] as f64])
+        }))
+    }
+
+    /// The systems whose name holds `query`, at most `limit` of them.
     ///
     /// One fold, of the query: every name in the table is upper case by
     /// construction ([`galos_index::SystemName`]), so the comparison is
-    /// bytes against bytes. It used to lowercase *both sides of every
-    /// comparison*, which over a hundred and thirty-one million entries is
-    /// a hundred and thirty-one million allocations to answer one search.
+    /// bytes against bytes over the blob and allocates nothing until
+    /// something is found. It used to lowercase *both sides of every
+    /// comparison*, which over 131 M entries is 131 M allocations to answer
+    /// one search, and to collect and sort every match before keeping
+    /// twenty-five.
     ///
-    /// Still a scan, and still O(N): a sorted by-name part is
+    /// Still a scan, and still O(N) in the systems: a sorted by-name part is
     /// `TODO-map-scale.md` item 1, and this is what it replaces.
-    pub fn find(&self, query: &str) -> Vec<&NameEntry> {
+    pub fn find(&self, query: &str, limit: usize) -> Vec<NameEntry> {
         let needle = SystemName::new(query);
-        self.iter().filter(|e| e.name.contains(needle.as_str())).collect()
+        let mut found: Vec<NameEntry> = self
+            .fresh
+            .values()
+            .filter(|entry| entry.name.contains(needle.as_str()))
+            .take(limit)
+            .cloned()
+            .collect();
+        for at in self.table.matching(needle.as_str(), limit - found.len()) {
+            let address = self.table.address_at(at);
+            if !self.fresh.contains_key(&address) {
+                found.push(self.table.entry_at(at));
+            }
+        }
+        found
     }
 
     /// Whether any system is named exactly `name`.
     pub fn names_exactly(&self, name: &str) -> bool {
-        let name = SystemName::new(name);
-        self.iter().any(|e| e.name == name)
+        self.address(name).is_some()
     }
 
     /// The address of the system named exactly `name`.
@@ -260,22 +291,32 @@ impl Names {
     /// two named systems, and the graph it walks is keyed by address.
     pub fn address(&self, name: &str) -> Option<i64> {
         let name = SystemName::new(name);
-        self.iter().find(|e| e.name == name).map(|e| e.address)
+        let fresh = self
+            .fresh
+            .values()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.address);
+        fresh.or_else(|| {
+            self.table
+                .named_exactly(name.as_str())
+                .map(|at| self.table.address_at(at))
+                .filter(|address| !self.fresh.contains_key(address))
+        })
     }
 
     /// How many systems the table names, the fresh ones counted once
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.table.len()
             + self
                 .fresh
                 .keys()
-                .filter(|address| !self.by_address.contains_key(address))
+                .filter(|address| self.table.index_of(**address).is_none())
                 .count()
     }
 
     /// Whether the table names nothing at all
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.fresh.is_empty()
+        self.table.is_empty() && self.fresh.is_empty()
     }
 }
 
