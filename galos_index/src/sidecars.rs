@@ -30,9 +30,12 @@ use crate::source::{
     boosts_path, factions_path, populated_path, reaches_path, read_meta,
     write_meta,
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 /// Which of the tables written whole a pass moved.
@@ -399,10 +402,9 @@ pub fn write_boosts(
 /// finishes, and these have to outlive that by exactly as long as it takes
 /// to write the tables.
 ///
-/// What this does not do is the sort. The tables are written in address
-/// order, so [`finish`](Self::finish) reads the rows back into maps and
-/// sorts them, which is the galaxy's worth of rows in memory once rather
-/// than throughout. Item 1 of `TODO-scale-regions.md` is the rest of it.
+/// The sort is not held either. [`finish`](Self::finish) sorts the rows a
+/// run at a time and merges the runs, so what the tables cost to write is
+/// one run rather than one galaxy — see [`sort_table`].
 ///
 /// Nothing is read back while the rows are being written, so a row does
 /// not merge over a published one. That is the same argument
@@ -442,34 +444,63 @@ impl Sheet {
     fn flush(&mut self) -> io::Result<()> {
         self.out.flush()
     }
+}
 
-    /// Every row back, in the order they were written.
-    fn read<T: serde::de::DeserializeOwned>(&self) -> io::Result<Vec<T>> {
-        let bytes = match std::fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(err) => return Err(err),
-        };
-        let mut rows = Vec::new();
-        let mut at = 0usize;
-        while at + 4 <= bytes.len() {
-            let len = u32::from_le_bytes(
-                bytes[at..at + 4].try_into().expect("four bytes"),
-            ) as usize;
-            at += 4;
-            // A row half written is a row the build never marked, so it is
-            // the end of what this file stands for.
-            if at + len > bytes.len() {
-                break;
-            }
-            rows.push(
-                rmp_serde::from_slice(&bytes[at..at + len]).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, e)
-                })?,
-            );
-            at += len;
+/// How many bytes of rows one sorted run holds.
+///
+/// What the sort costs in memory, and the only dial it has: a run is read
+/// back, sorted and written out, and the runs are then merged. A galaxy's
+/// six gigabytes of rows is tens of runs at this size, which is few enough
+/// that the merge can scan their heads rather than heap them.
+const RUN_BYTES: usize = 128 * 1024 * 1024;
+
+/// A row file read a row at a time.
+///
+/// Nothing reads a row file twice, so the rows go past rather than in: the
+/// whole point of writing them to a file was not to hold them.
+struct Framed {
+    inner: BufReader<File>,
+    buf: Vec<u8>,
+}
+
+impl Framed {
+    /// Open a row file, or answer [`None`] where there is not one.
+    fn open(path: &Path) -> io::Result<Option<Framed>> {
+        match File::open(path) {
+            Ok(file) => Ok(Some(Framed {
+                inner: BufReader::new(file),
+                buf: Vec::new(),
+            })),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
         }
-        Ok(rows)
+    }
+
+    /// The next row and what it took on disk, or the end of the file.
+    ///
+    /// A row half written is a row the build never marked, so a short read
+    /// is the end of what the file stands for rather than a failure.
+    fn next<T: DeserializeOwned>(&mut self) -> io::Result<Option<(T, usize)>> {
+        let mut head = [0u8; 4];
+        match self.inner.read_exact(&mut head) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        }
+        let len = u32::from_le_bytes(head) as usize;
+        self.buf.resize(len, 0);
+        match self.inner.read_exact(&mut self.buf) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        }
+        let row = rmp_serde::from_slice(&self.buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        Ok(Some((row, len + 4)))
     }
 }
 
@@ -492,23 +523,23 @@ impl Rows {
     /// the rows it derived are in those tables and nowhere else, and the
     /// tables are written whole, so a second publish that had only this
     /// run's rows would take every earlier system's politics away.
+    ///
+    /// Read a row at a time and pushed straight back out to the spill, so
+    /// carrying on costs a row rather than a table: a galaxy's published
+    /// reaches are one array of tens of millions of rows, and decoding it
+    /// into a `Vec` to walk it once would put the whole thing in memory
+    /// for the length of the seeding.
     pub fn onto(dir: &Path, served: &Path) -> io::Result<Rows> {
         let mut rows = Rows::writing(dir)?;
-        for row in optional::<Vec<PopulatedSystem>>(&populated_path(served))?
-            .unwrap_or_default()
-        {
-            rows.populate(&row)?;
-        }
-        for row in optional::<Vec<SystemReach>>(&reaches_path(served))?
-            .unwrap_or_default()
-        {
-            rows.reach(row.address, row.reach)?;
-        }
-        for row in optional::<Vec<SystemBoost>>(&boosts_path(served))?
-            .unwrap_or_default()
-        {
-            rows.boost(row.address, row.boost)?;
-        }
+        each_row(&populated_path(served), |row: PopulatedSystem| {
+            rows.populate(&row)
+        })?;
+        each_row(&reaches_path(served), |row: SystemReach| {
+            rows.reach(row.address, row.reach)
+        })?;
+        each_row(&boosts_path(served), |row: SystemBoost| {
+            rows.boost(row.address, row.boost)
+        })?;
         Ok(rows)
     }
 
@@ -564,8 +595,7 @@ impl Rows {
         self.boosts.flush()
     }
 
-    /// Read the rows back, write the three tables in address order, and
-    /// drop the rows.
+    /// Sort the rows into the three tables and drop them.
     ///
     /// The last row for an address wins, which is what a build carrying on
     /// from a published table leaves: the table's row goes in first and
@@ -574,37 +604,280 @@ impl Rows {
     /// Called once a build has published, never before: the rows are the
     /// only copy until this runs, and a table written over a directory whose
     /// build then stopped would stand for a galaxy nothing published.
-    pub fn finish(mut self, dir: &Path) -> io::Result<Counts> {
+    pub fn finish(self, dir: &Path) -> io::Result<Counts> {
+        self.sorted(dir, RUN_BYTES)
+    }
+
+    /// The same, with the run size said outright, which is what lets a
+    /// test spill several runs out of a handful of rows.
+    fn sorted(mut self, dir: &Path, budget: usize) -> io::Result<Counts> {
         let at = self.dir.clone();
         self.flush()?;
-        let populated: HashMap<i64, PopulatedSystem> = self
-            .populated
-            .read::<PopulatedSystem>()?
-            .into_iter()
-            .map(|row| (row.address, row))
-            .collect();
-        let reaches: HashMap<i64, f32> = self
-            .reaches
-            .read::<SystemReach>()?
-            .into_iter()
-            .map(|row| (row.address, row.reach))
-            .collect();
-        let boosts: HashMap<i64, Boost> = self
-            .boosts
-            .read::<SystemBoost>()?
-            .into_iter()
-            .map(|row| (row.address, row.boost))
-            .collect();
         let counts = Counts {
             names: 0,
-            populated: write_populated(dir, &populated)?,
-            reaches: write_reaches(dir, &reaches)?,
-            boosts: write_boosts(dir, &boosts)?,
+            populated: sort_table::<PopulatedSystem>(
+                &self.populated.path,
+                &at,
+                "populated",
+                &populated_path(dir),
+                |it| it.address,
+                budget,
+            )?,
+            reaches: sort_table::<SystemReach>(
+                &self.reaches.path,
+                &at,
+                "reaches",
+                &reaches_path(dir),
+                |it| it.address,
+                budget,
+            )?,
+            boosts: sort_table::<SystemBoost>(
+                &self.boosts.path,
+                &at,
+                "boosts",
+                &boosts_path(dir),
+                |it| it.address,
+                budget,
+            )?,
             factions: 0,
         };
         drop(self);
         std::fs::remove_dir_all(&at)?;
         Ok(counts)
+    }
+}
+
+/// Write one table from its rows, in address order, without the table ever
+/// being in memory.
+///
+/// An external sort: runs of `budget` bytes are read back, sorted and
+/// written out, and the runs are then merged. What it stands in for is a
+/// map of every row the read derived — 22.4 MiB over a seven-day slice and
+/// some 6 GiB over the galaxy, which was the last thing on this road that
+/// the whole sky had to fit in.
+///
+/// The last row an address has still wins, and that survives the split
+/// into runs: a run is a stretch of the row file, so every row in one is
+/// older than every row in the next, and a stable sort leaves the rows
+/// inside a run in the order they were written.
+fn sort_table<T: Serialize + DeserializeOwned>(
+    rows: &Path,
+    scratch: &Path,
+    name: &str,
+    table: &Path,
+    key: impl Fn(&T) -> i64,
+    budget: usize,
+) -> io::Result<usize> {
+    let runs = spill_runs::<T>(rows, scratch, name, &key, budget)?;
+    let merged = scratch.join(format!("{name}.sorted"));
+    let count = merge::<T>(&runs, &merged, &key)?;
+    write_table::<T>(table, &merged, count)?;
+    for run in runs {
+        let _ = std::fs::remove_file(run);
+    }
+    let _ = std::fs::remove_file(&merged);
+    Ok(count)
+}
+
+/// Read the rows a run at a time, sort each run, and answer the runs.
+fn spill_runs<T: Serialize + DeserializeOwned>(
+    rows: &Path,
+    scratch: &Path,
+    name: &str,
+    key: &impl Fn(&T) -> i64,
+    budget: usize,
+) -> io::Result<Vec<PathBuf>> {
+    let mut runs = Vec::new();
+    let Some(mut framed) = Framed::open(rows)? else {
+        return Ok(runs);
+    };
+    let mut held: Vec<T> = Vec::new();
+    let mut bytes = 0usize;
+    let mut ended = false;
+    while !ended {
+        match framed.next::<T>()? {
+            Some((row, width)) => {
+                held.push(row);
+                bytes += width;
+            }
+            None => ended = true,
+        }
+        if held.is_empty() || (!ended && bytes < budget) {
+            continue;
+        }
+        // Stable, so the rows an address has keep the order they were
+        // written in and the last of them is still the last.
+        held.sort_by_key(|it| key(it));
+        let path = scratch.join(format!("{name}.run{:04}", runs.len()));
+        let mut run = Sheet::open(path.clone())?;
+        for row in held.drain(..) {
+            run.push(&row)?;
+        }
+        run.flush()?;
+        runs.push(path);
+        bytes = 0;
+    }
+    Ok(runs)
+}
+
+/// Merge sorted runs into one file in address order, the last row an
+/// address has winning.
+///
+/// A scan over the runs' heads rather than a heap: a run is [`RUN_BYTES`]
+/// and a galaxy's rows are gigabytes, so there are tens of runs and the
+/// scan costs less than the code a heap would.
+fn merge<T: Serialize + DeserializeOwned>(
+    runs: &[PathBuf],
+    out: &Path,
+    key: &impl Fn(&T) -> i64,
+) -> io::Result<usize> {
+    let mut readers = Vec::new();
+    let mut heads: Vec<Option<T>> = Vec::new();
+    for run in runs {
+        let mut framed = Framed::open(run)?.expect("a run just written");
+        heads.push(framed.next::<T>()?.map(|(row, _)| row));
+        readers.push(framed);
+    }
+
+    let mut sorted = Sheet::open(out.to_owned())?;
+    let mut count = 0usize;
+    loop {
+        let Some(address) = heads.iter().flatten().map(key).min() else {
+            break;
+        };
+        // The runs in order, so a later run's row is taken over an earlier
+        // one's, and inside a run the last of a stretch over the first:
+        // both are the one rule, that the last row written wins.
+        let mut best: Option<T> = None;
+        for (at, head) in heads.iter_mut().enumerate() {
+            while head.as_ref().is_some_and(|it| key(it) == address) {
+                best = head.take();
+                *head = readers[at].next::<T>()?.map(|(row, _)| row);
+            }
+        }
+        sorted.push(&best.expect("the address came off a head"))?;
+        count += 1;
+    }
+    sorted.flush()?;
+    Ok(count)
+}
+
+/// Write a sorted run of rows as the MessagePack array a reader expects.
+///
+/// The bytes [`write_meta`] would write and by the same road — beside the
+/// file and renamed over it — but streamed: the array's length is known
+/// before its elements are, so nothing past one row is held.
+fn write_table<T: Serialize + DeserializeOwned>(
+    path: &Path,
+    rows: &Path,
+    count: usize,
+) -> io::Result<()> {
+    use serde::Serializer as _;
+    use serde::ser::SerializeSeq;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut out =
+        rmp_serde::Serializer::new(BufWriter::new(File::create(&tmp)?));
+    let mut seq = out
+        .serialize_seq(Some(count))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    if let Some(mut framed) = Framed::open(rows)? {
+        while let Some((row, _)) = framed.next::<T>()? {
+            seq.serialize_element(&row)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        }
+    }
+    seq.end().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    out.into_inner().flush()?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Read a published table back a row at a time.
+///
+/// A table is one MessagePack array, and `read_meta` decodes it into a
+/// `Vec`: fine for a pass that patches tens of systems, and a galaxy's
+/// worth of rows in memory for a run that only means to walk it once. This
+/// hands each row over as it is decoded instead. An absent table is no
+/// rows rather than a failure — a directory that has published no reaches
+/// has nothing to seed a resumed read with.
+fn each_row<T: DeserializeOwned>(
+    path: &Path,
+    take: impl FnMut(T) -> io::Result<()>,
+) -> io::Result<()> {
+    use serde::de::DeserializeSeed;
+
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let mut failed = None;
+    let mut de = rmp_serde::Deserializer::new(BufReader::new(file));
+    let each = Each { take, failed: &mut failed, marker: PhantomData };
+    each.deserialize(&mut de)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    match failed {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+/// The seed [`each_row`] walks an array with.
+///
+/// A seed rather than a `Vec` because the point is not to have one. The
+/// caller's error rides out in `failed`: serde's own error type is the
+/// decoder's, and a row the caller could not write is not a row that
+/// failed to decode.
+struct Each<'a, T, F> {
+    take: F,
+    failed: &'a mut Option<io::Error>,
+    marker: PhantomData<fn() -> T>,
+}
+
+impl<'de, T, F> serde::de::DeserializeSeed<'de> for Each<'_, T, F>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> io::Result<()>,
+{
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> Result<(), D::Error> {
+        de.deserialize_seq(self)
+    }
+}
+
+impl<'de, T, F> serde::de::Visitor<'de> for Each<'_, T, F>
+where
+    T: DeserializeOwned,
+    F: FnMut(T) -> io::Result<()>,
+{
+    type Value = ();
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a table of rows")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        mut self,
+        mut seq: A,
+    ) -> Result<(), A::Error> {
+        // The array is read to its end even after a write has failed: what
+        // is being read is a file the run still has to be able to say
+        // something about, and half a decode is not a state serde defines.
+        while let Some(row) = seq.next_element::<T>()? {
+            if self.failed.is_none() {
+                if let Err(err) = (self.take)(row) {
+                    *self.failed = Some(err);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -791,6 +1064,71 @@ mod tests {
             reaches.iter().find(|it| it.address == 1).map(|it| it.reach),
             Some(5.0),
             "the older reach won",
+        );
+    }
+
+    /// The sort is the sort, however many runs it takes
+    ///
+    /// The tables are written through an external sort now — runs of rows
+    /// sorted in memory, then merged — and the rule it has to keep is the
+    /// one a map of every row kept for free: address order, and the last
+    /// row an address has winning. The place to lose it is a duplicate
+    /// that falls either side of a run boundary, so this pushes rows in
+    /// no order, repeats three of them, and sets the run size to one byte:
+    /// every row is its own run and every duplicate straddles a boundary.
+    #[test]
+    fn a_sorted_table_is_what_a_map_of_every_row_would_have_written() {
+        let at = Scratch::new("sorted");
+        let dir = at.0.join("served");
+        std::fs::create_dir_all(&dir).expect("a directory");
+
+        let mut rows = Rows::writing(&at.0.join("rows")).expect("rows");
+        let pushed = [5i64, 3, 9, 3, 1, 9, 7, 3, 2, 8, 4, 6];
+        for (n, &address) in pushed.iter().enumerate() {
+            // The population says which push this row was, so the table
+            // says which one won.
+            let row =
+                PopulatedSystem { population: n as u64, ..populated(address) };
+            rows.populate(&row).expect("a row");
+            rows.reach(address, n as f32).expect("a reach");
+        }
+        let counts = rows.sorted(&dir, 1).expect("the tables write");
+        assert_eq!(counts.populated, 9, "a duplicate was written twice");
+        assert_eq!(counts.reaches, 9);
+
+        let table: Vec<PopulatedSystem> =
+            read_meta(&populated_path(&dir)).expect("the populated table");
+        assert_eq!(
+            table.iter().map(|it| it.address).collect::<Vec<_>>(),
+            (1..=9).collect::<Vec<_>>(),
+            "the merge did not leave the table in address order",
+        );
+        let won = |address: i64| {
+            table
+                .iter()
+                .find(|it| it.address == address)
+                .map(|it| it.population)
+        };
+        assert_eq!(won(3), Some(7), "an older row beat the newest one");
+        assert_eq!(won(9), Some(5), "an older row beat the newest one");
+        assert_eq!(won(5), Some(0));
+
+        let reaches: Vec<SystemReach> =
+            read_meta(&reaches_path(&dir)).expect("the reaches table");
+        assert_eq!(
+            reaches.iter().find(|it| it.address == 3).map(|it| it.reach),
+            Some(7.0),
+            "an older reach beat the newest one",
+        );
+
+        // And what it wrote is what the whole-table writer would have: the
+        // array is streamed a row at a time, so its header is the one
+        // thing a reader could be handed differently.
+        let bytes = std::fs::read(populated_path(&dir)).expect("the table");
+        assert_eq!(
+            bytes,
+            rmp_serde::to_vec(&table).expect("the table encodes"),
+            "the streamed table is not the bytes a held one would be",
         );
     }
 }

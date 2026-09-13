@@ -218,7 +218,7 @@ reporter — the three shapes whose absence let all of this pass.
 
 ## What is left
 
-### 1. The sidecars the cold route holds — half done
+### 1. The sidecars the cold route holds — done
 
 `Build::finish` writes the names chunks, the cell payloads, the index file
 and the checkpoint. `bin/sync/main.rs::cold` writes `populated.bin`,
@@ -235,13 +235,28 @@ tables are made from those files once the build has published, and
 `Rows::onto` seeds them from the tables a directory already publishes where
 a read is being carried on — see item 2b.
 
-**What is left is the sort.** The tables are written in address order, so
-`Rows::finish` reads the rows back into maps and sorts them: the galaxy's
-worth of rows in memory once, at the end, rather than throughout. The peak
-is therefore unchanged at 200 M and the read's profile is flat. Finishing
-this is an external sort — sorted runs and a k-way merge, or a spill
-bucketed by address — and it is what collapses the last two writers into
-one (see item 6).
+**And so is the sort.** `Rows::finish` read the rows back into maps to put
+them in address order, which was the galaxy's worth of them in memory once,
+at the end. It is an external sort now: runs of `RUN_BYTES` (128 MiB) read
+back, sorted stably and written out, then merged by a scan over the runs'
+heads — tens of runs over a galaxy, so a heap would cost more code than it
+saves. The last row an address has still wins, because a run is a stretch
+of the row file and every row in one is older than every row in the next.
+
+The table itself is streamed too: its length is known before its elements
+are, so `write_table` hands the rows to one `rmp_serde::Serializer` a row
+at a time and renames the file over, which is byte for byte what
+`write_meta` wrote from a whole `Vec`. `sidecars::tests::a_sorted_table_is_
+what_a_map_of_every_row_would_have_written` is the oracle: rows pushed in
+no order with duplicates either side of every run boundary, a one-byte run
+size, and the bytes checked against the held writer's.
+
+`Rows::onto`, which seeds a resumed read from what the directory
+publishes, walks each table through a serde seed rather than decoding it
+into a `Vec` — the published reaches alone are tens of millions of rows at
+200 M, and a run that only means to walk one once was holding all of it.
+So nothing on the cold road holds a galaxy now: what item 6 has left to
+collapse is the *writer*, not the tables.
 
 ### 2. The 200 M import has not been run to the end
 
