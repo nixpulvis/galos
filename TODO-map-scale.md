@@ -633,33 +633,84 @@ than the mechanism.
 unreachable goal costs their planner **161 s** weighted and over 240 s
 exact on a 145 k fixture, where ours answers in about a second.
 
-**The one real fork for us.** Their record array is *spatially* ordered,
-so a cell's members are a contiguous row range and a cell query needs no
-lookup at all. Ours is *address* ordered — which is what makes
+**The one real difference for us.** Their record array is *spatially*
+ordered, so a cell's members are a contiguous row range and a cell query
+needs no lookup at all. Ours is *address* ordered — which is what makes
 `addr.bin` the address index — so a cell's members are not contiguous in
-it. Three ways to close that, and it wants deciding before any of the
-above is built:
+it. Our spatially ordered array is the cell payloads, and that is where
+routing belongs.
 
-- **Route off the payload ranks.** `index.bin` already carries `rank_lo`
-  and `rank_hi` per cell and the payloads are already cell-ordered, so
-  cell → rank range exists today and a node is a rank. Costs reading 41 B
-  records for a 24 B position, and the payloads are *decoded* into
-  `Vec<Point>` rather than mapped (`store.rs:208-223`) — so this wants
-  mapped payloads first.
-- **Add a Morton permutation to the names table**, `bymorton.bin`, N × u32
-  = 800 MB mapped and nothing resident, exactly as `byname.bin` is a name
-  permutation. Then a cell's rows are a contiguous span of it and
-  positions still come off `pos.bin` at 12 B.
-- **Reorder the names base by Morton** and make `addr.bin` a permutation
-  instead. Cheapest at query time, but it moves the cost onto every
-  address lookup, which is the hottest path in the map.
+**The fork, corrected.** An earlier draft of this section proposed adding a
+Morton permutation to the *names* table so a cell's rows would be
+contiguous in it. That was wrong twice over, and the question that broke it
+was "why are names involved in routing at all?"
 
-The middle one looks right: it is additive, it is the same shape as a
-section that already exists, and it leaves both hot paths contiguous. It
-also means item 1b's `pos.bin` is not a duplicate to delete after all —
-it becomes the router's position array, 12 B a system against the
-payloads' 41.
+They should not be. `NameEntry` carries a position, so the names table was
+the only address-keyed table with positions in it, which made
+`Names::points` the path of least resistance — and item 2a's `Places::over`
+deepened that by making the router read `pos.bin` in bulk. The router needs
+exactly two things and neither is a name: bulk "what is near `p`", which is
+the spatial index's job, and address → node twice a leg, at the endpoints.
+Where the names table *does* earn a position is a search result — you type
+a name and it hands back somewhere to fly to — which is dozens of rows, not
+200 M. So `Places::over` is a stopgap and not the destination.
 
+It was also wrong on fact: `rank_lo`/`rank_hi` are ranks in the subtree's
+**magnitude order**, for the LOD slices (`aggregate.rs:290-303`), not
+payload offsets. There is no rank space to route in.
+
+**The move that is right needs no format change: map the payloads.**
+`Index::read_payload` does `fs::read` plus `Vec::<Point>::from_bytes`
+(`store.rs:211-226`) — it *decodes* a cell every time it is asked. Mapped
+instead:
+
+- the router reads positions out of the mapping, already cell-ordered, with
+  no derived structure, no build and no 32 s — which is EDDA's design
+  exactly;
+- names leave the routing path entirely;
+- and it fixes the number sitting beside the 32 s in the guard, which is
+  **24 s and 6.1 GB to page in one zoom**: 152 M points decoded into
+  `Vec<Point>`s. Same defect, bigger blast radius.
+
+41 B records against `pos.bin`'s 12 is ~3.4× the page traffic on a spatial
+scan. EDDA runs 29 B records and treats it as fine.
+
+#### 2c. What the EDDN feed constrains, and one hard blocker
+
+Per publish today (`store.rs:143-158`): `index.bin` **rewritten whole** —
+40 MB at 200 M, every beat, already its own item in `TODO-scale.md`;
+each changed cell's payload written whole, a leaf averaging ~978 systems ×
+41 B ≈ 40 KB; and one appended row per changed system in
+`names/delta.bin`. A beat naming fifty systems writes ~50 log rows, ~2 MB
+of payloads and 40 MB of index. The index dominates by twenty to one.
+
+**Blocker: `write_payload` is `fs::write`** (`store.rs:164-170`) —
+create-truncate-rewrite, in place. Safe today *only* because every reader
+decodes a snapshot into a `Vec`. Map the payloads and a feed rewriting one
+under a reader's mapping is a torn read, and truncating a mapped file is
+**SIGBUS** on the truncated pages. So mapping the payloads requires payload
+writes to go beside-and-rename first, the same way `write_meta` and the
+names generations already do. Not optional, and cheap.
+
+Three more things the feed decides:
+
+- **Derive nothing and there is nothing to invalidate.** That is why
+  reading the mapping directly survives a live feed, and it is the property
+  EDDA gets for free by publishing an immutable index daily rather than by
+  design.
+- **Node identity cannot be cached across publishes.** A payload rewrite
+  renumbers its cell's members, so `(cell, offset)` holds within one
+  snapshot only. A route in flight already holds an `Arc<JumpGraph>`; with
+  rename-not-rewrite it would hold mappings that stay valid for the route's
+  life, which is the answer we want — a search half-run against a galaxy
+  that moved underneath it has searched two skies.
+- **Anything genuinely derived needs the names table's base/overlay
+  shape.** A boost sub-index for the >1,500 ly coarse plan is derived from
+  the whole galaxy and is stale every beat; it wants building at compaction
+  with a small overlay of the arrivals that supercharge. That is exactly
+  what `JumpGraph::extended` does for places and `Delta` for names, and it
+  is the part EDDA has no answer for because a published daily artifact
+  never faces it.
 
 
 - **Positions from the payloads, cell-sorted.** The router's second copy of
