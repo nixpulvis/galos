@@ -47,7 +47,7 @@ use elite_journal::entry::{Entry, Event};
 use galos::bar;
 use galos::sink::{Landed, Reporter, Sink, SystemReport};
 use galos::{Shard, Shutdown};
-use galos_index::bodies::Published;
+use galos_index::bodies::Shared;
 use galos_index::{Build, LeftOff, Rows, Taking};
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -67,18 +67,18 @@ pub struct Dump {
 impl Dump {
     /// Read the file, answering whether it could be opened at all.
     pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
-        let mut reading =
-            match Reading::open(&self.path, self.shard, shutdown) {
-                Ok(reading) => reading,
-                Err(err) => {
-                    warn!(
-                        file = %self.path.display(),
-                        error = %err,
-                        "unreadable dump",
-                    );
-                    return false;
-                }
-            };
+        let mut reading = match Reading::open(&self.path, self.shard, shutdown)
+        {
+            Ok(reading) => reading,
+            Err(err) => {
+                warn!(
+                    file = %self.path.display(),
+                    error = %err,
+                    "unreadable dump",
+                );
+                return false;
+            }
+        };
 
         let by = crate::from::published("Spansh", &self.path);
         loop {
@@ -478,6 +478,11 @@ impl Galaxy {
             from.as_ref().map_or((0u64, 0), |it| (it.systems, it.bodies));
         let taken_up = systems;
         let by = crate::from::published("Spansh", &self.path);
+        // One store for the whole read, though the accumulator is a line's.
+        // What it holds is what makes the body records go out a shard at a
+        // time rather than one append a system; see `galos_index::pack` and
+        // [`Shared`].
+        let store = Shared::raising(self.dir.as_path());
         loop {
             // Where the line about to be read begins. A stop part way
             // through one is marked here rather than after it: the build
@@ -499,10 +504,8 @@ impl Galaxy {
             };
             systems += 1;
             let address = report.address;
-            let mut galaxy = galos_index::Galaxy::keeping(
-                self.now,
-                Box::new(Published::raising(self.dir.as_path())),
-            );
+            let mut galaxy =
+                galos_index::Galaxy::keeping(self.now, Box::new(store.clone()));
             galaxy.hear(report);
             // Nobody flew here and a file was published, so the file's own
             // name is what these bodies are filed under — the same
@@ -515,29 +518,29 @@ impl Galaxy {
             // Placed or named and not both is neither: the tree and the
             // names table have to agree about it, and a tree standing over a
             // system the names table has no row for will not reopen.
-            let took = match (
-                galaxy.system_of(address),
-                galaxy.name_of(address),
-            ) {
-                (Some(system), Some(name)) => match build.push(system, name)? {
-                    // New by construction: a cold build writes a directory
-                    // from nothing, so the updated count stays zero for the
-                    // whole read.
-                    Taking::More => {
-                        reading.took(Some(Landed::New));
-                        true
-                    }
-                    Taking::Stopped => {
-                        build.mark(
-                            &reading
-                                .place(began, self.now, systems - 1, bodies)
-                                .bytes(),
-                        );
-                        break;
-                    }
-                },
-                _ => false,
-            };
+            let took =
+                match (galaxy.system_of(address), galaxy.name_of(address)) {
+                    (Some(system), Some(name)) => match build
+                        .push(system, name)?
+                    {
+                        // New by construction: a cold build writes a directory
+                        // from nothing, so the updated count stays zero for the
+                        // whole read.
+                        Taking::More => {
+                            reading.took(Some(Landed::New));
+                            true
+                        }
+                        Taking::Stopped => {
+                            build.mark(
+                                &reading
+                                    .place(began, self.now, systems - 1, bodies)
+                                    .bytes(),
+                            );
+                            break;
+                        }
+                    },
+                    _ => false,
+                };
 
             // Only for a system the tree took: a row for one it has not got
             // is a row the map can colour and never draw. And before the
@@ -546,7 +549,11 @@ impl Galaxy {
             if took {
                 rows.take(&galaxy, galaxy.touched())?;
             }
-            bodies += galaxy.settle_bodies()?;
+            // What the store has written since it was last asked. It holds
+            // what it is told until [`Published::CARRIED`] systems have
+            // piled up, so most lines add nothing here and the line that
+            // does adds a shard's worth at a time — see `galos_index::pack`.
+            bodies += store.written();
 
             // What the publish at the end of the read will record, kept
             // current so a read that runs to the end of the file marks the
@@ -559,6 +566,10 @@ impl Galaxy {
         }
 
         reading.unparsed();
+        // Whatever is still held, whether the read ended or was stopped:
+        // the body records are the only copy of what a line said about a
+        // system's insides.
+        bodies += store.settle()?;
         let elapsed = started.elapsed();
         info!(
             systems,

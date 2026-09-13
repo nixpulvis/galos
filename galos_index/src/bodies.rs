@@ -57,12 +57,14 @@
 //! warning is the only place it is said.
 
 use crate::meta::SystemBodies;
-use crate::source::{self, bodies_path, raise_meta, write_meta};
+use crate::pack;
+use crate::source;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Where a system's scanned insides live.
 ///
@@ -276,16 +278,13 @@ impl Bodies for Published {
             .or_insert_with(|| published.unwrap_or_default()));
     }
 
-    /// Every system with a body file, and every one held unwritten.
+    /// Every system the directory holds bodies for, and every one held
+    /// unwritten.
     ///
-    /// The directory listing is the answer for a store that has been running
-    /// across restarts, and the held set covers what this run has scanned and
-    /// not yet written.
-    ///
-    /// Two levels of listing, because the body files are sharded: what sits
-    /// a directory down is the published layout, and anything still loose in
-    /// `bodies/` is what an older builder wrote and the migration has not
-    /// moved yet. Missing either would report a system nobody has scanned.
+    /// Three layouts and the held set: the packed shard indexes, the loose
+    /// file a system in its shard directory, the flat file from before the
+    /// sharding, and what this run has scanned and not yet written. Missing
+    /// any of them would report a system nobody has scanned.
     fn scanned(&self) -> Vec<i64> {
         fn listed(dir: &Path, into: &mut Vec<i64>) -> Vec<PathBuf> {
             let mut shards = Vec::new();
@@ -309,6 +308,10 @@ impl Bodies for Published {
         }
 
         let mut addresses: Vec<i64> = self.dirty.keys().copied().collect();
+        match pack::addresses(&self.dir) {
+            Ok(packed) => addresses.extend(packed),
+            Err(err) => eprintln!("the packed bodies could not be read: {err}"),
+        }
         let bodies = self.dir.join(crate::source::BODIES_DIR);
         for shard in listed(&bodies, &mut addresses) {
             listed(&shard, &mut addresses);
@@ -320,42 +323,104 @@ impl Bodies for Published {
 
     /// Write what is held, and let go of it.
     ///
-    /// A system whose file will not write is kept rather than dropped, so the
-    /// next flush tries again and a full disk that clears costs nothing. The
-    /// error is the first one met; the rest of the systems are still written.
+    /// Into the pack, grouped by shard: a shard is two appends however many
+    /// of the held systems fell in it, and neither append is a directory
+    /// operation. See [`crate::pack`] for why that is the whole of this
+    /// module's cost at galaxy scale.
     ///
-    /// Straight onto the path where the directory is being raised and beside
-    /// it and over where it is being edited, which is the difference between
-    /// a file that stands to be kept and one that does not. See
-    /// [`raising`](Published::raising).
+    /// A system whose record will not write is kept rather than dropped, so
+    /// the next flush tries again and a full disk that clears costs nothing.
+    /// The error is the first one met; the rest of the systems are still
+    /// written.
     fn flush(&mut self) -> io::Result<usize> {
-        let write: fn(&Path, &SystemBodies) -> io::Result<()> =
-            match self.raising {
-                true => raise_meta,
-                false => write_meta,
-            };
-        let mut wrote = 0;
-        let mut failed = None;
-        let mut kept = HashMap::new();
-        for (address, inside) in self.dirty.drain() {
-            match write(&bodies_path(&self.dir, address), &inside) {
-                Ok(()) => wrote += 1,
-                Err(err) => {
-                    failed.get_or_insert(err);
-                    kept.insert(address, inside);
-                }
-            }
-        }
-        self.dirty = kept;
-        self.wrote += wrote;
-        match failed {
+        let done = pack::write(&self.dir, std::mem::take(&mut self.dirty));
+        self.dirty = done.kept;
+        self.wrote += done.wrote;
+        match done.failed {
             Some(err) => Err(err),
-            None => Ok(wrote),
+            None => Ok(done.wrote),
         }
     }
 
     fn written(&mut self) -> usize {
         std::mem::take(&mut self.wrote)
+    }
+}
+
+/// One store, written through by several accumulators.
+///
+/// A cold read builds an accumulator a line — holding the galaxy one line
+/// at a time is the whole point of that road — and a store built with each
+/// of them is a store that can never batch: a flush a system, and a shard's
+/// two files opened to append one record. This is the store behind an
+/// `Arc`, so a run has one of it and each line's [`Galaxy`](crate::Galaxy)
+/// borrows it, which is what lets [`Published::CARRIED`] systems pile up
+/// and go out shard by shard.
+///
+/// One writer still: the `Arc` is shared within a run, and a run holds the
+/// directory's [`Lock`](crate::Lock).
+#[derive(Clone, Debug)]
+pub struct Shared(Arc<Mutex<Published>>);
+
+impl Shared {
+    /// A shared store onto a directory being edited.
+    pub fn new(dir: impl Into<PathBuf>) -> Shared {
+        Shared(Arc::new(Mutex::new(Published::new(dir))))
+    }
+
+    /// A shared store onto a directory being raised from nothing. See
+    /// [`Published::raising`].
+    pub fn raising(dir: impl Into<PathBuf>) -> Shared {
+        Shared(Arc::new(Mutex::new(Published::raising(dir))))
+    }
+
+    /// What is held, on disk, and how many systems have been written since
+    /// this was last asked.
+    pub fn settle(&self) -> io::Result<usize> {
+        let mut held = self.held();
+        held.flush()?;
+        Ok(held.written())
+    }
+
+    /// How many systems have been written since this was last asked.
+    ///
+    /// The trait has the same answer and wants a `&mut`, which a store
+    /// several accumulators share is never held as.
+    pub fn written(&self) -> usize {
+        self.held().written()
+    }
+
+    /// The store, whatever a panicking writer left it as.
+    ///
+    /// A poisoned store is one a write panicked in the middle of; what is
+    /// in it is still the systems the run has read, and refusing to write
+    /// them would lose more than it protects.
+    fn held(&self) -> std::sync::MutexGuard<'_, Published> {
+        self.0.lock().unwrap_or_else(|it| it.into_inner())
+    }
+}
+
+impl Bodies for Shared {
+    /// Cloned rather than borrowed: what is behind the lock cannot be lent
+    /// out past it, and the caller is about to merge into it anyway.
+    fn read(&self, address: i64) -> Cow<'_, SystemBodies> {
+        Cow::Owned(self.held().read(address).into_owned())
+    }
+
+    fn edit(&mut self, address: i64, act: &mut dyn FnMut(&mut SystemBodies)) {
+        self.held().edit(address, act)
+    }
+
+    fn scanned(&self) -> Vec<i64> {
+        self.held().scanned()
+    }
+
+    fn flush(&mut self) -> io::Result<usize> {
+        self.held().flush()
+    }
+
+    fn written(&mut self) -> usize {
+        self.held().written()
     }
 }
 
@@ -490,20 +555,20 @@ mod tests {
         assert_eq!(stars.len(), 1, "the file was merged rather than raised");
         assert_eq!(stars[0].id, 1, "the raised file is not what was written");
 
-        // Straight onto the path: nothing beside it, either left behind or
-        // in flight for a reader to trip over.
-        let shard = bodies_path(&dir, 11).parent().expect("a shard").to_owned();
-        let beside: Vec<_> = std::fs::read_dir(&shard)
-            .expect("the shard reads")
-            .flatten()
-            .map(|it| it.file_name())
-            .filter(|name| {
-                std::path::Path::new(name)
-                    .extension()
-                    .is_some_and(|it| it == "tmp")
-            })
-            .collect();
-        assert!(beside.is_empty(), "a temporary was left beside: {beside:?}");
+        // Into the pack and nowhere else: the loose file a system is the
+        // layout this replaced, and a store writing one would be a galaxy
+        // of inodes again.
+        assert!(
+            !crate::source::bodies_path(&dir, 11).exists(),
+            "a loose body file was written",
+        );
+        assert!(
+            matches!(
+                pack::find(&dir, 11).expect("the pack reads"),
+                pack::Found::Bodies(_)
+            ),
+            "the pack does not hold what the store wrote",
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -519,14 +584,21 @@ mod tests {
         let mut store = Published::new(&dir);
         store.edit(3, &mut |inside| inside.stars.push(star(0)));
 
-        assert!(
-            !bodies_path(&dir, 3).exists(),
+        assert_eq!(
+            pack::find(&dir, 3).expect("the pack reads"),
+            pack::Found::Absent,
             "an edit reached the disk before it was asked to",
         );
         assert_eq!(store.read(3).stars.len(), 1, "the held edit was not read");
 
-        store.flush().expect("the file writes");
-        assert!(bodies_path(&dir, 3).exists(), "the flush wrote nothing");
+        store.flush().expect("the record writes");
+        assert!(
+            matches!(
+                pack::find(&dir, 3).expect("the pack reads"),
+                pack::Found::Bodies(_)
+            ),
+            "the flush wrote nothing",
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -79,28 +79,15 @@ pub fn boosts_path(dir: &Path) -> PathBuf {
 
 /// A system's body file within a build directory, keyed by address.
 ///
-/// Sharded over 4,096 subdirectories, `bodies/{shard:03x}/{address}.bin`,
-/// one file per system being more than a flat directory holds at galaxy
-/// scale. The shard is the top twelve bits of the address multiplied by the
-/// 64-bit golden-ratio constant:
-///
-/// ```text
-/// shard = (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52
-/// ```
-///
-/// The multiply mixes the high bits down: an Elite `id64` packs a mass code
-/// and the boxel coordinates into its low bits, so `address % 4096` leaves
-/// whole shards empty and piles the rest up. See `ARCHITECTURE.md`.
+/// The layout before [`crate::pack`]: one file a system, sharded over 4,096
+/// subdirectories, `bodies/{shard:03x}/{address}.bin`. Read and never
+/// written — [`crate::pack::pack`] walks these into the shard files on the
+/// first open, and until it has, [`read_bodies`] falls back to this path.
 pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
-    let shard = bodies_shard(address);
+    let shard = crate::pack::shard_of(address);
     dir.join(BODIES_DIR)
         .join(format!("{shard:03x}"))
         .join(format!("{address}.bin"))
-}
-
-/// Which of the 4,096 shards a body file falls in. See [`bodies_path`].
-fn bodies_shard(address: i64) -> u64 {
-    (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52
 }
 
 /// Where a body file sat before the sharding, `bodies/{address}.bin`.
@@ -112,13 +99,22 @@ pub fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
     dir.join(BODIES_DIR).join(format!("{address}.bin"))
 }
 
-/// What the body file for `address` holds, empty where there is none.
+/// What the bodies of `address` are, empty where nothing has scanned it.
 ///
-/// The sharded path first and the flat one after it, so a directory that has
-/// not been resharded yet, or one being resharded as this reads, answers with
-/// what it has. A system with no file at all is one nobody has scanned, which
-/// is [`SystemBodies::default`] rather than an error.
+/// Three layouts, newest first: the packed shard files, then the loose file
+/// a system in its shard directory, then the flat one from before the
+/// sharding. A directory part way through a packing answers out of whichever
+/// holds the system, and a system the pack says was *withdrawn* is empty
+/// rather than whatever a loose file it replaced still says.
+///
+/// A system nothing has scanned is [`SystemBodies::default`] rather than an
+/// error.
 pub fn read_bodies(dir: &Path, address: i64) -> io::Result<SystemBodies> {
+    match crate::pack::find(dir, address)? {
+        crate::pack::Found::Bodies(inside) => return Ok(inside),
+        crate::pack::Found::Withdrawn => return Ok(SystemBodies::default()),
+        crate::pack::Found::Absent => {}
+    }
     let bytes = match std::fs::read(bodies_path(dir, address)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -136,13 +132,14 @@ pub fn read_bodies(dir: &Path, address: i64) -> io::Result<SystemBodies> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// Drop the body file for `address`, answering whether there was one.
+/// Withdraw the bodies of `address`, answering whether there were any.
 ///
-/// Both paths: removing only the sharded file would leave a pre-sharding
-/// flat one for [`read_bodies`] to fall back onto, and the withdrawn scan
-/// would go on reading as published.
+/// All three layouts: a tombstone in the pack, and the two loose files
+/// removed. Leaving either loose file behind would leave the withdrawn scan
+/// for a fallback to read, and leaving out the tombstone would leave it in
+/// the pack.
 pub fn remove_bodies(dir: &Path, address: i64) -> io::Result<bool> {
-    let mut removed = false;
+    let mut removed = crate::pack::remove(dir, address)?;
     for path in [bodies_path(dir, address), legacy_bodies_path(dir, address)] {
         match std::fs::remove_file(&path) {
             Ok(()) => removed = true,
@@ -176,104 +173,36 @@ pub struct Resharded {
 /// has the rest of that half to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Migrated {
-    /// The body files.
-    pub bodies: Resharded,
+    /// The body files, walked into the packed shard files.
+    pub bodies: crate::pack::Packed,
     /// The cell payloads, or [`None`] where the bodies were abandoned part
     /// way and the payloads were never reached.
     pub cells: Option<Resharded>,
 }
 
 /// Bring an existing directory's *layout* up to date, before anything reads
-/// or writes it: [`reshard_bodies`] and then
-/// [`crate::store::reshard_cells`], each move an idempotent rename.
+/// or writes it: [`crate::pack::pack`] and then
+/// [`crate::store::reshard_cells`].
 ///
 /// Nothing is versioned: a layout this cannot recognise is built again.
 ///
 /// Interruptible, and the one thing at an open that has to be: a galaxy's
-/// worth of loose body files is a rename each and minutes of them, which a
-/// run asked to stop must not be held up by. What this abandons a later
-/// open takes up; a reader falls back to the flat path for whatever is
-/// still loose, so a directory left half sharded serves exactly what a
-/// finished one does.
+/// worth of loose body files is hours of them, which a run asked to stop
+/// must not be held up by. What this abandons a later open takes up; a
+/// reader falls back to the loose paths for whatever has not been packed,
+/// so a directory left half migrated serves exactly what a finished one
+/// does.
 ///
 /// A stop during the bodies leaves the payloads alone rather than opening
 /// a second `readdir` on a directory nothing is going to move anything in:
 /// `cells` is [`None`] and the next open runs both halves.
 pub fn migrate(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Migrated> {
-    let bodies = reshard_bodies(dir, stop)?;
+    let bodies = crate::pack::pack(dir, stop)?;
     if !bodies.finished {
         return Ok(Migrated { bodies, cells: None });
     }
     let cells = crate::store::reshard_cells(dir, stop)?;
     Ok(Migrated { bodies, cells: Some(cells) })
-}
-
-/// Move every loose body file into its shard, stopping where asked.
-///
-/// The one-time migration from the flat layout to the sharded one,
-/// idempotent and cheap enough to run at every open: a directory with
-/// nothing loose in it costs one `readdir` and no writes, the sharded files
-/// living a level down.
-///
-/// Anything that is not a file named `<i64>.bin` is left alone — the shard
-/// directories themselves, and the `.tmp` a builder killed mid-write leaves
-/// beside a file.
-///
-/// `stop` is asked before each move, a rename being a syscall and the
-/// question a load. Abandoning is safe wherever it lands: a move is a
-/// rename within one tree, hence atomic, and [`read_bodies`] falls back to
-/// the flat path for whatever is still loose, so a half-migrated directory
-/// answers for every system a finished one does. The next open takes the
-/// rest.
-///
-/// A sharded file already standing where a loose one would land wins, and
-/// the loose one is dropped rather than renamed over it: nothing writes the
-/// flat path any more, so the sharded file is the newer of the two — what
-/// the run that abandoned a migration went on to publish — and a rename
-/// would put a withdrawn scan back.
-pub fn reshard_bodies(
-    dir: &Path,
-    stop: &dyn Fn() -> bool,
-) -> io::Result<Resharded> {
-    let entries = match std::fs::read_dir(dir.join(BODIES_DIR)) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Resharded { moved: 0, finished: true });
-        }
-        Err(e) => return Err(e),
-    };
-    let mut moved = 0;
-    let mut made = [false; 4096];
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(stem) = name.strip_suffix(".bin") else { continue };
-        let Ok(address) = stem.parse::<i64>() else { continue };
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        if stop() {
-            return Ok(Resharded { moved, finished: false });
-        }
-        let to = bodies_path(dir, address);
-        let shard = bodies_shard(address) as usize;
-        if !made[shard] {
-            if let Some(parent) = to.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            made[shard] = true;
-        }
-        match std::fs::metadata(&to) {
-            Ok(_) => std::fs::remove_file(entry.path())?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                std::fs::rename(entry.path(), to)?;
-            }
-            Err(e) => return Err(e),
-        }
-        moved += 1;
-    }
-    Ok(Resharded { moved, finished: true })
 }
 
 /// Serialize a metadata value to a file, MessagePack-encoded. The builder's
@@ -780,176 +709,6 @@ mod tests {
             source.bodies(7).await.expect("a read"),
             SystemBodies::default(),
             "a system nobody has scanned read as something other than empty",
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The migration moves every loose file into its shard and then has
-    /// nothing left to do
-    ///
-    /// It runs at every open, so the second pass costs nothing. What it moves
-    /// reads back as what was written, and what it is unsure of it leaves
-    /// alone: a `.tmp` beside a file is a torn write, not a body.
-    #[test]
-    fn resharding_moves_every_loose_file_once() {
-        use super::{bodies_path, legacy_bodies_path, read_bodies, write_meta};
-
-        let dir = scratch("reshard");
-        let addresses = [
-            2_412_116_659_890_i64,
-            4_611_686_020_061_657_985,
-            10_477_373_803,
-            -9_223_372_036_854_775_807,
-            0,
-        ];
-        for address in addresses {
-            write_meta(&legacy_bodies_path(&dir, address), &inside(address))
-                .expect("a loose file writes");
-        }
-        let torn = dir.join(super::BODIES_DIR).join("12345.tmp");
-        std::fs::write(&torn, b"\x90").expect("a torn write");
-
-        let done = super::reshard_bodies(&dir, &|| false)
-            .expect("the migration runs");
-        assert_eq!(
-            done.moved,
-            addresses.len(),
-            "the migration skipped a file"
-        );
-        assert!(done.finished, "the migration said it had more to do");
-
-        for address in addresses {
-            assert!(
-                bodies_path(&dir, address).exists(),
-                "a file did not land in its shard",
-            );
-            assert!(
-                !legacy_bodies_path(&dir, address).exists(),
-                "a file was left loose as well as sharded",
-            );
-            assert_eq!(
-                read_bodies(&dir, address).expect("a read"),
-                inside(address),
-                "a moved file did not read back as what was written",
-            );
-        }
-        assert!(torn.exists(), "the migration took a torn write for a body");
-
-        let again =
-            super::reshard_bodies(&dir, &|| false).expect("the second pass");
-        assert_eq!(
-            again.moved, 0,
-            "a second open moved files that were already sharded",
-        );
-        assert!(again.finished, "a second open found something left to do");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A reshard asked to stop leaves a directory that reads the same
-    ///
-    /// The migration is a rename per file and a galaxy's worth of them, so
-    /// a run asked to stop abandons it. What makes that safe is the
-    /// fallback: every file it did not reach still reads from the flat
-    /// path, and the next open moves the rest.
-    #[test]
-    fn resharding_stops_when_asked_and_takes_the_rest_later() {
-        use super::{bodies_path, legacy_bodies_path, read_bodies, write_meta};
-        use std::cell::Cell;
-
-        let dir = scratch("reshardstop");
-        let addresses: Vec<i64> =
-            (0..400).map(|n| 2_412_116_659_890_i64 + n * 7_919).collect();
-        for &address in &addresses {
-            write_meta(&legacy_bodies_path(&dir, address), &inside(address))
-                .expect("a loose file writes");
-        }
-
-        // Asked before each move, so the sixth question stops the sixth.
-        let questions = Cell::new(0usize);
-        let stop = || {
-            questions.set(questions.get() + 1);
-            questions.get() > 5
-        };
-        let part =
-            super::reshard_bodies(&dir, &stop).expect("the migration runs");
-        assert_eq!(part.moved, 5, "the migration did not stop when asked");
-        assert!(!part.finished, "an abandoned migration claimed to be done");
-
-        let sharded = addresses
-            .iter()
-            .filter(|&&address| bodies_path(&dir, address).exists())
-            .count();
-        assert_eq!(
-            sharded, part.moved,
-            "what it said it moved is not what is in the shards",
-        );
-        for &address in &addresses {
-            assert!(
-                bodies_path(&dir, address).exists()
-                    != legacy_bodies_path(&dir, address).exists(),
-                "a system was left in both layouts or in neither",
-            );
-            assert_eq!(
-                read_bodies(&dir, address).expect("a read"),
-                inside(address),
-                "a half-migrated directory stopped answering for a system",
-            );
-        }
-
-        let rest = super::reshard_bodies(&dir, &|| false)
-            .expect("the migration runs again");
-        assert!(rest.finished, "a migration nobody stopped did not finish");
-        assert_eq!(
-            rest.moved,
-            addresses.len() - part.moved,
-            "the second pass did not take what the first left",
-        );
-        for &address in &addresses {
-            assert!(
-                !legacy_bodies_path(&dir, address).exists(),
-                "a file was left loose after a finished migration",
-            );
-            assert_eq!(
-                read_bodies(&dir, address).expect("a read"),
-                inside(address),
-                "a moved file did not read back as what was written",
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A file already in its shard is not written over by the loose one
-    ///
-    /// What an abandoned migration makes possible: the run goes on to
-    /// publish, and a system it writes lands in the shard while the stale
-    /// flat file is still there. Renaming that flat file over the new one
-    /// at the next open would put the withdrawn scan back.
-    #[test]
-    fn resharding_keeps_the_sharded_file_over_the_loose_one() {
-        use super::{bodies_path, legacy_bodies_path, read_bodies, write_meta};
-
-        let dir = scratch("reshardwins");
-        let address = 10_477_373_803_i64;
-        write_meta(&legacy_bodies_path(&dir, address), &inside(address))
-            .expect("the stale flat file writes");
-        let current = inside(address + 1);
-        write_meta(&bodies_path(&dir, address), &current)
-            .expect("the published file writes");
-
-        let done =
-            super::reshard_bodies(&dir, &|| false).expect("the migration");
-        assert_eq!(done.moved, 1, "the loose file was left where it was");
-        assert!(
-            !legacy_bodies_path(&dir, address).exists(),
-            "the stale flat file is still there to be fallen back onto",
-        );
-        assert_eq!(
-            read_bodies(&dir, address).expect("a read"),
-            current,
-            "the stale flat file was renamed over what was published",
         );
 
         let _ = std::fs::remove_dir_all(&dir);

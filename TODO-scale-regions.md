@@ -279,16 +279,20 @@ above, and it is cheap next to the build.
 | 26 min | 7,585,860 | 6,465/s average, **1,740/s** by the end | 3.16 M body files, 14 GB |
 | 8 s | 114,333 | ~14,000/s into an empty directory | — |
 
-At 1,740 systems a second and still falling, the remaining 196 M systems
-are **31 hours**, and 188 M body files at 4.4 KB allocated apiece is
-**~830 GB** against 943 GB free. Neither number is the region build's: the
-tree, the names and the spills are 30 GB of the total and the read is 30,000
-systems a second when nothing is writing a file a system.
+**What the run in flight is doing**, measured from outside at 22.7 M
+systems published and rising: **~6,300 systems a second and not falling**
+over twenty minutes, 48 MB resident, 170 level-4 spills, and ~640 MB of
+disk a minute — **1.7 KB a system**, not the 4.4 KB the projection above
+assumed, because only ~38 % of systems have anything scanned at all. So the
+remaining systems are about eight hours and ~300 GB against 880 GiB free,
+and the decay to 1,740/s has not come back: `4a470fb` is the difference.
 
-So **item 2a comes first**. It changes how every body is written, and a
-read started before it is a read done twice.
+That is why the run was not stopped for item 2a. It writes the loose
+layout, `galos-index pack` walks it into the packed one afterwards at
+2,700 files a second, and every read falls back meanwhile — so the read is
+not a read done twice after all.
 
-### 2a. One file a system — next, and it blocks the 200 M run
+### 2a. One file a system — done, and the run that met it is still going
 
 A body file is a file: `bodies/{shard:03x}/{address}.bin`, 2.4 KB of
 MessagePack in 4.4 KB of allocated disk, written whole and read whole. At
@@ -339,32 +343,49 @@ bodies/{shard:03x}.{gen:04x}.dat  the records, appended
   data file gone reads the index again. That retry is the whole of the
   concurrency, there being one writer (the directory's `Lock`) and any
   number of readers.
-- **Writes buffer per shard**, `BUFFERED` bytes each, flushed with one
-  handle open at a time — the arrangement `bucket::Buckets` already uses.
-  At 16 KiB over 4,096 shards that is 64 MiB held and one open per seven
-  bodies, against one open, one rename and an inode apiece today.
+- **Writes go out a shard at a time.** `bodies::Published` holds what it
+  has been told until `Published::CARRIED` systems have piled up, and the flush
+  groups them by shard, so a shard is one open of each of its two files and
+  one append to each however many of the held systems fell in it. The cold
+  read holds *one* store for the whole file — `bodies::Shared`, the store
+  behind an `Arc`, since the accumulator is a line's and a store built with
+  each of them could never batch.
 
-At 200 M: 4,096 files rather than 188 M, **~450 GB rather than ~830 GB**
-(the difference is the block a small file rounds up to), and the import's
-writes become sequential.
+**Measured over the seven-day slice**, the same dump built both ways:
 
-**The seam is already right.** `galos_map` never builds a body path — it
-asks `Source::bodies(address)` — so the change lands in `FsSource`,
-`source::{read_bodies, remove_bodies}`, `bodies::Published`,
-`Published::scanned`, and the two `write_meta(&bodies_path(..))` calls in
-`galos_db::index::metadata`. A `pack(dir, stop)` migration walks the loose
-files into the shards the way `reshard_bodies` walked the flat ones, and
-`read` falls back to the loose and flat paths until it has, so a directory
-part way through answers from either.
+| | files | on disk | read of every body |
+|---|---|---|---|
+| a file a system | 277,551 | 1.56 GiB | 43.1 s |
+| packed | 8,192 | **1.01 GiB** | **25.8 s** |
 
-**The follow does not care which layout it is**, which is why this is an
+and `galos-index diff --bodies` says **the same derivation** between them:
+907 cells, identical payloads, identical tables, and all 277,551 systems'
+bodies identical through the two layouts. A build stopped at 15 s and
+carried on is identical to both. At 200 M that is 8,192 files rather than
+188 M, and the same 35 % off the bytes.
+
+**The seam was already right.** `galos_map` never builds a body path — it
+asks `Source::bodies(address)` — so the change landed in
+`source::{read_bodies, remove_bodies}`, `bodies::{Published, Shared}` and
+the two `write_meta(&bodies_path(..))` calls in `galos_db::index::metadata`,
+which are `pack::write_each` now. `pack::pack(dir, stop)` walks the loose
+files in — 277,551 of them in 102 s, interruptible, a file dropped only
+once the pack holds its record — and `read_bodies` falls back to the loose
+and the flat paths until it has, so a directory part way through answers
+for every system a finished one does. `galos-index pack DIR` runs it for an
+operator who would rather spend the hours on purpose; a sync runs it at
+every open, which is where `reshard_bodies` used to run and why that is
+gone.
+
+**The follow does not care which layout it is**, which is why this was an
 import decision. EDDN is ~30 systems a second: 30 point reads and 30 point
-writes, free either way. What it does care about is the 830 GB and the
-hours any whole-tree sweep over 188 M files costs — `Published::scanned`,
-a backup, an `rsync`.
+writes, free either way. What it cares about is the bytes and the hours any
+whole-tree sweep over 188 M files costs — `Published::scanned`, a backup,
+an `rsync`.
 
-One piece was written and pulled back out rather than left half done:
-`galos_index/src/pack.rs`. Start it again from this.
+What is left of this is one number nobody has measured yet: what the packed
+layout does to the 200 M import's *rate*. The run in flight is writing
+loose files; the next one over the full dump is the comparison.
 
 ### 2b. A stopped import publishes what it read, and is carried on
 
@@ -545,13 +566,15 @@ a directory or a checkpoint an older build wrote:
 - `Checkpoint::legacy` (`galos_index/src/checkpoint.rs:275`, dispatched from
   `:175`) reads a pre-provenance checkpoint and upgrades it in place,
   re-framing the pending log with it.
-- `reshard_bodies` / `reshard_cells` move a flat directory into its shards,
-  one rename at a time, idempotently, preferring a file already in the shard
-  over a stale loose one. Both take a stop predicate and answer
-  `Resharded { moved, finished }`; `galos_index::migrate` runs the pair.
-- `read_payload` / `read_bodies` fall back to the flat path. This is not the
-  same thing as the reshard: the reshard is the writer, the fallback is
-  `galos_map` reading a directory mid-migration.
+- `pack::pack` / `reshard_cells` bring an older directory's layout up to
+  date, idempotently and interruptibly: the first walks every loose body
+  file into its shard's packed pair, the second moves a flat payload into
+  its shard directory. `galos_index::migrate` runs the pair at every open,
+  and `galos-index pack` runs the first on its own.
+- `read_payload` falls back to the flat payload path, and `read_bodies`
+  falls back to both loose body layouts. This is not the same thing as the
+  migration: the migration is the writer, the fallback is `galos_map`
+  reading a directory part way through one.
 
 And two splits that look like duplication and are not: `build_cells` versus
 the watch's delta pass is a build versus an edit, and `galos_index::Galaxy`

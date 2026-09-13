@@ -18,10 +18,10 @@
 //! row.
 
 use crate::barycenters::Barycenter;
-use crate::bodies::{ancestry, composition, Body, Surface};
+use crate::bodies::{Body, Surface, ancestry, composition};
 use crate::index::Parts;
 use crate::stars::Star;
-use crate::{orbit, Database, Result};
+use crate::{Database, Result, orbit};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
@@ -29,8 +29,8 @@ pub(super) use galos_index::sidecars::Moved;
 use galos_index::sidecars::Sidecars;
 use galos_index::source::write_meta;
 use galos_index::{derive, meta, source};
-use sqlx::postgres::PgRow;
 use sqlx::Row;
+use sqlx::postgres::PgRow;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
@@ -301,9 +301,9 @@ pub(super) async fn write_parts(
                 }
             }
             if parts.bodies && scanned.anything() {
-                write_meta(
-                    &source::bodies_path(dir, scanned.address),
-                    &scanned.inside,
+                galos_index::pack::write_each(
+                    dir,
+                    [(scanned.address, &scanned.inside)],
                 )?;
                 body_files += 1;
             }
@@ -514,9 +514,8 @@ async fn boosts_of(
         let address: i64 = row.try_get("address")?;
         let routed: Option<String> = row.try_get("primary_star_class")?;
         let inside = grouped.get(&address);
-        let class = inside
-            .and_then(derive::arrival_class)
-            .or(routed.as_deref());
+        let class =
+            inside.and_then(derive::arrival_class).or(routed.as_deref());
         if let Some(boost) = class.and_then(meta::Boost::of) {
             boosts.push((address, boost));
         }
@@ -560,21 +559,24 @@ async fn bodies_of(
     Ok(grouped)
 }
 
-/// Write the body files of a pass's chunk, and remove the file of any
+/// Write the bodies of a pass's chunk into the pack, and withdraw any
 /// changed address left with nothing — so a system whose last scan was
-/// withdrawn stops reading as one that still has it. Only a pass knows which
-/// addresses it asked about.
+/// taken back stops reading as one that still has it. Only a pass knows
+/// which addresses it asked about.
 ///
-/// The removal goes through [`source::remove_bodies`], a directory published
-/// before the sharding still holding a flat file a read falls back onto.
+/// Both go through [`galos_index::pack`] and [`source::remove_bodies`]: a
+/// directory published by an older builder still holds loose files a read
+/// falls back onto, and a withdrawal has to clear those as well as the
+/// pack.
 fn write_bodies(
     dir: &Path,
     grouped: &HashMap<i64, meta::SystemBodies>,
     addresses: &[i64],
 ) -> Result<usize> {
-    for (address, system_bodies) in grouped {
-        write_meta(&source::bodies_path(dir, *address), system_bodies)?;
-    }
+    galos_index::pack::write_each(
+        dir,
+        grouped.iter().map(|(address, inside)| (*address, inside)),
+    )?;
 
     for &address in addresses {
         if !grouped.contains_key(&address) {
@@ -635,8 +637,7 @@ const BODIES_SELECT: &str = "SELECT b.*, \
          ON m.system_address = b.system_address AND m.body_id = b.id";
 /// Every positioned system with either source of an arrival class. The
 /// semi-join keeps a full build from carrying back the systems with neither.
-const BOOSTABLE_SELECT: &str =
-    "SELECT address AS system_address, primary_star_class FROM systems s \
+const BOOSTABLE_SELECT: &str = "SELECT address AS system_address, primary_star_class FROM systems s \
      WHERE s.position IS NOT NULL \
        AND (s.primary_star_class IS NOT NULL \
             OR EXISTS (SELECT 1 FROM stars st \
@@ -729,9 +730,10 @@ where
     // the whole of the order there is.
     let placed_sql = format!("{BOOSTABLE_SELECT} ORDER BY system_address");
 
-    let mut stars =
-        ByAddress::open(db, &stars_sql, |row| star_from_row(row).map(Into::into))
-            .await?;
+    let mut stars = ByAddress::open(db, &stars_sql, |row| {
+        star_from_row(row).map(Into::into)
+    })
+    .await?;
     let mut bodies = ByAddress::open(db, &bodies_sql, |row| {
         body_from_row(row).map(Into::into)
     })

@@ -14,12 +14,12 @@
 use clap::{Parser, Subcommand};
 use galos_index::geometry::MAX_LEVEL;
 use galos_index::{
-    source, store, Bodies, Cell, Index, NameEntry, PopulatedSystem, Published,
-    SystemBoost, SystemReach,
+    Bodies, Cell, Index, NameEntry, PopulatedSystem, Published, SystemBoost,
+    SystemReach, source, store,
 };
 use serde::de::DeserializeOwned;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,12 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         limit: usize,
     },
+    /// Walk a directory's loose body files into the packed shard files.
+    Pack {
+        /// The index directory to pack.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -64,6 +70,35 @@ fn main() {
         Command::Info { dir } => info(&dir),
         Command::Diff { a, b, bodies, detail, limit } => {
             diff(&a, &b, Compare { bodies, detail, limit })
+        }
+        Command::Pack { dir } => pack(&dir),
+    }
+}
+
+/// Pack a directory's loose body files, saying what it moved.
+///
+/// The same migration a sync runs at every open, for a directory nothing is
+/// about to sync: a galaxy of loose files is hours of packing, and an
+/// operator would rather spend them on purpose. Interruptible, idempotent,
+/// and safe to run against a directory a map is reading — a loose file is
+/// dropped only once the pack holds its record, and a read falls back to
+/// whatever is still loose.
+fn pack(dir: &Path) {
+    let start = std::time::Instant::now();
+    match galos_index::pack::pack(dir, &|| false) {
+        Ok(done) => println!(
+            "{}: {} files packed in {:.1?}{}",
+            dir.display(),
+            done.moved,
+            start.elapsed(),
+            match done.finished {
+                true => "",
+                false => ", and some are still loose",
+            },
+        ),
+        Err(e) => {
+            eprintln!("cannot pack {}: {e}", dir.display());
+            std::process::exit(2);
         }
     }
 }
