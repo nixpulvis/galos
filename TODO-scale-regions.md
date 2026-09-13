@@ -453,14 +453,17 @@ served-format migration, and the evidence for it should come from the
 galaxy rather than from a seven-day slice. A test should assert the
 ≤0.002 ly bound on the truncated cases rather than leaving it implicit.
 
-### 3. Flags
+### 3. Flags — done
 
-- `--shard`'s doc says "every Nth record"; a journal shards by *file*
-  (`bin/sync/journal.rs:100-107`). The code is right.
+- `--shard`'s help said "every Nth record" where a journal shards by
+  *file* (`bin/sync/journal.rs:91-98`). The code was right and the help is
+  now: it names both shares and says why a journal's is a file, which is
+  that a file is what names the commander who flew it.
 - `--watch` with only `eddn` is accepted and read by nothing: EDDN follows
   either way. It is the one flag/run pair where a value silently does
   nothing, documented as a lenience at `main.rs:168-170` rather than
-  refused.
+  refused — and it stays that way, a refusal being worse for a run that
+  names several sources and watches what can be watched.
 
 ### 4. The dumps that cannot reach the build
 

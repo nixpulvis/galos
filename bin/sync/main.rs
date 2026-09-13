@@ -200,9 +200,11 @@ struct Cli {
     #[arg(long, help_heading = IMPORTING)]
     bulk: bool,
 
-    /// Read one share of a file: every Nth record, offset I, so N processes
-    /// cover it exactly once between them. Every write is a guarded upsert
-    /// keyed by an address, so shards that overlap cost only time.
+    /// Read one share of a source: every Nth record of a dump, or every
+    /// Nth file of a journal directory, offset I, so N processes cover it
+    /// exactly once between them. A journal shards by file because a file
+    /// is what names the commander who flew it. Every write is a guarded
+    /// upsert keyed by an address, so shards that overlap cost only time.
     #[arg(
         long,
         value_name = "I/N",
