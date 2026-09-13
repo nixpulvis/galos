@@ -714,7 +714,7 @@ impl Jumps {
     ) -> Arc<JumpGraph> {
         let held = self.0.get_or_insert_with(|| {
             let at = std::time::Instant::now();
-            let graph = Arc::new(JumpGraph::new(names.points(), boosts));
+            let graph = Arc::new(JumpGraph::over(names, boosts));
             info!(
                 "bucketed {} systems for routing in {:.2?}",
                 graph.len(),
@@ -757,27 +757,152 @@ pub struct JumpGraph {
 }
 
 /// A set of systems' places, and the grid that finds them by neighbourhood.
-#[derive(Default)]
 struct Places {
-    /// Each system's address and position, in light years.
-    points: Vec<(i64, [f64; 3])>,
-    /// Address to its index in `points`.
-    by_address: HashMap<i64, usize>,
-    /// Grid bucket to the indices of the points that fall in it.
-    buckets: HashMap<[i32; 3], Vec<usize>>,
+    held: Held,
+    grid: Grid,
+}
+
+/// Where a set's places come from.
+///
+/// The galaxy's are read off the names table's own mapping and the feed's
+/// arrivals are held, and the difference is the whole of why clicking *Plot
+/// Route* used to cost thirteen gigabytes. See [`Places::over`].
+enum Held {
+    /// The published table, read where it lies. Nothing is copied: the
+    /// addresses and positions are slices of `addr.bin` and `pos.bin`, and
+    /// an address is found by binary search because they are sorted.
+    ///
+    /// The [`galos_index::Names`] is held for its *base* alone — the log
+    /// beside it is the other [`Places`], the one [`JumpGraph::extended`]
+    /// rebuilds.
+    Mapped(galos_index::Names),
+    /// Places given outright: the arrivals of one session, and what a test
+    /// builds. Thousands, not millions, so the address index is a map.
+    Given { points: Vec<(i64, [f64; 3])>, by_address: HashMap<i64, usize> },
+}
+
+/// Which rows fall in each grid bucket, as one block rather than a vector
+/// per bucket.
+///
+/// The bucketing used to be a `HashMap<[i32; 3], Vec<usize>>`: eight bytes
+/// a system in the vectors, a heap block and twenty-four bytes of header
+/// per occupied bucket, and an allocation per bucket to get there — some
+/// 72 M of them over a galaxy. This is the same index as two allocations:
+/// every row number once, grouped, and a map saying where each group sits.
+///
+/// `u32`, so a set is bounded at 4,294,967,295 places. The galaxy is
+/// 200,071,629.
+struct Grid {
+    /// Bucket to where its rows sit in `rows`: a start and a count.
+    at: HashMap<[i32; 3], (u32, u32)>,
+    /// Row numbers, grouped by bucket.
+    rows: Vec<u32>,
+}
+
+impl Grid {
+    /// Bucket `len` places, whose positions `position` answers.
+    ///
+    /// Counted, then placed: two sequential passes over the positions and
+    /// one allocation of the answer, rather than growing a vector per
+    /// bucket. The count is reused as the fill cursor on the second pass,
+    /// which is why the map holds a pair.
+    fn over(len: usize, position: impl Fn(usize) -> [f64; 3]) -> Grid {
+        let mut at: HashMap<[i32; 3], (u32, u32)> = HashMap::new();
+        for i in 0..len {
+            at.entry(bucket_of(position(i))).or_insert((0, 0)).1 += 1;
+        }
+        // The groups only have to be disjoint and cover the rows, so the
+        // order the map hands them out in is as good as any.
+        let mut next = 0u32;
+        for span in at.values_mut() {
+            span.0 = next;
+            next += span.1;
+            span.1 = 0;
+        }
+        let mut rows = vec![0u32; len];
+        for i in 0..len {
+            let span = at
+                .get_mut(&bucket_of(position(i)))
+                .expect("a bucket counted on the first pass");
+            rows[(span.0 + span.1) as usize] = i as u32;
+            span.1 += 1;
+        }
+        Grid { at, rows }
+    }
+
+    /// The rows in one bucket, empty where nothing falls in it.
+    fn bucket(&self, cell: [i32; 3]) -> &[u32] {
+        match self.at.get(&cell) {
+            Some(&(start, count)) => {
+                &self.rows[start as usize..(start + count) as usize]
+            }
+            None => &[],
+        }
+    }
 }
 
 impl Places {
-    /// Bucket `entries` into a searchable set.
+    /// The galaxy's places, read off the names table's mapping.
+    ///
+    /// What used to be three copies of the table on the heap — 32 bytes a
+    /// system of points, an address map beside them and a vector per
+    /// bucket, about 13.7 GB at 200 M — is the grid and nothing else, about
+    /// one. The positions come off `pos.bin` as the search touches them.
+    fn over(names: galos_index::Names) -> Places {
+        let base = names.base();
+        let grid = Grid::over(base.len(), |i| {
+            let [x, y, z] = base.position_at(i);
+            [x as f64, y as f64, z as f64]
+        });
+        Places { held: Held::Mapped(names), grid }
+    }
+
+    /// Bucket `entries` into a searchable set, holding them.
     fn of(entries: impl IntoIterator<Item = (i64, [f64; 3])>) -> Places {
         let points: Vec<(i64, [f64; 3])> = entries.into_iter().collect();
         let by_address =
             points.iter().enumerate().map(|(i, (a, _))| (*a, i)).collect();
-        let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-        for (i, (_, p)) in points.iter().enumerate() {
-            buckets.entry(bucket_of(*p)).or_default().push(i);
+        let grid = Grid::over(points.len(), |i| points[i].1);
+        Places { held: Held::Given { points, by_address }, grid }
+    }
+
+    /// How many places the set holds.
+    fn len(&self) -> usize {
+        match &self.held {
+            Held::Mapped(names) => names.base().len(),
+            Held::Given { points, .. } => points.len(),
         }
-        Places { points, by_address, buckets }
+    }
+
+    /// The address and place of the `i`th of them.
+    fn place(&self, i: usize) -> (i64, [f64; 3]) {
+        match &self.held {
+            Held::Mapped(names) => {
+                let base = names.base();
+                let [x, y, z] = base.position_at(i);
+                (base.address_at(i), [x as f64, y as f64, z as f64])
+            }
+            Held::Given { points, .. } => points[i],
+        }
+    }
+
+    /// Where `address` sits in the set, if it is in it.
+    fn index_of(&self, address: i64) -> Option<usize> {
+        match &self.held {
+            Held::Mapped(names) => names.base().index_of(address),
+            Held::Given { by_address, .. } => by_address.get(&address).copied(),
+        }
+    }
+
+    /// Whether the set holds `address` at all.
+    fn holds(&self, address: i64) -> bool {
+        self.index_of(address).is_some()
+    }
+}
+
+impl Default for Places {
+    fn default() -> Places {
+        Places::of(std::iter::empty())
     }
 }
 
@@ -826,9 +951,27 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl JumpGraph {
-    /// Build the graph from the resident names table and the supercharge
-    /// table beside it.
-    pub fn new(
+    /// Build the graph over the names table and the supercharge table
+    /// beside it.
+    ///
+    /// The galaxy's places are not copied: the base is the mapped table
+    /// itself and what is built is the grid over it. The feed's arrivals
+    /// are the log, which is thousands and is held.
+    pub fn over(names: &crate::Names, boosts: &Boosts) -> JumpGraph {
+        JumpGraph {
+            base: Arc::new(Places::over(names.table.clone())),
+            fresh: Arc::new(Places::of(
+                names.table.delta().entries().map(placed),
+            )),
+            boosts: boosts.clone(),
+        }
+    }
+
+    /// Build the graph over places given outright.
+    ///
+    /// The overlay's shape, for a caller that has the places and no table
+    /// to map: the perf guard, and the tests below.
+    pub fn of(
         points: impl IntoIterator<Item = (i64, [f64; 3])>,
         boosts: &Boosts,
     ) -> JumpGraph {
@@ -846,7 +989,7 @@ impl JumpGraph {
     /// itself the accumulated set and is handed here entire. Rebuilding the
     /// small side costs its own size and nothing else — the base is a handle
     /// clone — so a pass that found one arrival pays for the few thousand of
-    /// a session, not for the two million of the galaxy.
+    /// a session, not for the two hundred million of the galaxy.
     ///
     /// Only addresses the base does not hold. A rename is nothing to a router,
     /// which asks where a system is and not what it is called, and a position
@@ -859,13 +1002,12 @@ impl JumpGraph {
         arrivals: impl IntoIterator<Item = &'a NameEntry>,
         boosts: &Boosts,
     ) -> JumpGraph {
-        let known = &self.base.by_address;
         JumpGraph {
             base: Arc::clone(&self.base),
             fresh: Arc::new(Places::of(
                 arrivals
                     .into_iter()
-                    .filter(|entry| !known.contains_key(&entry.address))
+                    .filter(|entry| !self.base.holds(entry.address))
                     .map(placed),
             )),
             boosts: boosts.clone(),
@@ -874,7 +1016,7 @@ impl JumpGraph {
 
     /// How many systems the graph can route between.
     pub fn len(&self) -> usize {
-        self.base.points.len() + self.fresh.points.len()
+        self.base.len() + self.fresh.len()
     }
 
     /// Whether the graph holds no places at all.
@@ -888,9 +1030,9 @@ impl JumpGraph {
     /// own, above it the overlay's. Which is what lets the searches below key
     /// on a plain `usize` as they did when there was one set.
     fn place(&self, i: usize) -> (i64, [f64; 3]) {
-        match i.checked_sub(self.base.points.len()) {
-            Some(i) => self.fresh.points[i],
-            None => self.base.points[i],
+        match i.checked_sub(self.base.len()) {
+            Some(i) => self.fresh.place(i),
+            None => self.base.place(i),
         }
     }
 
@@ -904,9 +1046,9 @@ impl JumpGraph {
     /// The overlay first, so a system named since the table was read is
     /// routable at all.
     fn index_of(&self, address: i64) -> Option<usize> {
-        match self.fresh.by_address.get(&address) {
-            Some(&i) => Some(self.base.points.len() + i),
-            None => self.base.by_address.get(&address).copied(),
+        match self.fresh.index_of(address) {
+            Some(i) => Some(self.base.len() + i),
+            None => self.base.index_of(address),
         }
     }
 
@@ -951,7 +1093,7 @@ impl JumpGraph {
         let p = self.place(i).1;
         let home = bucket_of(p);
         let reach = (range / BUCKET_LY).ceil() as i32;
-        let held = self.base.points.len();
+        let held = self.base.len();
         for dx in -reach..=reach {
             for dy in -reach..=reach {
                 for dz in -reach..=reach {
@@ -965,18 +1107,11 @@ impl JumpGraph {
                     if bucket_away(p, cell) > range * range {
                         continue;
                     }
-                    let sets = [
-                        (self.base.buckets.get(&cell), 0, &self.base.points),
-                        (
-                            self.fresh.buckets.get(&cell),
-                            held,
-                            &self.fresh.points,
-                        ),
-                    ];
-                    for (bucket, offset, points) in sets {
-                        let Some(bucket) = bucket else { continue };
-                        for &j in bucket {
-                            let there = points[j].1;
+                    let sets = [(&*self.base, 0usize), (&*self.fresh, held)];
+                    for (set, offset) in sets {
+                        for &j in set.grid.bucket(cell) {
+                            let j = j as usize;
+                            let there = set.place(j).1;
                             if j + offset != i
                                 && dist2(p, there) <= range * range
                             {
@@ -1303,7 +1438,7 @@ mod tests {
     fn a_range_too_small_to_estimate_does_not_overflow() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [100., 0., 0.])];
         let boosts = Boosts::default();
-        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
+        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
 
         assert!(
             graph
@@ -1379,7 +1514,7 @@ mod tests {
         }
         entries.push(at(9, [2000., 0., 0.]));
         let graph =
-            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
+            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1414,7 +1549,7 @@ mod tests {
         entries.push(at(50, [450., 0., 0.]));
         entries.push(at(9, [900., 0., 0.]));
         let graph =
-            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
+            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1453,7 +1588,7 @@ mod tests {
         // what a leg has to be measured against, and what a search reaching
         // by the wrong one of the two would be caught by below.
         let boosts = Boosts::holding(HashMap::from([(15, Boost::Neutron)]));
-        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
+        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
         let drive = Drive::Standard;
 
         let fewest = graph
@@ -1508,7 +1643,7 @@ mod tests {
             at(9, [1800., 0., 0.]),
         ];
         let graph =
-            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
+            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             let path = graph
@@ -1528,7 +1663,7 @@ mod tests {
     fn a_gap_wider_than_the_range_is_no_route() {
         let entries = vec![at(0, [0., 0., 0.]), at(1, [600., 0., 0.])];
         let graph =
-            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
+            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
 
         for how in BOTH {
             assert!(
@@ -1552,7 +1687,7 @@ mod tests {
         let far = BUCKET_LY as f32 * 6.;
         let entries = vec![at(0, [0., 0., 0.]), at(1, [far, 0., 0.])];
         let graph =
-            JumpGraph::new(entries.iter().map(placed), &Boosts::default());
+            JumpGraph::of(entries.iter().map(placed), &Boosts::default());
 
         assert_eq!(
             graph.neighbors(0, far as f64 + 1., Drive::Unaided),
@@ -1574,7 +1709,7 @@ mod tests {
         // Two ends 900 ly apart, too far for one 500 ly jump, with nothing
         // between them when the table was read.
         let base = vec![at(0, [0., 0., 0.]), at(9, [900., 0., 0.])];
-        let graph = JumpGraph::new(base.iter().map(placed), &Boosts::default());
+        let graph = JumpGraph::of(base.iter().map(placed), &Boosts::default());
         for how in BOTH {
             assert!(
                 graph.route(0, 9, 500., how, Drive::Unaided, None).is_none(),
@@ -1626,7 +1761,7 @@ mod tests {
     #[test]
     fn a_rename_does_not_double_a_system() {
         let base = vec![at(0, [0., 0., 0.]), at(1, [450., 0., 0.])];
-        let graph = JumpGraph::new(base.iter().map(placed), &Boosts::default());
+        let graph = JumpGraph::of(base.iter().map(placed), &Boosts::default());
 
         let renamed = vec![NameEntry {
             address: 1,
@@ -1697,7 +1832,7 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(2, Boost::Neutron)]));
-        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
+        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(
@@ -1731,7 +1866,7 @@ mod tests {
             at(9, [440., 0., 0.]),
         ];
         let boosts = Boosts::holding(HashMap::from([(9, Boost::Neutron)]));
-        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
+        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(
@@ -1750,7 +1885,7 @@ mod tests {
     fn a_white_dwarf_carries_what_the_drive_allows() {
         let entries = vec![at(1, [0., 0., 0.]), at(9, [250., 0., 0.])];
         let boosts = Boosts::holding(HashMap::from([(1, Boost::WhiteDwarf)]));
-        let graph = JumpGraph::new(entries.iter().map(placed), &boosts);
+        let graph = JumpGraph::of(entries.iter().map(placed), &boosts);
 
         for how in BOTH {
             assert!(

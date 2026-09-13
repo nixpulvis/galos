@@ -734,8 +734,8 @@ pub(crate) mod tests {
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
         let names = Names::reaching(entries, Vec::new());
         app.insert_resource(crate::systems::route::graph::Jumps(Some(
-            std::sync::Arc::new(crate::systems::route::graph::JumpGraph::new(
-                names.points(),
+            std::sync::Arc::new(crate::systems::route::graph::JumpGraph::over(
+                &names,
                 &crate::Boosts::default(),
             )),
         )));

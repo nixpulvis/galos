@@ -185,7 +185,7 @@ fn routing_stays_quick() {
     let held = Names::packed(table, crate::names::Reaches::default());
 
     let at = Instant::now();
-    let graph = JumpGraph::new(held.points(), &boosts);
+    let graph = JumpGraph::over(&held, &boosts);
     let built = at.elapsed();
     println!("route graph: {} systems in {built:.2?}", graph.len());
     assert!(

@@ -564,15 +564,12 @@ mod tests {
             .ok()
             .flatten()
             .map_or_else(Boosts::absent, Boosts::of);
-        app.insert_resource(Jumps(Some(Arc::new(JumpGraph::new(
-            table.points(),
-            &boosts,
+        let names = Names::packed(table, crate::names::Reaches::of(reaches));
+        app.insert_resource(Jumps(Some(Arc::new(JumpGraph::over(
+            &names, &boosts,
         )))));
         app.insert_resource(boosts);
-        app.insert_resource(Names::packed(
-            table,
-            crate::names::Reaches::of(reaches),
-        ));
+        app.insert_resource(names);
         app.insert_resource(ResidentIndex(
             block_on(source.index()).expect("a published index"),
         ));

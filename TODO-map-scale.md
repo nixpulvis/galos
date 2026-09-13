@@ -499,13 +499,69 @@ Three readings. **The LOD walk is fine and always was** — 26–56 ms to plan
 what to draw, which is the only path whose work is proportional to what is
 on screen. **The payload read is the next thing after item 1a**: 24 s and
 6.1 GB to page in 152 M points for one zoom, which is what the first
-bullet below is about. And **the jump graph is the failure**: 34 s to
-bucket every system in the galaxy, before a single expansion, which is the
-`Places` grid this item exists to delete.
+bullet below is about. And **the jump graph is the failure**: 32 s to
+bucket every system in the galaxy, before a single expansion.
 
 The guard failing here is the guard working. It is an opt-in test — it
 stands down without `GALOS_PERF_DIR` — so the default suite stays green
 while it keeps saying that routing at 200 M is not done.
+
+#### 2a. `Places` no longer copies the galaxy — but still buckets it
+
+Reported from the map as "clicking Plot Route starts blowing up memory a
+lot… from like 7 GB to 20". It was arithmetic, not a leak. `Places` held
+three copies of what the names table already maps:
+
+| | at 200,071,629 |
+|---|---|
+| `points: Vec<(i64, [f64; 3])>` | 32 B a system = **6.40 GB** |
+| `by_address: HashMap<i64, usize>` | 268 M slots × 17 B = **4.56 GB** |
+| `buckets: HashMap<_, Vec<usize>>` | 8 B a system plus a heap block per occupied bucket = **~2.7 GB**, ~72 M allocations |
+| transient: `collect()` doubling, the `filter` having killed the size hint | up to **+3.2 GB** |
+
+≈13.7 GB, which is the +13 that was reported.
+
+**All three are now gone.** The base is the mapped table itself
+(`Held::Mapped`): addresses and positions are slices of `addr.bin` and
+`pos.bin`, and an address is a binary search because they are sorted, so
+`points` and `by_address` simply do not exist. The bucketing is a CSR —
+every row number once in one `Vec<u32>`, grouped, and a map saying where
+each group sits — which is two allocations instead of 72 M and 4 bytes a
+system instead of 8 plus a vector header. The feed's arrivals stay held
+(`Held::Given`), being thousands.
+
+Measured, whole test process peak resident:
+
+```
+route graph: 200071629 systems in 32.11s   peak RSS 4.90 GB
+```
+
+which accounts as: `pos.bin` faulted in by the two counting passes 2.4 GB
+(file-backed and evictable), the CSR rows 800 MB, the bucket map ~180 MB,
+and the search's own `best` + `came` 1.6 GB. So **anonymous heap went from
+~15.3 GB to ~2.6 GB**, and a third of what is left is not heap at all.
+
+**Two costs remain, and neither is fixed by this.**
+
+1. **The 32 s has not moved** (34.23 s before, 32.11 s after). It is 200 M
+   × `bucket_of` plus a hash lookup a system, twice, and that is the floor
+   for building *any* galaxy-wide grid. Shaving it is possible — assigning
+   bucket ordinals on the first pass would delete the second pass's hash
+   lookups at the cost of 800 MB transient, maybe 40 % — but that is a
+   constant factor on a structure this item exists to delete. **The answer
+   is not to build a global grid at all**: neighbour queries should go
+   through `index.bin`'s cell tree and the payloads, which the LOD path
+   already reads at 26–56 ms, so the work is the corridor's and not the
+   galaxy's.
+2. **`best` + `came` are 1.6 GB a leg**, allocated before the first
+   expansion: `vec![C::MAX; held]` and `vec![UNSEEN; held]` over every
+   system there is. Dense arrays over the galaxy cannot survive a
+   corridor-bounded search either — they want to be maps over what the
+   search actually reached, or arrays over the corridor's own index space.
+
+Both of those are the same conclusion `ROUTING-INDEX.md` §5 reached: the
+search space must be smaller, not the index faster.
+
 
 - **Positions from the payloads, cell-sorted.** The router's second copy of
   every position is unnecessary: the payloads hold `[f64; 3]` per system and
