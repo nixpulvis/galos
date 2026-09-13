@@ -197,12 +197,12 @@ impl Offer {
             // Held sorted rather than heaped: the insert is a memmove of
             // `room`, and it only happens for a system brighter than the
             // faintest already kept.
-            if brightest.len() == room && !brighter(&system, &brightest[room - 1])
+            if brightest.len() == room
+                && !brighter(&system, &brightest[room - 1])
             {
                 continue;
             }
-            let at = brightest
-                .partition_point(|held| brighter(held, &system));
+            let at = brightest.partition_point(|held| brighter(held, &system));
             brightest.insert(at, system);
             brightest.truncate(room);
         }
@@ -319,10 +319,7 @@ impl Crown {
         });
 
         Crown {
-            built: Snapshot {
-                index: Index::from_cells(cells),
-                payloads,
-            },
+            built: Snapshot { index: Index::from_cells(cells), payloads },
             claimed,
         }
     }
@@ -386,7 +383,8 @@ mod tests {
                 let near = clumps[(rng.next() % clumps.len() as u64) as usize];
                 let spread = if id % 5 == 0 { 4_000.0 } else { 200.0 };
                 let off = |rng: &mut Rng| {
-                    (rng.next() % 2_000) as f64 / 1_000.0 * spread - spread / 2.0
+                    (rng.next() % 2_000) as f64 / 1_000.0 * spread
+                        - spread / 2.0
                 };
                 System {
                     id64: id,
@@ -461,7 +459,11 @@ mod tests {
             println!(
                 "budget {budget}: {} regions over levels {:?}",
                 cut.regions().len(),
-                { let mut d: Vec<u8> = depths.iter().copied().collect(); d.sort(); d },
+                {
+                    let mut d: Vec<u8> = depths.iter().copied().collect();
+                    d.sort();
+                    d
+                },
             );
             assert!(
                 !crown.claimed().is_empty(),
@@ -521,7 +523,8 @@ mod tests {
         let params = BuildParams::default();
         let systems = galaxy(20_000);
         for budget in [20_000u64, 5_000] {
-            for region in cut(&systems, budget, &params).regions().iter().copied()
+            for region in
+                cut(&systems, budget, &params).regions().iter().copied()
             {
                 let level = region.level;
                 let held = inside(&systems, region);
@@ -578,5 +581,4 @@ mod tests {
         wanted.truncate(offer.brightest.len());
         assert_eq!(offer.brightest, wanted);
     }
-
 }

@@ -47,8 +47,11 @@ pub(crate) fn payload_path(dir: &Path, id: CellId) -> PathBuf {
 /// Where a cell's payload was written before the sharding: `cells/` flat.
 /// Read where the sharded path is absent, never written.
 pub(crate) fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
-    dir.join(PAYLOAD_DIR)
-        .join(format!("{:02}-{:016x}.bin", id.level, id.morton()))
+    dir.join(PAYLOAD_DIR).join(format!(
+        "{:02}-{:016x}.bin",
+        id.level,
+        id.morton()
+    ))
 }
 
 /// Move every loose `cells/*.bin` into its shard, stopping where asked.

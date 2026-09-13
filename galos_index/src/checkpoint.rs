@@ -190,8 +190,10 @@ impl Checkpoint {
             )));
         }
         let by = By::of_code(read_u32(&map, 16)).ok_or_else(|| {
-            invalid("a resume point derived by something this build has no \
-                     name for")
+            invalid(
+                "a resume point derived by something this build has no \
+                     name for",
+            )
         })?;
         let count = read_u64(&map, 32) as usize;
         let held = map.len() - HEADER;
@@ -286,15 +288,15 @@ impl Checkpoint {
             inputs: Vec<System>,
         }
 
-        let (cursor, by, inputs) =
-            if let Ok(it) = rmp_serde::from_slice::<Whole>(bytes) {
-                (it.cursor, it.by, it.inputs)
-            } else {
-                let it: Old = rmp_serde::from_slice(bytes).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, e)
-                })?;
-                (Some(it.cursor), By::Database, it.inputs)
-            };
+        let (cursor, by, inputs) = if let Ok(it) =
+            rmp_serde::from_slice::<Whole>(bytes)
+        {
+            (it.cursor, it.by, it.inputs)
+        } else {
+            let it: Old = rmp_serde::from_slice(bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            (Some(it.cursor), By::Database, it.inputs)
+        };
 
         let deltas = read_legacy_frames(path);
         Checkpoint::compact(path, cursor, by, inputs)?;
@@ -335,12 +337,7 @@ impl Compaction {
         let tmp = path.with_extension("tmp");
         let mut out = BufWriter::with_capacity(1 << 20, File::create(&tmp)?);
         out.write_all(&[0u8; HEADER])?;
-        Ok(Compaction {
-            path: path.to_owned(),
-            tmp,
-            out,
-            count: 0,
-        })
+        Ok(Compaction { path: path.to_owned(), tmp, out, count: 0 })
     }
 
     /// One more system.
@@ -444,8 +441,7 @@ impl Pending {
 
         let base = std::fs::metadata(checkpoint).map_or(0, |it| it.len());
         let log = file.metadata()?.len();
-        Ok(base == 0
-            || log > (base / FOLD_AT).clamp(FOLD_FLOOR, FOLD_CEILING))
+        Ok(base == 0 || log > (base / FOLD_AT).clamp(FOLD_FLOOR, FOLD_CEILING))
     }
 
     /// Drop the log, the base beside it now holding what it held.
@@ -580,7 +576,9 @@ fn read_i64(bytes: &[u8], at: usize) -> i64 {
 }
 
 /// A file this build will not read, said in the one place that says it.
-fn invalid(what: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+fn invalid(
+    what: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
@@ -691,8 +689,7 @@ mod tests {
         let dir = scratch("cursor-only");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)])
-            .unwrap();
+        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
         Pending::append(&path, at(500), &[]).unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
@@ -711,8 +708,7 @@ mod tests {
         let dir = scratch("torn");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)])
-            .unwrap();
+        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
         Pending::append(&path, at(200), &[system(2)]).unwrap();
         Pending::append(&path, at(300), &[system(3), system(4)]).unwrap();
 
@@ -736,15 +732,16 @@ mod tests {
         let dir = scratch("folded");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)])
-            .unwrap();
+        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
         Pending::append(&path, at(200), &[system(2)]).unwrap();
         assert!(Pending::path(&path).exists());
 
-        Checkpoint::compact(&path, at(200), By::Database, [
-            system(1),
-            system(2),
-        ])
+        Checkpoint::compact(
+            &path,
+            at(200),
+            By::Database,
+            [system(1), system(2)],
+        )
         .unwrap();
         assert!(!Pending::path(&path).exists(), "the log outlived the base");
 
@@ -885,11 +882,8 @@ mod tests {
         let path = dir.join("checkpoint");
 
         Checkpoint::compact(&path, at(1), By::Database, [system(1)]).unwrap();
-        Checkpoint::compact(&path, at(2), By::Database, [
-            system(1),
-            system(2),
-        ])
-        .unwrap();
+        Checkpoint::compact(&path, at(2), By::Database, [system(1), system(2)])
+            .unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(2));

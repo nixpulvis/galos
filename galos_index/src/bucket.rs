@@ -432,12 +432,8 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            let lone = CellId {
-                level: BUCKET_LEVEL,
-                x: cell.0,
-                y: cell.1,
-                z: cell.2,
-            };
+            let lone =
+                CellId { level: BUCKET_LEVEL, x: cell.0, y: cell.1, z: cell.2 };
             let id = 100_000 + i as u64;
             systems.push(system(id, middle(lone), &mut rng));
         }

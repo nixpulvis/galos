@@ -878,12 +878,7 @@ impl Snapshot {
     /// brightest first. For the live, editable form raise a [`Tree`] with
     /// [`Tree::build`], which builds this and holds it open.
     pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
-        Snapshot::of_region(
-            CellId::ROOT,
-            systems,
-            &HashSet::new(),
-            params,
-        )
+        Snapshot::of_region(CellId::ROOT, systems, &HashSet::new(), params)
     }
 
     /// Build the subtree of one cell, out of the systems that fall in it.
@@ -1509,7 +1504,8 @@ mod tests {
             (1..=9000).map(|id| input(id, &mut rng)).collect();
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let mut tree = Tree::build(&systems, &params);
-        let mut rebuilt = Tree::build(&tree.inputs().collect::<Vec<_>>(), &params);
+        let mut rebuilt =
+            Tree::build(&tree.inputs().collect::<Vec<_>>(), &params);
         assert_equivalent(&tree.to_snapshot(), &rebuilt.to_snapshot());
     }
 
