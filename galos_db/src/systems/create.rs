@@ -138,10 +138,14 @@ impl System {
     /// The station has to exist before a market may point at it, because the
     /// foreign key onto it stops being satisfied by a null the instant the
     /// address is filled in.
+    /// Both names are [`SystemName`]s — this one's and `markets.system_name`,
+    /// which `markets_system_name_uppercase` holds to the same spelling — so
+    /// the comparison is a comparison rather than a fold of the parameter on
+    /// every system write.
     async fn adopt_waiting_markets(
         conn: &mut sqlx::PgConnection,
         address: i64,
-        name: &str,
+        name: &SystemName,
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<(), Error> {
@@ -152,10 +156,10 @@ impl System {
             r#"
             SELECT EXISTS (
                 SELECT 1 FROM markets
-                 WHERE system_address IS NULL AND system_name = UPPER($1)
+                 WHERE system_address IS NULL AND system_name = $1
             ) AS "waiting!"
             "#,
-            name,
+            name.as_str(),
         )
         .fetch_one(&mut *conn)
         .await?;
@@ -169,11 +173,11 @@ impl System {
             INSERT INTO stations (system_address, name, updated_at, updated_by)
             SELECT $1, m.station_name, $3, $4
               FROM markets m
-             WHERE m.system_address IS NULL AND m.system_name = UPPER($2)
+             WHERE m.system_address IS NULL AND m.system_name = $2
             ON CONFLICT (system_address, name) DO NOTHING
             "#,
             address,
-            name,
+            name.as_str(),
             updated_at.naive_utc(),
             updated_by,
         )
@@ -183,10 +187,10 @@ impl System {
         sqlx::query!(
             r#"
             UPDATE markets SET system_address = $1
-             WHERE system_address IS NULL AND system_name = UPPER($2)
+             WHERE system_address IS NULL AND system_name = $2
             "#,
             address,
-            name,
+            name.as_str(),
         )
         .execute(&mut *conn)
         .await?;

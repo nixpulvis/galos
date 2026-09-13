@@ -1,6 +1,7 @@
 use super::{Economies, System};
 use crate::{Database, Error};
 use elite_journal::prelude::*;
+use galos_index::SystemName;
 use geozero::wkb;
 
 impl System {
@@ -61,6 +62,10 @@ impl System {
         db: &Database,
         name: &str,
     ) -> Result<Self, Error> {
+        // Folded once, through the one type that folds a system's name, so
+        // the query compares against `systems_name` rather than asking
+        // Postgres to fold the column.
+        let name = SystemName::new(name);
         let row = sqlx::query!(
             r#"
             SELECT
@@ -85,7 +90,7 @@ impl System {
             FROM systems
             WHERE name = $1
             "#,
-            name.to_uppercase()
+            name.as_str(),
         )
         .fetch_one(&db.pool)
         .await?;

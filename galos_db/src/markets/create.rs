@@ -2,6 +2,7 @@ use super::Market;
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
+use galos_index::SystemName;
 
 impl Market {
     /// Write the market row that a station's trade data hangs off
@@ -43,17 +44,22 @@ impl Market {
     /// a query on the busiest path the sync has. Nothing else is claimed about
     /// it: a trade message says a station is there and says nothing about what
     /// it is like, so `updated_at` goes on naming whoever last described it.
+    /// `system_name` is a [`SystemName`], so the market row is written in the
+    /// one spelling `markets_system_name_uppercase` allows and the lookup
+    /// below compares rather than folds. The four trade messages carry a
+    /// name off the wire, which is where the fold belongs and where each of
+    /// them does it.
     pub(crate) async fn touch(
         conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,
         user: &str,
         market_id: i64,
-        system_name: &str,
+        system_name: &SystemName,
         station_name: &str,
     ) -> Result<Market, Error> {
         let address = sqlx::query_scalar!(
             "SELECT address FROM systems WHERE name = $1",
-            system_name.to_uppercase(),
+            system_name.as_str(),
         )
         .fetch_optional(&mut *conn)
         .await?;
@@ -83,13 +89,13 @@ impl Market {
                 system_name,
                 station_name,
                 updated_at)
-            VALUES ($1, $2, UPPER($3), $4, $5)
+            VALUES ($1, $2, $3, $4, $5)
             ON CONFLICT (id)
             DO UPDATE SET
                 system_address = CASE WHEN $5 >= markets.updated_at
                     THEN $2 ELSE markets.system_address END,
                 system_name = CASE WHEN $5 >= markets.updated_at
-                    THEN UPPER($3) ELSE markets.system_name END,
+                    THEN $3 ELSE markets.system_name END,
                 station_name = CASE WHEN $5 >= markets.updated_at
                     THEN $4 ELSE markets.station_name END,
                 updated_at = GREATEST(markets.updated_at, $5)
@@ -102,7 +108,7 @@ impl Market {
             "#,
             market_id,
             address,
-            system_name,
+            system_name.as_str(),
             station_name,
             timestamp.naive_utc(),
         )
@@ -133,7 +139,7 @@ impl Market {
             timestamp,
             user,
             market.market_id,
-            &market.system_name,
+            &SystemName::new(market.system_name.clone()),
             &market.station_name,
         )
         .await?;

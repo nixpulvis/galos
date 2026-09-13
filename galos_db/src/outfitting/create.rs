@@ -1,8 +1,9 @@
 use super::Outfitting;
-use crate::markets::Market;
 use crate::Error;
+use crate::markets::Market;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Outfitting as JournalOutfitting;
+use galos_index::SystemName;
 
 impl Outfitting {
     /// Record everything a station's outfitting bay sells
@@ -24,7 +25,7 @@ impl Outfitting {
             timestamp,
             user,
             outfitting.market_id,
-            &outfitting.system_name,
+            &SystemName::new(outfitting.system_name.clone()),
             &outfitting.station_name,
         )
         .await?;

@@ -1,8 +1,9 @@
 use super::BlackMarket;
-use crate::markets::Market;
 use crate::Error;
+use crate::markets::Market;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::BlackMarket as JournalBlackMarket;
+use galos_index::SystemName;
 
 impl BlackMarket {
     /// Record what a black market paid for one commodity
@@ -26,7 +27,7 @@ impl BlackMarket {
             timestamp,
             user,
             market_id,
-            &sale.system_name,
+            &SystemName::new(sale.system_name.clone()),
             &sale.station_name,
         )
         .await?;
