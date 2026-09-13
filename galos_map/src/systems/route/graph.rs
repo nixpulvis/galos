@@ -1247,7 +1247,7 @@ mod tests {
 
     /// A system named for its address, at `at`.
     fn at(address: i64, at: [f32; 3]) -> NameEntry {
-        NameEntry { address, name: format!("S{address}"), position: at }
+        NameEntry { address, name: format!("S{address}").into(), position: at }
     }
 
     /// How far a route runs, following its legs.

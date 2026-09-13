@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use galos_index::meta::{
     Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
-use galos_index::{Index, Source as IndexSource};
+use galos_index::{Index, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -233,31 +233,34 @@ impl Names {
             .chain(self.fresh.values())
     }
 
-    /// The systems whose name contains `query`, case-insensitively.
+    /// The systems whose name contains `query`.
     ///
-    /// A linear scan, which a search action can afford: it is asked when the
-    /// user types rather than every frame, and the table is a couple of million
-    /// short strings.
+    /// One fold, of the query: every name in the table is upper case by
+    /// construction ([`galos_index::SystemName`]), so the comparison is
+    /// bytes against bytes. It used to lowercase *both sides of every
+    /// comparison*, which over a hundred and thirty-one million entries is
+    /// a hundred and thirty-one million allocations to answer one search.
+    ///
+    /// Still a scan, and still O(N): a sorted by-name part is
+    /// `TODO-map-scale.md` item 1, and this is what it replaces.
     pub fn find(&self, query: &str) -> Vec<&NameEntry> {
-        let needle = query.to_lowercase();
-        self.iter()
-            .filter(|e| e.name.to_lowercase().contains(&needle))
-            .collect()
+        let needle = SystemName::new(query);
+        self.iter().filter(|e| e.name.contains(needle.as_str())).collect()
     }
 
-    /// Whether any system is named exactly `name`, case-insensitively.
+    /// Whether any system is named exactly `name`.
     pub fn names_exactly(&self, name: &str) -> bool {
-        self.iter().any(|e| e.name.eq_ignore_ascii_case(name))
+        let name = SystemName::new(name);
+        self.iter().any(|e| e.name == name)
     }
 
-    /// The address of the system named exactly `name`, case-insensitively.
+    /// The address of the system named exactly `name`.
     ///
-    /// What a route's ends are resolved through: a route is plotted between two
-    /// named systems, and the graph it walks is keyed by address.
+    /// What a route's ends are resolved through: a route is plotted between
+    /// two named systems, and the graph it walks is keyed by address.
     pub fn address(&self, name: &str) -> Option<i64> {
-        self.iter()
-            .find(|e| e.name.eq_ignore_ascii_case(name))
-            .map(|e| e.address)
+        let name = SystemName::new(name);
+        self.iter().find(|e| e.name == name).map(|e| e.address)
     }
 
     /// How many systems the table names, the fresh ones counted once

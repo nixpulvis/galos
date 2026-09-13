@@ -1528,7 +1528,8 @@ pub(super) fn plate_width(
 ) -> usize {
     match jump_to(system, stop, from) {
         Some(jump) => plate_words(&system.name, Some(jump)).chars().count(),
-        None => capitals(&system.name),
+        // The name is upper already, so its capitals are its characters.
+        None => system.name.chars().count(),
     }
 }
 
@@ -1549,15 +1550,21 @@ fn capitals(name: &str) -> usize {
     name.chars().map(|letter| letter.to_uppercase().count()).sum()
 }
 
-/// A name, and `jump` beside it where there is one
+/// The words one plate sets: a system's name, and how far off it is where
+/// that is being said.
 ///
-/// A stop says how far the jump to it is. That is the one number the viewer
-/// wants of a system they are being told to go to next, and the name alone
-/// does not carry it. In light years, as every distance the map states is.
+/// A jump is stated on a stop and nowhere else, because that is what a
+/// commander wants of a system they are being told to go to next, and the
+/// name alone does not carry it. In light years, as every distance the map
+/// states is.
+///
+/// Nothing is folded here: a [`System`]'s name is upper case by
+/// construction ([`galos_index::SystemName`]), where this used to call
+/// `to_uppercase` on every name on screen every time a label was set.
 fn plate_words(name: &str, jump: Option<f64>) -> String {
     match jump {
-        Some(jump) => format!("{} {jump:.1} Ly", name.to_uppercase()),
-        None => name.to_uppercase(),
+        Some(jump) => format!("{name} {jump:.1} Ly"),
+        None => name.to_owned(),
     }
 }
 
@@ -1767,10 +1774,14 @@ mod tests {
     use super::*;
 
     /// A stop says the jump to it, and anything else says its name alone
+    ///
+    /// The name arrives upper case — a `System` carries a
+    /// [`galos_index::SystemName`] — so what is asked of this is the jump
+    /// and nothing else.
     #[test]
     fn only_a_stop_says_how_far_off_it_is() {
-        assert_eq!(plate_words("lung", Some(6.74)), "LUNG 6.7 Ly");
-        assert_eq!(plate_words("lung", None), "LUNG");
+        assert_eq!(plate_words("LUNG", Some(6.74)), "LUNG 6.7 Ly");
+        assert_eq!(plate_words("LUNG", None), "LUNG");
     }
 
     /// A plate is measured at the width it will be set at

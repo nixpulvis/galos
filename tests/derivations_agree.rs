@@ -299,7 +299,7 @@ impl Published {
             .expect("the names table")
             .into_iter()
             .filter(|it| ours(&it.address))
-            .map(|it| (it.address, (it.name, it.position)))
+            .map(|it| (it.address, (it.name.to_string(), it.position)))
             .collect();
         let populated = source
             .populated()

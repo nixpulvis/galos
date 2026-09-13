@@ -643,7 +643,7 @@ mod tests {
         let built = publish(&dir.0, &[input(1, 0.0)]);
         let named = |address: i64, name: &str| NameEntry {
             address,
-            name: name.to_owned(),
+            name: name.into(),
             position: [0.0, 900.0, 24400.0],
         };
         let mut table = NameTable::from_entries(vec![named(1, "First")]);
@@ -665,7 +665,7 @@ mod tests {
                 .world()
                 .resource::<Names>()
                 .get(2)
-                .is_some_and(|entry| entry.name == "Second")),
+                .is_some_and(|entry| entry.name == "SECOND")),
             "the name published mid-session was never picked up",
         );
         assert_eq!(
@@ -687,7 +687,7 @@ mod tests {
         let built = publish(&dir.0, &[input(1, 0.0)]);
         let named = |address: i64, name: &str| NameEntry {
             address,
-            name: name.to_owned(),
+            name: name.into(),
             position: [0.0, 900.0, 24400.0],
         };
         let mut table = NameTable::from_entries(vec![named(1, "First")]);
@@ -722,12 +722,12 @@ mod tests {
 
         assert_eq!(
             named_at(&app, 2).as_deref(),
-            Some("Second"),
+            Some("SECOND"),
             "the earlier arrival is still named"
         );
         assert_eq!(
             named_at(&app, 1).as_deref(),
-            Some("First, Renamed"),
+            Some("FIRST, RENAMED"),
             "and a correction answers over what the base was read with"
         );
         let names = app.world().resource::<Names>();
@@ -793,7 +793,7 @@ mod tests {
         let built = publish(&dir.0, &[input(1, 0.0), input(9, 900.0)]);
         let named = |address: i64, at: f32| NameEntry {
             address,
-            name: format!("S{address}"),
+            name: format!("S{address}").into(),
             position: [at, 0.0, 0.0],
         };
         // Two ends 900 ly apart, and nothing between them on record.
@@ -842,7 +842,7 @@ mod tests {
         let built = publish(&dir.0, &[input(1, 0.0)]);
         let named = |address: i64, name: &str| NameEntry {
             address,
-            name: name.to_owned(),
+            name: name.into(),
             position: [0.0, 900.0, 24400.0],
         };
         let mut table = NameTable::from_entries(vec![named(1, "First")]);
@@ -939,7 +939,7 @@ mod tests {
         let dir = Scratch::new();
         let named = |address: i64, at: f32| NameEntry {
             address,
-            name: format!("S{address}"),
+            name: format!("S{address}").into(),
             position: [at, 0.0, 0.0],
         };
         let built = publish(&dir.0, &[input(1, 0.0)]);

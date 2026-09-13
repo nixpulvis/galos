@@ -15,7 +15,7 @@
 
 use chrono::offset::Utc;
 use galos::bar;
-use galos::sink::{Sink, SystemReport};
+use galos::sink::{Sink, SystemName, SystemReport};
 use galos::{Shard, Shutdown};
 use std::path::{Path, PathBuf};
 
@@ -144,7 +144,7 @@ async fn place(
         let landed = sink
             .system(
                 &SystemReport {
-                    name: Some(system.name),
+                    name: Some(SystemName::new(system.name)),
                     position: Some(coords),
                     population: system.information.population,
                     security: system.information.security,

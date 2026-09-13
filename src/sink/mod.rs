@@ -86,6 +86,13 @@ pub use galos_db::systems::Landed;
 /// the rule for merging two of them lives as well.
 pub use galos_index::SystemReport;
 
+/// A system's name, in the one spelling everything here uses.
+///
+/// Upper case by construction, so a source folds case once as it builds a
+/// report and nothing downstream folds it again. See
+/// [`galos_index::name`] for what that saved.
+pub use galos_index::SystemName;
+
 /// Who a source says wrote what it is handing over.
 ///
 /// A string was not enough, and the way it was not enough is a bug that ran

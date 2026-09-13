@@ -27,7 +27,7 @@
 // and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
 // each message, and the gateway's rules about how much and how often.
 
-use galos::sink::{Reporter, Sink, SystemReport};
+use galos::sink::{Reporter, Sink, SystemName, SystemReport};
 use galos::{bar, Shard, Shutdown};
 use elite_journal::entry::{Entry, Event, NavRoute};
 use elite_journal::system::Coordinate;
@@ -248,7 +248,7 @@ impl Journal {
         for (address, (_, entry, name, pos)) in gather_names(&journals) {
             sink.system(
                 &SystemReport {
-                    name: Some(name.to_owned()),
+                    name: Some(SystemName::new(name)),
                     position: pos,
                     ..SystemReport::new(address, entry.timestamp)
                 },
@@ -393,7 +393,7 @@ impl Journal {
             let landed = sink
                 .system(
                     &SystemReport {
-                        name: Some((*name).to_owned()),
+                        name: Some(SystemName::new(*name)),
                         position: *pos,
                         ..SystemReport::new(*address, entry.timestamp)
                     },

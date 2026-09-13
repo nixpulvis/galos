@@ -957,7 +957,7 @@ fn described(
         // map, a message to somebody, a spreadsheet. Nothing on the panel is
         // otherwise selectable, and a name retyped is a name misspelled.
         if ui.button("Copy Name").clicked() {
-            ui.ctx().copy_text(system.name.clone());
+            ui.ctx().copy_text(system.name.to_string());
         }
     });
 }
@@ -2458,7 +2458,7 @@ mod tests {
     fn a_trip_flown_home_is_listed_in_the_order_flown() {
         let placed = |address: i64, at: f32| galos_index::meta::NameEntry {
             address,
-            name: format!("STOP {address}"),
+            name: format!("STOP {address}").into(),
             position: [at, 0., 0.],
         };
         let names = Names::reaching(
@@ -3392,12 +3392,12 @@ mod tests {
         // The whole trip's figures, above either leg.
         assert!(at("26.0 Ly flown, longest jump 12.0 Ly") < at("FIRST LEG"));
         // Each leg's stops under its own name, in the order flown.
-        assert!(at("FIRST LEG") < at("Test 1"));
-        assert!(at("Test 3") < at("SECOND LEG"));
-        assert!(at("SECOND LEG") < at("Test 4"));
+        assert!(at("FIRST LEG") < at("TEST 1"));
+        assert!(at("TEST 3") < at("SECOND LEG"));
+        assert!(at("SECOND LEG") < at("TEST 4"));
         // And the seam once: the first leg lands on Test 3, the second sets
         // out from it.
-        assert_eq!(said.iter().filter(|line| *line == "Test 3").count(), 1);
+        assert_eq!(said.iter().filter(|line| *line == "TEST 3").count(), 1);
     }
 
     /// The list copied is the list drawn, a system to a line

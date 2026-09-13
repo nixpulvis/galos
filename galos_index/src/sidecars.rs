@@ -921,7 +921,7 @@ mod tests {
         let mut held = Sidecars::empty();
         let system = || PopulatedSystem {
             address: 1,
-            name: "SOL".to_string(),
+            name: "SOL".into(),
             position: [0.0; 3],
             population: 22_780_919_531,
             security: None,
@@ -970,7 +970,7 @@ mod tests {
     fn populated(address: i64) -> PopulatedSystem {
         PopulatedSystem {
             address,
-            name: format!("Sys {address}"),
+            name: format!("Sys {address}").into(),
             position: [0.0; 3],
             population: 1_000,
             security: None,

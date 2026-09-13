@@ -903,7 +903,7 @@ mod tests {
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.len(), 1, "the body outlived what it named");
-        assert_eq!(selection.get(0).map(Picked::name), Some("Test 1"));
+        assert_eq!(selection.get(0).map(Picked::name), Some("TEST 1"));
     }
 
     /// And a system with nothing on the map is kept

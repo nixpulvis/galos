@@ -33,6 +33,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::aggregate::bucket_temperature;
 use galos_index::meta::Economies;
+use galos_index::name::SystemName;
 use galos_photometry::psf::{ProfileKind, Psf};
 use galos_photometry::{Magnitude, Temperature};
 use std::{
@@ -856,7 +857,7 @@ pub(crate) fn build_system(
     let name = names
         .get(raw.address)
         .map(|entry| entry.name.clone())
-        .unwrap_or_else(|| raw.address.to_string());
+        .unwrap_or_else(|| SystemName::new(raw.address.to_string()));
     // How far it reaches comes from the reaches table rather than from the
     // political one: most systems with anything scanned in them are not
     // populated, and a system drawn at a stood-in size wears a shell many
@@ -1193,7 +1194,7 @@ mod tests {
     /// A system named `name` at `address`
     fn called(address: i64, name: &str) -> System {
         let mut system = system(address);
-        system.name = name.to_owned();
+        system.name = name.into();
         system
     }
 

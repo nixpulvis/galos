@@ -691,7 +691,7 @@ mod tests {
     fn entry(system: &System) -> NameEntry {
         NameEntry {
             address: system.id64 as i64,
-            name: format!("Sys {}", system.id64),
+            name: format!("Sys {}", system.id64).into(),
             position: [
                 system.position[0] as f32,
                 system.position[1] as f32,

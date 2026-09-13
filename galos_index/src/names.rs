@@ -379,7 +379,7 @@ mod tests {
     fn entry(address: i64) -> NameEntry {
         NameEntry {
             address,
-            name: format!("SYSTEM {address}"),
+            name: format!("SYSTEM {address}").into(),
             position: [address as f32, 0., 0.],
         }
     }

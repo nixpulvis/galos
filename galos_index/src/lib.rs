@@ -36,6 +36,7 @@ pub mod lock;
 pub mod merge;
 pub mod meta;
 pub mod moments;
+pub mod name;
 pub mod names;
 pub mod orbit;
 pub mod pack;
@@ -69,6 +70,7 @@ pub use meta::{
     PopulatedSystem, Star, Surface, SystemBodies, SystemBoost, SystemReach,
 };
 pub use moments::Moments;
+pub use name::SystemName;
 pub use names::{Chunks, NameTable};
 pub use orbit::{Orbit, Orbits, Spacing};
 pub use report::SystemReport;

@@ -40,8 +40,9 @@
 //! so the narrow key is the right one until something needs more.
 
 use crate::{Database, Result};
-use galos_catalog::compare::{compare, Comparison, Reference};
 use galos_catalog::Star;
+use galos_catalog::compare::{Comparison, Reference, compare};
+use galos_index::SystemName;
 use sqlx::Row;
 
 /// Look up every named catalog star in the Elite dataset and compare them.
@@ -54,16 +55,23 @@ pub async fn compare_to_catalog(
     db: &Database,
     catalog: &[Star],
 ) -> Result<Comparison> {
-    let names: Vec<String> =
-        catalog.iter().filter_map(|s| s.name.clone()).collect();
+    // Folded once, through the one type that folds names, so this asks the
+    // `systems_name` index rather than `upper(name)` — which is a function
+    // of the column and so cannot be indexed by it. Every stored name is
+    // upper case; see `galos_index::SystemName`.
+    let names: Vec<String> = catalog
+        .iter()
+        .filter_map(|s| s.name.clone())
+        .map(|name| SystemName::new(name).into_string())
+        .collect();
 
     let rows = sqlx::query(
         "SELECT name, \
                 ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
          FROM systems \
-         WHERE position IS NOT NULL AND upper(name) = ANY($1)",
+         WHERE position IS NOT NULL AND name = ANY($1)",
     )
-    .bind(names.iter().map(|n| n.to_uppercase()).collect::<Vec<_>>())
+    .bind(&names)
     .fetch_all(&db.pool)
     .await?;
 

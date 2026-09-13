@@ -12,6 +12,7 @@
 //! nested and read one system at a time rather than a million points a frame,
 //! so the tedium a fixed layout would trade for is not worth its speed here.
 
+use crate::name::SystemName;
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
     AtmosphereType, BodyType, Composition, Material, Orbit, Spin,
@@ -29,7 +30,7 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PopulatedSystem {
     pub address: i64,
-    pub name: String,
+    pub name: SystemName,
     pub position: [f32; 3],
     pub population: u64,
     pub security: Option<Security>,
@@ -121,7 +122,7 @@ pub struct SystemBoost {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NameEntry {
     pub address: i64,
-    pub name: String,
+    pub name: SystemName,
     pub position: [f32; 3],
 }
 

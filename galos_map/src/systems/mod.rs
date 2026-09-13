@@ -11,6 +11,7 @@ use elite_journal::{
 };
 use galos_index::aggregate::{bucket_temperature, temp_bucket};
 use galos_index::meta::{Economies, NameEntry};
+use galos_index::name::SystemName;
 use galos_photometry::ClassLight;
 use std::collections::HashSet;
 
@@ -80,7 +81,9 @@ pub fn plugin(app: &mut App) {
 #[require(bodies::spawn::Strength)]
 pub(crate) struct System {
     address: i64,
-    name: String,
+    /// Upper case, and typed so: see [`galos_index::SystemName`]. A label
+    /// draws it as it stands rather than folding case a system a frame.
+    name: SystemName,
     /// Absolute galactic position, in light years
     ///
     /// The grid this is drawn in splits a position into a cell and an offset
@@ -825,7 +828,7 @@ pub(crate) mod tests {
     pub(crate) fn system(address: i64) -> System {
         System {
             address,
-            name: format!("Test {address}"),
+            name: format!("Test {address}").into(),
             position: [0., 0., 0.],
             population: 0,
             allegiance: None,
@@ -849,7 +852,7 @@ pub(crate) mod tests {
     /// the name has to be set from in here.
     pub(crate) fn named(address: i64, name: &str) -> System {
         let mut system = system(address);
-        system.name = name.to_owned();
+        system.name = SystemName::new(name);
         system
     }
 

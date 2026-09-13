@@ -375,7 +375,7 @@ pub(crate) mod tests {
     pub(crate) fn row(name: &str) -> NameEntry {
         NameEntry {
             address: name.len() as i64,
-            name: name.to_owned(),
+            name: name.into(),
             position: [0., 0., 0.],
         }
     }

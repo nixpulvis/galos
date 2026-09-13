@@ -1271,7 +1271,7 @@ mod tests {
             (1..=3)
                 .map(|address| NameEntry {
                     address,
-                    name: format!("Stop {address}"),
+                    name: format!("Stop {address}").into(),
                     position: [address as f32 * 10., 0., 0.],
                 })
                 .collect(),
@@ -1448,7 +1448,7 @@ mod tests {
                 address,
                 PopulatedSystem {
                     address,
-                    name: format!("Home {address}"),
+                    name: format!("Home {address}").into(),
                     position: [address as f32, 0., 0.],
                     population,
                     security: None,
@@ -1533,7 +1533,7 @@ mod tests {
                 address,
                 PopulatedSystem {
                     address,
-                    name: format!("Home {address}"),
+                    name: format!("Home {address}").into(),
                     position: [address as f32, 0., 0.],
                     population: 1_000 * address as u64,
                     security: None,

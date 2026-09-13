@@ -1174,7 +1174,7 @@ mod tests {
             .enumerate()
             .map(|(at, place)| NameEntry {
                 address: at as i64 + 1,
-                name: format!("S{at}"),
+                name: format!("S{at}").into(),
                 position: [place.x as f32, place.y as f32, place.z as f32],
             })
             .collect();

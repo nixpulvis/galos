@@ -1,9 +1,9 @@
 use super::{Economies, Landed, System};
-use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::Error;
+use crate::factions::{Conflict, Faction, SystemFaction};
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
-use galos_index::SystemReport;
+use galos_index::{SystemName, SystemReport};
 use geozero::wkb;
 
 impl System {
@@ -26,7 +26,7 @@ impl System {
     pub async fn create(
         conn: &mut sqlx::PgConnection,
         address: i64,
-        name: &str,
+        name: &SystemName,
         position: Option<Coordinate>,
         primary_star_class: Option<String>,
         population: Option<u64>,
@@ -52,12 +52,12 @@ impl System {
                  secondary_economy,
                  updated_at,
                  updated_by)
-            VALUES ($1, UPPER($2), $3, $4::geometry, $5, $6,
+            VALUES ($1, $2, $3, $4::geometry, $5, $6,
                 $7, $8, $9, $10, $11, $12)
             ON CONFLICT (address)
             DO UPDATE SET
                 name = CASE WHEN $11 >= systems.updated_at
-                    THEN UPPER($2) ELSE systems.name END,
+                    THEN $2 ELSE systems.name END,
                 primary_star_class = CASE WHEN $11 >= systems.updated_at
                     THEN COALESCE($3, systems.primary_star_class)
                     ELSE COALESCE(systems.primary_star_class, $3) END,
@@ -106,7 +106,7 @@ impl System {
                 (updated_at = $11) AS "took!"
             "#,
             address as i64,
-            name,
+            name.as_str(),
             primary_star_class,
             position.map(|p| wkb::Encode(p)) as _,
             population.map(|n| n as i64),
@@ -236,7 +236,7 @@ impl System {
         report: &SystemReport,
         by: &str,
     ) -> Result<Option<Landed>, Error> {
-        let politics = match report.name.as_deref() {
+        let politics = match report.name.as_ref() {
             Some(name) => Some(
                 Self::create(
                     &mut *conn,
@@ -300,7 +300,7 @@ impl System {
         Self::create(
             &mut *conn,
             system.address,
-            &system.name,
+            &SystemName::new(system.name.clone()),
             system.pos,
             None,
             system.population,
@@ -385,7 +385,7 @@ impl System {
     pub async fn set_body_counts(
         conn: &mut sqlx::PgConnection,
         address: i64,
-        name: Option<&str>,
+        name: Option<&SystemName>,
         position: Option<Coordinate>,
         body_count: i32,
         non_body_count: Option<i32>,
@@ -437,11 +437,11 @@ impl System {
                  non_body_count,
                  updated_at,
                  updated_by)
-            VALUES ($1, UPPER($2), $3::geometry, $4, $5, $6, $7)
+            VALUES ($1, $2, $3::geometry, $4, $5, $6, $7)
             ON CONFLICT (address)
             DO UPDATE SET
                 name = CASE WHEN $6 >= systems.updated_at
-                    THEN UPPER($2) ELSE systems.name END,
+                    THEN $2 ELSE systems.name END,
                 -- Weighed by the stamps as `create` weighs it, the two
                 -- statements being one rule about where a system is. The
                 -- counts below are the exception and say why.
@@ -458,7 +458,7 @@ impl System {
             RETURNING (xmax = 0) AS "inserted!"
             "#,
             address,
-            name,
+            name.as_str(),
             position.map(|p| wkb::Encode(p)) as _,
             body_count,
             non_body_count,

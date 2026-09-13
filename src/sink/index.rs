@@ -827,7 +827,7 @@ mod tests {
     use super::*;
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
-    use galos_index::{FsSource, Source as _};
+    use galos_index::{FsSource, Source as _, SystemName};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -870,7 +870,7 @@ mod tests {
         let mut said: Vec<String> = pollster::block_on(read.names())
             .expect("the names read")
             .into_iter()
-            .map(|it| it.name)
+            .map(|it| it.name.into_string())
             .collect();
         said.sort();
         said
@@ -1290,7 +1290,7 @@ mod tests {
 
         let report =
             |address: i64, name: &str, at: Option<Coordinate>| SystemReport {
-                name: Some(name.to_string()),
+                name: Some(SystemName::new(name)),
                 position: at,
                 population: Some(1000),
                 ..SystemReport::new(
@@ -1641,7 +1641,7 @@ mod tests {
     /// journal entry per system.
     fn spotted(address: i64, at: [f64; 3], when: &str) -> SystemReport {
         SystemReport {
-            name: Some(format!("System {}", address)),
+            name: Some(format!("System {address}").into()),
             position: Some(Coordinate { x: at[0], y: at[1], z: at[2] }),
             ..SystemReport::new(address, when.parse().expect("a moment"))
         }

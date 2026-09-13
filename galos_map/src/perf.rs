@@ -179,10 +179,7 @@ fn routing_stays_quick() {
     let start = nearest([0.0, 0.0, 0.0]);
     let end = nearest([700.0, 0.0, 700.0]);
 
-    let held = Names {
-        entries: Arc::new(entries),
-        ..Names::default()
-    };
+    let held = Names { entries: Arc::new(entries), ..Names::default() };
 
     let at = Instant::now();
     let graph = JumpGraph::new(&held.entries, &boosts);

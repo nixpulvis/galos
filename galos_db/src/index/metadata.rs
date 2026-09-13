@@ -358,7 +358,7 @@ pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
     let z: f64 = row.try_get("z")?;
     Ok(meta::NameEntry {
         address: row.try_get("address")?,
-        name: row.try_get("name")?,
+        name: galos_index::SystemName::new(row.try_get::<String, _>("name")?),
         position: [x as f32, y as f32, z as f32],
     })
 }
@@ -401,7 +401,9 @@ async fn populated_of(
             let population: i64 = row.try_get("population")?;
             Ok(meta::PopulatedSystem {
                 address,
-                name: row.try_get("name")?,
+                name: galos_index::SystemName::new(
+                    row.try_get::<String, _>("name")?,
+                ),
                 position: [x as f32, y as f32, z as f32],
                 population: population as u64,
                 security: row.try_get("security")?,

@@ -49,6 +49,7 @@
 //! be a shape with one source and nothing to reconcile.
 
 use crate::meta::PopulatedSystem;
+use crate::name::SystemName;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::route::Destination;
 use elite_journal::entry::{Entry, Event};
@@ -82,7 +83,7 @@ pub struct SystemReport {
     /// table is a system the search can neither reach nor recognise — but it
     /// is still worth recording, since whatever names it later merges onto
     /// the place and the counts this report did carry.
-    pub name: Option<String>,
+    pub name: Option<SystemName>,
     /// [`None`] where the report did not place it, which the game does for
     /// events written inside a system it has already placed.
     pub position: Option<Coordinate>,
@@ -160,7 +161,7 @@ impl SystemReport {
     pub fn of(entry: &Entry<Event>) -> Option<SystemReport> {
         let at = entry.timestamp;
         let report = |address, name: Option<&str>, position| SystemReport {
-            name: name.map(str::to_owned),
+            name: name.map(SystemName::new),
             position,
             ..SystemReport::new(address, at)
         };
@@ -272,7 +273,7 @@ impl SystemReport {
         system: &elite_journal::system::System,
     ) -> SystemReport {
         SystemReport {
-            name: Some(system.name.clone()),
+            name: Some(SystemName::new(system.name.clone())),
             position: system.pos,
             population: system.population,
             security: system.security,
@@ -293,7 +294,7 @@ impl SystemReport {
     /// nothing about who runs the place or what is in it.
     pub fn plotted(at: DateTime<Utc>, stop: &Destination) -> SystemReport {
         SystemReport {
-            name: Some(stop.star_system.clone()),
+            name: Some(SystemName::new(stop.star_system.clone())),
             position: Some(stop.star_pos),
             star_class: Some(stop.star_class.clone()),
             ..SystemReport::new(stop.system_address as i64, at)
@@ -345,20 +346,12 @@ impl SystemReport {
 
     /// The name as the galaxy spells it, where the report named one.
     ///
-    /// Upper case, because that is `galos_db`'s spelling: every write of a
-    /// `systems` row goes through `UPPER($2)`, so that is what the published
-    /// names table holds and what a client comparing against it sees. A
-    /// directory written by both derivations would otherwise hold two
-    /// spellings of one galaxy.
-    ///
-    /// Here rather than where a report is built, and it costs a scan per
-    /// read for it: every field on a report is public, because the dump
-    /// sources and the journal's name pre-pass write one out by hand, so an
-    /// invariant kept by the constructors would not be kept at all. Upper
-    /// once at the boundary was tried and published a dump's names in
-    /// whatever case the dump had them.
-    pub fn named(&self) -> Option<String> {
-        Some(self.name.as_deref()?.to_uppercase())
+    /// Upper case because [`SystemName`] cannot be anything else, so this
+    /// is a borrow rather than the `to_uppercase` per read it used to be —
+    /// and the two derivations cannot publish two spellings of one galaxy,
+    /// which is what the fold was for.
+    pub fn named(&self) -> Option<&SystemName> {
+        self.name.as_ref()
     }
 
     /// Where the system is, as the tree counts positions.
@@ -384,7 +377,7 @@ impl SystemReport {
         let at = self.placed()?;
         Some(PopulatedSystem {
             address: self.address,
-            name: self.named()?,
+            name: self.named()?.clone(),
             position: [at[0] as f32, at[1] as f32, at[2] as f32],
             population,
             security: self.security,

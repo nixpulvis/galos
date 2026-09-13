@@ -45,7 +45,7 @@
 use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
 use galos::bar;
-use galos::sink::{Landed, Reporter, Sink, SystemReport};
+use galos::sink::{Landed, Reporter, Sink, SystemName, SystemReport};
 use galos::{Shard, Shutdown};
 use galos_index::bodies::Shared;
 use galos_index::{Build, LeftOff, Rows, Taking};
@@ -396,7 +396,7 @@ impl Reading {
 /// the galaxy.
 fn reported(system: spansh::galaxy::System) -> SystemReport {
     SystemReport {
-        name: Some(system.name),
+        name: Some(SystemName::new(system.name)),
         position: Some(system.coords),
         population: system.population,
         security: system.security,

@@ -987,7 +987,7 @@ mod tests {
                 .iter()
                 .map(|system| galos_index::meta::NameEntry {
                     address: system.id64 as i64,
-                    name: format!("TEST {}", system.id64),
+                    name: format!("TEST {}", system.id64).into(),
                     position: [system.position[0] as f32, 0.0, 0.0],
                 })
                 .collect(),

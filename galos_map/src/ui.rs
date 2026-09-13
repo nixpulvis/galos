@@ -11268,7 +11268,7 @@ mod tests {
 
         assert_eq!(
             asked_in_order(&stops, &picked, Shape::FromFirst, None),
-            vec!["Test 0", "Test 1", "Test 2", "Test 3"]
+            vec!["TEST 0", "TEST 1", "TEST 2", "TEST 3"]
         );
     }
 
@@ -11284,8 +11284,8 @@ mod tests {
         let asked =
             asked_in_order(&stops, &picked, Shape::FromFirst, Some(10.));
 
-        assert_eq!(asked[0], "Test 0");
-        assert_eq!(asked, vec!["Test 0", "Test 3", "Test 2", "Test 1"]);
+        assert_eq!(asked[0], "TEST 0");
+        assert_eq!(asked, vec!["TEST 0", "TEST 3", "TEST 2", "TEST 1"]);
     }
 
     /// A trip asked for as a loop is asked for the leg home as well
@@ -11305,7 +11305,7 @@ mod tests {
 
         assert_eq!(
             asked_in_order(&stops, &picked, Shape::Loop, None),
-            vec!["Test 0", "Test 1", "Test 2", "Test 3", "Test 0"]
+            vec!["TEST 0", "TEST 1", "TEST 2", "TEST 3", "TEST 0"]
         );
     }
 

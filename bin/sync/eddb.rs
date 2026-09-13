@@ -10,7 +10,7 @@
 
 use elite_journal::system::Coordinate;
 use galos::bar;
-use galos::sink::{Sink, SystemReport};
+use galos::sink::{Sink, SystemName, SystemReport};
 use galos::{Shard, Shutdown};
 use std::path::PathBuf;
 use tracing::warn;
@@ -87,7 +87,7 @@ impl Eddb {
             let landed = sink
                 .system(
                     &SystemReport {
-                        name: Some(system.name),
+                        name: Some(SystemName::new(system.name)),
                         position: Some(Coordinate {
                             x: system.coords.x,
                             y: system.coords.y,

@@ -54,7 +54,7 @@ use galos_db::{
     testing::Scratch,
     Database, Error,
 };
-use galos_index::{merge, meta, SystemReport};
+use galos_index::{merge, meta, SystemName, SystemReport};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -176,7 +176,7 @@ async fn a_body_count_creates_the_system_it_counts() {
     System::set_body_counts(
         &mut *conn,
         COUNTS,
-        Some("Test Counts"),
+        Some(&SystemName::new("Test Counts")),
         Some(somewhere(1.0)),
         40,
         Some(10),
@@ -208,7 +208,7 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     System::set_body_counts(
         &mut *conn,
         COUNTS_AGAIN,
-        Some("Test Counts Again"),
+        Some(&SystemName::new("Test Counts Again")),
         Some(somewhere(7.0)),
         40,
         Some(10),
@@ -221,7 +221,7 @@ async fn a_later_count_does_not_erase_what_it_does_not_carry() {
     System::set_body_counts(
         &mut *conn,
         COUNTS_AGAIN,
-        Some("Test Counts Again"),
+        Some(&SystemName::new("Test Counts Again")),
         None,
         41,
         None,
@@ -254,7 +254,7 @@ async fn a_count_without_a_name_reaches_a_system_already_there() {
     System::create(
         &mut *conn,
         COUNTS_UNNAMED,
-        "Test Unnamed Counts",
+        &SystemName::new("Test Unnamed Counts"),
         Some(somewhere(21.0)),
         None,
         None,
@@ -334,7 +334,7 @@ async fn a_report_of_counts_and_politics_writes_both() {
     let landed = System::report(
         &mut *conn,
         &SystemReport {
-            name: Some("Test Counts And Politics".to_owned()),
+            name: Some(SystemName::new("Test Counts And Politics")),
             position: Some(somewhere(31.0)),
             population: Some(9_000_000),
             security: Some(Security::High),
@@ -462,7 +462,7 @@ async fn signals_are_kept_for_a_body_that_was_never_scanned() {
     System::set_body_counts(
         &mut *conn,
         BODY_SIGNALS,
-        Some("Test Body Signals"),
+        Some(&SystemName::new("Test Body Signals")),
         Some(somewhere(2.0)),
         4,
         None,
@@ -508,7 +508,7 @@ async fn a_signal_seen_again_is_the_same_row() {
     System::set_body_counts(
         &mut *conn,
         BODY_SIGNALS,
-        Some("Test Body Signals"),
+        Some(&SystemName::new("Test Body Signals")),
         Some(somewhere(2.0)),
         4,
         None,
@@ -552,7 +552,7 @@ async fn a_batch_of_system_signals_keeps_each_signal_s_own_time() {
     System::set_body_counts(
         &mut *conn,
         SYSTEM_SIGNALS,
-        Some("Test System Signals"),
+        Some(&SystemName::new("Test System Signals")),
         Some(somewhere(3.0)),
         4,
         None,
@@ -621,7 +621,7 @@ async fn a_codex_sighting_is_one_row_per_kind_per_system() {
     System::set_body_counts(
         &mut *conn,
         CODEX,
-        Some("Test Codex"),
+        Some(&SystemName::new("Test Codex")),
         Some(somewhere(4.0)),
         4,
         None,
@@ -677,7 +677,7 @@ async fn a_settlement_keeps_its_place_on_the_body() {
     System::set_body_counts(
         &mut *conn,
         SETTLEMENT,
-        Some("Test Settlement"),
+        Some(&SystemName::new("Test Settlement")),
         Some(somewhere(5.0)),
         4,
         None,
@@ -732,7 +732,7 @@ async fn an_outfitting_message_replaces_what_came_before() {
     System::set_body_counts(
         &mut *conn,
         TRADE,
-        Some("Test Trade"),
+        Some(&SystemName::new("Test Trade")),
         Some(somewhere(6.0)),
         4,
         None,
@@ -795,7 +795,7 @@ async fn a_trade_message_writes_the_station_it_names() {
     System::set_body_counts(
         &mut *conn,
         TRADE_STATION,
-        Some("Test Trade Station"),
+        Some(&SystemName::new("Test Trade Station")),
         Some(somewhere(23.0)),
         1,
         None,
@@ -840,7 +840,7 @@ async fn an_unpriced_module_is_still_stocked() {
     System::set_body_counts(
         &mut *conn,
         TRADE_UNPRICED,
-        Some("Test Trade Unpriced"),
+        Some(&SystemName::new("Test Trade Unpriced")),
         Some(somewhere(6.0)),
         4,
         None,
@@ -879,7 +879,7 @@ async fn a_shipyard_message_replaces_what_came_before() {
     System::set_body_counts(
         &mut *conn,
         TRADE_SHIPYARD,
-        Some("Test Trade Shipyard"),
+        Some(&SystemName::new("Test Trade Shipyard")),
         Some(somewhere(6.0)),
         4,
         None,
@@ -926,7 +926,7 @@ async fn a_black_market_sale_does_not_retire_the_others() {
     System::set_body_counts(
         &mut *conn,
         TRADE_BLACK_MARKET,
-        Some("Test Trade Black Market"),
+        Some(&SystemName::new("Test Trade Black Market")),
         Some(somewhere(6.0)),
         4,
         None,
@@ -975,7 +975,7 @@ async fn a_belt_cluster_is_one_row_however_often_it_is_scanned() {
     System::set_body_counts(
         &mut *conn,
         CLUSTER,
-        Some("Test Cluster"),
+        Some(&SystemName::new("Test Cluster")),
         Some(somewhere(8.0)),
         4,
         None,
@@ -1044,7 +1044,7 @@ async fn a_late_scan_does_not_rename_a_cluster() {
     System::set_body_counts(
         &mut *conn,
         RENAMED,
-        Some("Test Renamed"),
+        Some(&SystemName::new("Test Renamed")),
         Some(somewhere(24.0)),
         4,
         None,
@@ -1110,7 +1110,7 @@ async fn a_basic_rescan_keeps_what_a_detailed_one_found() {
     System::set_body_counts(
         &mut *conn,
         RESCAN,
-        Some("Test Rescan"),
+        Some(&SystemName::new("Test Rescan")),
         Some(somewhere(9.0)),
         1,
         None,
@@ -1236,7 +1236,7 @@ async fn a_sparser_station_message_keeps_what_the_fuller_one_said() {
     System::set_body_counts(
         &mut *conn,
         REDOCK,
-        Some("Test Redock"),
+        Some(&SystemName::new("Test Redock")),
         Some(somewhere(10.0)),
         1,
         None,
@@ -1309,7 +1309,7 @@ async fn a_stale_station_message_does_not_undo_a_newer_one() {
     System::set_body_counts(
         &mut *conn,
         STALE,
-        Some("Test Stale"),
+        Some(&SystemName::new("Test Stale")),
         Some(somewhere(11.0)),
         1,
         None,
@@ -1379,7 +1379,7 @@ async fn a_settlement_approached_again_keeps_its_place() {
     System::set_body_counts(
         &mut *conn,
         PLACED,
-        Some("Test Placed"),
+        Some(&SystemName::new("Test Placed")),
         Some(somewhere(18.0)),
         1,
         None,
@@ -1442,7 +1442,7 @@ async fn two_messages_in_one_second_both_land() {
     System::create(
         &mut *conn,
         SAME_SECOND,
-        "Test Same Second",
+        &SystemName::new("Test Same Second"),
         Some(somewhere(12.0)),
         None,
         Some(4_000_000),
@@ -1460,7 +1460,7 @@ async fn two_messages_in_one_second_both_land() {
     System::create(
         &mut *conn,
         SAME_SECOND,
-        "Test Same Second",
+        &SystemName::new("Test Same Second"),
         None,
         None,
         None,
@@ -1499,7 +1499,7 @@ async fn a_ring_is_kept_where_its_clusters_can_find_it() {
     System::set_body_counts(
         &mut *conn,
         RING,
-        Some("Test Ring"),
+        Some(&SystemName::new("Test Ring")),
         Some(somewhere(13.0)),
         1,
         None,
@@ -1583,7 +1583,7 @@ async fn a_thing_once_mapped_stays_mapped() {
     System::set_body_counts(
         &mut *conn,
         UNMAPPED,
-        Some("Test Unmapped"),
+        Some(&SystemName::new("Test Unmapped")),
         Some(somewhere(14.0)),
         1,
         None,
@@ -1654,7 +1654,7 @@ async fn the_earliest_discovery_on_record_is_kept() {
     System::set_body_counts(
         &mut *conn,
         DISCOVERED,
-        Some("Test Discovered"),
+        Some(&SystemName::new("Test Discovered")),
         Some(somewhere(26.0)),
         1,
         None,
@@ -1761,10 +1761,12 @@ async fn two_systems_may_share_a_position() {
         }
     };
 
-    at_the_same_point(SHARED_A, "Test Shared A")
+    let (shared_a, shared_b) =
+        (SystemName::new("Test Shared A"), SystemName::new("Test Shared B"));
+    at_the_same_point(SHARED_A, &shared_a)
         .await
         .expect("the first should write");
-    at_the_same_point(SHARED_B, "Test Shared B")
+    at_the_same_point(SHARED_B, &shared_b)
         .await
         .expect("the second should write, and not be refused the point");
 
@@ -1792,7 +1794,7 @@ async fn a_scan_naming_no_ancestor_keeps_the_ancestry() {
     System::set_body_counts(
         &mut *conn,
         ORPHANED,
-        Some("Test Orphaned"),
+        Some(&SystemName::new("Test Orphaned")),
         Some(somewhere(17.0)),
         1,
         None,
@@ -1933,7 +1935,7 @@ async fn a_message_delivered_late_does_not_put_the_stamp_back() {
     System::set_body_counts(
         &mut *conn,
         LATE,
-        Some("Test Late"),
+        Some(&SystemName::new("Test Late")),
         Some(somewhere(19.0)),
         1,
         None,
@@ -2014,7 +2016,7 @@ async fn a_count_delivered_late_does_not_put_the_stamp_back() {
             System::set_body_counts(
                 &mut *conn,
                 LATE_COUNT,
-                Some("Test Late Count"),
+                Some(&SystemName::new("Test Late Count")),
                 Some(somewhere(20.0)),
                 bodies,
                 non_bodies,
@@ -2160,7 +2162,7 @@ async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
             System::create(
                 &mut *conn,
                 LATE_CREATE,
-                "Test Late Create",
+                &SystemName::new("Test Late Create"),
                 Some(somewhere(25.0)),
                 None,
                 Some(population),
@@ -2222,7 +2224,7 @@ async fn a_write_says_whether_it_made_a_row_moved_one_or_neither() {
             System::create(
                 &mut *conn,
                 LANDED,
-                name,
+                &SystemName::new(name),
                 Some(somewhere(place)),
                 None,
                 None,
@@ -2327,7 +2329,7 @@ async fn the_later_reading_of_a_signal_wins() {
     System::set_body_counts(
         &mut *conn,
         LATE_SIGNAL,
-        Some("Test Late Signal"),
+        Some(&SystemName::new("Test Late Signal")),
         Some(somewhere(21.0)),
         1,
         None,
@@ -2493,7 +2495,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
     System::create(
         &mut *tx,
         CROWDED,
-        "Test Crowded",
+        &SystemName::new("Test Crowded"),
         Some(Coordinate { x: 0., y: 0., z: 0. }),
         None,
         None,
@@ -2650,7 +2652,7 @@ impl Columns {
     /// The report `SystemReport::over` merged.
     fn of_report(report: &SystemReport) -> Columns {
         Columns {
-            name: report.named(),
+            name: report.named().map(|it| it.to_string()),
             position: report.position,
             population: report.population.unwrap_or(0),
             security: report.security,
@@ -2669,7 +2671,7 @@ impl Columns {
 /// A report of a scan: the system named and placed, and nothing else.
 fn scanned(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
     SystemReport {
-        name: Some(name.to_string()),
+        name: Some(SystemName::new(name)),
         position: Some(somewhere(address as f64 % 100.0)),
         ..SystemReport::new(address, at)
     }
@@ -2843,7 +2845,7 @@ async fn the_star_upsert_says_what_the_merge_rule_says() {
         System::create(
             &mut *conn,
             CONFORMANCE_STAR,
-            "Test Conformance Star",
+            &SystemName::new("Test Conformance Star"),
             Some(somewhere(60.0)),
             None,
             None,
@@ -2922,7 +2924,7 @@ async fn the_body_upsert_says_what_the_merge_rule_says() {
     System::create(
         &mut *conn,
         CONFORMANCE_BODY,
-        "Test Conformance Body",
+        &SystemName::new("Test Conformance Body"),
         Some(somewhere(61.0)),
         None,
         None,
@@ -3076,7 +3078,7 @@ async fn an_interrupted_entry_writes_nothing() {
     System::create(
         &mut *tx,
         INTERRUPTED,
-        "Test Interrupted",
+        &SystemName::new("Test Interrupted"),
         Some(somewhere(27.0)),
         None,
         None,
@@ -3183,7 +3185,7 @@ async fn one_star_written_twice_leaves_the_nearer_record() {
     System::create(
         &mut *tx,
         TWIN,
-        "Test Twin",
+        &SystemName::new("Test Twin"),
         Some(somewhere(31.0)),
         None,
         None,
@@ -3293,7 +3295,7 @@ async fn two_writers_of_one_name_do_not_refuse_each_other() {
     System::create(
         &mut *tx,
         TWIN_RACE,
-        "Test Race",
+        &SystemName::new("Test Race"),
         Some(somewhere(32.0)),
         None,
         None,

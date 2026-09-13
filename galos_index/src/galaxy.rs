@@ -390,7 +390,7 @@ impl Galaxy {
         let at = report.placed()?;
         Some(NameEntry {
             address,
-            name: report.named()?,
+            name: report.named()?.clone(),
             position: [at[0] as f32, at[1] as f32, at[2] as f32],
         })
     }
