@@ -125,15 +125,6 @@ enum Next {
     Failed { at: u64, error: io::Error },
 }
 
-/// Systems between one mark and the next, for a read that is not stopped
-/// but killed.
-///
-/// A mark flushes every bucket's buffer and stages the part-filled names
-/// chunk, so it costs a few thousand small writes; at a million systems
-/// that is once every few minutes of reading, and what a kill costs is the
-/// systems since. A clean stop marks where it stopped and costs nothing.
-const MARKED: u64 = 1_000_000;
-
 /// Where a stopped read had got to, as the build carries it.
 ///
 /// [`Build::mark`] takes a caller's place as bytes and does not read them;
@@ -160,11 +151,6 @@ pub struct Place {
     /// at the end of the read.
     systems: u64,
     bodies: usize,
-    /// How many bytes of each of the three row files the place stands for,
-    /// in the order [`galos_index::Rows::lengths`] answers them. A row is
-    /// derived from the same line a system is, so the two are cut at the
-    /// same system or the tables stand for a galaxy the tree does not.
-    rows: [u64; 3],
     /// The clock the stopped run dated its Recency by.
     pub now: DateTime<Utc>,
 }
@@ -196,12 +182,6 @@ impl Place {
     /// How far into the file this is, in bytes.
     pub fn at(&self) -> u64 {
         self.at
-    }
-
-    /// How much of each row file the place stands for, for the [`Rows`]
-    /// that takes up writing them.
-    pub fn rows(&self) -> [u64; 3] {
-        self.rows
     }
 
     /// This place as the bytes [`Build::mark`] carries.
@@ -301,7 +281,6 @@ impl Reading {
         now: DateTime<Utc>,
         systems: u64,
         bodies: usize,
-        rows: [u64; 3],
     ) -> Place {
         Place {
             file: self.path.to_string_lossy().into_owned(),
@@ -310,7 +289,6 @@ impl Reading {
             line: at.1,
             systems,
             bodies,
-            rows,
             now,
         }
     }
@@ -497,7 +475,6 @@ impl Galaxy {
             from.as_ref().map_or((0u64, 0), |it| (it.systems, it.bodies));
         let taken_up = systems;
         let by = crate::from::published("Spansh", &self.path);
-        let mut marked = systems;
         loop {
             // Where the line about to be read begins. A stop part way
             // through one is marked here rather than after it: the build
@@ -508,14 +485,11 @@ impl Galaxy {
                 Next::System(report, scans) => (report, scans),
                 Next::Ended => break,
                 Next::Stopped => {
-                    let place = reading.place(
-                        began,
-                        self.now,
-                        systems,
-                        bodies,
-                        rows.lengths()?,
+                    build.mark(
+                        &reading
+                            .place(began, self.now, systems, bodies)
+                            .bytes(),
                     );
-                    build.mark(&place.bytes())?;
                     break;
                 }
                 Next::Failed { error, .. } => return Err(error),
@@ -551,14 +525,11 @@ impl Galaxy {
                         true
                     }
                     Taking::Stopped => {
-                        let place = reading.place(
-                            began,
-                            self.now,
-                            systems - 1,
-                            bodies,
-                            rows.lengths()?,
+                        build.mark(
+                            &reading
+                                .place(began, self.now, systems - 1, bodies)
+                                .bytes(),
                         );
-                        build.mark(&place.bytes())?;
                         break;
                     }
                 },
@@ -574,17 +545,14 @@ impl Galaxy {
             }
             bodies += galaxy.settle_bodies()?;
 
-            if systems - marked >= MARKED {
-                let place = reading.place(
-                    reading.here(),
-                    self.now,
-                    systems,
-                    bodies,
-                    rows.lengths()?,
-                );
-                build.mark(&place.bytes())?;
-                marked = systems;
-            }
+            // What the publish at the end of the read will record, kept
+            // current so a read that runs to the end of the file marks the
+            // end of it. Nothing is written by this.
+            build.mark(
+                &reading
+                    .place(reading.here(), self.now, systems, bodies)
+                    .bytes(),
+            );
         }
 
         reading.unparsed();

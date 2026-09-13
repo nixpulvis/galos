@@ -31,8 +31,8 @@ use crate::source::{
     write_meta,
 };
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, OpenOptions};
-use std::io::{self, BufWriter, Seek, Write};
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Which of the tables written whole a pass moved.
@@ -416,27 +416,18 @@ pub struct Rows {
     boosts: Sheet,
 }
 
-/// One table's rows, length-framed so the file is always cut between two.
+/// One table's rows, length-framed so a row half written is the end of
+/// what the file stands for rather than a row read out of the wrong bytes.
 struct Sheet {
     path: PathBuf,
     out: BufWriter<File>,
-    bytes: u64,
 }
 
 impl Sheet {
-    /// Open `path`, at `from` bytes of it: everything past that was written
-    /// after the mark being taken up, and is derived again by the read that
-    /// takes it up.
-    fn open(path: PathBuf, from: u64) -> io::Result<Sheet> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)?;
-        file.set_len(from)?;
-        let mut file = file;
-        file.seek(io::SeekFrom::Start(from))?;
-        Ok(Sheet { path, out: BufWriter::new(file), bytes: from })
+    /// Open `path`, empty.
+    fn open(path: PathBuf) -> io::Result<Sheet> {
+        let file = File::create(&path)?;
+        Ok(Sheet { path, out: BufWriter::new(file) })
     }
 
     /// One row, its length ahead of it.
@@ -444,15 +435,12 @@ impl Sheet {
         let bytes = rmp_serde::to_vec(row)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         self.out.write_all(&(bytes.len() as u32).to_le_bytes())?;
-        self.out.write_all(&bytes)?;
-        self.bytes += 4 + bytes.len() as u64;
-        Ok(())
+        self.out.write_all(&bytes)
     }
 
-    /// Everything pushed, on disk, and how many bytes that is.
-    fn flush(&mut self) -> io::Result<u64> {
-        self.out.flush()?;
-        Ok(self.bytes)
+    /// Everything pushed, on disk.
+    fn flush(&mut self) -> io::Result<()> {
+        self.out.flush()
     }
 
     /// Every row back, in the order they were written.
@@ -486,21 +474,42 @@ impl Sheet {
 }
 
 impl Rows {
-    /// Write the rows of a build into `dir`, taking up whatever `from`
-    /// names.
-    ///
-    /// `from` is the three byte counts [`lengths`](Self::lengths) answered
-    /// when the build last marked its place, or zeroes for a build starting
-    /// over. A file is cut back to its figure, so the rows and the systems
-    /// they stand for are cut at the same system.
-    pub fn writing(dir: &Path, from: [u64; 3]) -> io::Result<Rows> {
+    /// Write the rows of a build into `dir`, from nothing.
+    pub fn writing(dir: &Path) -> io::Result<Rows> {
+        let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
         Ok(Rows {
             dir: dir.to_owned(),
-            populated: Sheet::open(dir.join("populated.rows"), from[0])?,
-            reaches: Sheet::open(dir.join("reaches.rows"), from[1])?,
-            boosts: Sheet::open(dir.join("boosts.rows"), from[2])?,
+            populated: Sheet::open(dir.join("populated.rows"))?,
+            reaches: Sheet::open(dir.join("reaches.rows"))?,
+            boosts: Sheet::open(dir.join("boosts.rows"))?,
         })
+    }
+
+    /// The same, seeded with the tables `served` already publishes.
+    ///
+    /// What a build carrying on from a read a stop published starts with:
+    /// the rows it derived are in those tables and nowhere else, and the
+    /// tables are written whole, so a second publish that had only this
+    /// run's rows would take every earlier system's politics away.
+    pub fn onto(dir: &Path, served: &Path) -> io::Result<Rows> {
+        let mut rows = Rows::writing(dir)?;
+        for row in optional::<Vec<PopulatedSystem>>(&populated_path(served))?
+            .unwrap_or_default()
+        {
+            rows.populate(&row)?;
+        }
+        for row in optional::<Vec<SystemReach>>(&reaches_path(served))?
+            .unwrap_or_default()
+        {
+            rows.reach(row.address, row.reach)?;
+        }
+        for row in optional::<Vec<SystemBoost>>(&boosts_path(served))?
+            .unwrap_or_default()
+        {
+            rows.boost(row.address, row.boost)?;
+        }
+        Ok(rows)
     }
 
     /// Take what `galaxy` says about every system in `touched`.
@@ -548,28 +557,26 @@ impl Rows {
         self.boosts.push(&SystemBoost { address, boost })
     }
 
-    /// Everything pushed, on disk, and the byte counts a mark is made of.
-    pub fn lengths(&mut self) -> io::Result<[u64; 3]> {
-        Ok([
-            self.populated.flush()?,
-            self.reaches.flush()?,
-            self.boosts.flush()?,
-        ])
+    /// Everything pushed, on disk.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.populated.flush()?;
+        self.reaches.flush()?;
+        self.boosts.flush()
     }
 
     /// Read the rows back, write the three tables in address order, and
     /// drop the rows.
     ///
-    /// The last row for an address wins, which is what a resumed read that
-    /// derived a system twice would leave — it cannot, the cut being exact,
-    /// but a map is what sorts them and a map has to answer something.
+    /// The last row for an address wins, which is what a build carrying on
+    /// from a published table leaves: the table's row goes in first and
+    /// whatever this read said about the same system goes over it.
     ///
     /// Called once a build has published, never before: the rows are the
     /// only copy until this runs, and a table written over a directory whose
     /// build then stopped would stand for a galaxy nothing published.
     pub fn finish(mut self, dir: &Path) -> io::Result<Counts> {
         let at = self.dir.clone();
-        self.lengths()?;
+        self.flush()?;
         let populated: HashMap<i64, PopulatedSystem> = self
             .populated
             .read::<PopulatedSystem>()?
@@ -718,7 +725,7 @@ mod tests {
         let dir = at.0.join("served");
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let rows = Rows::writing(&at.0.join("rows"), [0; 3]).expect("rows");
+        let rows = Rows::writing(&at.0.join("rows")).expect("rows");
         let counts = rows.finish(&dir).expect("the tables write");
 
         assert_eq!(counts.populated, 0);
@@ -738,38 +745,36 @@ mod tests {
         );
     }
 
-    /// Rows are cut where the build marked, and taken up from there
+    /// A build carrying on keeps the rows the one before it published
     ///
-    /// The whole of what makes a stopped build resumable: the rows and the
-    /// systems they stand for are cut at the same system. A row past the
-    /// cut is one the resumed read derives again, so leaving it would
-    /// publish it twice; a row before the cut is one nothing derives again,
-    /// so losing it is a system the map can draw and never colour.
+    /// The tables are written whole, so a second publish holding only the
+    /// second read's rows would take the politics off every system the
+    /// first one read — which is a map that can draw a system and not
+    /// colour it. The read that carries on says what it says over the top
+    /// of what stands, which is the same rule the feed's own tables follow.
     #[test]
-    fn rows_are_cut_where_the_build_marked() {
-        let at = Scratch::new("cut");
+    fn rows_carry_on_from_the_table_that_was_published() {
+        let at = Scratch::new("carried");
         let (spill, dir) = (at.0.join("rows"), at.0.join("served"));
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let mut rows = Rows::writing(&spill, [0; 3]).expect("rows");
+        let mut rows = Rows::writing(&spill).expect("rows");
         rows.populate(&populated(1)).expect("a row");
         rows.reach(1, 4.0).expect("a reach");
-        let marked = rows.lengths().expect("the lengths");
-
-        // Past the mark: what a run writes between its last mark and the
-        // stop that killed it.
         rows.populate(&populated(2)).expect("a row");
-        rows.reach(2, 9.0).expect("a reach");
-        rows.lengths().expect("the lengths");
-        drop(rows);
+        let first = rows.finish(&dir).expect("the tables write");
+        assert_eq!(first.populated, 2);
 
-        let mut rows = Rows::writing(&spill, marked).expect("taken up");
+        let mut rows = Rows::onto(&spill, &dir).expect("the tables back");
         rows.populate(&populated(3)).expect("a row");
         rows.reach(3, 16.0).expect("a reach");
         rows.boost(3, Boost::Neutron).expect("a boost");
+        // The same system again, as a resumed read re-deriving the line it
+        // stopped on would: the newer row wins and there is still one of it.
+        rows.reach(1, 5.0).expect("a reach");
         let counts = rows.finish(&dir).expect("the tables write");
 
-        assert_eq!(counts.populated, 2, "the cut was not where it was marked");
+        assert_eq!(counts.populated, 3, "the published rows were dropped");
         assert_eq!(counts.reaches, 2);
         assert_eq!(counts.boosts, 1);
 
@@ -777,8 +782,15 @@ mod tests {
             read_meta(&populated_path(&dir)).expect("the populated table");
         assert_eq!(
             table.iter().map(|it| it.address).collect::<Vec<_>>(),
-            vec![1, 3],
-            "the rows past the mark were published",
+            vec![1, 2, 3],
+            "the table is not in address order",
+        );
+        let reaches: Vec<SystemReach> =
+            read_meta(&reaches_path(&dir)).expect("the reaches table");
+        assert_eq!(
+            reaches.iter().find(|it| it.address == 1).map(|it| it.reach),
+            Some(5.0),
+            "the older reach won",
         );
     }
 }

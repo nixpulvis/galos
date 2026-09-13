@@ -14,7 +14,7 @@ use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
 use galos_index::{
     derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, Chunks,
-    ColdReport, Index, Pending, Start, System, Taking, Tree,
+    ColdReport, Ending, Index, Pending, Start, System, Taking, Tree,
 };
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
@@ -221,9 +221,11 @@ async fn changed_addresses(
 /// inside [`Build::finish`]. A build that was stopped published nothing:
 /// see [`Built`].
 ///
-/// Always [`Start::Fresh`]: a stopped read is taken up again by re-reading
-/// the cursors, which is minutes over a database where it is hours over a
-/// 610 GB dump, and the rows may have moved under it meanwhile.
+/// Always [`Start::Fresh`] and [`Ending::Abandon`]: the directory this
+/// publishes stands for every row Postgres has, so a read cut short must
+/// not replace it with the prefix it reached — and a read taken up again
+/// is a re-read of the cursors, which is minutes over a database where it
+/// is hours over a 610 GB dump.
 async fn build_cells(
     db: &Database,
     dir: &Path,
@@ -279,7 +281,7 @@ async fn build_cells(
             break;
         }
     }
-    Ok(build.finish(By::Database, Some(now))?)
+    Ok(build.finish(By::Database, Some(now), Ending::Abandon)?)
 }
 
 /// The next star of the ordered read, as [`star_light`] reads one, skipping

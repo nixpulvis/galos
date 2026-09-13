@@ -15,8 +15,7 @@
 //! from the resume point this leaves.
 
 use crate::bucket::{self, Buckets, Formed};
-use crate::checkpoint::{By, Compaction};
-use crate::geometry::CellId;
+use crate::checkpoint::{By, Checkpoint, Compaction};
 use crate::meta::NameEntry;
 use crate::names::Chunks;
 use crate::region::{self, Crown, Offer};
@@ -60,46 +59,39 @@ pub fn region_budget() -> u64 {
     }
 }
 
-/// What a build has read, so that a stopped one can be taken up.
+/// How far into its own source a published directory stands.
 ///
-/// The spills are the work: every system read, on disk, in the bucket it
-/// belongs to. What they do not say is where in its own source the caller
-/// had got to, and without that a resumed read either starts over or
-/// spills a second copy of what it already has.
+/// A dump is hours of reading and a directory nobody can open until the
+/// last line is a directory nobody can open. So a read that is stopped
+/// publishes what it has — a smaller galaxy, whole in itself — and writes
+/// down where it had got to. The next run takes the systems back out of the
+/// resume point that publish left, reads on from here, and publishes again.
 ///
-/// So a mark is the caller's place and the cut the spills stand at: the
-/// bytes of each bucket's file at the moment the mark was taken, and the
-/// names chunks beside them. The buffers flush on their own, so a spill
-/// runs on past its figure between one mark and the next; the figures are
-/// what a resume cuts back to. See [`Buckets::resume`](crate::bucket::Buckets::resume).
+/// The cursor is the caller's own and is carried rather than read: a dump's
+/// place is a byte offset and a database's is nothing at all.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Mark {
     /// The caller's place in its own source, opaque here.
     cursor: Vec<u8>,
-    /// Each bucket, as level and Morton key, and the bytes of its spill.
-    buckets: Vec<(u8, u64, u64)>,
-    /// Complete name chunks, and entries in the tail staged beside them.
-    chunks: usize,
-    tail: usize,
-    /// Systems the mark stands for.
+    /// Systems the directory published when the mark was written.
     systems: u64,
 }
 
-/// A stopped build's work, and where its caller had read to.
+/// What a published directory says about the read behind it.
 ///
 /// Answered by [`left_off`] and handed back to [`Build::begin`] as
-/// [`Start::Resuming`]. The cursor is the caller's own: this carries it and
-/// does not read it.
+/// [`Start::Resuming`].
 #[derive(Clone, Debug)]
 pub struct LeftOff(Mark);
 
 impl LeftOff {
-    /// What the caller wrote when it last marked its place.
+    /// Where the caller had read to, in the caller's own terms.
     pub fn cursor(&self) -> &[u8] {
         &self.0.cursor
     }
 
-    /// Systems already spilled, which a resumed read does not read again.
+    /// Systems the directory holds, which a resumed read takes back out of
+    /// the resume point rather than reading again.
     pub fn systems(&self) -> u64 {
         self.0.systems
     }
@@ -108,35 +100,47 @@ impl LeftOff {
 /// Where a build starts.
 #[derive(Clone, Debug)]
 pub enum Start {
-    /// From nothing: whatever a previous build left is cleared first.
+    /// From nothing: whatever a previous build left is cleared first, the
+    /// directory it publishes standing for what this read reaches and
+    /// nothing else.
     Fresh,
-    /// From what a stopped build left, at the cut its mark names.
+    /// From a directory a stopped read published: its systems back out of
+    /// the resume point, its names back off the chunks, and the read
+    /// carrying on from the mark.
     Resuming(LeftOff),
 }
 
-/// What a stopped build left beside `checkpoint`, where it left anything.
+/// What to do with a read that was stopped part way.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Ending {
+    /// Publish nothing. The directory stands for a whole galaxy and a
+    /// prefix of one would replace it with less than it had — which is
+    /// what a rebuild from the database is, the rows being read in
+    /// address order and the directory already holding every one of them.
+    Abandon,
+    /// Publish what was read, and record where the read had got to. A dump
+    /// is read in file order and what has been read is a galaxy in itself,
+    /// smaller than the file; the next run carries on from the mark.
+    Publish,
+}
+
+/// How far the read behind the directory beside `checkpoint` got, where
+/// anything says.
 ///
-/// [`None`] where no build has stopped part way, where one finished (the
-/// scratch goes with it), or where what is there cannot be read — a mark
-/// that will not decode is a build starting over, not a run failing.
+/// [`None`] where no build has published one, or where what is there
+/// cannot be read — a mark that will not decode is a read starting over,
+/// not a run failing.
 pub fn left_off(checkpoint: &Path) -> Option<LeftOff> {
-    read_meta::<Mark>(&mark_path(&spill_dir(checkpoint))).ok().map(LeftOff)
+    read_meta::<Mark>(&mark_path(checkpoint)).ok().map(LeftOff)
 }
 
-/// Where a build's mark sits: in the scratch, so clearing one clears both.
-fn mark_path(scratch: &Path) -> PathBuf {
-    scratch.join("mark.bin")
-}
-
-/// Where a build's own scratch is: beside the resume point, cleared when
-/// the build finishes and left standing by a stop that can be taken up.
-///
-/// A caller with working files of its own — the rows of the tables a
-/// record fills, which are cut at the same place the spills are — puts
-/// them here, so that one directory removed is the whole of a build's
-/// scratch and a fresh build cannot read a stopped one's leavings.
-pub fn scratch(checkpoint: &Path) -> PathBuf {
-    spill_dir(checkpoint)
+/// Where the mark sits: beside the resume point, which is what it stands
+/// with. The build's scratch is cleared by the publish that writes this,
+/// so it cannot live there.
+fn mark_path(checkpoint: &Path) -> PathBuf {
+    let mut name = checkpoint.as_os_str().to_owned();
+    name.push(".mark");
+    PathBuf::from(name)
 }
 
 /// A cold build a caller pushes into: the galaxy read once, as it arrives.
@@ -151,14 +155,21 @@ pub fn scratch(checkpoint: &Path) -> PathBuf {
 ///
 /// ## The stop
 ///
-/// A build over the galaxy is an hour, and a run asked to stop must not
-/// have to sit through one. `stop` is asked at the three places the time
-/// goes: per record in [`push`](Self::push), which is the read; per region
-/// in the offer pass, which reads every spill back; and per region in the
-/// raise, which reads every spill back and writes every payload. Between
-/// them is [`bucket::form`], which is not interruptible: it rewrites the
-/// buckets that are over budget and nothing else, where the three above are
-/// each the galaxy.
+/// A build over the galaxy is hours, and a run asked to stop must not have
+/// to sit through one, nor throw away what it read. `stop` is asked per
+/// record in [`push`](Self::push), which is the read and where the time
+/// goes; the caller then calls [`finish`](Self::finish), and what that does
+/// with a read cut short is the caller's [`Ending`].
+///
+/// [`Ending::Publish`] raises the tree over what was read and writes the
+/// directory, the resume point and the mark, so the galaxy read so far is
+/// one a map can open and the next run carries on from. The passes that
+/// does — the offers and the raise, each a read of every spill — do not
+/// ask `stop` again: a caller that has decided not to wait has the second
+/// Ctrl-C, which leaves the directory where it stands rather than half
+/// written. [`Ending::Abandon`] is the older answer and still the right
+/// one for a derivation whose directory already holds more than the read
+/// reached.
 ///
 /// A stop is an answer and not a failure — see [`Built`].
 pub struct Build<'a> {
@@ -174,8 +185,9 @@ pub struct Build<'a> {
     buckets: Buckets,
     /// The names table, written as the names arrive.
     names: Chunks,
-    /// Systems this build took up from a stopped one, of what it holds.
-    kept: u64,
+    /// Where the caller says it has read to, for the mark a publish
+    /// writes. See [`mark`](Self::mark).
+    place: Vec<u8>,
     /// Whether whoever asked for this build has stopped wanting it.
     stop: &'a dyn Fn() -> bool,
 }
@@ -197,76 +209,47 @@ pub enum Taking {
 #[derive(Copy, Clone, Debug)]
 pub enum Built {
     /// The directory is published: every cell's payload, the names table,
-    /// the index file over them and the resume point beside them.
+    /// the index file over them, the resume point beside them and the mark
+    /// saying how far the read behind them got.
+    ///
+    /// A read that was stopped and ended [`Ending::Publish`] comes here
+    /// too, the galaxy it published being what it read.
     Index(ColdReport),
-    /// The run was asked to stop first. Nothing was published and there is
-    /// no resume point to take up, so the next run builds from nothing.
+    /// Nothing was published: a read stopped with nothing to publish, or
+    /// one ended [`Ending::Abandon`]. The directory is as the build found
+    /// it.
     Stopped(Abandoned),
 }
 
-/// How far a build got before it was asked to stop, and what it left.
+/// A build that published nothing, and what it had read when it stopped.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Abandoned {
-    /// Systems the build had taken.
+    /// Systems the build had taken, the ones a resume brought back with
+    /// it included.
     pub systems: u64,
-    /// Regions raised, of [`regions`](Self::regions).
-    pub raised: usize,
-    /// Regions the cut divided the galaxy into. Zero where the stop came
-    /// while the galaxy was still being read, there being no cut yet.
-    pub regions: usize,
-    /// Whether the directory is as the build found it.
-    ///
-    /// True for a stop up to and including the offer pass: the spills are
-    /// scratch and the names table was staged, so neither is published.
-    /// False from the first payload written: those payloads are this
-    /// build's and nothing here holds the galaxy it would take to put the
-    /// others back, so the index file that stood over them comes down with
-    /// them and the directory serves nothing until a build finishes.
-    ///
-    /// It says nothing about the body files, which are the caller's and
-    /// are written as the read goes.
-    pub intact: bool,
-    /// Systems the spills hold for the next run, which it does not read
-    /// again.
-    ///
-    /// What the build's last [`mark`](Build::mark) stands for, and zero
-    /// where the read has to start over: a caller that never marked, or a
-    /// stop past the point where the buckets are consumed.
-    pub kept: u64,
 }
 
 impl Abandoned {
     /// A build that was never begun, the run being already stopping.
     pub fn unstarted() -> Abandoned {
-        Abandoned { systems: 0, raised: 0, regions: 0, intact: true, kept: 0 }
+        Abandoned { systems: 0 }
     }
 }
 
 impl fmt::Display for Abandoned {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} systems read", self.systems)?;
-        if self.regions > 0 {
-            write!(
-                f,
-                ", {} of {} regions raised",
-                self.raised, self.regions
-            )?;
-        }
-        match self.intact {
-            true => write!(f, "; the directory is as it was found")?,
-            false => write!(f, "; the directory serves nothing until a \
-                                build finishes")?,
-        }
-        match self.kept {
-            0 => write!(f, " and the next run reads from the start"),
-            kept => write!(f, " and the next run takes up {kept} systems"),
-        }
+        write!(
+            f,
+            "{} systems read; nothing was published and the directory is \
+             as it was found",
+            self.systems,
+        )
     }
 }
 
 impl<'a> Build<'a> {
     /// Open the scratch the systems spill into and the names table beside
-    /// it, both emptied of anything a previous build left.
+    /// it.
     ///
     /// `dir` is the served directory: the cells, their payloads and the
     /// names table. `checkpoint` is the resume point, which is
@@ -276,6 +259,14 @@ impl<'a> Build<'a> {
     /// `budget` is how many systems one region may hold. A region is built
     /// alone at about 298 B a system, and the budget is systems rather than
     /// bytes because that is what a bucket's count answers.
+    ///
+    /// [`Start::Fresh`] clears whatever a previous build left.
+    /// [`Start::Resuming`] takes a directory a stopped read published and
+    /// carries on with it: every system back out of the resume point and
+    /// into the buckets, and the names table back off its own chunks. That
+    /// is a read and a write of 56 bytes a system — eleven gigabytes over
+    /// the galaxy — against re-reading the dump those systems came out of,
+    /// which is six hundred.
     ///
     /// `stop` is asked as the build goes; see the type's own docs for
     /// where.
@@ -288,23 +279,21 @@ impl<'a> Build<'a> {
         stop: &'a dyn Fn() -> bool,
     ) -> io::Result<Build<'a>> {
         let scratch = spill_dir(checkpoint);
-        let (buckets, names, kept) = match start {
+        let mut buckets = Buckets::create(&scratch)?;
+        let names = match start {
             Start::Fresh => {
-                (Buckets::create(&scratch)?, Chunks::writing(dir), 0)
+                let _ = std::fs::remove_file(mark_path(checkpoint));
+                Chunks::writing(dir)
             }
-            Start::Resuming(LeftOff(mark)) => {
-                let cut: Vec<(CellId, u64)> = mark
-                    .buckets
-                    .iter()
-                    .map(|&(level, morton, bytes)| {
-                        (CellId::from_morton(level, morton), bytes)
-                    })
-                    .collect();
-                (
-                    Buckets::resume(&scratch, &cut)?,
-                    Chunks::resuming(dir, mark.chunks, mark.tail)?,
-                    mark.systems,
-                )
+            Start::Resuming(_) => {
+                let published = Checkpoint::read(checkpoint)?;
+                for &system in published.base() {
+                    buckets.push(system)?;
+                }
+                for &system in published.deltas() {
+                    buckets.push(system)?;
+                }
+                Chunks::onto(dir)?
             }
         };
         Ok(Build {
@@ -314,44 +303,24 @@ impl<'a> Build<'a> {
             budget,
             buckets,
             names,
-            kept,
+            place: Vec::new(),
             stop,
         })
     }
 
-    /// Write down where the caller has read to, and cut the spills to
-    /// match.
+    /// Where the caller has read to, for the mark a publish writes.
     ///
-    /// `cursor` is the caller's own place in its own source and is carried
-    /// rather than read. Everything pushed before this call is on disk when
-    /// it returns, and a build that stops after it leaves a scratch the
-    /// next run takes up with [`left_off`] — so what a stop costs is
-    /// whatever has been read since the last mark, and a caller that marks
-    /// when it is told to stop loses nothing at all.
+    /// The bytes are the caller's own and are carried rather than read. The
+    /// last one given stands; a caller that never gives one publishes a
+    /// directory nothing can carry on from, which is what a read of
+    /// something with no place in it — a database's cursors — has.
     ///
-    /// Not free: every buffer is flushed and the part-filled names chunk is
-    /// written, which over a galaxy's worth of buckets is a few thousand
-    /// small writes and a megabyte. Marking per record would cost more than
-    /// the read. The caller decides how much of a read it is prepared to
-    /// lose to a kill.
-    pub fn mark(&mut self, cursor: &[u8]) -> io::Result<()> {
-        let buckets = self
-            .buckets
-            .lengths()?
-            .into_iter()
-            .map(|(id, bytes)| (id.level, id.morton(), bytes))
-            .collect();
-        let tail = self.names.stage()?;
-        let mark = Mark {
-            cursor: cursor.to_vec(),
-            buckets,
-            chunks: self.names.complete(),
-            tail,
-            systems: self.buckets.count(),
-        };
-        write_meta(&mark_path(&spill_dir(&self.checkpoint)), &mark)?;
-        self.kept = mark.systems;
-        Ok(())
+    /// Free, and nothing is written by it: the mark goes out with the
+    /// index, so what it says and what the directory holds cannot come
+    /// apart.
+    pub fn mark(&mut self, cursor: &[u8]) {
+        self.place.clear();
+        self.place.extend_from_slice(cursor);
     }
 
     /// One more system, with the name the names table is to carry.
@@ -376,11 +345,12 @@ impl<'a> Build<'a> {
         Ok(Taking::More)
     }
 
-    /// Form the regions from the buckets, raise the tree off them, and leave
-    /// the resume point behind it.
+    /// Form the regions from the buckets, raise the tree off them, and
+    /// leave the resume point and the mark behind it.
     ///
     /// `by` is what derived the resume point, and so what `cursor` means; a
-    /// source with no clock of its own has none to record.
+    /// source with no clock of its own has none to record. `ending` is what
+    /// a read that was stopped part way comes to — see [`Ending`].
     ///
     /// Two passes over the spills, because the crown must be settled before
     /// any region can be built: a region cannot know which of its systems a
@@ -390,20 +360,19 @@ impl<'a> Build<'a> {
     /// Held during: one region's build, which is the budget.
     ///
     /// Each spill is appended to the resume point's base as its region is
-    /// built and then deleted, so the base comes out region-ordered.
+    /// built and then deleted, so the base comes out region-ordered — and
+    /// that base is what a resumed build takes its systems back out of.
     ///
-    /// Nothing of the directory is replaced until the crown's payloads are
-    /// written, which is where [`Abandoned::intact`] stops holding.
-    ///
-    /// A stop before the buckets are formed into regions leaves them, and
-    /// the mark beside them, for the next run: see [`Build::mark`]. A stop
-    /// after it does not — `form` renames, concatenates and divides the
-    /// bucket files, so what is on disk from there on is regions and no
-    /// longer the cut a read could be taken up at.
+    /// Neither pass asks `stop`. A read cut short is either being published
+    /// or was abandoned before either of them ran, and a caller unwilling
+    /// to wait for the raise has the second Ctrl-C; stopping in the middle
+    /// of it would leave payloads with no index over them, which is the one
+    /// state this is careful never to publish.
     pub fn finish(
         self,
         by: By,
         cursor: Option<NaiveDateTime>,
+        ending: Ending,
     ) -> io::Result<Built> {
         let Build {
             dir,
@@ -412,30 +381,23 @@ impl<'a> Build<'a> {
             budget,
             buckets,
             names,
-            kept,
+            place,
             stop,
         } = self;
         let named = names.named();
         let taken = buckets.count();
         let scratch = spill_dir(&checkpoint);
-        let abandoned = |raised, regions, intact, kept| Abandoned {
-            systems: taken,
-            raised,
-            regions,
-            intact,
-            kept,
-        };
 
-        if stop() {
-            return stopped(&scratch, names, abandoned(0, 0, true, kept));
+        // Nothing to publish, or a caller whose directory already holds
+        // more than this read reached.
+        if stop() && (taken == 0 || ending == Ending::Abandon) {
+            return stopped(&scratch, names, Abandoned { systems: taken });
         }
         let formed =
             bucket::form(&scratch, buckets.finish()?, budget, &params)?;
         let regions = formed.cut.regions().len();
 
-        let Some(offered) = offers(&formed, &params, stop)? else {
-            return stopped(&scratch, names, abandoned(0, regions, true, 0));
-        };
+        let offered = offers(&formed, &params)?;
         let systems: u64 = offered.iter().map(Offer::count).sum();
         let allowed = budget.max(params.leaf_cap as u64);
         let over_budget =
@@ -458,15 +420,7 @@ impl<'a> Build<'a> {
         let mut base = Compaction::begin(&checkpoint)?;
         let mut points = crown.built().point_count();
 
-        for (raised, &region) in formed.cut.regions().iter().enumerate() {
-            if stop() {
-                base.abandon()?;
-                return stopped(
-                    &scratch,
-                    names,
-                    abandoned(raised, regions, false, 0),
-                );
-            }
+        for &region in formed.cut.regions() {
             let spilled = Spilled::open(&formed.spills[&region])?;
             let built = Snapshot::of_region(
                 region,
@@ -489,6 +443,15 @@ impl<'a> Build<'a> {
         let index = region::joined(&crown, indexes.iter().skip(1));
         let chunks = names.finish()?;
         index.write(&dir)?;
+        // Last, and only where the caller said where it had read to: the
+        // mark stands for a published directory, so it goes out behind the
+        // index file rather than in front of it.
+        if !place.is_empty() {
+            write_meta(
+                &mark_path(&checkpoint),
+                &Mark { cursor: place, systems: taken },
+            )?;
+        }
         Ok(Built::Index(ColdReport::of_index(
             systems as usize,
             points,
@@ -500,45 +463,32 @@ impl<'a> Build<'a> {
     }
 }
 
-/// What a stopped build leaves on disk, which is what its report says.
+/// A build that published nothing, tidied: the scratch spills and the
+/// staged names chunks go, there being no reader for either.
 ///
-/// A stop the next run can take up — [`Abandoned::kept`] systems, a mark
-/// standing for them — leaves the scratch spills and the staged names
-/// exactly where a resume looks for them. Nothing of the served directory
-/// is theirs: the chunks are in `.building` and the spills are beside the
-/// resume point, so a directory that was being read into still serves what
-/// it served.
-///
-/// A stop nothing can take up removes both, there being no reader for
-/// either.
+/// Nothing of the served directory is theirs — the chunks were staged in
+/// `.building` and the spills sit beside the resume point — so what stood
+/// in the directory still stands.
 fn stopped(
     scratch: &Path,
     names: Chunks,
     abandoned: Abandoned,
 ) -> io::Result<Built> {
-    if abandoned.kept > 0 {
-        return Ok(Built::Stopped(abandoned));
-    }
     names.abandon()?;
     let _ = std::fs::remove_dir_all(scratch);
     Ok(Built::Stopped(abandoned))
 }
 
-/// What each region offers the crown, read off its own spill, or [`None`]
-/// where the run was asked to stop part way through the pass.
+/// What each region offers the crown, read off its own spill.
 ///
 /// One region's systems in memory at a time: an offer is the counts a cell
 /// above the region would take from it, not the systems themselves.
 fn offers(
     formed: &Formed,
     params: &BuildParams,
-    stop: &dyn Fn() -> bool,
-) -> io::Result<Option<Vec<Offer>>> {
+) -> io::Result<Vec<Offer>> {
     let mut offered = Vec::with_capacity(formed.cut.regions().len());
     for &region in formed.cut.regions() {
-        if stop() {
-            return Ok(None);
-        }
         let spilled = Spilled::open(&formed.spills[&region])?;
         offered.push(Offer::of(
             region,
@@ -546,7 +496,7 @@ fn offers(
             params,
         ));
     }
-    Ok(Some(offered))
+    Ok(offered)
 }
 
 /// Where the systems of each region go while they are being read.
@@ -812,7 +762,7 @@ mod tests {
         for &system in systems {
             assert_eq!(build.push(system, entry(&system))?, Taking::More);
         }
-        match build.finish(By::Database, None)? {
+        match build.finish(By::Database, None, Ending::Abandon)? {
             Built::Index(report) => Ok(report),
             Built::Stopped(abandoned) => {
                 panic!("nothing asked it to stop: {}", abandoned)
@@ -1028,20 +978,13 @@ mod tests {
         }
         assert_eq!(pushed.get(), 66_000);
 
-        let stopped = build.finish(By::Database, None).expect("a build");
+        let stopped = build
+            .finish(By::Database, None, Ending::Abandon)
+            .expect("a build");
         let Built::Stopped(abandoned) = stopped else {
             panic!("it ran to its end: {:?}", stopped)
         };
-        assert_eq!(
-            abandoned,
-            Abandoned {
-                systems: 66_000,
-                raised: 0,
-                regions: 0,
-                intact: true,
-                kept: 0,
-            },
-        );
+        assert_eq!(abandoned, Abandoned { systems: 66_000 });
         assert_eq!(contents(&dir), before, "the directory was written to");
         assert_eq!(
             std::fs::read(&checkpoint).expect("a base"),
@@ -1070,92 +1013,15 @@ mod tests {
         assert!(dir.join(INDEX_FILE).exists(), "no index file was written");
     }
 
-    /// A build stopped once it has begun raising says the directory is no
-    /// longer as it found it, and takes the index file down with the
-    /// payloads it replaced.
+    /// A stopped read publishes what it read, and carrying on from it comes
+    /// to the directory a build that was never stopped comes to
     ///
-    /// The one step that cannot be undone. A cell's payload is written in
-    /// place, so the index file that stood over the payloads a previous
-    /// build wrote is no longer a tree over what is beneath it — and it is
-    /// the file every reader and every resume starts from, so it goes and
-    /// the next build writes both again. The scratch goes all the same.
-    #[test]
-    fn a_build_stopped_while_raising_takes_the_index_file_with_it() {
-        let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
-        let at = Scratch::new("raising");
-        let (dir, checkpoint) =
-            (at.join("served"), at.join("served.checkpoint"));
-
-        let published = galaxy(4_000);
-        built(&at, "served", params, 500, &published)
-            .expect("a published index");
-        let resume_point = std::fs::read(&checkpoint).expect("a base");
-        let table = NameTable::read(&dir).expect("the names table").len();
-
-        // Asked to stop the moment the index file comes down, which is the
-        // one observable the point of no return has.
-        let systems = galaxy(3_000);
-        let stop = || !dir.join(INDEX_FILE).exists();
-        let mut build =
-            Build::begin(&dir, &checkpoint, params, 500, Start::Fresh, &stop)
-                .expect("a build");
-        for &system in &systems {
-            assert_eq!(
-                build.push(system, entry(&system)).expect("a push"),
-                Taking::More,
-            );
-        }
-
-        let stopped = build.finish(By::Database, None).expect("a build");
-        let Built::Stopped(abandoned) = stopped else {
-            panic!("it ran to its end: {:?}", stopped)
-        };
-        assert!(!abandoned.intact, "{}", abandoned);
-        assert_eq!(abandoned.systems, systems.len() as u64);
-        assert_eq!(abandoned.raised, 0);
-        assert!(abandoned.regions > 1, "{}", abandoned);
-        assert!(
-            !dir.join(INDEX_FILE).exists(),
-            "an index file over payloads it does not stand for",
-        );
-        assert!(
-            !spill_dir(&checkpoint).exists(),
-            "the spills are still there",
-        );
-        assert!(
-            !checkpoint.with_extension("tmp").exists(),
-            "a base nothing will read is still there",
-        );
-        assert_eq!(
-            std::fs::read(&checkpoint).expect("a base"),
-            resume_point,
-            "the resume point was written over",
-        );
-        // The table is published with the index file and never before it,
-        // so the one that stood is still the one on disk.
-        assert_eq!(
-            NameTable::read(&dir).expect("the names table").len(),
-            table,
-        );
-
-        // And the next build writes both again.
-        built(&at, "served", params, 500, &systems).expect("a cold build");
-        assert!(dir.join(INDEX_FILE).exists());
-        assert_eq!(
-            NameTable::read(&dir).expect("the names table").len(),
-            systems.len(),
-        );
-    }
-
-    /// A stopped read is taken up where it left off, and comes to the
-    /// directory a build that was never stopped comes to
-    ///
-    /// The whole claim of [`Build::mark`], and the one worth a test: the
-    /// spills a stop leaves stand for exactly the systems the mark names,
-    /// so the second run reads on from there and neither loses a system nor
-    /// spills one twice. A system in two cells is not a tree, and a system
-    /// in none is a name the map cannot draw, so both failures are silent
-    /// in the directory and loud here.
+    /// Two claims in one, and both are silent failures in a directory. The
+    /// first is that [`Ending::Publish`] leaves an index a map can open
+    /// over exactly the systems that were read. The second is that
+    /// [`Start::Resuming`] takes every one of them back out of the resume
+    /// point — lose one and it is a name the map can find and never draw,
+    /// take one twice and it is a system in two cells, which is not a tree.
     ///
     /// The payloads and the names chunks are compared byte for byte; the
     /// index file by its cells' integers, `rank_lo`, `rank_hi`,
@@ -1166,8 +1032,8 @@ mod tests {
     fn a_resumed_build_is_the_build_that_was_never_stopped() {
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let at = Scratch::new("resumed");
-        // More than the 64Ki entries a names chunk holds, so the tail
-        // chunk the mark stages is a chunk the resume reads back.
+        // More than the 64Ki entries a names chunk holds, so the chunk the
+        // stop published part-filled is one the resume fills the rest of.
         let systems = lumpy(70_000);
 
         built(&at, "whole", params, 6_000, &systems).expect("a cold build");
@@ -1189,20 +1055,26 @@ mod tests {
                 // The record was refused, so the mark stands for what went
                 // in before it — which is what the caller counted.
                 Taking::Stopped => {
-                    build.mark(took.to_string().as_bytes()).expect("a mark");
+                    build.mark(took.to_string().as_bytes());
                     break;
                 }
             }
         }
-        let Built::Stopped(abandoned) =
-            build.finish(By::Database, None).expect("a stopped build")
+        let Built::Index(part) = build
+            .finish(By::Database, None, Ending::Publish)
+            .expect("a stopped build publishes")
         else {
-            panic!("it ran to its end")
+            panic!("a stopped read published nothing")
         };
-        assert_eq!(abandoned.kept, 40_000, "{abandoned}");
+        assert_eq!(part.systems, 40_000, "{part}");
+        assert!(part.is_consistent(), "{part}");
         assert!(
-            spill_dir(&checkpoint).exists(),
-            "the spills a resume reads were removed: {abandoned}",
+            dir.join(INDEX_FILE).exists(),
+            "a stopped read left no index to open",
+        );
+        assert_eq!(
+            NameTable::read(&dir).expect("the names table").len(),
+            40_000,
         );
 
         let left = left_off(&checkpoint).expect("a mark to take up");
@@ -1229,8 +1101,9 @@ mod tests {
                 Taking::More,
             );
         }
-        let Built::Index(report) =
-            build.finish(By::Database, None).expect("a build")
+        let Built::Index(report) = build
+            .finish(By::Database, None, Ending::Publish)
+            .expect("a build")
         else {
             panic!("the resumed build stopped")
         };

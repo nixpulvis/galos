@@ -90,7 +90,7 @@ use galos::{bar, Shard, Shutdown};
 use galos_db::index::Parts;
 use galos_db::Database;
 use galos_index::{
-    Build, BuildParams, Built, By, Rows, Start, region_budget,
+    Build, BuildParams, Built, By, Ending, Rows, Start, region_budget,
 };
 use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -792,26 +792,28 @@ fn cold(
     let budget = region_budget();
     let failed = |err| format!("the index could not be built: {err}");
 
-    // What a stopped build left, where it was reading this same file. The
-    // clock comes back with it: a build ages every system against one
-    // moment, and a resumed run taking its own would bin half the galaxy's
-    // Recency against another.
+    // What the directory already stands for, where it stands for part of
+    // this same file. The clock comes back with it: a build ages every
+    // system against one moment, and a run carrying on with its own would
+    // bin half the galaxy's Recency against another.
     let (taking_up, place) = match galos_index::left_off(checkpoint) {
-        Some(kept) => match spansh::Place::of(&kept, &source.path) {
+        Some(left) => match spansh::Place::of(&left, &source.path) {
             Some(place) => {
                 info!(
-                    systems = kept.systems(),
+                    systems = left.systems(),
                     at = place.at(),
                     dir = %dir.display(),
-                    "taking up the read a stopped build left",
+                    "carrying on with the read this directory was published \
+                     from",
                 );
                 source.now = place.now;
-                (Start::Resuming(kept), Some(place))
+                (Start::Resuming(left), Some(place))
             }
             None => (Start::Fresh, None),
         },
         None => (Start::Fresh, None),
     };
+    let carrying_on = place.is_some();
 
     let stop = || source.shutdown.asked();
     let mut build = Build::begin(
@@ -825,23 +827,32 @@ fn cold(
     .map_err(failed)?;
     // Beside the build's own scratch rather than in it: `Build::finish`
     // clears that when it publishes, and these have to stand until the
-    // tables have been written off them.
-    let mut rows = Rows::writing(
-        &rows_dir(checkpoint),
-        place.as_ref().map_or([0; 3], spansh::Place::rows),
-    )
+    // tables have been written off them. A run carrying on starts from the
+    // tables the directory publishes, those rows being the only copy of
+    // what the read before it derived.
+    let spill = rows_dir(checkpoint);
+    let mut rows = match carrying_on {
+        true => Rows::onto(&spill, dir),
+        false => Rows::writing(&spill),
+    }
     .map_err(failed)?;
     source.read(&mut build, &mut rows, place).map_err(failed)?;
-    let report = match build.finish(By::Events, None).map_err(failed)? {
+
+    // A read cut short publishes what it read: a dump is read in file
+    // order, so what has been read is a galaxy in itself, and a map can
+    // open it while the rest of the file is still to come. The mark the
+    // publish leaves is what the next run carries on from.
+    let report = match build
+        .finish(By::Events, None, Ending::Publish)
+        .map_err(failed)?
+    {
         Built::Index(report) => report,
         Built::Stopped(abandoned) => {
             info!(
                 %abandoned,
                 elapsed = ?start.elapsed(),
                 dir = %dir.display(),
-                "asked to stop before the index was built; nothing of the \
-                 index was published, and the body files the read wrote \
-                 stand",
+                "asked to stop before anything was read",
             );
             return Ok(true);
         }

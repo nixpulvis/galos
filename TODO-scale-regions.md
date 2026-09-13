@@ -107,8 +107,9 @@ route needs a 43-minute import first.
 body-file reshard of 559,582 files ignored the stop flag. It is 0.05 s. A
 SIGINT 0.9 s into a cold build exits in 0.023 s with code 0. A `finish`
 that takes the delta road is 3.4 ms where the whole-directory rewrite was
-26 s over 240,000 systems. A stop during the read keeps its place: the
-spills stand and the next run takes them up — item 2b.
+26 s over 240,000 systems. A stop during the read publishes what it has
+read and records where it got to, so the map can open it and the next run
+carries on — item 2b.
 
 **One file a system, which is what the import costs.** 91 % of a dump
 import's wall clock was body files: three `open`s and a `rename` a system,
@@ -281,45 +282,58 @@ served-format migration, and the evidence for it should come from the
 galaxy rather than from a seven-day slice. A test should assert the
 ≤0.002 ly bound on the truncated cases rather than leaving it implicit.
 
-### 2b. A stopped import is taken up rather than thrown away
+### 2b. A stopped import publishes what it read, and is carried on
 
-Found by running it. A 610 GB read is not something anybody gets through
-without stopping once, and a stop used to remove the spills, the staged
-names and the mark: 26 minutes and 7,585,860 systems, gone, with 4.2 M
-body files left behind in a directory the run reported as "as it was
-found".
+Found by running it, twice. A 610 GB read is not something anybody gets
+through without stopping once, and a stop used to remove the spills, the
+staged names and everything else: 26 minutes and 7,585,860 systems, gone,
+with 4.2 M body files left behind in a directory the run reported as "as it
+was found". Keeping the spills fixed the loss and not the point — the
+directory still held no index, and a galaxy nobody can open is a galaxy
+nobody can look at.
 
-`Build::mark(cursor)` writes down where the caller has read to and cuts the
-spills to match: every bucket's buffer flushed, the part-filled names chunk
-staged, and the byte count of each file recorded beside the caller's own
-cursor, which this crate carries and does not read. `left_off(checkpoint)`
-answers what a stopped build left, and `Start::Resuming` takes it up —
-every spill cut back to its figure, since the buffers flush on their own
-and a file runs on past its mark between one and the next.
+So a read cut short **publishes what it read**. A dump is read in file
+order, so what has been read is a galaxy in itself: `Ending::Publish` forms
+the regions over it, raises the tree, and writes the payloads, the names
+table, the index file, the resume point and the mark. The map opens it. The
+next run carries on.
 
-`bin/sync/spansh.rs` marks every `MARKED` = 1,000,000 systems, and again at
-the exact line a stop lands on, so a Ctrl-C costs nothing and a kill costs
-the systems since the last mark. What it writes into the mark is a
-`Place`: the file, its length, the byte and line it had read to, the row
-files' lengths, and the clock the run dated its Recency by — because a
-build ages every system against one moment and a resumed run taking its
-own would bin half the galaxy against another. A mark taken against a
-different dump, or a dump that has changed length, is refused and the read
-starts over.
+Carrying on is the resume point read backwards. `Start::Resuming` takes
+every system back out of the base the last publish wrote and pushes it into
+the buckets — 56 B a system, eleven gigabytes over the galaxy, against
+re-reading the 610 GB those systems came from — and the names table off its
+own chunks, `Chunks::onto` filling the part-filled last one the rest of the
+way rather than copying the ones behind it. The three tables come back the
+same way, `Rows::onto` seeding the rows from what the directory publishes,
+because they are written whole and a second publish holding only the second
+read's rows would take the politics off every system the first one read.
 
-Measured over 50,000 systems of the seven-day slice, stopped at 18,504 and
-taken up: all **27,045 files byte-identical** to a build that was never
-stopped — every body file, every cell payload, the names chunk and all
-three tables — and `index.bin` identical in every integer column, the
-floats beside them moving in the last bit with the order a cell map
-iterates. `cold::tests::a_resumed_build_is_the_build_that_was_never_stopped`
-is the same claim over a lumpy galaxy at a 6,000-system budget.
+The mark is `<checkpoint>.mark`, written by the publish and after the index
+file, so what it says and what the directory holds cannot come apart.
+`Build::mark(cursor)` only hands over the caller's bytes; the dump's are a
+`Place` — the file, its length, the byte and line reached, and the clock
+the run dated its Recency by, because a build ages every system against one
+moment and a run carrying on with its own would bin half the galaxy against
+another. A mark taken against a different dump, or one that has changed
+length, is refused and the read starts over saying so.
 
-A stop *after* the buckets are formed into regions is not resumable and
-says so: `bucket::form` renames, concatenates and divides the bucket files,
-so what is on disk from there on is regions and no longer a cut a read
-could be taken up at. The read is what takes the hours, so that is where
-the resume is.
+Measured over 50,000 systems of the seven-day slice, stopped twice — at
+11,675 and at 37,757 — and carried on to the end: all **27,045 files
+byte-identical** to a build that was never stopped, every body file, every
+cell payload, the names chunk and all three tables, and `index.bin`
+identical in every integer column. Each stop left an index `galos-index
+info` reads and the map opens.
+`cold::tests::a_resumed_build_is_the_build_that_was_never_stopped` is the
+same claim over a lumpy galaxy at a 6,000-system budget.
+
+Neither of the two passes a publish makes asks the stop flag any more. A
+read cut short is being published, and a run unwilling to wait for the
+raise has the second Ctrl-C, which leaves the directory where it stands;
+stopping in the middle of the raise would leave payloads with no index over
+them, which is the one state the build is careful never to publish. The
+database's derivation ends `Ending::Abandon` instead: its directory already
+stands for every row Postgres has, and a read cut short must not replace it
+with the prefix it reached.
 
 ### 3. Flags
 

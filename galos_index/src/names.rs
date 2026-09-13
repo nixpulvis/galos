@@ -226,6 +226,9 @@ pub struct Chunks {
     /// Where the chunks are written until they are put in place.
     building: std::path::PathBuf,
     filling: Vec<NameEntry>,
+    /// The first chunk this build is to write, which is not zero for one
+    /// carrying on from a published table. See [`onto`](Self::onto).
+    first: usize,
     written: usize,
     named: usize,
 }
@@ -237,58 +240,41 @@ impl Chunks {
             dir: dir.to_owned(),
             building: dir.join(BUILDING),
             filling: Vec::with_capacity(CHUNK),
+            first: 0,
             written: 0,
             named: 0,
         }
     }
 
-    /// Take up the chunks a stopped build staged, at the cut it recorded.
+    /// Carry on writing the table `dir` already publishes.
     ///
-    /// `written` complete chunks stand as they are, and the part-filled
-    /// tail beside them — which [`stage`](Self::stage) put there — is read
-    /// back into the buffer it was written from, cut to the `tail` entries
-    /// the mark stands for. Anything past that was named after the mark and
-    /// is named again by the resumed read.
+    /// What a build resuming a read a stop published takes up: the chunks
+    /// that stand are the table's, and this writes the ones after them. The
+    /// last of them is part-filled — a chunk is only full where the read
+    /// went past it — so it is read back into the buffer it came from and
+    /// filled the rest of the way, which is what keeps every chunk but the
+    /// last full and the table one a watch can go on appending to.
     ///
-    /// A name is pushed for every system pushed, so the table and the
-    /// spills are cut at the same place or the directory's two halves stand
-    /// for different galaxies.
-    pub fn resuming(
-        dir: &Path,
-        written: usize,
-        tail: usize,
-    ) -> io::Result<Chunks> {
-        let building = dir.join(BUILDING);
-        let mut filling = match tail {
-            0 => Vec::new(),
-            _ => read_meta::<Vec<NameEntry>>(&names_chunk_path(
-                &building, written,
-            ))?,
-        };
-        filling.truncate(tail);
-        filling.reserve(CHUNK - filling.len().min(CHUNK));
+    /// Only the chunks this writes are renamed by [`finish`](Self::finish);
+    /// the ones behind them are already in place and are not copied.
+    pub fn onto(dir: &Path) -> io::Result<Chunks> {
+        let published = read_chunks(dir)?;
+        let complete = published.len().saturating_sub(1);
+        let named: usize = published.iter().map(Vec::len).sum();
+        let mut filling = published.into_iter().next_back().unwrap_or_default();
+        filling.reserve(CHUNK.saturating_sub(filling.len()));
         Ok(Chunks {
             dir: dir.to_owned(),
-            building,
-            named: written * CHUNK + filling.len(),
+            building: dir.join(BUILDING),
             filling,
-            written,
+            first: complete,
+            written: complete,
+            named,
         })
     }
 
-    /// Put the part-filled tail on disk without closing it, and say how
-    /// many entries it holds.
-    ///
-    /// What a build does when it marks where its caller has read to: the
-    /// chunk is written where the next [`flush`](Self::flush) would write
-    /// it anyway, so a resumed build reads it back and carries on filling
-    /// it, and a build that is never resumed overwrites it.
-    pub fn stage(&mut self) -> io::Result<usize> {
-        write_meta(&names_chunk_path(&self.building, self.written), &self.filling)?;
-        Ok(self.filling.len())
-    }
-
-    /// How many chunks are complete behind the one being filled.
+    /// How many chunks the table comes to, this build's and whatever it is
+    /// carrying on from.
     pub fn complete(&self) -> usize {
         self.written
     }
@@ -303,13 +289,16 @@ impl Chunks {
         Ok(())
     }
 
-    /// Write the part-filled tail, put every chunk in place and answer how
-    /// many chunks the table came to. A build that named nothing writes no
-    /// chunk at all, which reads back as the empty table it is.
+    /// Write the part-filled tail, put this build's chunks in place and
+    /// answer how many chunks the table comes to. A build that named
+    /// nothing writes no chunk at all, which reads back as the empty table
+    /// it is.
     ///
     /// The one step of a build's names table that cannot be undone, and a
     /// rename apiece: a chunk is [`CHUNK`] systems, so a galaxy is a few
-    /// thousand renames within one directory.
+    /// thousand renames within one directory. A build carrying on from a
+    /// published table renames only what it wrote — see [`onto`](Self::onto)
+    /// — so the chunks behind it are never copied.
     pub fn finish(mut self) -> io::Result<usize> {
         if !self.filling.is_empty() {
             self.flush()?;
@@ -317,7 +306,7 @@ impl Chunks {
         if self.written > 0 {
             std::fs::create_dir_all(names_dir(&self.dir))?;
         }
-        for chunk in 0..self.written {
+        for chunk in self.first..self.written {
             std::fs::rename(
                 names_chunk_path(&self.building, chunk),
                 names_chunk_path(&self.dir, chunk),

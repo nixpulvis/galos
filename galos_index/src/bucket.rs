@@ -96,66 +96,6 @@ impl Buckets {
         Ok(Buckets { dir: dir.to_owned(), held: HashMap::new() })
     }
 
-    /// Take up the spills a stopped build left, at the cut it recorded.
-    ///
-    /// `cut` is what [`lengths`](Self::lengths) answered when the build
-    /// last marked where its caller had read to: a byte count a bucket, and
-    /// the whole of what the mark stands for. A spill longer than its
-    /// figure holds records pushed after the mark — the buffers flush on
-    /// their own every [`BUFFERED`] records — and a spill the mark does not
-    /// name was opened after it, so both are cut back to what the caller
-    /// can say it has read. Without that the resumed read would spill a
-    /// second copy of every system between the mark and the stop, and a
-    /// system in two cells is not a tree.
-    ///
-    /// A count is the file's length over [`RECORD`](crate::spill::RECORD),
-    /// so nothing but the mark's own figures has to be believed.
-    pub fn resume(
-        dir: &Path,
-        cut: &[(CellId, u64)],
-    ) -> io::Result<Buckets> {
-        std::fs::create_dir_all(dir)?;
-        let kept: HashSet<PathBuf> =
-            cut.iter().map(|&(id, _)| path_of(dir, id)).collect();
-        for entry in std::fs::read_dir(dir)?.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|it| it == "bin")
-                && !kept.contains(&path)
-            {
-                std::fs::remove_file(path)?;
-            }
-        }
-
-        let mut held = HashMap::with_capacity(cut.len());
-        for &(id, bytes) in cut {
-            let path = path_of(dir, id);
-            let file = OpenOptions::new().write(true).open(&path)?;
-            if file.metadata()?.len() != bytes {
-                file.set_len(bytes)?;
-            }
-            held.insert(
-                id,
-                Bucket {
-                    path,
-                    buffer: Vec::new(),
-                    count: bytes / crate::spill::RECORD as u64,
-                },
-            );
-        }
-        Ok(Buckets { dir: dir.to_owned(), held })
-    }
-
-    /// Write out every buffer, and say how many bytes of each bucket's
-    /// spill that leaves. What a mark is made of; see [`resume`](Self::resume).
-    pub fn lengths(&mut self) -> io::Result<Vec<(CellId, u64)>> {
-        let mut cut = Vec::with_capacity(self.held.len());
-        for (&id, bucket) in self.held.iter_mut() {
-            bucket.flush()?;
-            cut.push((id, bucket.count * crate::spill::RECORD as u64));
-        }
-        Ok(cut)
-    }
-
     /// One more system, into the bucket its position falls in.
     pub fn push(&mut self, system: System) -> io::Result<()> {
         let id = CellId::of_point(system.position, BUCKET_LEVEL);

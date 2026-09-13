@@ -56,8 +56,8 @@ pub use bodies::{Bodies, Kept, Published};
 pub use cache::{Point, Resident, ResidentCell};
 pub use checkpoint::{By, Checkpoint, Compaction, Pending};
 pub use cold::{
-    Abandoned, Build, Built, ColdReport, LeftOff, Start, Taking, left_off,
-    region_budget, scratch,
+    Abandoned, Build, Built, ColdReport, Ending, LeftOff, Start, Taking,
+    left_off, region_budget,
 };
 pub use galaxy::Galaxy;
 pub use geometry::{Aabb, CellId};
