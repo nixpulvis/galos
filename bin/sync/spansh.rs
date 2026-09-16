@@ -344,21 +344,20 @@ impl Reading {
             // One line nothing can parse is one system missed rather than a
             // run ended: a file this size is not going to be read again for
             // it.
-            let system: spansh::System =
-                match serde_json::from_str(text) {
-                    Ok(system) => system,
-                    Err(err) => {
-                        self.skipped += 1;
-                        self.bar.missed();
-                        warn!(
-                            line = at,
-                            error = %err,
-                            skipped = self.skipped,
-                            "unparsed system",
-                        );
-                        continue;
-                    }
-                };
+            let system: spansh::System = match serde_json::from_str(text) {
+                Ok(system) => system,
+                Err(err) => {
+                    self.skipped += 1;
+                    self.bar.missed();
+                    warn!(
+                        line = at,
+                        error = %err,
+                        skipped = self.skipped,
+                        "unparsed system",
+                    );
+                    continue;
+                }
+            };
 
             // The scans first, so the name and the place are moved into the
             // report rather than copied out of a system still borrowed.

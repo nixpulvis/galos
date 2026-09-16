@@ -639,7 +639,9 @@
 
 #![cfg(test)]
 
-use super::graph::{Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh};
+use super::graph::{
+    Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh,
+};
 use crate::Boosts;
 use bevy::math::DVec3;
 use galos_index::{FsSource, Source as _};

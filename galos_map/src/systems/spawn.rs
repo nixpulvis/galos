@@ -1370,9 +1370,14 @@ fn allegiance_hue(system: &System) -> Hue {
 fn government_hue(system: &System) -> Hue {
     match system.government {
         Some(Government::Anarchy) => Hue::Yellow,
-        // Neither is a way of governing anybody. A carrier answers to whoever
-        // owns it, and a megaconstruction site to whoever is building it.
-        Some(Government::Carrier | Government::Megaconstruction) => Hue::Green,
+        // None of the three is a way of governing anybody. A carrier
+        // answers to whoever owns it, a megaconstruction site to whoever
+        // is building it, and a privately owned settlement to its owner.
+        Some(
+            Government::Carrier
+            | Government::Megaconstruction
+            | Government::PrivateOwnership,
+        ) => Hue::Green,
         Some(Government::Communism) => Hue::Red,
         Some(Government::Confederacy) => Hue::Red,
         Some(Government::Cooperative) => Hue::Orange,

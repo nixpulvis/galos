@@ -261,14 +261,32 @@ pub(crate) mod schema {
         strings(&arm["enum"])
     }
 
-    /// A schema array of strings, as strings.
+    /// Every value a system-level field may take, by its name in the
+    /// schema: `allegiance`, `government`, `primaryEconomy`, `security`.
+    ///
+    /// `null` is a value of three of them and is dropped here, being the
+    /// absence the reader already answers with [`None`].
+    pub fn system_enum(field: &str) -> Vec<String> {
+        strings(&galaxy()["properties"][field]["enum"])
+    }
+
+    /// Every value a body-level field may take, by its name in the
+    /// schema: `atmosphereType`, `volcanismType`, `type`, and the rest.
+    pub fn body_enum(field: &str) -> Vec<String> {
+        let body = galaxy()["properties"]["bodies"]["items"].clone();
+        strings(&body["properties"][field]["enum"])
+    }
+
+    /// A schema array of strings, as strings, `null` left out.
+    ///
+    /// A node that is a `$ref` is [`Value::Null`] here, the file not
+    /// carrying what it points at, and that panics rather than reading
+    /// as a list with nothing in it — a test over an empty list is a
+    /// test that asks nothing.
     fn strings(value: &Value) -> Vec<String> {
-        value
-            .as_array()
-            .expect("a list")
-            .iter()
-            .map(|it| it.as_str().expect("a string").to_owned())
-            .collect()
+        let list = value.as_array().expect("an inline list, not a $ref");
+        assert!(!list.is_empty(), "an empty list asks nothing");
+        list.iter().filter_map(|it| it.as_str()).map(str::to_owned).collect()
     }
 }
 
@@ -329,5 +347,65 @@ mod tests {
         assert!(brief.bodies.is_empty() && full.bodies.is_empty());
         assert_eq!(brief.class(), None);
         assert_eq!(full.class(), None);
+    }
+
+    /// Every value the schema's closed lists hold is a value this can
+    /// read, and a value refused is a system lost whole.
+    ///
+    /// A system whose government the reader will not parse is a line
+    /// that fails, so its bodies, its place and its name go with it —
+    /// which is how the anarchy security reading cost 13% of a
+    /// seven-day file before anybody noticed. This is that check made
+    /// ahead of the loss, over every field of the system the schema
+    /// closes.
+    ///
+    /// It found four the day it was written: `Frontline Solutions`,
+    /// `Private Ownership`, `Private Enterprise` and `Repair`, none of
+    /// them in the seven-day file and all of them published as things a
+    /// system may be.
+    #[test]
+    fn every_value_a_system_may_have_reads() {
+        for field in ["allegiance", "government", "primaryEconomy", "security"]
+        {
+            for value in schema::system_enum(field) {
+                let line = format!(
+                    r#"{{"id64":1,"name":"N","coords":{{"x":0,"y":0,"z":0}},
+                       "date":"2020-01-01T00:00:00Z","{field}":"{value}"}}"#,
+                );
+                let read: Result<System, _> = serde_json::from_str(&line);
+                assert!(read.is_ok(), "{field} = {value:?}: {read:?}");
+            }
+        }
+    }
+
+    /// And every value a *body* may have, over the two the dump states
+    /// in prose and this translates rather than stores.
+    ///
+    /// A body refused is not a system lost — [`System::scans`] leaves
+    /// out what it cannot read — but it is a planet's whole atmosphere
+    /// or its volcanism gone, on every body of that kind in the galaxy.
+    #[test]
+    fn every_prose_a_body_may_carry_is_translated() {
+        for value in schema::body_enum("atmosphereType") {
+            let read = system::atmosphere_of(Some(&value));
+            assert!(
+                !format!("{read:?}").contains("Unknown"),
+                "atmosphere {value:?} read as {read:?}",
+            );
+        }
+        for value in schema::body_enum("volcanismType") {
+            let read = system::volcanism_of(&value);
+            assert!(
+                value == "No volcanism" || read.is_some(),
+                "volcanism {value:?} read as nothing",
+            );
+        }
+        // The three kinds a body may be, which decide what a scan is.
+        assert_eq!(schema::body_enum("type").len(), 3);
+        for value in schema::body_enum("type") {
+            let read: Kind =
+                serde_json::from_str(&format!("\"{value}\"")).expect(&value);
+            assert!(!matches!(read, Kind::Unknown(_)), "{value} is unknown");
+        }
     }
 }
