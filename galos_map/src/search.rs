@@ -128,6 +128,25 @@ pub(crate) enum Search {
     /// started again. And a button whose meaning depends on invisible state
     /// cannot be read before it is pressed.
     Stop,
+    /// Ask a route that has been asked for before again, from nothing
+    ///
+    /// The row's own ask rather than the form's: the two ends it was plotted
+    /// between, the ship it was plotted for, how hard the search was told to
+    /// work and how its plan was to be made. The row carries all of those and
+    /// the form may have moved off any of them since, so re-asking through
+    /// the form would be a different question — which is why this carries the
+    /// filter rather than the stops.
+    ///
+    /// **From nothing.** Whatever that leg had found is dropped and its
+    /// search is told to give up before the new one starts: a route restarted
+    /// is not a route resumed. What it is for is a leg that came back with no
+    /// route, or one the reader stopped, or one plotted before the galaxy
+    /// under it was republished.
+    ///
+    /// One leg, and only that leg. A trip's other legs are their own
+    /// questions and go on as they were, where [`Self::Route`] replaces the
+    /// lot.
+    Replot(crate::systems::filter::Filter),
 }
 
 /// The row for a named system a route may run to, or why it may not
@@ -316,6 +335,11 @@ fn searched(
             // none. What it does to the searches is
             // [`crate::systems::route::fetch::stop_routes`]'s.
             Search::Stop => {}
+            // Nor a route asked again, whose ends were looked up when it was
+            // first asked and are held as addresses by the row asking. A name
+            // withdrawn since is answered by the plot coming back with
+            // nothing, as it would be for any other leg.
+            Search::Replot(_) => {}
         };
     }
 

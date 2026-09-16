@@ -5,7 +5,7 @@ use crate::search::Search;
 use crate::systems::Spyglass;
 use crate::systems::System;
 use crate::systems::bodies::spawn::{HeldSystem, Strength};
-use crate::systems::filter::{Filter, Filters};
+use crate::systems::filter::{Filter, Filters, Plotted};
 use crate::systems::route::graph::{Drive, Routing, Tuning};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
+    app.add_message::<UnflownLeg>();
     app.init_resource::<SelectedFilter>();
     app.init_resource::<graph::Routing>();
     app.init_resource::<graph::Drive>();
@@ -621,40 +622,92 @@ fn frame_trip(
     }
 }
 
-/// Take up a leg that has just been plotted
+/// A leg that came back with no route
 ///
-/// One row and one line per leg, so a trip through five systems leaves four
-/// of each: each leg is a route the user can close, turn off, or pick out on
-/// its own. Where the camera goes is the trip's business rather than any one
-/// leg's; see [`frame_trip`].
+/// Written where the fetch is collected, as [`PlottedRoute`] is: a leg
+/// answering with fewer than two systems is the router saying it could not
+/// get from one end to the other at the range asked, and the row standing for
+/// that leg has to say so rather than go on saying it is being searched.
+///
+/// By the key it was asked under, that being what the collector has in hand —
+/// the two ends as the user typed them. Which row asked is a question about
+/// addresses, so [`plotted`] resolves the pair against the names table, which
+/// is the table the row's own ends were resolved through.
+#[derive(Message, Debug)]
+pub(crate) struct UnflownLeg(pub(crate) crate::systems::fetch::FetchIndex);
+
+impl UnflownLeg {
+    /// The ask this leg was, as the row standing for it holds it
+    ///
+    /// [`None`] where either end is no longer a name the table knows, there
+    /// being no row it could have gone up as either.
+    fn ask(&self, names: &Names) -> Option<Filter> {
+        let crate::systems::fetch::FetchIndex::Route(
+            start,
+            end,
+            range,
+            trip,
+            drive,
+            how,
+            tune,
+        ) = &self.0
+        else {
+            return None;
+        };
+        let ends = (names.address(start)?, names.address(end)?);
+        Some(Filter::Route {
+            label: format!(
+                "{}{}{}",
+                said(names, ends.0),
+                crate::ui::ARROW,
+                said(names, ends.1),
+            ),
+            systems: vec![ends.0, ends.1],
+            range: range.clone(),
+            trip: trip.clone(),
+            drive: *drive,
+            how: *how,
+            tune: *tune,
+        })
+    }
+}
+
+/// What the names table spells the system at `address`
+///
+/// The map's own spelling rather than whatever the user typed, which is how
+/// [`crate::systems::spawn::build_system`] names a stop and so how a landed
+/// route's label is built: a leg's row is put up before its answer and has to
+/// read the same after, being the one row.
+pub(crate) fn said(names: &Names, address: i64) -> String {
+    names
+        .get(address)
+        .map(|entry| entry.name.to_string())
+        .unwrap_or_else(|| address.to_string())
+}
+
+/// Hand a leg's row what became of it
+///
+/// **The row is already there.** It went up when the leg was asked for
+/// ([`fetch::fetch_route`]), carrying the two ends and no route between them,
+/// so a leg landing hands that row its answer and a leg that could not be
+/// flown tells it to stop saying it is searching. One row and one line per
+/// leg, so a trip through five systems leaves four of each: each leg is a
+/// route the user can close, turn off, or pick out on its own. Where the
+/// camera goes is the trip's business rather than any one leg's; see
+/// [`frame_trip`].
 fn plotted(
     mut plotted: MessageReader<PlottedRoute>,
+    mut unflown: MessageReader<UnflownLeg>,
+    names: Res<Names>,
     mut filters: ResMut<Filters>,
-    mut selected: ResMut<SelectedFilter>,
 ) {
     for route in plotted.read() {
-        // A route just asked for is the one being looked at, so whichever was
-        // picked out before it stands down. Cleared rather than set to this
-        // one, the last route held being what [`active`] falls back to.
-        if !selected.0.is_empty() {
-            selected.0.clear();
+        filters.landed(route.filter(), route.took);
+    }
+    for leg in unflown.read() {
+        if let Some(ask) = leg.ask(&names) {
+            filters.gave_up(&ask, Plotted::Unreachable);
         }
-
-        // Beside whatever is already plotted rather than in place of it. Each
-        // route keeps its own line and its own row, so plotting a second is
-        // asking to see both. The same route asked for twice is deduped,
-        // there being nothing to see twice.
-        //
-        // In the trip's order rather than where it lands. The legs are walked
-        // at once and land as each finishes, which is an order nobody chose:
-        // a trip picked out SOL, LAVE, DISO reads as its three rows, and they
-        // have to be those three in that order or the trip is a set again.
-        let at = placed_at(&route.filter(), &filters);
-        filters.insert(at, route.filter());
-        // After the row is in, the filter being what dedupes it: a route
-        // plotted again is the row already there, told how long the second
-        // search took.
-        filters.took(&route.filter(), route.took);
     }
 }
 
@@ -677,7 +730,7 @@ fn plotted(
 /// Read off the route itself. A leg carries the trip it belongs to, and a
 /// trip is named for its stops, so the stops and which leg this is are both
 /// in hand without anything else being asked.
-fn placed_at(leg: &Filter, filters: &Filters) -> usize {
+pub(crate) fn placed_at(leg: &Filter, filters: &Filters) -> usize {
     let last = filters.iter().count();
     let Some((trip, at)) = leg_of(leg) else { return last };
 
@@ -1585,6 +1638,29 @@ mod tests {
         .radius
     }
 
+    /// A leg asked for and then answered, as a plot does it
+    ///
+    /// The row goes up first, carrying the two ends it was asked between —
+    /// which is [`fetch::fetch_route`]'s, off the names table — and the
+    /// answer lands in that row afterwards. So what a test about the order of
+    /// the rows exercises is [`placed_at`], wherever the ask reaches it.
+    fn asked_and_landed(app: &mut App, route: PlottedRoute) {
+        let ask = Filter::Route {
+            label: route.label.clone(),
+            systems: route.filter().stops(),
+            range: route.range.clone(),
+            trip: route.trip.clone(),
+            drive: route.drive,
+            how: route.how,
+            tune: route.tune,
+        };
+        let mut filters = app.world_mut().resource_mut::<Filters>();
+        let at = placed_at(&ask, &filters);
+        filters.searching(at, ask);
+        app.world_mut().write_message(route);
+        app.update();
+    }
+
     /// A trip's legs read in the trip's order, whatever order they land in
     ///
     /// The reported trouble. The legs are walked at once and each row is
@@ -1598,6 +1674,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<PlottedRoute>();
+        app.add_message::<UnflownLeg>();
+        app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
         app.add_systems(Update, plotted);
@@ -1606,22 +1684,24 @@ mod tests {
         // Backwards, which is as good an order as any other: what decides it
         // is which walk finished first.
         for leg in [2, 0, 1] {
-            app.world_mut().write_message(PlottedRoute {
-                label: format!(
-                    "{}{}{}",
-                    stops[leg],
-                    crate::ui::ARROW,
-                    stops[leg + 1]
-                ),
-                systems: vec![leg as i64],
-                range: "10".to_owned(),
-                trip: Some(trip.clone()),
-                drive: Drive::Unaided,
-                how: Routing::default(),
-                took: std::time::Duration::ZERO,
-                tune: Tuning::default(),
-            });
-            app.update();
+            asked_and_landed(
+                &mut app,
+                PlottedRoute {
+                    label: format!(
+                        "{}{}{}",
+                        stops[leg],
+                        crate::ui::ARROW,
+                        stops[leg + 1]
+                    ),
+                    systems: vec![leg as i64],
+                    range: "10".to_owned(),
+                    trip: Some(trip.clone()),
+                    drive: Drive::Unaided,
+                    how: Routing::default(),
+                    took: std::time::Duration::ZERO,
+                    tune: Tuning::default(),
+                },
+            );
         }
 
         let rows: Vec<String> = app
@@ -1646,6 +1726,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<PlottedRoute>();
+        app.add_message::<UnflownLeg>();
+        app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
         app.add_systems(Update, plotted);
@@ -1655,22 +1737,24 @@ mod tests {
             // Backwards again: what decides the order they land in is which
             // walk finished first, and neither plot is asked in order.
             for leg in [1, 0] {
-                app.world_mut().write_message(PlottedRoute {
-                    label: format!(
-                        "{}{}{}",
-                        stops[leg],
-                        crate::ui::ARROW,
-                        stops[leg + 1]
-                    ),
-                    systems: vec![leg as i64],
-                    range: range.to_owned(),
-                    trip: Some(trip.clone()),
-                    drive: Drive::Unaided,
-                    how: Routing::default(),
-                    took: std::time::Duration::ZERO,
-                    tune: Tuning::default(),
-                });
-                app.update();
+                asked_and_landed(
+                    &mut app,
+                    PlottedRoute {
+                        label: format!(
+                            "{}{}{}",
+                            stops[leg],
+                            crate::ui::ARROW,
+                            stops[leg + 1]
+                        ),
+                        systems: vec![leg as i64],
+                        range: range.to_owned(),
+                        trip: Some(trip.clone()),
+                        drive: Drive::Unaided,
+                        how: Routing::default(),
+                        took: std::time::Duration::ZERO,
+                        tune: Tuning::default(),
+                    },
+                );
             }
         }
 
@@ -1700,6 +1784,8 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_message::<PlottedRoute>();
+        app.add_message::<UnflownLeg>();
+        app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
         app.add_systems(Update, plotted);
@@ -1710,17 +1796,19 @@ mod tests {
             ("SOL -> LAVE", Some("SOL -> LAVE -> DISO".to_owned())),
             ("WOLF 359 -> SIRIUS", None),
         ] {
-            app.world_mut().write_message(PlottedRoute {
-                label: label.to_owned(),
-                systems: vec![1],
-                range: "10".to_owned(),
-                trip,
-                drive: Drive::Unaided,
-                how: Routing::default(),
-                took: std::time::Duration::ZERO,
-                tune: Tuning::default(),
-            });
-            app.update();
+            asked_and_landed(
+                &mut app,
+                PlottedRoute {
+                    label: label.to_owned(),
+                    systems: vec![1],
+                    range: "10".to_owned(),
+                    trip,
+                    drive: Drive::Unaided,
+                    how: Routing::default(),
+                    took: std::time::Duration::ZERO,
+                    tune: Tuning::default(),
+                },
+            );
         }
 
         let rows: Vec<String> = app
@@ -1986,41 +2074,6 @@ mod tests {
         filters.add(Filter::Faction { id: 7, name: "Some Lot".to_owned() });
 
         assert_eq!(active(&filters, &[]), vec![&asking(&[1, 2])]);
-    }
-
-    /// Plotting takes back whatever was picked out
-    ///
-    /// A route just asked for is the one the user is looking at, so the one
-    /// they had picked out stands down and the fall back does the rest.
-    #[test]
-    fn plotting_takes_back_what_was_picked_out() {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.add_message::<PlottedRoute>();
-        app.add_message::<MoveCamera>();
-        app.init_resource::<Filters>();
-        app.insert_resource(Spyglass {
-            radius: Spyglass::OPENING,
-            clear: true,
-            lock_camera: false,
-            follow_camera: false,
-        });
-        app.insert_resource(SelectedFilter(vec![asking(&[1, 2])]));
-        app.add_systems(Update, plotted);
-
-        app.world_mut().write_message(PlottedRoute {
-            label: "C -> D".to_owned(),
-            systems: vec![8, 9],
-            range: "10".to_owned(),
-            trip: None,
-            drive: Drive::Unaided,
-            how: Routing::default(),
-            took: std::time::Duration::ZERO,
-            tune: Tuning::default(),
-        });
-        app.update();
-
-        assert!(app.world().resource::<SelectedFilter>().0.is_empty());
     }
 
     /// The active route is drawn at full strength and the rest behind it

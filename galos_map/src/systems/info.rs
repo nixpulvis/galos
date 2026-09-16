@@ -15,7 +15,7 @@ use crate::camera::{MoveCamera, OrbitCamera};
 use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::bodies::mark_if_moved;
-use crate::systems::filter::{Filter, Filters};
+use crate::systems::filter::{Filter, Filters, Plotted};
 use crate::systems::route::graph::Crossing;
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
@@ -638,7 +638,7 @@ fn fetch(populated: &Populated, names: &Names, filter: &Filter) -> Vec<System> {
 /// button was still down, the panel answered first and was corrected on the
 /// release, and the selection flickered through the wrong route on the way.
 fn asked_of_panel(clicked: bool) -> Option<crate::ui::RowGesture> {
-    crate::ui::asked_of_row(false, false, false, false, clicked)
+    crate::ui::asked_of_row(false, false, false, false, false, clicked)
 }
 
 /// Tell the user what is known about the systems they have opened
@@ -826,6 +826,14 @@ fn panels(
             _ => None,
         };
         let mut held = 0.;
+        // And what became of its own search, for a leg whose row stands
+        // before its answer. Nothing for a trip's joined route, which is
+        // built out of the rows rather than standing in them: what is
+        // outstanding there is `outstanding`, counted above.
+        let state = match &panel.subject {
+            Subject::Filter { filter, .. } => filters.plotted_of(filter),
+            _ => None,
+        };
         let window = window.show(ctx, |ui| {
             held = inside(ui, id, room, |ui| match &panel.subject {
                 Subject::System(system) => {
@@ -854,6 +862,7 @@ fn panels(
                     systems.as_deref(),
                     timed,
                     outstanding,
+                    state,
                     &boosts,
                     &classes,
                     center,
@@ -1446,6 +1455,7 @@ fn summary(
     count: usize,
     took: Option<Duration>,
     plotting: usize,
+    plotted: Option<Plotted>,
 ) -> String {
     let Some(range) = filter.range() else {
         return format!("{count} systems");
@@ -1485,6 +1495,16 @@ fn summary(
             legs => format!("{legs} legs"),
         };
         said.push_str(&format!(" — {legs} still being plotted"));
+    }
+    // And what became of this row's own search, where it never landed a
+    // route. Its systems are then the two ends it was asked between rather
+    // than a route through them, so a panel reading "2 systems, 45 Ly range"
+    // over them claims an answer nobody has: a leg still being walked, one
+    // stopped, and one with no route to be found each say which.
+    if let Some(ended) =
+        plotted.filter(|how| !how.landed()).and_then(Plotted::said)
+    {
+        said.push_str(&format!(" — {ended}"));
     }
     said
 }
@@ -1853,6 +1873,9 @@ fn admitted(
     took: Option<Duration>,
     // How many of a trip's legs are still being searched; see `summary`.
     plotting: usize,
+    // And what became of this row's own search, where it has not landed a
+    // route; see [`crate::systems::filter::Plotted`].
+    plotted: Option<Plotted>,
     // Which stops can supercharge, for the class each line says.
     boosts: &crate::Boosts,
     // And what the arrival star of each listed system is, where it has been
@@ -1876,8 +1899,14 @@ fn admitted(
     }
 
     ui.label(
-        egui::RichText::new(summary(filter, systems.len(), took, plotting))
-            .weak(),
+        egui::RichText::new(summary(
+            filter,
+            systems.len(),
+            took,
+            plotting,
+            plotted,
+        ))
+        .weak(),
     );
     // And how it was planned, on its own line: the first says what the
     // route had to be, this says how the plan went about finding it.
@@ -2135,6 +2164,7 @@ fn admitted(
                     heading.double_clicked(),
                 );
                 match crate::ui::asked_of_row(
+                    false,
                     false,
                     false,
                     false,
@@ -3113,6 +3143,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
@@ -3146,6 +3177,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
@@ -3523,6 +3555,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::new(100., 0., 0.)),
@@ -3574,6 +3607,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
@@ -3645,7 +3679,7 @@ mod tests {
     #[test]
     fn a_route_panel_says_what_it_was_plotted_for() {
         assert_eq!(
-            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0),
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0, None),
             "12 systems, 10 Ly range, optimal, fewest jumps"
         );
         assert_eq!(
@@ -3658,7 +3692,8 @@ mod tests {
                 ),
                 116,
                 None,
-                0
+                0,
+                None,
             ),
             "116 systems, 150 Ly range, SCO supercharged, 95% optimality, \
              fewest jumps, the nearest 512 expanded"
@@ -3678,11 +3713,12 @@ mod tests {
             12,
             Some(Duration::from_millis(2230)),
             0,
+            None,
         );
         assert!(said.ends_with("plotted in 2.2 s"), "{said}");
 
         let untimed =
-            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0);
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0, None);
         assert!(!untimed.contains("plotted"), "{untimed}");
     }
 
@@ -3713,6 +3749,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &boosts,
                 &StarClasses::default(),
                 None,
@@ -3758,6 +3795,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 None,
@@ -3792,20 +3830,42 @@ mod tests {
     fn a_trip_still_being_plotted_says_what_is_missing() {
         let trip = plotted_for("3 Leg Route", "50");
 
-        let waiting = summary(&trip, 120, None, 1);
+        let waiting = summary(&trip, 120, None, 1, None);
         assert!(
             waiting.ends_with("1 leg still being plotted"),
             "nothing said a leg was missing: {waiting}"
         );
-        let two = summary(&trip, 120, None, 2);
+        let two = summary(&trip, 120, None, 2, None);
         assert!(two.ends_with("2 legs still being plotted"), "{two}");
 
         // And once they are all in, it says only what it is.
-        let whole = summary(&trip, 168, None, 0);
+        let whole = summary(&trip, 168, None, 0, None);
         assert!(
             !whole.contains("still being plotted"),
             "a finished trip said it was waiting: {whole}"
         );
+    }
+
+    /// And a leg's own panel says what became of its search
+    ///
+    /// A leg's row stands from the ask onward, so a panel can be opened over
+    /// one that has no route yet: what it lists is then the two ends it was
+    /// asked between, and a summary reading "2 systems, 50 Ly range" over
+    /// them claims a route nobody has found.
+    #[test]
+    fn a_leg_with_no_route_says_so_rather_than_listing_two_systems() {
+        let leg = plotted_for("SOL -> COLONIA", "50");
+
+        let searching = summary(&leg, 2, None, 0, Some(Plotted::Searching));
+        assert!(searching.ends_with("— searching"), "{searching}");
+        let stopped = summary(&leg, 2, None, 0, Some(Plotted::Stopped));
+        assert!(stopped.ends_with("— stopped"), "{stopped}");
+        let unflown = summary(&leg, 2, None, 0, Some(Plotted::Unreachable));
+        assert!(unflown.ends_with("— no route"), "{unflown}");
+
+        // And a route that landed says what it came to and nothing else.
+        let landed = summary(&leg, 168, None, 0, Some(Plotted::Landed));
+        assert!(!landed.contains('—'), "{landed}");
     }
 
     /// And how it was planned, where it was planned at all
@@ -4038,8 +4098,10 @@ mod tests {
     /// the difference between them.
     #[test]
     fn two_routes_between_the_same_ends_read_apart() {
-        let near = summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0);
-        let far = summary(&plotted_for("SOL -> BARNARD", "20"), 7, None, 0);
+        let near =
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0, None);
+        let far =
+            summary(&plotted_for("SOL -> BARNARD", "20"), 7, None, 0, None);
 
         assert_ne!(near, far);
         assert!(near.contains("10 Ly"), "{near}");
@@ -4052,7 +4114,7 @@ mod tests {
     /// that answered one for them would be answering for the user.
     #[test]
     fn a_filter_that_was_not_plotted_says_only_how_many() {
-        assert_eq!(summary(&faction(7), 12, None, 0), "12 systems");
+        assert_eq!(summary(&faction(7), 12, None, 0, None), "12 systems");
         assert_eq!(
             summary(
                 &Filter::Systems {
@@ -4061,7 +4123,8 @@ mod tests {
                 },
                 3,
                 None,
-                0
+                0,
+                None,
             ),
             "3 systems"
         );
@@ -4083,6 +4146,7 @@ mod tests {
                 Some(&systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
@@ -4354,6 +4418,7 @@ mod tests {
                 Some(&held),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
@@ -4427,6 +4492,7 @@ mod tests {
                 Some(systems),
                 None,
                 0,
+                None,
                 &crate::Boosts::absent(),
                 &StarClasses::default(),
                 None,
@@ -4565,6 +4631,7 @@ mod tests {
                     Some(&held),
                     None,
                     0,
+                    None,
                     &crate::Boosts::absent(),
                     &StarClasses::default(),
                     Some(DVec3::ZERO),
@@ -4674,6 +4741,7 @@ mod tests {
                     Some(&held),
                     None,
                     0,
+                    None,
                     &crate::Boosts::absent(),
                     &StarClasses::default(),
                     Some(DVec3::ZERO),
@@ -4831,6 +4899,7 @@ mod tests {
                         Some(&held),
                         None,
                         0,
+                        None,
                         &crate::Boosts::absent(),
                         &StarClasses::default(),
                         Some(DVec3::ZERO),

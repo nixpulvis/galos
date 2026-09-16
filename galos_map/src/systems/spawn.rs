@@ -539,6 +539,7 @@ pub fn spawn(
     mut material_assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
     mut plotted: MessageWriter<route::PlottedRoute>,
+    mut unflown: MessageWriter<route::UnflownLeg>,
     mut tasks: ResMut<FetchTasks>,
     mut plot: ResMut<Plot>,
     mut pending: ResMut<PendingSpawns>,
@@ -599,10 +600,16 @@ pub fn spawn(
                 // exactly than this could: the leg was fetched anyway, and it
                 // comes back empty for the same reason, so without this the
                 // better answer is talked over a moment after it arrives.
-                if *plot == Plot::Working && new_systems.len() < 2 {
-                    *plot = Plot::Failed(format!(
-                        "No route from {start} to {end} at {range} Ly"
-                    ));
+                if new_systems.len() < 2 {
+                    if *plot == Plot::Working {
+                        *plot = Plot::Failed(format!(
+                            "No route from {start} to {end} at {range} Ly"
+                        ));
+                    }
+                    // And the leg's own row is told, the form's line being
+                    // one answer about the whole plot where a trip has a row
+                    // for each of its legs. See [`route::UnflownLeg`].
+                    unflown.write(route::UnflownLeg(index.clone()));
                 }
 
                 // Said rather than acted on. What a route does to the map is
@@ -1479,6 +1486,7 @@ mod tests {
         app.init_asset::<Mesh>();
         app.init_asset::<StandardMaterial>();
         app.add_message::<route::PlottedRoute>();
+        app.add_message::<route::UnflownLeg>();
         app.init_resource::<FetchTasks>();
         app.init_resource::<Plot>();
         app.init_resource::<PendingSpawns>();

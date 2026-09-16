@@ -414,6 +414,8 @@ pub fn fetch_searched(
     populated: Res<Populated>,
     mut plot: ResMut<crate::search::Plot>,
     tune: Res<crate::systems::route::graph::Tuning>,
+    mut filters: ResMut<crate::systems::filter::Filters>,
+    mut selected: ResMut<crate::systems::route::SelectedFilter>,
 ) {
     for event in search_events.read() {
         match event {
@@ -431,6 +433,7 @@ pub fn fetch_searched(
                 crate::systems::route::fetch::stop_routes(
                     &mut tasks,
                     &mut searching,
+                    &mut filters,
                 );
                 // Nothing is left for the form to wait on, and the only
                 // other thing that clears `Working` is a route landing.
@@ -454,7 +457,28 @@ pub fn fetch_searched(
                     &names,
                     &boosts,
                     &populated,
+                    &mut filters,
+                    &mut selected,
                 );
+            }
+            // And one leg asked again, on its own ask rather than the
+            // form's. The form is told it is waiting again, as pressing
+            // plot tells it: the row's own spinner is the bar's, and the
+            // stop button is the one way out of either.
+            Search::Replot(route) => {
+                if crate::systems::route::fetch::replot(
+                    route,
+                    &mut tasks,
+                    &mut searching,
+                    &time,
+                    &mut jumps,
+                    &names,
+                    &boosts,
+                    &populated,
+                    &mut filters,
+                ) {
+                    *plot = crate::search::Plot::Working;
+                }
             }
         };
     }
@@ -717,6 +741,7 @@ fn region_asked<'a>(mut asked: impl Iterator<Item = &'a FetchIndex>) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::systems::filter::Plotted;
 
     /// A region of `radius` about `center` on the x axis
     fn region(center: i32, radius: i32) -> FetchIndex {
@@ -762,6 +787,11 @@ pub(crate) mod tests {
         app.init_resource::<crate::systems::route::graph::Routing>();
         app.init_resource::<crate::systems::route::graph::Tuning>();
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
+        // The rows a plot puts up, and which route is the one being looked
+        // at: a leg's row goes up when it is asked for, so the ask writes
+        // both. See [`crate::systems::filter::Plotted`].
+        app.init_resource::<crate::systems::filter::Filters>();
+        app.init_resource::<crate::systems::route::SelectedFilter>();
         // The same systems twice over: the names table the search box reads,
         // and the built galaxy the router walks.
         let dir = crate::testing::Scratch::new("fetch");
@@ -954,6 +984,234 @@ pub(crate) mod tests {
         trip(&mut app, &["Start", "End"]);
 
         assert_eq!(legs(&app), vec![("Start".to_owned(), "End".to_owned())]);
+        // And the legs of the trip it replaced say they were stopped rather
+        // than losing their rows. Both of them: a leg of a trip and a route
+        // asked for on its own are different questions — the trip is part of
+        // the key the router walks under and part of the row's own ask — so
+        // the second plot is a row of its own rather than the first's leg
+        // carried over.
+        assert_eq!(
+            rows(&app),
+            vec![
+                ("START -> END".to_owned(), Some(Plotted::Stopped)),
+                ("END -> ONWARD".to_owned(), Some(Plotted::Stopped)),
+                ("START -> END".to_owned(), Some(Plotted::Searching)),
+            ],
+        );
+    }
+
+    /// What the bar holds, in the rows' own order, and how each is getting on
+    fn rows(app: &App) -> Vec<(String, Option<Plotted>)> {
+        app.world()
+            .resource::<crate::systems::filter::Filters>()
+            .iter()
+            .map(|entry| (entry.filter.name().to_owned(), entry.plotted))
+            .collect()
+    }
+
+    /// A leg's row goes up when it is asked for, not when it lands
+    ///
+    /// Which is what gives a search something on screen: the row picks out
+    /// the two ends, the sky dims to them, and the search's own layers are
+    /// drawn against that rather than against the whole star field.
+    #[test]
+    fn a_leg_has_a_row_while_it_is_being_searched() {
+        let (mut app, _dir) = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+
+        assert_eq!(
+            rows(&app),
+            vec![
+                ("START -> END".to_owned(), Some(Plotted::Searching)),
+                ("END -> ONWARD".to_owned(), Some(Plotted::Searching)),
+            ],
+            "a leg being searched has no row of its own",
+        );
+    }
+
+    /// And a trip stopped part way keeps a row for every leg of it
+    ///
+    /// The reported trouble. A trip of three legs stopped before the last
+    /// landed read as a "3 Leg Route" standing over **two** rows: a leg that
+    /// never landed left no row at all, so the count over them named a trip
+    /// the rows could not account for. The rows stand and say they were
+    /// stopped; what is not there is the route, which is the truth of it.
+    #[test]
+    fn a_trip_stopped_part_way_keeps_a_row_for_every_leg() {
+        let (mut app, _dir) = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+        app.world_mut().write_message(crate::search::Search::Stop);
+        app.update();
+
+        assert_eq!(
+            rows(&app),
+            vec![
+                ("START -> END".to_owned(), Some(Plotted::Stopped)),
+                ("END -> ONWARD".to_owned(), Some(Plotted::Stopped)),
+            ],
+            "a stopped leg's row went with its search",
+        );
+        // And each goes on naming the two ends it was asked between: the
+        // route is what is missing, not the systems. Three of them over two
+        // legs, the middle stop being both legs' own.
+        assert_eq!(
+            app.world().resource::<crate::systems::filter::Filters>().routed(),
+            std::collections::HashSet::from([1, 2, 3]),
+            "a stopped leg let go of where it was going",
+        );
+    }
+
+    /// The route a row names, for asking it over
+    fn row_of(app: &App, at: usize) -> crate::systems::filter::Filter {
+        app.world()
+            .resource::<crate::systems::filter::Filters>()
+            .get(at)
+            .expect("a row")
+            .filter
+            .clone()
+    }
+
+    /// Ask the route `route` again, as its row's own mark does
+    fn again(app: &mut App, route: crate::systems::filter::Filter) {
+        app.world_mut().write_message(Search::Replot(route));
+        app.update();
+    }
+
+    /// A leg that was stopped can be asked again, from its own row
+    ///
+    /// The whole of what the row standing there is for: the ask is the row's
+    /// — its two ends, its ship, how hard the search was told to work — so a
+    /// leg that was stopped, or one that came back with no route, is tried
+    /// again without the form having to be filled in a second time.
+    #[test]
+    fn a_stopped_leg_can_be_asked_again() {
+        let (mut app, _dir) = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+        app.world_mut().write_message(crate::search::Search::Stop);
+        app.update();
+        assert!(legs(&app).is_empty(), "the stop left a search running");
+
+        let leg = row_of(&app, 1);
+        again(&mut app, leg);
+
+        assert_eq!(
+            legs(&app),
+            vec![("END".to_owned(), "ONWARD".to_owned())],
+            "the leg was not asked again",
+        );
+        assert_eq!(
+            rows(&app),
+            vec![
+                ("START -> END".to_owned(), Some(Plotted::Stopped)),
+                ("END -> ONWARD".to_owned(), Some(Plotted::Searching)),
+            ],
+            "asking one leg again disturbed the other",
+        );
+        // And the form is waiting again, as it is when the plot button is
+        // pressed: the spinner turns and the stop gesture is the way out.
+        assert_eq!(
+            *app.world().resource::<crate::search::Plot>(),
+            crate::search::Plot::Working,
+        );
+    }
+
+    /// And a leg asked again while it runs is taken back first
+    ///
+    /// From nothing is the whole of the gesture: one search over that leg,
+    /// not two racing to land in the one row. The search it takes back is
+    /// found by what it asks and not by the string it was asked with — the
+    /// row is named off the names table and the leg is keyed on what the
+    /// reader typed, which here is neither spelled the other's way.
+    #[test]
+    fn a_leg_asked_again_while_it_runs_is_taken_back_first() {
+        let (mut app, _dir) = plotting();
+
+        app.world_mut().write_message(Search::Route {
+            stops: vec!["start".into(), "end".into()],
+            range: "10".into(),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+        });
+        app.update();
+        assert_eq!(legs(&app), vec![("start".to_owned(), "end".to_owned())]);
+
+        let leg = row_of(&app, 0);
+        again(&mut app, leg);
+
+        assert_eq!(
+            legs(&app),
+            vec![("START".to_owned(), "END".to_owned())],
+            "the leg is being searched twice over",
+        );
+        assert_eq!(
+            rows(&app),
+            vec![("START -> END".to_owned(), Some(Plotted::Searching))],
+            "asking again left a second row",
+        );
+    }
+
+    /// And a filter that was never plotted has nothing to ask again
+    #[test]
+    fn a_faction_cannot_be_asked_again() {
+        let (mut app, _dir) = plotting();
+
+        again(
+            &mut app,
+            crate::systems::filter::Filter::Faction {
+                id: 7,
+                name: "Some Lot".to_owned(),
+            },
+        );
+
+        assert!(legs(&app).is_empty(), "a faction was searched for");
+        assert_eq!(
+            *app.world().resource::<crate::search::Plot>(),
+            crate::search::Plot::Nothing,
+            "the form was told it was waiting on a faction",
+        );
+    }
+
+    /// A leg asked for again while it runs keeps the one row it has
+    #[test]
+    fn a_leg_asked_again_is_the_row_it_already_has() {
+        let (mut app, _dir) = plotting();
+
+        plot(&mut app);
+        plot(&mut app);
+
+        assert_eq!(
+            rows(&app),
+            vec![("START -> END".to_owned(), Some(Plotted::Searching))],
+        );
+    }
+
+    /// Asking for a route takes back whatever was picked out
+    ///
+    /// A route just asked for is the one the user is looking at, so the one
+    /// they had picked out stands down and the fall back does the rest. At
+    /// the ask rather than when the answer lands, the row being up from the
+    /// ask onwards.
+    #[test]
+    fn asking_for_a_route_takes_back_what_was_picked_out() {
+        let (mut app, _dir) = plotting();
+        app.insert_resource(crate::systems::route::SelectedFilter(vec![
+            crate::systems::filter::Filter::Faction {
+                id: 7,
+                name: "Some Lot".to_owned(),
+            },
+        ]));
+
+        plot(&mut app);
+
+        assert!(
+            app.world()
+                .resource::<crate::systems::route::SelectedFilter>()
+                .0
+                .is_empty(),
+        );
     }
 
     /// The stops a plotted route came back with, or nothing if it was never

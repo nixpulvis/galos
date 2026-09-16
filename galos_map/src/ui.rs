@@ -32,8 +32,8 @@ use crate::systems::bodies::spawn::ShowOrbits;
 use crate::systems::bodies::{Clock, Contents, mark_if_moved};
 use crate::systems::fetch::Poll;
 use crate::systems::filter::{
-    DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
-    SPANS, Standstill, Watch,
+    DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Plotted,
+    Resolving, SPANS, Standstill, Watch,
 };
 use crate::systems::info::Panels;
 use crate::systems::labels::ShowBodyNames;
@@ -536,6 +536,14 @@ pub(crate) const INFO: &str = "ℹ";
 
 /// The mark on the control that lets go of what a row names
 const CLOSE: &str = "x";
+
+/// The mark on the control that asks for a route again, from nothing
+///
+/// A turn, which is what it is: the same question put once more. It stands on
+/// a route's row alone — a faction is not searched for and has nothing to ask
+/// again — and it is what a leg that came back with no route, or one the
+/// reader stopped, is tried again by. See [`crate::search::Search::Replot`].
+const AGAIN: &str = "↻";
 
 /// The mark on the control that stops what is running
 ///
@@ -1390,6 +1398,7 @@ pub(crate) fn chrome(
         center,
         &mut panels,
         &mut camera,
+        &mut bar.search,
         &mut filter,
     );
     gear(ctx, edge, asked.middle, &mut open.0);
@@ -2228,6 +2237,7 @@ fn state_bar(
     center: Option<DVec3>,
     panels: &mut Panels,
     camera: &mut MessageWriter<MoveCamera>,
+    searched: &mut MessageWriter<Search>,
     filter: &mut FilterBar,
 ) -> (egui::Rect, bool) {
     // What the filter rows were asked, carried out of the closure they are
@@ -2355,6 +2365,13 @@ fn state_bar(
     // routes as they were rather than standing in front of them.
     if !row_ask.chosen.is_empty() {
         filter.chosen.0 = row_ask.chosen;
+    }
+
+    // And a route asked over: the row's own ask rather than the form's, which
+    // may have moved off it since. One message a leg, a trip being several
+    // searches; see [`crate::search::Search::Replot`].
+    for route in row_ask.replot {
+        searched.write(Search::Replot(route));
     }
     // A panel about the whole trip, which reads as a route's panel because
     // that is what a trip is: one line through every stop, in order.
@@ -3172,7 +3189,8 @@ fn selected(
                 x += size.x + gap;
             }
 
-            let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
+            let Buttons { info, close, .. } =
+                place_buttons(ui, rect, buttons, of);
 
             let asked = asked_of_selection(
                 close.clicked(),
@@ -3282,11 +3300,14 @@ fn asked_of_selection(
     double: bool,
     click: bool,
 ) -> Option<SelectionAction> {
-    match asked_of_row(close, info, false, double, click) {
+    match asked_of_row(close, info, false, false, double, click) {
         Some(RowGesture::LetGo) => Some(SelectionAction::LetGo),
         Some(RowGesture::Describe) => Some(SelectionAction::Describe),
         Some(RowGesture::Frame) => Some(SelectionAction::Travel),
-        Some(RowGesture::Toggle | RowGesture::Select) | None => None,
+        // A system picked out was never searched for and is not turned off:
+        // its row offers neither, and says so by never reporting them.
+        Some(RowGesture::Replot | RowGesture::Toggle | RowGesture::Select)
+        | None => None,
     }
 }
 
@@ -5258,6 +5279,7 @@ fn applied(
                     section.hops(filters),
                     section.on(filters),
                     matches!(section, Section::Trip { .. }),
+                    section.unfound(filters),
                     place,
                 )
             {
@@ -5376,6 +5398,18 @@ fn applied(
                 .map(|active| active.filter.clone())
                 .collect();
         }
+        // Every leg of the trip asked again, from nothing: a trip is one
+        // route flown in several searches, and restarting it is restarting
+        // each of them. Only its legs — nothing else in a section was
+        // plotted.
+        Some((FilterAction::Replot, _, rows)) => {
+            ask.replot = rows
+                .iter()
+                .filter_map(|index| filters.get(*index))
+                .map(|active| active.filter.clone())
+                .filter(Filter::is_route)
+                .collect();
+        }
         // The trip as one route, which is what a panel about it is about. Its
         // legs are what it is made of and each has a panel of its own.
         Some((FilterAction::Describe, Section::Trip { stops, .. }, rows)) => {
@@ -5397,7 +5431,7 @@ fn applied(
 
 /// What one press on a filter's row meant
 ///
-/// Five things can be pressed in the space of a row, and a press lands on
+/// Six things can be pressed in the space of a row, and a press lands on
 /// exactly one of them. Kept apart from the drawing because the order is the
 /// whole of it: [`asked_of_row`] is where that order is written down and the
 /// only place it can be got wrong.
@@ -5407,6 +5441,8 @@ pub(crate) enum RowGesture {
     LetGo,
     /// Open the panel describing it
     Describe,
+    /// Ask the route it names over, from nothing
+    Replot,
     /// Turn it off, or back on
     Toggle,
     /// Send the camera to see the whole of what it admits
@@ -5417,8 +5453,9 @@ pub(crate) enum RowGesture {
 
 /// Which of them a press on a row was
 ///
-/// The mark first, then the switch, then the double. Egui answers the first
-/// click of a pair as a click and the second as a double, so a row double
+/// The marks first, in the order they are drawn — close, info, again — then
+/// the switch, then the double. Egui answers the first click of a pair as a
+/// click and the second as a double, so a row double
 /// clicked has already been asked about as a click by the time this is
 /// reached: the double has to beat the click or framing a filter would pick
 /// it out on the way, which is the same order the selection rows are read in.
@@ -5428,11 +5465,12 @@ pub(crate) enum RowGesture {
 ///
 /// Read here by everything a press can land on that stands for one filter or
 /// one system: the bar's rows, the sections over them, and the legs a trip's
-/// panel lists. A row that offers fewer of the five says so by passing
+/// panel lists. A row that offers fewer of the six says so by passing
 /// `false`, rather than keeping an order of its own.
 pub(crate) fn asked_of_row(
     close: bool,
     info: bool,
+    again: bool,
     switch: bool,
     double: bool,
     click: bool,
@@ -5441,6 +5479,8 @@ pub(crate) fn asked_of_row(
         Some(RowGesture::LetGo)
     } else if info {
         Some(RowGesture::Describe)
+    } else if again {
+        Some(RowGesture::Replot)
     } else if switch {
         Some(RowGesture::Toggle)
     } else if double {
@@ -5556,6 +5596,13 @@ struct RowAsk {
     /// alongside whatever was already, which is a union and not a toggle —
     /// see [`crate::systems::selection::Selection::gather`].
     picked: Option<(Vec<i64>, bool)>,
+    /// The routes a press on a row's own mark asked for again, from nothing
+    ///
+    /// One for a leg's row and every leg for a trip's, a trip being one route
+    /// flown in several searches. Handed back rather than acted on here, as
+    /// the rest are: what a search costs and what it takes back is the
+    /// fetch's business. See [`crate::search::Search::Replot`].
+    replot: Vec<Filter>,
 }
 
 /// A trip's legs joined back into the one route they are flown as
@@ -5578,29 +5625,32 @@ pub(crate) fn as_one(
     rows: &[usize],
     filters: &Filters,
 ) -> Option<Filter> {
-    let legs: Vec<&Filter> = rows
-        .iter()
-        .filter_map(|index| filters.get(*index))
-        .map(|active| &active.filter)
-        .collect();
-    let range = legs.first()?.range()?.to_owned();
+    let legs: Vec<&crate::systems::filter::Entry> =
+        rows.iter().filter_map(|index| filters.get(*index)).collect();
+    let asked = legs.first()?;
+    let range = asked.filter.range()?.to_owned();
     // As the range is, and for the same reason: the legs were all plotted for
     // the one ship, so the trip they come to was plotted for it too. The
     // search mode with them, all the legs having been asked the one way.
-    let drive = legs.first()?.drive()?;
-    let how = legs.first()?.how()?;
+    let drive = asked.filter.drive()?;
+    let how = asked.filter.how()?;
     // And how they were planned, which is the same for all of them for the
     // same reason: one ask, one set of settings, however many legs it came
     // to. A leg that was never planned carries what it was asked with all
     // the same, so the trip's own filter matches its legs'.
-    let tune = legs.first().and_then(|leg| match leg {
+    let tune = match &asked.filter {
         Filter::Route { tune, .. } => Some(*tune),
         _ => None,
-    })?;
+    }?;
 
+    // What has landed, and only that. A leg still being searched — or one
+    // stopped, or one with no route to be found — has a row carrying the two
+    // ends it was asked between, and joining those in would have the trip run
+    // through a jump nobody flew. The row over it already says how many legs
+    // are still out; see [`crate::systems::info`]'s summary.
     let mut systems: Vec<i64> = Vec::new();
-    for leg in legs {
-        let Filter::Route { systems: hops, .. } = leg else { continue };
+    for leg in legs.iter().filter(|leg| leg.landed()) {
+        let Filter::Route { systems: hops, .. } = &leg.filter else { continue };
         let seam = usize::from(!systems.is_empty());
         systems.extend(hops.iter().skip(seam));
     }
@@ -5831,20 +5881,52 @@ impl Section {
     /// at a time, so this is what has landed: it grows as they arrive and
     /// settles when the last of them does.
     ///
+    /// Nothing until a leg of it has landed, rather than a nought. A trip
+    /// whose legs are all still being walked has flown no jumps and found no
+    /// route, and "0 hops" over it reads as the answer having come back
+    /// empty; the rows under it say what each leg is doing.
+    ///
     /// Nothing for the rest. A count over the routes stands over lines that
     /// are not flown as one thing, and adding their jumps together would be a
     /// number for a journey nobody is making.
     fn hops(&self, filters: &Filters) -> Option<usize> {
         match self {
-            Section::Trip { .. } => Some(
-                self.rows(filters)
+            Section::Trip { .. } => {
+                let landed: Vec<usize> = self
+                    .rows(filters)
                     .iter()
                     .filter_map(|index| filters.get(*index))
+                    // What has landed. A leg still being searched carries the
+                    // two ends it was asked between, which is a hop nobody
+                    // has flown, and counting it would have a trip claim a
+                    // jump per leg before a single one landed.
+                    .filter(|active| active.landed())
                     .filter_map(|active| active.filter.hops())
-                    .sum(),
-            ),
+                    .collect();
+                (!landed.is_empty()).then(|| landed.iter().sum())
+            }
             _ => None,
         }
+    }
+
+    /// Whether anything in this section has a search left to ask again
+    ///
+    /// A trip whose every leg has landed is a route that was found: there is
+    /// nothing to restart, and a mark offering it would ask for the same
+    /// answer a second time. One leg short of that — still searching,
+    /// stopped, or with no route to be found — and the whole trip is worth
+    /// asking over, its legs being one route.
+    ///
+    /// Only a trip. What stands over every route on the map stands over lines
+    /// that were asked for separately, and [`Section::Filters`] over things
+    /// that were never searched for at all.
+    fn unfound(&self, filters: &Filters) -> bool {
+        matches!(self, Section::Trip { .. })
+            && self
+                .rows(filters)
+                .iter()
+                .filter_map(|index| filters.get(*index))
+                .any(|active| !active.landed())
     }
 
     /// How many legs the trip through `stops` has
@@ -5915,13 +5997,20 @@ pub(crate) fn hops_said(hops: usize) -> String {
 
 /// The same reading, laid out to paint in a row of the bar
 fn hops_galley(ui: &Ui, hops: usize) -> std::sync::Arc<egui::Galley> {
-    egui::WidgetText::from(egui::RichText::new(hops_said(hops)).weak())
-        .into_galley(
-            ui,
-            Some(egui::TextWrapMode::Extend),
-            f32::INFINITY,
-            egui::TextStyle::Body,
-        )
+    faint_galley(ui, &hops_said(hops))
+}
+
+/// What a row says at its far end, laid out faint beside the name
+///
+/// The hops a route is flown in, or — where its search never landed one —
+/// what became of that search: see [`crate::systems::filter::Plotted::said`].
+fn faint_galley(ui: &Ui, said: &str) -> std::sync::Arc<egui::Galley> {
+    egui::WidgetText::from(egui::RichText::new(said).weak()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Body,
+    )
 }
 
 /// Draw a row for each filter at `rows`, and say what a click asked of one
@@ -5946,11 +6035,26 @@ fn section_rows(
         // What a route says at its end, where a selection row says how far
         // off its system is. Nothing on the others: a faction's name says all
         // there is to say, and a set says how many it holds in its own name.
-        let hops = active.filter.hops().map(|hops| hops_galley(ui, hops));
+        //
+        // For a leg whose search has not landed a route, what became of that
+        // search instead of a hop count. Its row carries the two ends it was
+        // asked between, which `hops` would read as a one-jump route — so a
+        // leg still being walked would say "1 hop" over a route nobody has
+        // found. See [`crate::systems::filter::Plotted`].
+        let tail = match active.plotted.and_then(Plotted::said) {
+            Some(said) => Some(faint_galley(ui, said)),
+            None => active.filter.hops().map(|hops| hops_galley(ui, hops)),
+        };
 
         // No info button where nothing could be said: a span admits the
-        // galaxy over and what it admits is on the map already.
-        let buttons = if active.filter.worth_describing() {
+        // galaxy over and what it admits is on the map already. And the one
+        // that asks again only where there is a search left to ask again: a
+        // route that landed is the answer to its own question, and asking it
+        // over would put the same question a second time. A faction was
+        // never searched for at all.
+        let buttons = if active.filter.is_route() && !active.landed() {
+            lay_out_replot(ui)
+        } else if active.filter.worth_describing() {
             lay_out_buttons(ui)
         } else {
             lay_out_close(ui)
@@ -5964,7 +6068,7 @@ fn section_rows(
             - DOT
             - gap
             - buttons_width(&buttons, gap)
-            - hops.as_ref().map_or(0., |hops| hops.size().x + gap);
+            - tail.as_ref().map_or(0., |tail| tail.size().x + gap);
         // Cut here rather than left to the layout below, which cuts from the
         // right hand end and would take the far end of a route with it.
         // Egui's own truncation still stands behind this, for the names it
@@ -6023,7 +6127,7 @@ fn section_rows(
             );
         }
         x += DOT + gap;
-        for galley in [Some(name), hops].into_iter().flatten() {
+        for galley in [Some(name), tail].into_iter().flatten() {
             let size = galley.size();
             // The galleys carry the colors they were laid out in, so there
             // is nothing for a fallback to answer for.
@@ -6035,7 +6139,8 @@ fn section_rows(
             x += size.x + gap;
         }
 
-        let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
+        let Buttons { info, close, again } =
+            place_buttons(ui, rect, buttons, of);
 
         // The dot is the switch. It is already the answer to whether the
         // filter is being asked -- filled while it is, hollow while it is not
@@ -6055,6 +6160,7 @@ fn section_rows(
         match asked_of_row(
             close.clicked(),
             info.is_some_and(|info| info.clicked()),
+            again.is_some_and(|again| again.clicked()),
             switch.clicked(),
             row.double_clicked(),
             settled.is_some(),
@@ -6062,6 +6168,9 @@ fn section_rows(
             Some(RowGesture::LetGo) => *removing = Some(index),
             Some(RowGesture::Describe) => {
                 *opening = Some(active.filter.clone())
+            }
+            Some(RowGesture::Replot) => {
+                ask.replot = vec![active.filter.clone()]
             }
             Some(RowGesture::Toggle) => *toggling = Some(index),
             Some(RowGesture::Frame) => ask.framed = Some(active.filter.clone()),
@@ -6184,6 +6293,14 @@ enum FilterAction {
     Toggle,
     /// Open a panel describing the whole of it
     Describe,
+    /// Ask every leg of it again, from nothing
+    ///
+    /// A trip is one route flown in several, and restarting it means
+    /// restarting its legs: they are separate searches and each is asked
+    /// over. Only a trip's row offers it — the count over every route on the
+    /// map stands over lines that were asked for separately, and re-asking
+    /// the lot from one press is more than any press means.
+    Replot,
     /// Send the camera to see the whole of what all of them admit
     Frame,
     /// Take them all away
@@ -6214,12 +6331,16 @@ enum FilterAction {
 /// all: a trip says at its end what each of its legs says at theirs, that
 /// being the one figure a trip was plotted to find out. [`None`] for a count
 /// standing over things that are not flown as one thing.
+///
+/// `unfound` is whether anything under it has a search left to ask again,
+/// which is what the mark offering one turns on; see [`Section::unfound`].
 fn whole_set(
     ui: &mut Ui,
     said: &str,
     hops: Option<usize>,
     on: bool,
     describes: bool,
+    unfound: bool,
     place: &mut usize,
 ) -> Option<FilterAction> {
     let gap = ui.spacing().item_spacing.x;
@@ -6227,8 +6348,16 @@ fn whole_set(
     // the whole of it runs, and every system it passes through in the order
     // it passes through them. A count of filters is not, there being nothing
     // to say about a heap of them that their own rows do not say.
-    let buttons =
-        if describes { lay_out_buttons(ui) } else { lay_out_close(ui) };
+    // A trip is the one section there is anything to describe: it is one
+    // route flown in legs, where a count of filters or of routes stands over
+    // things that were asked for separately. And it offers to be asked again
+    // only while a leg of it has not been found — a trip whose every leg
+    // landed is the answer to its own question.
+    let buttons = match (describes, unfound) {
+        (true, true) => lay_out_replot(ui),
+        (true, false) => lay_out_buttons(ui),
+        _ => lay_out_close(ui),
+    };
 
     // As a row below lays its own out: the name is cut to whatever the dot,
     // the jumps and the marks leave, so a trip too long to spell out never
@@ -6297,7 +6426,7 @@ fn whole_set(
         x += size.x + gap;
     }
 
-    let Buttons { info, close } = place_buttons(ui, rect, buttons, of);
+    let Buttons { info, close, again } = place_buttons(ui, rect, buttons, of);
 
     // The switch, as the rows below have. Said of all of them at once, which
     // is what this row is for.
@@ -6316,12 +6445,14 @@ fn whole_set(
     let asked = match asked_of_row(
         close.clicked(),
         info.is_some_and(|info| info.clicked()),
+        again.is_some_and(|again| again.clicked()),
         switch.clicked(),
         row.double_clicked(),
         settled.is_some(),
     ) {
         Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
         Some(RowGesture::Describe) => Some(FilterAction::Describe),
+        Some(RowGesture::Replot) => Some(FilterAction::Replot),
         Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
         Some(RowGesture::Frame) => Some(FilterAction::Frame),
         Some(RowGesture::Select) => Some(FilterAction::Select(gathering_with(
@@ -7218,19 +7349,24 @@ fn row_of(
     (rect, row)
 }
 
-/// The two buttons a row in the bar ends with
+/// The buttons a row in the bar ends with
 ///
-/// Info opens a panel about whatever the row names, and close lets go of it.
-/// Close stands outermost, where a window's own close button stands, so that
-/// the gesture is in the same place wherever it is offered.
+/// Info opens a panel about whatever the row names, close lets go of it, and
+/// again asks a route over. Close stands outermost, where a window's own
+/// close button stands, so that the gesture is in the same place wherever it
+/// is offered — and each row draws the prefix of them it has a use for, so
+/// the column of buttons reads straight down however many any one row ends
+/// with.
 struct Buttons {
     /// Nothing where the row names nothing a panel could describe
     info: Option<Response>,
     close: Response,
+    /// Nothing where the row names nothing that was searched for
+    again: Option<Response>,
 }
 
 /// The glyphs those buttons are drawn with, outermost first
-const GLYPHS: [&str; 2] = [CLOSE, INFO];
+const GLYPHS: [&str; 3] = [CLOSE, INFO, AGAIN];
 
 /// Lay the buttons out without placing them
 ///
@@ -7239,6 +7375,14 @@ const GLYPHS: [&str; 2] = [CLOSE, INFO];
 /// they are measured here and placed by [`place_buttons`] once there is a row
 /// to place them in.
 fn lay_out_buttons(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
+    lay_out(ui, &GLYPHS[..2])
+}
+
+/// Those two and the one that asks again, for a row that names a route
+///
+/// Only a route: it is the one filter that was *searched* for, so it is the
+/// only one there is anything to ask again. See [`crate::search::Search::Replot`].
+fn lay_out_replot(ui: &Ui) -> Vec<std::sync::Arc<egui::Galley>> {
     lay_out(ui, &GLYPHS)
 }
 
@@ -7331,7 +7475,8 @@ fn place_buttons(
     // button alone ends there.
     let close = answers.next().expect("a close button");
     let info = answers.next();
-    Buttons { info, close }
+    let again = answers.next();
+    Buttons { info, close, again }
 }
 
 /// How far a line in a list holds its text off its own edge
@@ -10777,6 +10922,59 @@ mod tests {
         assert!(!said.iter().any(|line| line.contains("route")), "{said:?}");
     }
 
+    /// Only a route with a search left to ask offers to be asked again
+    ///
+    /// Two rules in one mark. A route is the one filter that was *searched*
+    /// for, so it is the only one there is anything to ask over — and a route
+    /// that landed is the answer to its own question, so the mark is not
+    /// drawn beside it either. What is left is the case it exists for: a leg
+    /// still searching, one stopped, and one with no route to be found.
+    #[test]
+    fn only_a_route_left_unfound_offers_to_be_plotted_again() {
+        let mut panels = Panels::default();
+        let mut drawn = |filters: &mut Filters| {
+            words(|ui| {
+                applied(ui, filters, &mut panels, &mut 0);
+            })
+        };
+
+        let mut alone = Filters::default();
+        alone.add(Filter::Faction { id: 1, name: "Empire".into() });
+        let said = drawn(&mut alone);
+        assert!(
+            !said.contains(&AGAIN.to_owned()),
+            "a faction was offered a search: {said:?}",
+        );
+
+        // A route that came back. Nothing to ask again: it is the answer.
+        let mut landed = Filters::default();
+        landed.searching(0, a_route(&[1, 9]));
+        landed.landed(a_route(&[1, 4, 9]), std::time::Duration::ZERO);
+        let said = drawn(&mut landed);
+        assert!(
+            !said.contains(&AGAIN.to_owned()),
+            "a route that landed was offered plotting over: {said:?}",
+        );
+
+        // And one that did not, whichever way it ended.
+        for how in [
+            crate::systems::filter::Plotted::Searching,
+            crate::systems::filter::Plotted::Stopped,
+            crate::systems::filter::Plotted::Unreachable,
+        ] {
+            let mut unfound = Filters::default();
+            unfound.searching(0, a_route(&[1, 9]));
+            if how != crate::systems::filter::Plotted::Searching {
+                unfound.gave_up(&a_route(&[1, 9]), how);
+            }
+            let said = drawn(&mut unfound);
+            assert!(
+                said.contains(&AGAIN.to_owned()),
+                "{how:?} could not be asked again: {said:?}",
+            );
+        }
+    }
+
     /// A section with nothing in it says nothing
     ///
     /// Routes alone are routes alone, with no empty count for the filters
@@ -11306,6 +11504,142 @@ mod tests {
         assert!(top_of("5 hops") > top_of("3 hops"), "{said:?}");
     }
 
+    /// And a trip stopped part way keeps a row for every leg of it
+    ///
+    /// The reported trouble: a trip of three legs cancelled before the last
+    /// one landed drew a **"3 Leg Route" over two rows**, with nothing to say
+    /// where the third went. Its row goes up when the leg is asked for, so it
+    /// stands and says it was stopped — and stays out of what the trip is
+    /// flown in, that being what has actually been found.
+    #[test]
+    fn a_stopped_leg_keeps_its_row_and_stays_out_of_the_total() {
+        let stops = ["SOL", "LAVE", "DISO", "REORTE"];
+        let trip = stops.join(ARROW);
+        // A leg's two ends are fixed and what it flies between them is the
+        // answer: the ask carries the ends alone, which is how the row is
+        // found again when the answer lands.
+        let leg = |at: usize, hops: i64| {
+            let start = 100 * at as i64;
+            let mut systems = vec![start];
+            systems.extend((1..hops).map(|k| start + k));
+            systems.push(start + 99);
+            Filter::Route {
+                label: format!("{}{ARROW}{}", stops[at], stops[at + 1]),
+                systems,
+                range: "10".to_owned(),
+                trip: Some(trip.clone()),
+                drive: Drive::Unaided,
+                how: Routing::default(),
+                tune: Tuning::default(),
+            }
+        };
+
+        let mut filters = Filters::default();
+        for at in 0..3 {
+            let asked = leg(at, 1);
+            let place = crate::systems::route::placed_at(&asked, &filters);
+            filters.searching(place, asked);
+        }
+        // Two of them land; the third is still searching when the plot is
+        // stopped.
+        filters.landed(leg(0, 3), std::time::Duration::ZERO);
+        filters.landed(leg(1, 5), std::time::Duration::ZERO);
+        filters.stopped_searching();
+
+        assert_eq!(filters.iter().count(), 3, "the stopped leg lost its row");
+
+        let mut panels = Panels::default();
+        let ctx = crate::tests::context();
+        let mut drawn = |filters: &mut Filters| {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                applied(ui, filters, &mut panels, &mut 0);
+            });
+            let mut said = Vec::new();
+            for shape in &output.shapes {
+                if let egui::Shape::Text(text) = &shape.shape {
+                    said.push(text.galley.text().to_owned());
+                }
+            }
+            said
+        };
+        drawn(&mut filters);
+        let said = drawn(&mut filters);
+
+        assert!(said.contains(&"3 Leg Route".to_owned()), "{said:?}");
+        assert!(said.contains(&"DISO -> REORTE".to_owned()), "{said:?}");
+        assert!(said.contains(&"stopped".to_owned()), "{said:?}");
+        // Three and five, and nothing claimed for the leg nobody flew.
+        assert!(said.contains(&"8 hops".to_owned()), "{said:?}");
+
+        // And the trip as one route is the legs that landed.
+        let section = Section::of(&leg(0, 3)).expect("a leg of a trip");
+        let rows = section.rows(&filters);
+        let whole = as_one(&trip, &rows, &filters).expect("a joined trip");
+        assert_eq!(whole.hops(), Some(8), "the stopped leg was counted in");
+    }
+
+    /// And a trip's row offers to be asked again only while a leg is unfound
+    ///
+    /// One route flown in several searches: while any of them is still to be
+    /// found the whole trip is worth asking over, and once every leg has
+    /// landed there is nothing to ask — the trip is the answer to its own
+    /// question, and a mark offering to put it again would put the same
+    /// question twice.
+    #[test]
+    fn a_trips_row_offers_a_replot_only_while_a_leg_is_unfound() {
+        let stops = ["SOL", "LAVE", "DISO"];
+        let trip = stops.join(ARROW);
+        let leg = |at: usize, hops: i64| {
+            let start = 100 * at as i64;
+            let mut systems = vec![start];
+            systems.extend((1..hops).map(|k| start + k));
+            systems.push(start + 99);
+            Filter::Route {
+                label: format!("{}{ARROW}{}", stops[at], stops[at + 1]),
+                systems,
+                range: "10".to_owned(),
+                trip: Some(trip.clone()),
+                drive: Drive::Unaided,
+                how: Routing::default(),
+                tune: Tuning::default(),
+            }
+        };
+
+        let mut filters = Filters::default();
+        for at in 0..2 {
+            let asked = leg(at, 1);
+            let place = crate::systems::route::placed_at(&asked, &filters);
+            filters.searching(place, asked);
+        }
+        let section = Section::of(&leg(0, 1)).expect("a leg of a trip");
+
+        // One leg landed, the other still out: the trip has a search left.
+        filters.landed(leg(0, 3), std::time::Duration::ZERO);
+        assert!(section.unfound(&filters), "a leg was still being searched");
+
+        // And with the last of them in, nothing to ask.
+        filters.landed(leg(1, 5), std::time::Duration::ZERO);
+        assert!(
+            !section.unfound(&filters),
+            "a trip that landed whole was offered plotting over",
+        );
+
+        // Which is what the row draws: the mark, and then no mark.
+        let mut panels = Panels::default();
+        let mut drawn = |filters: &mut Filters| {
+            words(|ui| {
+                applied(ui, filters, &mut panels, &mut 0);
+            })
+        };
+        let whole = drawn(&mut filters);
+        assert!(!whole.contains(&AGAIN.to_owned()), "{whole:?}");
+
+        // And it comes back the moment a leg is being searched again.
+        filters.searching(1, leg(1, 1));
+        let waiting = drawn(&mut filters);
+        assert!(waiting.contains(&AGAIN.to_owned()), "{waiting:?}");
+    }
+
     /// A trip's row is named for how many legs it is
     ///
     /// Not for its stops: they are the rows under it, named there and in that
@@ -11315,6 +11649,40 @@ mod tests {
     fn a_trips_row_is_named_for_its_legs() {
         assert_eq!(trip_at("SOL -> LAVE", "10").said(1), "1 Leg Route");
         assert_eq!(trip_at("SOL -> LAVE -> DISO", "10").said(2), "2 Leg Route");
+    }
+
+    /// And a trip with nothing landed yet claims no jumps at all
+    ///
+    /// Its rows go up when its legs are asked for, so the count over them is
+    /// drawn before any of them has an answer: a nought there reads as a trip
+    /// that came back with nothing, where what is true is that nothing has
+    /// come back yet.
+    #[test]
+    fn a_trip_still_searching_says_no_jumps_rather_than_none_flown() {
+        let trip = "SOL -> LAVE -> DISO";
+        let leg = |from: &str, to: &str| Filter::Route {
+            label: format!("{from}{ARROW}{to}"),
+            systems: vec![1, 9],
+            range: "10".to_owned(),
+            trip: Some(trip.to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+            tune: Tuning::default(),
+        };
+        let mut filters = Filters::default();
+        filters.searching(0, leg("SOL", "LAVE"));
+        let section = Section::of(&leg("SOL", "LAVE")).expect("a trip's leg");
+
+        assert_eq!(section.hops(&filters), None, "a nought was claimed");
+
+        // And the moment one lands, what it came to is said.
+        let mut flown = leg("SOL", "LAVE");
+        if let Filter::Route { systems, .. } = &mut flown {
+            *systems = vec![1, 4, 9];
+        }
+        filters.landed(flown, std::time::Duration::ZERO);
+
+        assert_eq!(section.hops(&filters), Some(2));
     }
 
     /// A section's own row reads the same way as the rows under it
@@ -11329,7 +11697,7 @@ mod tests {
     #[test]
     fn a_sections_row_reads_like_the_rows_under_it() {
         let asked = |close, switch, double| match asked_of_row(
-            close, false, switch, double, false,
+            close, false, false, switch, double, false,
         ) {
             Some(RowGesture::LetGo) => Some(FilterAction::LetGo),
             Some(RowGesture::Toggle) => Some(FilterAction::Toggle),
@@ -11374,39 +11742,48 @@ mod tests {
 
     /// What a press on a row means depends on where in it it landed
     ///
-    /// Five things share the space of a row and a press lands on one of them.
+    /// Six things share the space of a row and a press lands on one of them.
     /// The order is the whole of the rule, and two pairs are why it is
     /// written down rather than left to a chain of ifs nobody re-reads.
     #[test]
     fn a_press_on_a_row_means_the_one_thing_it_landed_on() {
-        assert_eq!(asked_of_row(false, false, false, false, false), None);
+        assert_eq!(
+            asked_of_row(false, false, false, false, false, false),
+            None
+        );
 
         // The dot stands inside the row, so a press on it is a press on the
         // row as well -- and it means the dot. Otherwise turning a filter off
         // would pick it out on the way.
         assert_eq!(
-            asked_of_row(false, false, true, false, true),
+            asked_of_row(false, false, false, true, false, true),
             Some(RowGesture::Toggle)
         );
         // Egui answers the first click of a pair as a click, so a double
         // arrives with a click beside it. The double has to win, or framing a
         // filter would pick it out first.
         assert_eq!(
-            asked_of_row(false, false, false, true, true),
+            asked_of_row(false, false, false, false, true, true),
             Some(RowGesture::Frame)
         );
         // The marks at the end beat all of it: they are what was pressed.
         assert_eq!(
-            asked_of_row(true, false, true, true, true),
+            asked_of_row(true, false, false, true, true, true),
             Some(RowGesture::LetGo)
         );
         assert_eq!(
-            asked_of_row(false, true, true, true, true),
+            asked_of_row(false, true, false, true, true, true),
             Some(RowGesture::Describe)
+        );
+        // The mark that asks a route over is one of them, and reads in the
+        // order it is drawn: after close and info, before the dot.
+        assert_eq!(
+            asked_of_row(false, false, true, true, true, true),
+            Some(RowGesture::Replot)
         );
         // And a plain click on the name means the filter itself.
         assert_eq!(
-            asked_of_row(false, false, false, false, true),
+            asked_of_row(false, false, false, false, false, true),
             Some(RowGesture::Select)
         );
     }

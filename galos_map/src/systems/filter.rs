@@ -21,6 +21,15 @@
 //! drawn. At zero they are not loaded at all — never spawned, and evicted if
 //! already on the map — which is the other thing a filter is asked for: this
 //! kind of system and none of the rest.
+//!
+//! A route's row is the one that does not wait to exist. It goes up when the
+//! leg is *asked for*, carrying the two ends and no route between them, so a
+//! search has something on screen while it runs — the sky dims to where it is
+//! going and the search's own layers ([`super::route::frontier`]) are drawn
+//! against that. [`Plotted`] is what became of it: the answer lands in that
+//! row, and a leg stopped or with no route to be found leaves the row
+//! standing and still naming its two ends — the route is what does not
+//! exist, and the two systems it was asked between are as real as any others.
 
 use crate::schedule::MapSet;
 use crate::search::Pending;
@@ -488,6 +497,41 @@ impl Filter {
         }
     }
 
+    /// Whether this and `other` are the one ask, answered or not
+    ///
+    /// **The ask is the two ends, the ship and the trip; the route is the
+    /// answer.** A leg's row goes up when it is asked for, carrying the two
+    /// ends and nothing between them, and the systems flown replace them when
+    /// the search lands — so the row before and the row after are not equal
+    /// and cannot be found by equality. This is the question equality cannot
+    /// put: is this the row that asked for that.
+    ///
+    /// The ends by address rather than the label, which is spelled off the
+    /// names table wherever it is built and is no part of what was asked.
+    /// Everything else is: the range, the drive, how hard the search was to
+    /// work and how the plan was made all change the answer, which is why
+    /// they are what tells two plots between the same ends apart.
+    pub(crate) fn same_ask(&self, other: &Filter) -> bool {
+        let ends = |filter: &Filter| match filter {
+            Filter::Route { systems, .. } => {
+                Some((*systems.first()?, *systems.last()?))
+            }
+            _ => None,
+        };
+        match (self, other) {
+            (
+                Filter::Route { trip: mine, .. },
+                Filter::Route { trip: theirs, .. },
+            ) => {
+                mine == theirs
+                    && self.ship() == other.ship()
+                    && ends(self) == ends(other)
+                    && ends(self).is_some()
+            }
+            _ => false,
+        }
+    }
+
     /// What the filter is asking for, as a row can say it
     pub fn name(&self) -> &str {
         match self {
@@ -657,6 +701,57 @@ fn resolve(
     }
 }
 
+/// How the search behind a route's row got on
+///
+/// A route's row goes up when it is *asked for* rather than when it lands, so
+/// a row outlives the search under it: a leg the user stopped, and one the
+/// router could find no route for, stand where they stood and say what became
+/// of them. Before this a leg that never landed left no row at all, so a trip
+/// of three legs stopped after two read as a "3 Leg Route" over two rows,
+/// with nothing on screen for the third.
+///
+/// [`None`] on the [`Entry`] for a filter that was never searched for — a
+/// faction, a span, a hand-picked set — and for a route restored rather than
+/// plotted, exactly as [`Entry::took`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plotted {
+    /// Still being searched, the row carrying the two ends it was asked
+    /// between until the answer replaces them
+    Searching,
+    /// The answer landed, and the row's systems are the route flown
+    Landed,
+    /// The search finished and found no route between the two ends
+    Unreachable,
+    /// The search was stopped before it answered, by the stop gesture or by
+    /// another plot taking its place
+    Stopped,
+}
+
+impl Plotted {
+    /// Whether the row stands for a route that was actually found
+    ///
+    /// What everything reading a route's *systems* has to ask first: a row
+    /// that has not landed carries the two ends it was asked between, which
+    /// is one hop of a route nobody has found and must not be counted, drawn
+    /// or joined into a trip as though it were.
+    pub fn landed(self) -> bool {
+        matches!(self, Plotted::Landed)
+    }
+
+    /// What a row says about it, where there is anything to say
+    ///
+    /// Nothing for a route that landed: what it came to is said by its hops,
+    /// as it always was.
+    pub fn said(self) -> Option<&'static str> {
+        match self {
+            Plotted::Searching => Some("searching"),
+            Plotted::Landed => None,
+            Plotted::Unreachable => Some("no route"),
+            Plotted::Stopped => Some("stopped"),
+        }
+    }
+}
+
 /// A filter, and whether it is being applied
 ///
 /// Off without being taken away, so that one can be lifted to see what it was
@@ -674,6 +769,23 @@ pub struct Entry {
     /// filter nothing was searched for, and for a route restored from a
     /// session rather than plotted in this one.
     pub took: Option<std::time::Duration>,
+    /// What became of the search behind it, for a route
+    ///
+    /// Beside the filter for the same reason `took` is: a leg being searched
+    /// and the route it comes back as are one row, and the filter is what
+    /// identifies it.
+    pub plotted: Option<Plotted>,
+}
+
+impl Entry {
+    /// Whether the systems this row names are a route that was found
+    ///
+    /// True for everything that was never searched for: a faction's systems
+    /// are its systems. What this excludes is a route's row standing before
+    /// its answer, or standing over a search that ended without one.
+    pub fn landed(&self) -> bool {
+        self.plotted.is_none_or(Plotted::landed)
+    }
 }
 
 /// Every filter the user has added
@@ -949,37 +1061,127 @@ impl Filters {
         if self.asked.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.asked.push(Entry { filter, enabled: true, took: None });
+        self.asked.push(Entry {
+            filter,
+            enabled: true,
+            took: None,
+            plotted: None,
+        });
         self.revision += 1;
     }
 
-    /// Ask a filter, keeping it at `index` among the ones already asked
+    /// Put a row up for a leg that is being searched, at `index` among the
+    /// rows already there
     ///
-    /// For a set of filters that arrive in no particular order and mean
-    /// something in one: the legs of a trip land as their walks finish, and a
-    /// trip whose rows read in the order they happened to come back is a trip
-    /// in the wrong order.
-    pub fn insert(&mut self, index: usize, filter: Filter) {
-        if self.asked.iter().any(|active| active.filter == filter) {
+    /// The row carries the two ends the leg was asked between, which is what
+    /// it picks out while the search runs: the sky dims to them, the two are
+    /// held on the map, and the search's own layers are drawn against that
+    /// rather than against the whole star field. What it does *not* carry is
+    /// a route, and [`Entry::landed`] is what says so.
+    ///
+    /// Idempotent, and deliberately so. A leg asked for again while it is
+    /// still running is the one question ([`super::route::fetch::fetch_route`]
+    /// leaves it alone), and a route plotted a second time is the row already
+    /// there told it is searching once more — which keeps the answer it is
+    /// drawn from until the new one lands, rather than taking the line off the
+    /// map for the seconds the second search costs.
+    pub fn searching(&mut self, index: usize, route: Filter) {
+        if let Some(entry) =
+            self.asked.iter_mut().find(|held| held.filter.same_ask(&route))
+        {
+            entry.plotted = Some(Plotted::Searching);
+            entry.enabled = true;
+            self.revision += 1;
             return;
         }
         let at = index.min(self.asked.len());
-        self.asked.insert(at, Entry { filter, enabled: true, took: None });
+        self.asked.insert(
+            at,
+            Entry {
+                filter: route,
+                enabled: true,
+                took: None,
+                plotted: Some(Plotted::Searching),
+            },
+        );
         self.revision += 1;
     }
 
-    /// Say how long the search that answered `filter` took
+    /// Hand the row that asked for `route` its answer
     ///
-    /// Said after the row is in, rather than passed in with it, because what
-    /// dedupes a row is the filter alone: a route plotted a second time is
-    /// the row already there, and this is the only part of the answer that
-    /// is allowed to differ between the two.
-    pub fn took(&mut self, filter: &Filter, took: std::time::Duration) {
+    /// In place, so a leg lands in the row it was asked in and the trip's
+    /// order is the order it was asked in rather than the order the walks
+    /// finished in.
+    ///
+    /// **Nothing where no row asked for it.** Every leg the map searches puts
+    /// a row up first, so a route landing with no row is a row the user let
+    /// go of while it ran — and answering a question that has been taken back
+    /// by putting the row up again is the map arguing with them. The line is
+    /// taken off with it: [`super::route::follow_filters`] draws a line only
+    /// while a row names it.
+    pub fn landed(&mut self, route: Filter, took: std::time::Duration) {
         if let Some(entry) =
-            self.asked.iter_mut().find(|entry| &entry.filter == filter)
+            self.asked.iter_mut().find(|held| held.filter.same_ask(&route))
         {
+            entry.filter = route;
             entry.took = Some(took);
+            entry.plotted = Some(Plotted::Landed);
+            self.revision += 1;
         }
+    }
+
+    /// Say the search behind the row that asked for `ask` ended without a
+    /// route, and how
+    ///
+    /// **The row stands and goes on naming its two ends.** There is no route
+    /// to draw, and that is the one thing it stops claiming — but the ends
+    /// are two real systems and they are where the user asked to go, so the
+    /// filter goes on picking them out: they stay drawn whatever the level of
+    /// detail says ([`Self::routed`]), and the sky stays dimmed around them.
+    /// A row that stopped asking would leave the two systems the search was
+    /// about indistinguishable from the sky it failed to cross.
+    ///
+    /// Turning it off is the reader's, by its dot, as it is for every other
+    /// filter.
+    ///
+    /// Only a row that was still searching. A landed route is its answer,
+    /// whatever became of a later question about the same pair.
+    pub fn gave_up(&mut self, ask: &Filter, how: Plotted) {
+        if let Some(entry) = self
+            .asked
+            .iter_mut()
+            .filter(|held| held.plotted == Some(Plotted::Searching))
+            .find(|held| held.filter.same_ask(ask))
+        {
+            entry.plotted = Some(how);
+            self.revision += 1;
+        }
+    }
+
+    /// Say every search still running has stopped
+    ///
+    /// What the stop gesture leaves behind, and what a new plot leaves of the
+    /// one before it: the rows stand, each saying it was stopped and each
+    /// still naming the two ends it was asked between, and whichever legs the
+    /// new ask is made of are told they are searching again right after. A
+    /// trip of three legs stopped after two keeps three rows, which is the
+    /// whole point of the row going up when the leg is asked for.
+    pub fn stopped_searching(&mut self) {
+        let mut moved = false;
+        for entry in &mut self.asked {
+            if entry.plotted == Some(Plotted::Searching) {
+                entry.plotted = Some(Plotted::Stopped);
+                moved = true;
+            }
+        }
+        if moved {
+            self.revision += 1;
+        }
+    }
+
+    /// What became of the search behind the row naming `filter`
+    pub fn plotted_of(&self, filter: &Filter) -> Option<Plotted> {
+        self.asked.iter().find(|held| &held.filter == filter)?.plotted
     }
 
     /// How long the search that answered `filter` took, where it is a row
@@ -1090,6 +1292,7 @@ impl Filters {
                 filter: asked,
                 enabled: true,
                 took: None,
+                plotted: None,
             }),
         }
         self.revision += 1;
@@ -1162,6 +1365,12 @@ impl Filters {
     ///
     /// Only the routes being shown. A row turned off draws no line, so its
     /// stops are nothing to hold the map open for.
+    ///
+    /// **A route that was never found still holds its two ends.** Its row
+    /// names them and nothing else ([`Self::gave_up`]), so this keeps them
+    /// drawn however coarsely the sky around them is: there is no line, and
+    /// the two systems the search was about are still the two systems the
+    /// reader asked about.
     ///
     /// Routes only. A faction or a hand-picked set is a set of systems the
     /// map happens to admit, with no line running between them and so
@@ -1783,6 +1992,126 @@ mod tests {
         filters.add(route(&[1, 2]));
 
         assert_eq!(filters.iter().count(), 1);
+    }
+
+    /// A leg's answer lands in the row that asked for it
+    ///
+    /// The row goes up carrying the two ends, and the systems flown replace
+    /// them in place: one row throughout, keeping its place among the rest,
+    /// so a trip's rows read in the order they were asked whatever order the
+    /// walks finish in. Equality cannot find it — the ends and the route are
+    /// not equal — which is what [`Filter::same_ask`] is for.
+    #[test]
+    fn a_legs_answer_lands_in_the_row_that_asked() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.searching(1, route(&[1, 9]));
+
+        filters.landed(
+            route(&[1, 4, 6, 9]),
+            std::time::Duration::from_millis(2230),
+        );
+
+        let rows: Vec<(&Filter, Option<Plotted>)> =
+            filters.iter().map(|held| (&held.filter, held.plotted)).collect();
+        assert_eq!(
+            rows,
+            vec![
+                (&faction(7), None),
+                (&route(&[1, 4, 6, 9]), Some(Plotted::Landed)),
+            ],
+            "the answer did not land in the row that asked",
+        );
+        assert_eq!(
+            filters.took_of(&route(&[1, 4, 6, 9])),
+            Some(std::time::Duration::from_millis(2230)),
+        );
+    }
+
+    /// A row let go of while its search ran does not come back
+    ///
+    /// Every leg the map searches puts a row up first, so an answer with no
+    /// row is a question the user took back — and answering it by putting
+    /// the row up again is the map arguing with them.
+    #[test]
+    fn an_answer_nobody_still_asks_for_is_dropped() {
+        let mut filters = Filters::default();
+        filters.searching(0, route(&[1, 9]));
+        filters.clear(&[0]);
+
+        filters.landed(route(&[1, 4, 9]), std::time::Duration::ZERO);
+
+        assert_eq!(filters.iter().count(), 0, "a closed row came back");
+    }
+
+    /// A leg being searched picks out where it is going
+    ///
+    /// Which is what the row going up at the ask buys: the sky dims to the
+    /// two ends for as long as the search runs, so the layers it draws while
+    /// it works ([`super::route::frontier`]) stand against a dimmed star
+    /// field rather than the whole of one.
+    #[test]
+    fn a_leg_being_searched_picks_out_its_two_ends() {
+        let mut filters = Filters::default();
+        filters.searching(0, route(&[1, 9]));
+
+        assert!(filters.admit(&member(1, &[]), now()));
+        assert!(filters.admit(&member(9, &[]), now()));
+        assert!(
+            !filters.admit(&member(5, &[]), now()),
+            "a leg being searched left the sky undimmed",
+        );
+    }
+
+    /// A search that ends without a route goes on naming its two ends
+    ///
+    /// The route is the one thing that does not exist. The ends are two real
+    /// systems and they are where the reader asked to go, so the row goes on
+    /// picking them out — drawn whatever the level of detail says
+    /// ([`Filters::routed`]) and dimming the sky around them — and says what
+    /// became of the search beside them. Turning it off is the reader's, by
+    /// its dot, as for any other filter.
+    #[test]
+    fn a_search_with_no_answer_still_names_its_two_ends() {
+        for how in [Plotted::Unreachable, Plotted::Stopped] {
+            let mut filters = Filters::default();
+            filters.searching(0, route(&[1, 9]));
+
+            filters.gave_up(&route(&[1, 9]), how);
+
+            let held = filters.get(0).expect("the row stands");
+            assert_eq!(held.plotted, Some(how));
+            assert!(held.enabled, "{how:?} stopped picking its ends out");
+            assert!(!held.landed(), "{how:?} read as a route that was found");
+            assert!(filters.admit(&member(1, &[]), now()), "{how:?}");
+            assert!(filters.admit(&member(9, &[]), now()), "{how:?}");
+            assert_eq!(
+                filters.routed(),
+                std::collections::HashSet::from([1, 9]),
+                "{how:?} let go of the ends it was asked between",
+            );
+            assert!(
+                !filters.admit(&member(5, &[]), now()),
+                "{how:?} admitted the sky it never crossed",
+            );
+        }
+    }
+
+    /// And a route that landed is not told a later search stopped
+    ///
+    /// A landed route is its answer: the line is drawn and the row says what
+    /// it came to, whatever becomes of a second search between the same ends.
+    #[test]
+    fn stopping_leaves_a_landed_route_alone() {
+        let mut filters = Filters::default();
+        filters.searching(0, route(&[1, 9]));
+        filters.landed(route(&[1, 4, 9]), std::time::Duration::ZERO);
+
+        filters.stopped_searching();
+
+        let held = filters.get(0).expect("the row stands");
+        assert_eq!(held.plotted, Some(Plotted::Landed));
+        assert!(held.enabled, "a landed route stopped picking itself out");
     }
 
     /// And a plot asked for differently is a plot of its own

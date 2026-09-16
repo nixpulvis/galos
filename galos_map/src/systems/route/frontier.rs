@@ -299,6 +299,19 @@ impl Frontiers {
         }
     }
 
+    /// Give up on the search over `leg`, where one is being watched
+    ///
+    /// The one-leg form of [`Self::abandon_others`], for a leg being asked
+    /// again from nothing ([`super::fetch::replot`]): what that ask replaces
+    /// is that leg alone, the rest of a trip going on as it was. The picture
+    /// it had drawn comes down on the next frame, as [`draw`] takes down
+    /// every search that has finished.
+    pub(crate) fn abandon(&self, leg: &FetchIndex) {
+        for watched in self.0.iter().filter(|watched| &watched.leg == leg) {
+            watched.reached.abandon();
+        }
+    }
+
     /// How many systems the searches under way have expanded between them
     ///
     /// What the form says while it waits. One number over every leg, since
