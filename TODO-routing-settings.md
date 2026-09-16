@@ -124,11 +124,13 @@ reach itself and nobody is asked.
   deliberately *not* on the distance ordering — a boosted jump costs a
   whole tank however far the cone throws the ship, so fuel on a chain of
   cones is the hop count.
-- **The gap rail cannot be set below what connects.** It opened at one hop
-  (225 Ly for a 45 Ly ship) and every notch under the default could only
-  break the plot. It now opens at the first quantum ≥ `GAPS_LY`, which also
-  fixed a hard panic: the old ceiling was counted off the boosted jump, so
-  a 10 Ly ship got `min > max. min = 400, max = 200`.
+- **The gap rail was floored, and then it was deleted.** It opened at one
+  hop (225 Ly for a 45 Ly ship) and every notch under the default could
+  only break the plot, so it was moved to open at the first quantum ≥
+  `GAPS_LY` — which also fixed a hard panic, the old ceiling having been
+  counted off the boosted jump so that a 10 Ly ship got `min > max. min =
+  400, max = 200`. Superseded by the ladder above: there is no rail left
+  to floor or to panic in.
 - **A route landing no longer freezes the map.** A cut used to throw every
   cell's filter verdicts away and the next frame re-walked 152 M resident
   points — **3.4 s** in one frame. Stale verdicts are kept and brought
@@ -161,20 +163,67 @@ anywhere else.
 
 ## The next steps, in order
 
-### 1. The screen walk is 22–29 ms a frame
+### 1. `JumpGraph::STEPS` is the last constant tuned against a 50 Ly ship
+
+A gap walk gives up after **32 steps**, on the reasoning that "a gap is one
+supercharged jump and a few ordinary ones by construction, so a walk that
+has taken this many is wandering". That reasoning is the reach divided by
+the range, and the reach is a distance: at 10 Ly a 500 Ly hop is **47
+jumps**, so *every* wide gap exceeds the cap, the walk gives up, and the
+gap goes to the search — which is the expensive path stepping exists to
+avoid (0.30 s stepped against 2.60 s searched on one Colonia crossing,
+17.9 s for a single gap near the core).
+
+What is measured is the symptom: Sol to a system 2 kly out at 10 Ly plots
+495 stops in **896 s** where its coarse plan takes 1.31 s, so the legs are
+essentially all of it. That the step cap is the cause is arithmetic rather
+than an A/B — nothing has yet run the same plot with a scaled cap.
+
+The fix is the shape [`Tuning::reach`] already took: derive the cap from
+the reach in jumps — about `reach / range`, with slack — rather than from
+a constant. The fuel-weighed walk already has its own bound for the same
+reason (`HOPS` = 512, measured against walks of 11–61 steps).
+
+### 2. The screen walk is 22–29 ms a frame
 
 `Index::needed` marks 151,619 cells at a wide zoom and costs 22–29 ms every
 frame at 200 M, which is a hard ~35 fps ceiling independent of everything
 above. Not a hitch — a floor. Untouched, and the biggest remaining cost in
 the map.
 
-### 2. Two smaller things, both measured
+### 3. What the ladder costs where no rung works
+
+A rung that does not close on the goal pays its stall allowance before the
+next is tried — measured at 1.0–1.3 s on the 2 kly corridor at 405 Ly — so
+a corridor no reach can plan now pays up to nine of those before the flat
+galaxy-wide fallback it used to reach immediately. Unmeasured, and the far
+rim is where to measure it: the nearest cone to `[0, 0, -20,000]` is 4,378
+Ly out and joins no chain at any reach.
+
+`Tuning::stall` is the number that bounds it, and it was measured against
+a single pass rather than against nine.
+
+### 4. The exact chain is not reachable from the form
+
+`Tuning::allowance` drops an exact coarse plan that has spent 2,048
+expansions, and on Colonia the plan it refuses to pay for is **156 stops
+against 166** — six percent of the jumps flown, for 1.90 s against 98 ms.
+Nothing on the form asks for it: the `Plan` rail only leans *harder* than
+exact, and the allowance's unit is expansions, which is not a thing to put
+in front of a reader. Either it wants a stop past the rail's top that
+means "and pay for it", or the answer is that a reader who wants the best
+chain there is ticks nothing and waits for the flat search.
+
+### 5. Two smaller things, both measured
 
 - **`Expand nearest` is worth 1.0× above a quarter of the range**, so it is
   drawn only at an unpriced hop. It is worth 18× at the bottom of the trade
   on a 45 Ly ship and 1.3× on a 25 Ly one, where the sphere barely holds
   more than the cap. Consider dropping the rail's `8` stop: it buys 2.3× on
-  a long route for +2.6% fuel, and 64 already gets within a fiftieth.
+  a long route for +2.6% fuel, and 64 already gets within a fiftieth. And
+  it has a default nobody sees — every other position of the trade carries
+  `EXPAND` = 64 invisibly, which measures 1.0× there and so is harmless,
+  but it is a number the form does not admit to holding.
 - **The far rim has cones that connect to nothing** — the nearest cone to
   `[0, 0, -20,000]` is 4,378 Ly out and joins no chain at any reach. No gap
   setting helps there; `START_BRIDGE` is what carries such a start, and
