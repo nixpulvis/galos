@@ -147,6 +147,72 @@ fn a_missing_dump_is_an_error() {
     assert!(Dump::open(missing).is_err());
 }
 
+/// A read carries on from where a stopped one left off, and reads
+/// neither a system twice nor none.
+///
+/// This is what a 610 GB import does after a Ctrl-C: it keeps the byte
+/// and the line it had reached and opens there. Nothing else in the
+/// crate is public for it now — the framing under this is private.
+#[test]
+fn a_read_carries_on_from_where_it_stopped() {
+    let path =
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/galaxy.json"));
+    let whole: Vec<_> = Dump::open(path)
+        .expect("the fixture opens")
+        .map(|it| it.expect("it reads").name)
+        .collect();
+
+    let mut stopped = Dump::open(path).expect("the fixture opens");
+    let first: Vec<_> =
+        (&mut stopped).take(2).map(|it| it.expect("it reads").name).collect();
+    let (at, line) = (stopped.bytes(), stopped.at());
+    drop(stopped);
+
+    let rest: Vec<_> = Dump::open_at(path, at, line)
+        .expect("the fixture reopens")
+        .map(|it| it.expect("it reads").name)
+        .collect();
+
+    assert_eq!([first, rest].concat(), whole);
+}
+
+/// A line passed over costs no parse, which is what a share of a file
+/// is read with: whose a line is depends on where it is and nothing in
+/// it.
+#[test]
+fn a_line_passed_over_is_never_parsed() {
+    let path = std::env::temp_dir().join("spansh_passed_over.json");
+    std::fs::write(
+        &path,
+        concat!(
+            "[\n",
+            r#"{"id64":1,"name":"First","coords":{"x":0,"y":0,"z":0},"date":"2020-01-01T00:00:00Z","bodies":[]},"#,
+            "\n{ this line is not JSON at all },\n",
+            r#"{"id64":3,"name":"Third","coords":{"x":0,"y":0,"z":0},"date":"2020-01-01T00:00:00Z","bodies":[]}"#,
+            "\n]\n",
+        ),
+    )
+    .expect("the scratch file writes");
+
+    // Passed over, the broken line is not a fault at all.
+    let mut dump = Dump::open(&path).expect("it opens");
+    assert_eq!(dump.next().expect("a first").expect("it reads").name, "First");
+    assert!(dump.pass().expect("passing over reads"), "a line was there");
+    assert_eq!(dump.next().expect("a third").expect("it reads").name, "Third");
+    assert!(dump.next().is_none(), "the file ended");
+    assert!(!dump.pass().expect("passing over reads"), "nothing left");
+
+    // Parsed, it is one system missed and the read goes on past it. The
+    // fault names line 3: the array's `[` is line 1 and the first system
+    // line 2, so it is the line a reader would count to.
+    let read: Vec<_> = Dump::open(&path).expect("it opens").collect();
+    assert_eq!(read.len(), 3);
+    assert!(matches!(read[1], Err(spansh::Fault::Unparsed { at: 3, .. })));
+    assert!(read[0].is_ok() && read[2].is_ok());
+
+    std::fs::remove_file(&path).expect("the scratch file goes");
+}
+
 #[test]
 fn a_planets_surface_survives() {
     let systems = fixture();

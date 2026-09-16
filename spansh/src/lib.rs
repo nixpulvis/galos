@@ -37,6 +37,7 @@
 //! the arrival star where there are bodies, and [`System::scans`] is
 //! empty where there are none.
 
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek};
 use std::path::Path;
@@ -62,16 +63,10 @@ const BUFFER: usize = 1 << 20;
 /// line, so what comes out is only ever a candidate object. The buffer is
 /// reused across lines.
 ///
-/// Public for one reader, `bin/sync`, and for one reason: it needs the
-/// text before anything parses it. Resuming part way through a 610 GB
-/// file wants [`open_at`](Self::open_at), a progress bar wants
-/// [`bytes`](Self::bytes), and `--shard i/8` wants to drop seven lines in
-/// eight without paying `serde` for them — measured over
-/// `galaxy_7days.json`, framing alone runs at **239,221 lines a second
-/// against 33,346 parsed**, so a sharded import that parsed what it
-/// discards would spend most of its time on other processes' systems.
-/// Everything else wants [`Dump`].
-pub struct Lines {
+/// Private: [`Dump`] is the crate's reader and answers everything any
+/// caller has wanted of this — resuming mid-file, the byte it has
+/// reached, and passing over a line without parsing it.
+struct Lines {
     reader: BufReader<File>,
     line: String,
     at: u64,
@@ -149,6 +144,42 @@ impl Lines {
     }
 }
 
+/// Why a line did not come back as a system.
+///
+/// The two are not the same kind of trouble and a reader has to tell
+/// them apart: one line nothing can parse is one system missed out of
+/// two hundred million, where a file that stops being readable — which a
+/// half-written dump does — is the end of the read.
+#[derive(Debug)]
+pub enum Fault {
+    /// The file could not be read. Nothing further will come.
+    Unreadable(io::Error),
+    /// One line's text was not a system. The read carries on.
+    Unparsed {
+        /// Which line of the file it was, counting from one.
+        at: u64,
+        error: serde_json::Error,
+    },
+}
+
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Fault::Unreadable(err) => write!(f, "{err}"),
+            Fault::Unparsed { at, error } => write!(f, "line {at}: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for Fault {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Fault::Unreadable(err) => Some(err),
+            Fault::Unparsed { error, .. } => Some(error),
+        }
+    }
+}
+
 /// Every system of a dump, parsed — whichever dump it is.
 ///
 /// `systems.json`, `galaxy.json` and their dated slices all read through
@@ -156,11 +187,13 @@ impl Lines {
 /// What a brief file does not carry comes back as [`None`] and an empty
 /// [`System::bodies`].
 ///
-/// [`Lines`] is underneath and is the one to reach for where a read is
-/// more than a loop: resuming part way through a 610 GB file, taking one
-/// line in eight as a shard of it, or counting bytes for a progress bar
-/// all want the text before anything parses it, and a line another
-/// process owns should cost no `serde` at all.
+/// A read of one of these files is rarely just a loop, so the whole of
+/// what the framing knows is here rather than under it:
+/// [`open_at`](Self::open_at) carries on from where a stopped read left
+/// off, [`bytes`](Self::bytes) and [`at`](Self::at) say where that is,
+/// and [`pass`](Self::pass) puts a line by without parsing it — which is
+/// what `--shard i/8` wants, framing running at **239,221 lines a second
+/// against 33,346 parsed** over `galaxy_7days.json`.
 pub struct Dump {
     lines: Lines,
 }
@@ -171,30 +204,64 @@ impl Dump {
         Ok(Dump { lines: Lines::open(path)? })
     }
 
+    /// Open a dump at a byte and a line already read up to.
+    ///
+    /// `at` is a figure [`bytes`](Self::bytes) answered, which is only
+    /// ever the end of a line — every line is read whole or not at all —
+    /// so the read carries on at the start of the next object and never
+    /// inside one. A build that stopped part way through a 610 GB file
+    /// takes up where it left off with this.
+    pub fn open_at(path: &Path, at: u64, line: u64) -> io::Result<Dump> {
+        Ok(Dump { lines: Lines::open_at(path, at, line)? })
+    }
+
     /// Which line the reader is on.
     pub fn at(&self) -> u64 {
         self.lines.at()
     }
+
+    /// How much of the file has been read, in bytes.
+    ///
+    /// Always a line boundary, so it is what
+    /// [`open_at`](Self::open_at) takes to carry on from, and the
+    /// difference across one read is that line's own bytes — what a
+    /// progress bar drawn against the file's size wants.
+    pub fn bytes(&self) -> u64 {
+        self.lines.bytes()
+    }
+
+    /// Pass over the next line without parsing it, answering whether
+    /// there was one.
+    ///
+    /// For a reader taking a share of the file: whose a line is depends
+    /// on its position and nothing in it, so the seven lines in eight
+    /// another process owns cost a `read_line` and no `serde` at all.
+    pub fn pass(&mut self) -> Result<bool, Fault> {
+        match self.lines.next() {
+            Ok(text) => Ok(text.is_some()),
+            Err(err) => Err(Fault::Unreadable(err)),
+        }
+    }
 }
 
 impl Iterator for Dump {
-    type Item = io::Result<System>;
+    type Item = Result<System, Fault>;
 
     /// The next system, or [`None`] at the end of the file.
     ///
-    /// A line that will not parse is an error naming the line it was on
-    /// rather than the end of the read, so the caller decides whether one
-    /// bad row ends anything — `bin/sync` counts it and carries on.
-    fn next(&mut self) -> Option<io::Result<System>> {
+    /// A line that will not parse is a [`Fault::Unparsed`] rather than
+    /// the end of the read, so the caller decides whether one bad row
+    /// ends anything — `bin/sync` counts it and carries on.
+    fn next(&mut self) -> Option<Result<System, Fault>> {
         let at = self.lines.at() + 1;
         let text = match self.lines.next() {
             Ok(Some(text)) => text,
             Ok(None) => return None,
-            Err(err) => return Some(Err(err)),
+            Err(err) => return Some(Err(Fault::Unreadable(err))),
         };
         Some(
             serde_json::from_str(text)
-                .map_err(|err| io::Error::other(format!("line {at}: {err}"))),
+                .map_err(|error| Fault::Unparsed { at, error }),
         )
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! <https://spansh.co.uk/dumps> publishes one complete system per line,
 //! bodies nested inside it. The file is tens of gigabytes, so it is read a
-//! line at a time through [`spansh::Lines`] and never held whole.
+//! line at a time through [`spansh::Dump`] and never held whole.
 //!
 //! Two things reach a sink per line: the system itself, through
 //! [`Sink::system`], and one entry per body it gives a home to, through
@@ -125,6 +125,19 @@ enum Next {
     Failed { at: u64, error: io::Error },
 }
 
+/// The error a fault that ends the read is reported as.
+///
+/// Only [`spansh::Fault::Unreadable`] ever reaches here — a line nothing
+/// could parse is counted and passed over — and it is the reader's own
+/// `io::Error`, handed back whole so what ended the run is what the file
+/// said rather than a sentence about it.
+fn failed(fault: spansh::Fault) -> io::Error {
+    match fault {
+        spansh::Fault::Unreadable(error) => error,
+        unparsed => io::Error::other(unparsed.to_string()),
+    }
+}
+
 /// Where a stopped read had got to, as the build carries it.
 ///
 /// [`Build::mark`] takes a caller's place as bytes and does not read them;
@@ -203,7 +216,7 @@ impl Place {
 struct Reading {
     /// The file being read, for saying which one a warning is about.
     path: PathBuf,
-    lines: spansh::Lines,
+    dump: spansh::Dump,
     bar: bar::Import,
     /// One line in `n`, where the run was told to take a share of the file.
     shard: Option<Shard>,
@@ -240,7 +253,7 @@ impl Reading {
         from: Option<&Place>,
     ) -> io::Result<Reading> {
         let (at, line) = from.map_or((0, 0), |it| (it.at, it.line));
-        let lines = spansh::Lines::open_at(path, at, line)?;
+        let dump = spansh::Dump::open_at(path, at, line)?;
         let tag = match shard {
             Some(shard) => format!("Spansh {shard}"),
             None => "Spansh".to_string(),
@@ -258,7 +271,7 @@ impl Reading {
         }
         Ok(Reading {
             path: path.to_owned(),
-            lines,
+            dump,
             bar,
             shard,
             shutdown: shutdown.clone(),
@@ -270,7 +283,7 @@ impl Reading {
     /// The byte and the line the read has reached, which is always the end
     /// of a line and so a place another read can start at.
     fn here(&self) -> (u64, u64) {
-        (self.lines.bytes(), self.lines.at())
+        (self.dump.bytes(), self.dump.at())
     }
 
     /// Where the read stands, for the build to mark.
@@ -311,47 +324,59 @@ impl Reading {
                 self.bar.abandoned("stopped");
                 return Next::Stopped;
             }
-            let at = self.lines.at() + 1;
-            let text = match self.lines.next() {
-                Ok(Some(text)) => text,
-                Ok(None) => {
+            let at = self.dump.at() + 1;
+            let was = self.dump.bytes();
+
+            // Another process's line, and the cheapest place to find that
+            // out: whose a line is depends on its position in the file, so
+            // it is passed over unparsed. Counted by position, so the
+            // shards agree about whose it is without talking to each other.
+            let mine = self.shard.is_none_or(|shard| shard.mine(self.read));
+            let got = match mine {
+                true => self.dump.next(),
+                false => match self.dump.pass() {
+                    Ok(true) => None,
+                    Ok(false) => {
+                        self.bar.done();
+                        return Next::Ended;
+                    }
+                    Err(fault) => {
+                        self.bar.abandoned("unreadable");
+                        return Next::Failed { at, error: failed(fault) };
+                    }
+                },
+            };
+
+            // The bytes the line cost, comma and newline included, so the
+            // bar reaches the file's size at the last line.
+            if self.dump.bytes() > was {
+                self.bar.through(self.dump.bytes() - was);
+                self.read += 1;
+            }
+
+            let system = match got {
+                Some(Ok(system)) => system,
+                // The end of the file, or a line this shard passed over.
+                None if mine => {
                     self.bar.done();
                     return Next::Ended;
                 }
-                // The file stopped being readable part way through, which a
-                // half-written dump does.
-                Err(error) => {
+                None => continue,
+                // The file stopped being readable part way through, which
+                // a half-written dump does.
+                Some(Err(fault @ spansh::Fault::Unreadable(_))) => {
                     self.bar.abandoned("unreadable");
-                    return Next::Failed { at, error };
+                    return Next::Failed { at, error: failed(fault) };
                 }
-            };
-            // The comma and the newline the reader trimmed off, so the bar
-            // reaches the file's size at the last line.
-            self.bar.through(text.len() as u64 + 2);
-            self.read += 1;
-
-            // Another process's line, and the cheapest place to find that
-            // out: the bytes had to be read to reach the next line, and
-            // nothing has been parsed yet. Counted by position in the file,
-            // so the shards agree about whose it is without talking to each
-            // other.
-            if let Some(shard) = self.shard {
-                if !shard.mine(self.read - 1) {
-                    continue;
-                }
-            }
-
-            // One line nothing can parse is one system missed rather than a
-            // run ended: a file this size is not going to be read again for
-            // it.
-            let system: spansh::System = match serde_json::from_str(text) {
-                Ok(system) => system,
-                Err(err) => {
+                // One line nothing can parse is one system missed rather
+                // than a run ended: a file this size is not going to be
+                // read again for it.
+                Some(Err(fault)) => {
                     self.skipped += 1;
                     self.bar.missed();
                     warn!(
                         line = at,
-                        error = %err,
+                        error = %fault,
                         skipped = self.skipped,
                         "unparsed system",
                     );
