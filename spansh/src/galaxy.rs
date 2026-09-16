@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::body::Body as Planet;
 use elite_journal::body::{
     AtmosphereType, BodyType, Composition, Discovery, Material, Orbit, Spin,
-    Star, Surface,
+    Star, StarClass, Surface,
 };
 use elite_journal::de::null_is_none;
 use elite_journal::entry::incremental::exploration::{
@@ -201,6 +201,26 @@ pub struct Body {
 }
 
 impl System {
+    /// The star a ship arrives at, as the dump flags it, or [`None`]
+    /// where nobody has looked or what is there is not a star.
+    ///
+    /// The flag is the dump's own: the brief form states the arrival
+    /// star's prose in `mainStar` and the full form hangs `mainStar:
+    /// true` on the body it belongs to, so this is that field and not a
+    /// rule of ours about which body is first or nearest.
+    pub fn main_star(&self) -> Option<&Body> {
+        self.bodies.iter().find(|body| body.main_star == Some(true))
+    }
+
+    /// What is at the middle of this system, in the game's vocabulary, or
+    /// [`None`] where there is no star there or nobody has looked.
+    ///
+    /// The same answer [`crate::System::class`] gives for the same system
+    /// in the brief dump, off the same prose. See [`crate::star`].
+    pub fn class(&self) -> Option<StarClass> {
+        class_of(self.main_star()?.sub_type.as_deref()?)
+    }
+
     /// One scan per body the dump gives a home to, in dump order.
     ///
     /// A star and a planet come back as [`Event::Scan`] and a barycentre

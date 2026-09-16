@@ -129,6 +129,75 @@ impl Lines {
     }
 }
 
+/// Which of the two forms a dump is in.
+///
+/// They are told apart by the fields that are not in both: the full form
+/// spells the system's own time `date` and hangs `bodies` off it, where
+/// the brief form has `updateTime` and no bodies at all. A body of the
+/// full form carries an `updateTime` of its own, so the tell for the
+/// brief form is that field *and* neither of the other two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// `systems.json` and its dated slices: [`System`].
+    Brief,
+    /// `galaxy.json` and its dated slices: [`galaxy::System`].
+    Full,
+}
+
+impl Form {
+    /// The form an object's text is in, or [`None`] where it says
+    /// neither.
+    fn of(text: &str) -> Option<Form> {
+        match text.contains("\"bodies\":") || text.contains("\"date\":") {
+            true => Some(Form::Full),
+            false => text.contains("\"updateTime\":").then_some(Form::Brief),
+        }
+    }
+
+    /// What to say about a line that will not parse as this form.
+    ///
+    /// The brief reader over a full dump fails on line 1 with `missing
+    /// field `updateTime``, which says nothing about which file is in
+    /// hand — and these two are named alike, published together and tens
+    /// of gigabytes each, so that is the mistake to expect rather than a
+    /// corrupt line.
+    fn mistaken(self, text: &str) -> Option<&'static str> {
+        match (self, Form::of(text)?) {
+            (Form::Brief, Form::Full) => {
+                Some("this is a full dump; read it with `Galaxy`")
+            }
+            (Form::Full, Form::Brief) => {
+                Some("this is a brief dump; read it with `Systems`")
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Which form the dump at `path` is in, off its first object, or [`None`]
+/// for a file with no object in it at all.
+pub fn form(path: &Path) -> io::Result<Option<Form>> {
+    Ok(Lines::open(path)?.next()?.and_then(Form::of))
+}
+
+/// The next object of `lines` as a `T`, naming the line and the form when
+/// it will not parse.
+fn next_as<T: serde::de::DeserializeOwned>(
+    lines: &mut Lines,
+    form: Form,
+) -> io::Result<Option<T>> {
+    let at = lines.at() + 1;
+    let Some(text) = lines.next()? else {
+        return Ok(None);
+    };
+    serde_json::from_str(text).map(Some).map_err(|err| {
+        io::Error::other(match form.mistaken(text) {
+            Some(hint) => format!("line {at}: {err} — {hint}"),
+            None => format!("line {at}: {err}"),
+        })
+    })
+}
+
 /// Every system of a `systems.json`, parsed.
 ///
 /// The brief form: a name, a place, the class of the main star and when the
@@ -148,13 +217,33 @@ impl Systems {
     /// A line that will not parse is an error naming the line it was on, so
     /// the caller decides whether one bad row ends the read.
     pub fn next(&mut self) -> io::Result<Option<System>> {
-        let at = self.lines.at() + 1;
-        match self.lines.next()? {
-            None => Ok(None),
-            Some(text) => serde_json::from_str(text)
-                .map(Some)
-                .map_err(|err| io::Error::other(format!("line {at}: {err}"))),
-        }
+        next_as(&mut self.lines, Form::Brief)
+    }
+
+    /// Which line the reader is on.
+    pub fn at(&self) -> u64 {
+        self.lines.at()
+    }
+}
+
+/// Every system of a `galaxy.json`, parsed.
+///
+/// The full form: the same system with its standing and every body anybody
+/// has looked at hung off it. What [`galaxy::System::scans`] turns into the
+/// entries the rest of the ecosystem is fed.
+pub struct Galaxy {
+    lines: Lines,
+}
+
+impl Galaxy {
+    /// Open a `galaxy.json`.
+    pub fn open(path: &Path) -> io::Result<Galaxy> {
+        Ok(Galaxy { lines: Lines::open(path)? })
+    }
+
+    /// The next system, or [`None`] at the end.
+    pub fn next(&mut self) -> io::Result<Option<galaxy::System>> {
+        next_as(&mut self.lines, Form::Full)
     }
 
     /// Which line the reader is on.

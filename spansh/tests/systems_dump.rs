@@ -5,7 +5,7 @@
 //! object, and the end of the array ends the read.
 
 use elite_journal::body::StarClass;
-use spansh::Systems;
+use spansh::{Form, Systems};
 use std::path::Path;
 
 fn fixture() -> &'static Path {
@@ -37,4 +37,30 @@ fn the_dump_reads_as_systems() {
 fn a_missing_dump_is_an_error_and_not_a_panic() {
     let missing = fixture().with_file_name("not-a-dump.json");
     assert!(Systems::open(&missing).is_err());
+}
+
+/// The two dumps are told apart by what is in them, not by what the
+/// caller was told to expect.
+#[test]
+fn a_dump_says_which_form_it_is() {
+    let full = fixture().with_file_name("galaxy.json");
+    assert_eq!(spansh::form(fixture()).unwrap(), Some(Form::Brief));
+    assert_eq!(spansh::form(&full).unwrap(), Some(Form::Full));
+}
+
+/// Pointing the brief reader at a full dump says so, rather than naming
+/// the first field the full form spells differently.
+///
+/// `galaxy_7days.json` read this way answered `missing field `updateTime`
+/// at line 1 column 3900`, which is true and no help: the two files are
+/// published together, named alike, and tens of gigabytes each.
+#[test]
+fn a_full_dump_read_as_a_brief_one_says_which_it_is() {
+    let full = fixture().with_file_name("galaxy.json");
+    let mut systems = Systems::open(&full).expect("the fixture opens");
+    let err = systems.next().expect_err("a full line is not a brief one");
+    let said = err.to_string();
+    assert!(said.contains("line 1"), "{said}");
+    assert!(said.contains("full dump"), "{said}");
+    assert!(said.contains("`Galaxy`"), "{said}");
 }

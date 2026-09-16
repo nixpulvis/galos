@@ -101,6 +101,32 @@ fn a_stars_class_is_the_games_token() {
     assert_eq!(scan.star_pos, Some(system.coords));
 }
 
+/// The full form names the star a ship arrives at, and it is the same
+/// answer the brief form's `mainStar` gives for the same system.
+///
+/// The flag is the dump's, not a rule of ours: the body carrying
+/// `mainStar: true` is the one, whatever its number or its distance.
+#[test]
+fn the_main_star_is_the_one_the_dump_flags() {
+    let systems = fixture();
+
+    let dwarf = &systems[named(&systems, "Phua Scrua AA-A h1")];
+    let class = dwarf.class().expect("a red dwarf has a class");
+    assert_eq!(class.token(), "M");
+    assert_eq!(
+        dwarf.main_star().map(|body| body.name.as_str()),
+        Some("Phua Scrua AA-A h1"),
+    );
+
+    // A system nobody has looked into has no bodies, so no arrival star
+    // and no class -- which is not the same answer as a system whose
+    // middle is a planet, and the tally of a read tells the two apart.
+    let empty = &systems[named(&systems, "Traikoa EG-Y g0")];
+    assert!(empty.bodies.is_empty());
+    assert!(empty.main_star().is_none());
+    assert_eq!(empty.class(), None);
+}
+
 #[test]
 fn a_planets_surface_survives() {
     let systems = fixture();
