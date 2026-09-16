@@ -106,13 +106,30 @@ pub struct Names {
     pub reaches: Arc<names::Reaches>,
 }
 
-/// Which systems can supercharge a drive, and on what, by address.
+/// Which systems can supercharge a drive, where they are, and on what — in
+/// address order, as published.
 ///
-/// Four systems in a hundred, held resident because the router weighs it at
+/// Two systems in a hundred, held resident because the router weighs it at
 /// every step of a search: a route is plotted over the whole galaxy rather
 /// than over what is drawn, so a fetch per step is not a thing that could
 /// work. What a boost is worth is the drive's to say
 /// ([`systems::route::graph::Drive`]); this is only where one can be had.
+///
+/// **The published rows themselves**, kept in their own order rather than
+/// spread into a map. A `HashMap` over 3.8 M rows is some 140 MB of slots
+/// to hold 60 MB of facts, and the order is what the second reader of this
+/// table wants: the boost stars are the nodes of
+/// [`systems::route::highway`]'s coarse graph, sorted into cells once and
+/// then read where they lie. A lookup is therefore a binary search rather
+/// than a hash — asked once per expansion, against a neighbour query that
+/// measures hundreds of candidates, so the twenty-odd compares are noise
+/// beside it.
+///
+/// The place comes with the row ([`galos_index::SystemBoost`]) and that is
+/// the whole of why routing no longer touches the names table: finding
+/// where four million cones sat used to mean walking the names table's
+/// address column, 4 GB of mapping faulted and 7.9 s before a galactic
+/// route could start planning.
 ///
 /// Whether the index publishes such a table at all is kept beside it. An
 /// index built before the table existed, or one whose builder has not reached
@@ -122,7 +139,8 @@ pub struct Names {
 /// one under the supercharged drive's name.
 #[derive(Resource, Default, Clone)]
 pub struct Boosts {
-    by_address: Arc<HashMap<i64, Boost>>,
+    /// The rows, ascending by address.
+    rows: Arc<Vec<galos_index::SystemBoost>>,
     /// Whether the index published the table this came from
     published: bool,
 }
@@ -130,17 +148,21 @@ pub struct Boosts {
 impl Boosts {
     /// What the system at `address` can supercharge, if anything.
     pub fn get(&self, address: i64) -> Option<Boost> {
-        self.by_address.get(&address).copied()
+        let at = self.rows.binary_search_by_key(&address, |row| row.address);
+        Some(self.rows[at.ok()?].boost)
     }
 
-    /// The table keyed by address, as the published rows give it.
+    /// The table as the published rows give it.
+    ///
+    /// Sorted here rather than trusted: the builder writes it in address
+    /// order and the lookup is a binary search, which is wrong rather than
+    /// slow if a file says otherwise.
     pub fn of(rows: Vec<galos_index::SystemBoost>) -> Boosts {
-        Boosts {
-            by_address: Arc::new(
-                rows.into_iter().map(|it| (it.address, it.boost)).collect(),
-            ),
-            published: true,
+        let mut rows = rows;
+        if !rows.windows(2).all(|pair| pair[0].address <= pair[1].address) {
+            rows.sort_unstable_by_key(|row| row.address);
         }
+        Boosts { rows: Arc::new(rows), published: true }
     }
 
     /// No such table in the index, which is not the same as an empty one.
@@ -156,10 +178,10 @@ impl Boosts {
         self.published
     }
 
-    /// A table built from what is already keyed, for tests.
-    #[cfg(test)]
-    pub(crate) fn holding(by_address: HashMap<i64, Boost>) -> Boosts {
-        Boosts { by_address: Arc::new(by_address), published: true }
+    /// The rows, for the coarse graph [`systems::route::highway`] sorts
+    /// them into.
+    pub(crate) fn table(&self) -> &[galos_index::SystemBoost] {
+        &self.rows
     }
 }
 
@@ -333,9 +355,21 @@ pub(crate) mod tests {
     /// What is drawn here is measured, and how wide a word comes out is the
     /// font's answer. A test weighing a line against the room there is for it
     /// in a face the map does not use is a test about some other map.
+    ///
+    /// **And it complains about an id clash whether or not this is a debug
+    /// build.** Egui's `warn_on_id_clash` defaults to
+    /// `cfg!(debug_assertions)`, so in release it reports nothing — and the
+    /// eighteen tests that draw a piece of the bar twice and assert egui
+    /// said nothing were all *vacuously* green under `--release`, along
+    /// with the two that check the instruments themselves can hear a real
+    /// clash, which failed outright and are how it was noticed. It is a
+    /// runtime option and not a compile-time one, so the answer is to ask
+    /// for it: an id clash is a fault of the code and not of the profile it
+    /// was built in.
     pub(crate) fn context() -> egui::Context {
         let ctx = egui::Context::default();
         ctx.all_styles_mut(crate::ui::styled);
+        ctx.options_mut(|options| options.warn_on_id_clash = true);
         ctx
     }
 
@@ -401,6 +435,16 @@ pub(crate) mod tests {
     /// tests it hears run at the same time as the rest, so a warning from
     /// somewhere else would otherwise be read as this pass having complained.
     /// Egui logs from whichever thread called it, which is this one.
+    ///
+    /// **Debug builds only, because the check itself is.** Egui's
+    /// `warn_if_rect_changes_id` is `#[cfg(debug_assertions)]` — compiled
+    /// out of a release build rather than switched off by an option, as
+    /// `warn_on_id_clash` is ([`context`]) — so under `--release` there is
+    /// nothing to listen for and every caller would assert that nothing
+    /// was said about a check that never ran. Gated rather than left to
+    /// pass vacuously: a test that cannot observe its subject should not
+    /// be counted as having observed it.
+    #[cfg(debug_assertions)]
     pub(crate) fn between_passes(
         first: impl FnMut(&mut egui::Ui),
         second: impl FnMut(&mut egui::Ui),

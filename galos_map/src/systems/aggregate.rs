@@ -204,6 +204,7 @@ mod tests {
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
+                kind: galos_index::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -245,6 +246,7 @@ mod tests {
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
+                kind: galos_index::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());

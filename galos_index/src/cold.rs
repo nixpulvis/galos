@@ -699,6 +699,7 @@ mod tests {
                     temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                     age_bucket: (rng.next() % 8) as u32,
                     updated_at: 1_700_000_000 + (id as u32 % 1_000),
+                    kind: crate::meta::StarKind::G,
                 }
             })
             .collect()
@@ -753,6 +754,7 @@ mod tests {
                     temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                     age_bucket: (rng.next() % 8) as u32,
                     updated_at: 1_700_000_000 + (id as u32 % 1_000),
+                    kind: crate::meta::StarKind::G,
                 }
             })
             .collect()
@@ -916,6 +918,7 @@ mod tests {
                 temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                 age_bucket: (rng.next() % 8) as u32,
                 updated_at: 1_700_000_000,
+                kind: crate::meta::StarKind::G,
             })
             .collect();
 

@@ -12,9 +12,7 @@
 
 use crate::cache::Point;
 use crate::geometry::CellId;
-use crate::serialization::{
-    Decode, Encode, FixedCodec, INDEX_VERSION, index_version,
-};
+use crate::serialization::{Decode, Encode, INDEX_VERSION, index_version};
 use crate::source::Resharded;
 use crate::tree::{Dirtied, Snapshot};
 use crate::walk::Index;
@@ -132,7 +130,11 @@ impl Snapshot {
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
         for (&id, points) in &self.payloads {
             if !points.is_empty() {
-                write_payload(dir, id, points.as_slice().to_bytes())?;
+                write_payload(
+                    dir,
+                    id,
+                    crate::serialization::payload_bytes(id, points),
+                )?;
             }
         }
         Ok(())
@@ -146,7 +148,11 @@ impl Snapshot {
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
         fs::write(dir.join(INDEX_FILE), self.index.to_bytes())?;
         for &id in &dirtied.changed {
-            write_payload(dir, id, self.payload(id).to_bytes())?;
+            write_payload(
+                dir,
+                id,
+                crate::serialization::payload_bytes(id, self.payload(id)),
+            )?;
         }
         for &id in &dirtied.removed {
             for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
@@ -173,6 +179,17 @@ impl Snapshot {
 /// and the truncation itself is a `SIGBUS` on the pages a reader still
 /// holds. A rename leaves the old inode alone for as long as anything has
 /// it open, which is the same guarantee a names generation gives.
+/// Write one cell's payload, replacing whatever stood there
+///
+/// Public for [`crate::upgrade`], which rewrites them all in place.
+pub fn write_payload_bytes(
+    dir: &Path,
+    id: CellId,
+    bytes: Vec<u8>,
+) -> io::Result<()> {
+    write_payload(dir, id, bytes)
+}
+
 fn write_payload(dir: &Path, id: CellId, bytes: Vec<u8>) -> io::Result<()> {
     let path = payload_path(dir, id);
     if let Some(parent) = path.parent() {
@@ -181,6 +198,24 @@ fn write_payload(dir: &Path, id: CellId, bytes: Vec<u8>) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, &path)
+}
+
+/// The format version a directory claims, where it is not the one this
+/// build reads
+///
+/// [`None`] for a directory this build can read, or for one there is
+/// nothing of yet — a missing index file is a directory nothing has built,
+/// which is not the same as one built another way.
+///
+/// **Asked before any migration touches the place.** The automatic
+/// migrations are content-blind — they move files into shards and fold
+/// chunks — so they would run happily over a directory whose payloads this
+/// build cannot read, and the refusal would come later, out of whatever
+/// asked for a cell. See [`crate::source::migrate`] and
+/// [`crate::upgrade`].
+pub fn stale(dir: &Path) -> Option<u16> {
+    let bytes = fs::read(dir.join(INDEX_FILE)).ok()?;
+    index_version(&bytes).filter(|found| *found != INDEX_VERSION)
 }
 
 impl Index {
@@ -197,8 +232,8 @@ impl Index {
             let what = match index_version(&bytes) {
                 Some(found) if found != INDEX_VERSION => format!(
                     "index format version {found}, this build reads \
-                     {INDEX_VERSION}: the payload record changed width, so \
-                     rebuild the directory"
+                     {INDEX_VERSION}: the payloads changed layout, so run \
+                     `galos-index upgrade` over the directory"
                 ),
                 _ => "not an index file".to_string(),
             };
@@ -236,7 +271,7 @@ impl Index {
             }
             Err(e) => return Err(e),
         };
-        Ok(Vec::<Point>::from_bytes(&bytes).unwrap_or_default())
+        Ok(crate::serialization::payload_points(id, &bytes).unwrap_or_default())
     }
 }
 
@@ -250,20 +285,34 @@ impl Index {
 /// and 6.1 GB of `Vec` for it.
 ///
 /// So: the bytes where they lie, and a field read out of them when asked.
-/// A record is [`Point::LEN`] bytes and nothing here is aligned to
-/// anything, so every read is `from_le_bytes` over a slice — which is what
-/// makes the odd width free rather than costly.
+/// Nothing here is aligned to anything, so every read is `from_le_bytes`
+/// over a slice — which is what makes an odd width free rather than costly.
+///
+/// **The columns are the point of the layout.** A position is six bytes and
+/// a star kind is one, laid in runs of their own, so an expansion that
+/// measures every system in a cell walks 6 bytes a row and touches the
+/// magnitude, the temperature and the moment not at all. See
+/// [`crate::serialization::payload_bytes`].
 pub struct Payload {
     map: memmap2::Mmap,
     count: usize,
+    /// How wide one axis of a position is, 2 bytes or 4; see
+    /// [`crate::serialization::position_width`].
+    width: usize,
+    /// The cell's low corner, which a position is counted from.
+    origin: [f64; 3],
+    /// Where the kind column starts.
+    kinds: usize,
+    /// Where the address column starts.
+    ids: usize,
+    /// Where the photometry column starts.
+    lit: usize,
 }
 
 impl Payload {
-    /// Where a system's position sits within its record.
-    const POS: usize = 8;
-
     /// Map a cell's payload, or [`None`] where the cell owns nothing and so
-    /// has no file.
+    /// has no file — or where what stands there is not a payload of this
+    /// layout, which is what a directory built before the columns is.
     ///
     /// The sharded path first and the flat one after it, as
     /// [`Index::read_payload`] does, so a directory part way through a
@@ -283,7 +332,7 @@ impl Payload {
             Err(e) => return Err(e),
         };
         let len = file.metadata()?.len() as usize;
-        if len < Point::LEN {
+        if len < crate::serialization::PAYLOAD_HEADER {
             return Ok(None);
         }
         // SAFETY: a payload is written beside its path and renamed over it
@@ -292,9 +341,21 @@ impl Payload {
         // republished cell is a new inode and this one lives as long as the
         // mapping does.
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        // A trailing part-record is dropped, which is what the decoding
-        // reader does with one too.
-        Ok(Some(Payload { count: len / Point::LEN, map }))
+        let Some(held) = crate::serialization::payload_head(&map) else {
+            return Ok(None);
+        };
+        if len < crate::serialization::payload_len(held.count, held.width) {
+            return Ok(None);
+        }
+        Ok(Some(Payload {
+            map,
+            count: held.count,
+            width: held.width as usize,
+            origin: id.min_ly(),
+            kinds: held.kinds,
+            ids: held.ids,
+            lit: held.lit,
+        }))
     }
 
     /// How many systems the cell owns.
@@ -309,18 +370,55 @@ impl Payload {
 
     /// The address of the `at`th system.
     pub fn id64_at(&self, at: usize) -> u64 {
-        let from = at * Point::LEN;
+        let from = self.ids + at * 8;
         u64::from_le_bytes(self.map[from..from + 8].try_into().unwrap())
     }
 
     /// Where the `at`th system sits, in light years.
+    ///
+    /// Counted out from the cell's own corner on the galaxy's
+    /// thirty-second-of-a-light-year grid, which is exact for every position
+    /// the game states: see
+    /// [`POSITION_STEP`](crate::serialization::POSITION_STEP).
     pub fn position_at(&self, at: usize) -> [f64; 3] {
-        let from = at * Point::LEN + Payload::POS;
+        let from = crate::serialization::PAYLOAD_HEADER + at * 3 * self.width;
         let axis = |n: usize| {
-            let from = from + n * 8;
-            f64::from_le_bytes(self.map[from..from + 8].try_into().unwrap())
+            let from = from + n * self.width;
+            let counts = match self.width {
+                2 => u16::from_le_bytes(
+                    self.map[from..from + 2].try_into().unwrap(),
+                ) as f64,
+                _ => u32::from_le_bytes(
+                    self.map[from..from + 4].try_into().unwrap(),
+                ) as f64,
+            };
+            self.origin[n] + counts * crate::serialization::POSITION_STEP
         };
         [axis(0), axis(1), axis(2)]
+    }
+
+    /// What kind of star the `at`th system arrives at
+    ///
+    /// One byte, which is why it is here: a route asks it of every system it
+    /// expands, for whether a ship can refuel and whether it can
+    /// supercharge. See [`crate::meta::StarKind`].
+    pub fn kind_at(&self, at: usize) -> crate::meta::StarKind {
+        crate::meta::StarKind::from_code(self.map[self.kinds + at])
+    }
+
+    /// The photometry of the `at`th system: how bright, how hot, how lately
+    /// heard from.
+    ///
+    /// A column of its own because the router never reads it and the
+    /// drawing always does.
+    pub fn lit_at(&self, at: usize) -> (f32, u8, u32) {
+        let from = self.lit + at * 9;
+        let bytes = &self.map[from..from + 9];
+        (
+            f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            bytes[4],
+            u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
+        )
     }
 }
 
@@ -381,6 +479,7 @@ mod tests {
                         // stamp or carried a neighbour's would show up in the
                         // round trip below.
                         updated_at: 1_700_000_000 + id as u32,
+                        kind: crate::meta::StarKind::G,
                     });
                     id += 1;
                 }
@@ -430,7 +529,9 @@ mod tests {
             let decoded = Index::read_payload(&scratch.0, cell.id).unwrap();
             let mapped = Payload::open(&scratch.0, cell.id).unwrap();
             match mapped {
-                None => assert!(decoded.is_empty(), "{:?} maps as none", cell.id),
+                None => {
+                    assert!(decoded.is_empty(), "{:?} maps as none", cell.id)
+                }
                 Some(mapped) => {
                     assert_eq!(mapped.len(), decoded.len(), "{:?}", cell.id);
                     for (at, point) in decoded.iter().enumerate() {
@@ -489,10 +590,11 @@ mod tests {
 
     /// A directory written by an older codec is refused by name, not read.
     ///
-    /// Its payloads are 39-byte records where this build reads 41, and a
-    /// payload block carries nothing that could say so. The message has to
-    /// carry the version met and the remedy, because the alternative is a
-    /// galaxy of plausible nonsense.
+    /// Its payloads are laid out another way and the alternative to
+    /// refusing them is a galaxy of plausible nonsense — so the message has
+    /// to carry both the version met and **the command that fixes it**,
+    /// which is the whole reason that command is named for the job rather
+    /// than for this version's layout.
     #[test]
     fn a_directory_at_an_older_version_is_refused_by_name() {
         let scratch = Scratch::new();
@@ -511,7 +613,10 @@ mod tests {
             said.contains(&format!("version {}", INDEX_VERSION - 1)),
             "the version met is not named: {said}"
         );
-        assert!(said.contains("rebuild"), "no remedy named: {said}");
+        assert!(
+            said.contains("galos-index upgrade"),
+            "the remedy is not named: {said}",
+        );
     }
 
     /// The directory read back holds exactly the built tree, cell for cell.
@@ -585,6 +690,7 @@ mod tests {
             temperature: 3500.0,
             age_bucket: 0,
             updated_at: 1_800_000_000,
+            kind: crate::meta::StarKind::G,
         });
         s.remove(0);
 

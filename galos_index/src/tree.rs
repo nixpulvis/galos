@@ -29,6 +29,7 @@
 use crate::aggregate::{Aggregate, Cell};
 use crate::cache::Point;
 use crate::geometry::{CellId, MAX_LEVEL};
+use crate::meta::StarKind;
 use crate::walk::Index;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -42,6 +43,8 @@ struct Record {
     temperature: f64,
     age_bucket: u32,
     updated_at: u32,
+    /// What kind of star a ship arrives at, for the payload to carry.
+    kind: StarKind,
 }
 
 /// A monotonic `u64` image of a magnitude, so a `BTreeSet` orders systems
@@ -130,6 +133,7 @@ impl Tree {
                         temperature: s.temperature,
                         age_bucket: s.age_bucket,
                         updated_at: s.updated_at,
+                        kind: s.kind,
                     },
                 )
             })
@@ -274,6 +278,7 @@ impl Tree {
             temperature: rec.temperature,
             age_bucket: rec.age_bucket,
             updated_at: rec.updated_at,
+            kind: rec.kind,
         })
     }
 
@@ -286,6 +291,7 @@ impl Tree {
             temperature: system.temperature,
             age_bucket: system.age_bucket,
             updated_at: system.updated_at,
+            kind: system.kind,
         };
         let id = system.id64;
         self.records.insert(id, rec);
@@ -724,6 +730,7 @@ impl Tree {
                     r.magnitude,
                     r.temperature,
                     r.updated_at,
+                    r.kind,
                 )
             })
             .collect()
@@ -823,12 +830,24 @@ pub struct System {
     pub temperature: f64,
     pub age_bucket: u32,
     pub updated_at: u32,
+    /// What kind of star a ship arrives at
+    ///
+    /// Carried through the build so the payload can hold it: whether a ship
+    /// refuels and whether it supercharges are this one byte, and the
+    /// router reads it per expansion. See [`StarKind`].
+    pub kind: StarKind,
 }
 
 /// The record width the resume point's format is written against. A field
 /// added here without the format being told would read a checkpoint of one
 /// galaxy back as another, so it fails the build instead.
-const _: () = assert!(std::mem::size_of::<System>() == 56);
+///
+/// Sixty-four with the star kind on it, where it was fifty-six: the byte
+/// did not fit the `u32` pair's tail and took a word of its own. A resume
+/// point written at the old width would be read as another galaxy, so
+/// [`crate::checkpoint`]'s `VERSION` moved with it and a stale one is
+/// refused rather than misread.
+const _: () = assert!(std::mem::size_of::<System>() == 64);
 const _: () = assert!(std::mem::align_of::<System>() == 8);
 
 /// A built tree: the index the walks plan on and the per-cell payloads.
@@ -1146,6 +1165,7 @@ fn assign_slices(
                         s.absolute_magnitude,
                         s.temperature,
                         s.updated_at,
+                        s.kind,
                     ));
                     break;
                 }
@@ -1170,7 +1190,6 @@ fn assign_slices(
 #[cfg(test)]
 mod batch_tests {
     use super::*;
-    use crate::serialization::{Decode, Encode};
     use std::collections::HashSet;
 
     /// A grid of systems spaced `step` ly apart, `n` on a side, each a touch
@@ -1196,6 +1215,7 @@ mod batch_tests {
                         temperature: 5000.0,
                         age_bucket: 0,
                         updated_at: 0,
+                        kind: crate::meta::StarKind::G,
                     });
                     id += 1;
                 }
@@ -1362,8 +1382,12 @@ mod batch_tests {
             systems.iter().map(|s| (s.id64, s.position)).collect();
 
         for cell in built.index.cells() {
-            let bytes = built.payload(cell.id).to_bytes();
-            let back = Vec::<Point>::from_bytes(&bytes).unwrap();
+            let bytes = crate::serialization::payload_bytes(
+                cell.id,
+                built.payload(cell.id),
+            );
+            let back =
+                crate::serialization::payload_points(cell.id, &bytes).unwrap();
             assert_eq!(back.len(), built.payload(cell.id).len());
             for p in &back {
                 assert_eq!(
@@ -1430,6 +1454,7 @@ mod tests {
             // sequence they had, and distinct per system, so a payload that
             // mixed the stamps up fails the equivalence check.
             updated_at: 1_700_000_000 + id as u32,
+            kind: crate::meta::StarKind::G,
         }
     }
 

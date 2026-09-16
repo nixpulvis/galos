@@ -312,10 +312,13 @@ fn stood_up(
     let boosts = boosts.map_or_else(Boosts::absent, Boosts::of);
     if !index.is_empty() && !boosts.published() {
         warn!(
-            "{dir} publishes no supercharge table, so routes for a \
-             supercharging drive cannot be plotted. An index built from \
-             the database takes one from `cargo run --bin galos-sync -- \
-             --db --index {dir} --only boosts`; one written from a feed \
+            "{dir} publishes no supercharge table this can read, so routes \
+             for a supercharging drive cannot be plotted. A table written \
+             before its rows carried the place they sit at reads as absent \
+             and wants bringing forward, which any `galos-sync` run over \
+             the directory does on the way past. An index built from the \
+             database takes a fresh one from `cargo run --bin galos-sync \
+             -- --db --index {dir} --only boosts`; one written from a feed \
              or a journal writes its own on the next publish."
         );
     }

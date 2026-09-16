@@ -986,7 +986,7 @@ fn draw(
         .filter_map(|(id, _)| Some((id, contents.ridden_at(id)?)))
         .collect();
     if !marked.is_empty() {
-        let cross = meshes.add(LineList { points: CROSS.to_vec() });
+        let cross = meshes.add(LineList::plain(CROSS.to_vec()));
         for (id, ridden) in marked {
             let (cell, offset) =
                 placed(orbits.place(id, since) - middle, &grid);
@@ -1202,7 +1202,7 @@ fn drawn_orbit(
     let points: Vec<Vec3> =
         path.into_iter().map(|p| (p - pin).as_vec3()).collect();
     let mesh = if bare {
-        meshes.add(LineList { points: dashed(&points, spacing.run) })
+        meshes.add(LineList::plain(dashed(&points, spacing.run)))
     } else {
         meshes.add(LineStrip { points })
     };
@@ -1321,7 +1321,7 @@ fn redash(
 
         // Nothing to write to where the mesh has already gone. How it was laid
         // is left as it was, so it is tried again rather than taken as done.
-        let cut = LineList { points: dashed(&points, spacing.run) };
+        let cut = LineList::plain(dashed(&points, spacing.run));
         if meshes.insert(&mesh.0, cut.into()).is_err() {
             continue;
         }

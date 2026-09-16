@@ -183,14 +183,14 @@ impl Metadata {
         }
 
         // The star class of each system reported, which says whether its
-        // arrival star can supercharge a drive. Read off the same rows the
-        // reach was measured over, so the two cannot disagree about which
-        // star a ship drops at.
+        // arrival star can supercharge a drive, and where the system is.
+        // Read off the same rows the reach was measured over, so the two
+        // cannot disagree about which star a ship drops at.
         let boosting = boosts_of(db, touched, &grouped).await?;
         let mut charged = HashSet::with_capacity(boosting.len());
-        for (address, boost) in boosting {
-            charged.insert(address);
-            moved.boosts |= self.held.boost(address, boost);
+        for row in boosting {
+            charged.insert(row.address);
+            moved.boosts |= self.held.boost(row);
         }
 
         for address in touched {
@@ -312,8 +312,8 @@ pub(super) async fn write_parts(
                 }
             }
             if parts.boosts {
-                if let Some(boost) = scanned.boost() {
-                    boosts.insert(scanned.address, boost);
+                if let Some(row) = scanned.boost() {
+                    boosts.insert(row.address, row);
                 }
             }
             if parts.bodies && scanned.anything() {
@@ -369,14 +369,24 @@ async fn names_for(
 /// One `systems` row as the names table's record of it. The row carries
 /// `address`, `name` and the three `ST_?` coordinates.
 pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
-    let x: f64 = row.try_get("x")?;
-    let y: f64 = row.try_get("y")?;
-    let z: f64 = row.try_get("z")?;
     Ok(meta::NameEntry {
         address: row.try_get("address")?,
         name: galos_index::SystemName::new(row.try_get::<String, _>("name")?),
-        position: [x as f32, y as f32, z as f32],
+        position: place_from_row(row)?,
     })
+}
+
+/// The place of a row that selected the three `ST_?` coordinates, in light
+/// years.
+///
+/// PostGIS holds the geometry in double precision and every table published
+/// from here states a position as `[f32; 3]`, so the narrowing is written
+/// once here rather than at each of the reads that want a place.
+fn place_from_row(row: &PgRow) -> Result<[f32; 3]> {
+    let x: f64 = row.try_get("x")?;
+    let y: f64 = row.try_get("y")?;
+    let z: f64 = row.try_get("z")?;
+    Ok([x as f32, y as f32, z as f32])
 }
 
 /// Every populated system with a place, or those of `addresses` alone.
@@ -411,16 +421,13 @@ async fn populated_of(
     rows.iter()
         .map(|row| {
             let address: i64 = row.try_get("address")?;
-            let x: f64 = row.try_get("x")?;
-            let y: f64 = row.try_get("y")?;
-            let z: f64 = row.try_get("z")?;
             let population: i64 = row.try_get("population")?;
             Ok(meta::PopulatedSystem {
                 address,
                 name: galos_index::SystemName::new(
                     row.try_get::<String, _>("name")?,
                 ),
-                position: [x as f32, y as f32, z as f32],
+                position: place_from_row(row)?,
                 population: population as u64,
                 security: row.try_get("security")?,
                 government: row.try_get("government")?,
@@ -483,16 +490,13 @@ fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
     Ok(table.len())
 }
 
-/// Write `boosts.bin`: which systems can supercharge a drive, in address order
-/// so the same table is always the same bytes.
+/// Write `boosts.bin`: which systems can supercharge a drive and where each
+/// one sits, in address order so the same table is always the same bytes.
 fn write_boosts(
     dir: &Path,
-    boosts: &HashMap<i64, meta::Boost>,
+    boosts: &HashMap<i64, meta::SystemBoost>,
 ) -> Result<usize> {
-    let mut table: Vec<meta::SystemBoost> = boosts
-        .iter()
-        .map(|(&address, &boost)| meta::SystemBoost { address, boost })
-        .collect();
+    let mut table: Vec<&meta::SystemBoost> = boosts.values().collect();
     table.sort_unstable_by_key(|it| it.address);
     write_meta(&source::boosts_path(dir), &table)?;
     Ok(table.len())
@@ -513,15 +517,22 @@ fn write_boosts(
 /// read at all. The classification is [`meta::Boost::of`], so a class that
 /// supercharges nothing is left out and the caller takes such a system out
 /// of the table it stands in.
+///
+/// The place comes off the same row, the published table carrying it: what a
+/// router wants of a supercharge is where to fly for it, and reading that
+/// out of the names table instead meant joining every boosting system
+/// against it before a route could be planned.
 async fn boosts_of(
     db: &Database,
     addresses: &[i64],
     grouped: &HashMap<i64, meta::SystemBodies>,
-) -> Result<Vec<(i64, meta::Boost)>> {
+) -> Result<Vec<meta::SystemBoost>> {
     // The systems with nothing to say are dropped below rather than by the
     // query.
     let rows = sqlx::query(
-        "SELECT address, primary_star_class FROM systems \
+        "SELECT address, primary_star_class, \
+         ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
+         FROM systems \
          WHERE address = ANY($1) AND position IS NOT NULL",
     )
     .bind(addresses)
@@ -535,7 +546,8 @@ async fn boosts_of(
         let class =
             inside.and_then(derive::arrival_class).or(routed.as_deref());
         if let Some(boost) = class.and_then(meta::Boost::of) {
-            boosts.push((address, boost));
+            let position = place_from_row(&row)?;
+            boosts.push(meta::SystemBoost { address, boost, position });
         }
     }
     Ok(boosts)
@@ -611,9 +623,10 @@ fn write_bodies(
 struct Scanned {
     address: i64,
     inside: meta::SystemBodies,
-    /// Whether anything has placed this system. A supercharge is published
-    /// only for one that has; see [`boosts_of`].
-    placed: bool,
+    /// Where anything has placed this system, if anything has. A supercharge
+    /// is published only for a system with a place, and the place is
+    /// published beside the class; see [`boosts_of`].
+    position: Option<[f32; 3]>,
     /// What a plotted route said the system's primary is: the fallback where
     /// nothing has been scanned.
     routed: Option<String>,
@@ -628,16 +641,15 @@ impl Scanned {
             || !self.inside.barycenters.is_empty()
     }
 
-    /// Whether this system's arrival star can supercharge a drive, by
+    /// This system's row in the supercharge table, the place included, by
     /// [`boosts_of`]'s rule: the scanned arrival star, else the route's
     /// class, and nothing for a system nothing has placed.
-    fn boost(&self) -> Option<meta::Boost> {
-        if !self.placed {
-            return None;
-        }
-        derive::arrival_class(&self.inside)
-            .or(self.routed.as_deref())
-            .and_then(meta::Boost::of)
+    fn boost(&self) -> Option<meta::SystemBoost> {
+        let position = self.position?;
+        let class =
+            derive::arrival_class(&self.inside).or(self.routed.as_deref());
+        let boost = class.and_then(meta::Boost::of)?;
+        Some(meta::SystemBoost { address: self.address, boost, position })
     }
 }
 
@@ -653,9 +665,13 @@ const BODIES_SELECT: &str = "SELECT b.*, \
      FROM bodies b \
      LEFT JOIN body_materials m \
          ON m.system_address = b.system_address AND m.body_id = b.id";
-/// Every positioned system with either source of an arrival class. The
-/// semi-join keeps a full build from carrying back the systems with neither.
-const BOOSTABLE_SELECT: &str = "SELECT address AS system_address, primary_star_class FROM systems s \
+/// Every positioned system with either source of an arrival class, with the
+/// place a supercharge is published at. The semi-join keeps a full build
+/// from carrying back the systems with neither.
+const BOOSTABLE_SELECT: &str = "SELECT address AS system_address, \
+     primary_star_class, ST_X(s.position) AS x, ST_Y(s.position) AS y, \
+     ST_Z(s.position) AS z \
+     FROM systems s \
      WHERE s.position IS NOT NULL \
        AND (s.primary_star_class IS NOT NULL \
             OR EXISTS (SELECT 1 FROM stars st \
@@ -760,12 +776,17 @@ where
         barycenter_from_row(row).map(Into::into)
     })
     .await?;
+    // The class a route named and the place the system sits at: what a
+    // supercharge is published out of, both off the one row.
     let mut placed = ByAddress::open(db, &placed_sql, |row| {
-        Ok(row.try_get::<Option<String>, _>("primary_star_class")?)
+        Ok((
+            row.try_get::<Option<String>, _>("primary_star_class")?,
+            place_from_row(row)?,
+        ))
     })
     .await?;
 
-    let mut routed = Vec::new();
+    let mut boostable = Vec::new();
     loop {
         // By value and not `into_iter`, this crate being on the 2018
         // edition, where an array's `into_iter` is the reference's.
@@ -783,14 +804,17 @@ where
         stars.take(address, &mut inside.stars).await?;
         bodies.take(address, &mut inside.bodies).await?;
         barycenters.take(address, &mut inside.barycenters).await?;
-        routed.clear();
-        placed.take(address, &mut routed).await?;
+        boostable.clear();
+        placed.take(address, &mut boostable).await?;
 
+        // One row per system at most, so the first of them is the whole of
+        // what `systems` has to say about this one.
+        let eligible = boostable.first();
         each(Scanned {
             address,
             inside,
-            placed: !routed.is_empty(),
-            routed: routed.first().cloned().flatten(),
+            position: eligible.map(|&(_, position)| position),
+            routed: eligible.and_then(|(routed, _)| routed.clone()),
         })?;
     }
 }
@@ -1290,6 +1314,10 @@ mod tests {
     /// route, so a scanned neutron star has `N` in `stars` and a null column.
     /// Reading the column alone published no supercharge for it.
     ///
+    /// The place is asserted beside the class: the table carries where the
+    /// cone is so a router needs nothing else, and a position read off the
+    /// wrong column is a route to somewhere the star is not.
+    ///
     /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
     /// down without one.
     #[async_std::test]
@@ -1346,11 +1374,12 @@ mod tests {
         .expect("the routed system should write");
 
         // Over the rows a full build has in hand, which is every scanned
-        // thing there is, handed over a system at a time.
-        let mut whole: HashMap<i64, meta::Boost> = HashMap::new();
+        // thing there is, handed over a system at a time. The place comes
+        // back beside the class, both being published.
+        let mut whole: HashMap<i64, meta::SystemBoost> = HashMap::new();
         each_scanned(&db, |system| {
-            if let Some(boost) = system.boost() {
-                whole.insert(system.address, boost);
+            if let Some(row) = system.boost() {
+                whole.insert(row.address, row);
             }
             Ok(())
         })
@@ -1358,12 +1387,21 @@ mod tests {
         .expect("a full read");
         assert_eq!(
             whole.get(&scanned),
-            Some(&meta::Boost::Neutron),
-            "a scanned neutron star published no supercharge",
+            Some(&meta::SystemBoost {
+                address: scanned,
+                boost: meta::Boost::Neutron,
+                position: [1.0, 2.0, 3.0],
+            }),
+            "a scanned neutron star published no supercharge, or not the \
+             place it sits at",
         );
         assert_eq!(
             whole.get(&routed),
-            Some(&meta::Boost::WhiteDwarf),
+            Some(&meta::SystemBoost {
+                address: routed,
+                boost: meta::Boost::WhiteDwarf,
+                position: [4.0, 5.0, 6.0],
+            }),
             "a routed class is still what an unscanned system has",
         );
 
@@ -1373,11 +1411,12 @@ mod tests {
         let some = bodies_of(&db, &[scanned, routed])
             .await
             .expect("the scanned things of two systems");
-        let touched: HashMap<i64, meta::Boost> =
+        let touched: HashMap<i64, meta::SystemBoost> =
             boosts_of(&db, &[scanned, routed], &some)
                 .await
                 .expect("a read of what changed")
                 .into_iter()
+                .map(|row| (row.address, row))
                 .collect();
         for address in [scanned, routed] {
             assert_eq!(

@@ -78,7 +78,8 @@ use crate::bodies::{Bodies, Kept};
 use crate::derive;
 use crate::merge;
 use crate::meta::{
-    Boost, NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
+    Boost, NameEntry, PopulatedSystem, StarKind, SystemBodies, SystemBoost,
+    SystemReach,
 };
 use crate::report::SystemReport;
 use crate::tree::System;
@@ -400,9 +401,19 @@ impl Galaxy {
         self.inside.read(address).extent(address)
     }
 
-    /// What one system's arrival star can supercharge, if anything.
-    pub fn boost_of(&self, address: i64) -> Option<Boost> {
-        Boost::of(&self.arrival_class(address)?)
+    /// What one system's arrival star can supercharge, and where it sits.
+    ///
+    /// Nothing for a system nothing has placed: the published table is what
+    /// a router reads, and a cone with no place is no waypoint. Which is
+    /// the same rule the database derivation's `placed` carries.
+    pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
+        let boost = Boost::of(&self.arrival_class(address)?)?;
+        let at = self.systems.get(&address)?.placed()?;
+        Some(SystemBoost {
+            address,
+            boost,
+            position: [at[0] as f32, at[1] as f32, at[2] as f32],
+        })
     }
 
     /// One system's political columns, where anybody lives in it.
@@ -444,6 +455,13 @@ impl Galaxy {
             temperature,
             age_bucket,
             updated_at,
+            // The arrival star, by the same rule the boost table is derived
+            // by: nearest the drop point, ties by body id, and the class a
+            // plotted route named where nothing has been scanned. Nothing
+            // said reads as nothing said — see [`StarKind::Unknown`].
+            kind: self
+                .arrival_class(report.address)
+                .map_or(StarKind::Unknown, |class| StarKind::of(&class)),
         }
     }
 
@@ -482,13 +500,8 @@ impl Galaxy {
     /// drop point; where nothing has been scanned the route file's class
     /// stands in, that being a statement about the same star.
     pub fn boosts(&self) -> Vec<SystemBoost> {
-        let mut table: Vec<SystemBoost> = self
-            .systems
-            .keys()
-            .filter_map(|&address| {
-                Some(SystemBoost { address, boost: self.boost_of(address)? })
-            })
-            .collect();
+        let mut table: Vec<SystemBoost> =
+            self.systems.keys().filter_map(|&a| self.boost_of(a)).collect();
         table.sort_by_key(|it| it.address);
         table
     }
@@ -892,6 +905,133 @@ mod tests {
         let boosts = galaxy.boosts();
         assert_eq!(boosts.len(), 1);
         assert_eq!(boosts[0].boost, Boost::Neutron);
+    }
+
+    /// The class survives a trip through the byte a payload carries
+    ///
+    /// Which is the whole point of [`crate::meta::StarKind`]: a router asks
+    /// what kind of star every system it expands has, and the answer has to
+    /// be a byte beside a position rather than a lookup in a table of
+    /// ninety-five million. So every kind has to come back out of its code
+    /// as what went in, and a code this build does not know has to read as
+    /// nothing having been said rather than as some other star.
+    #[test]
+    fn a_star_kind_goes_through_a_byte_unchanged() {
+        use crate::meta::StarKind;
+
+        for class in [
+            "O",
+            "B",
+            "A",
+            "F",
+            "G",
+            "K",
+            "M",
+            "L",
+            "T",
+            "Y",
+            "N",
+            "H",
+            "DA",
+            "W",
+            "CS",
+            "MS",
+            "TTS",
+            "AeBe",
+            "M_RedGiant",
+            "",
+        ] {
+            let kind = StarKind::of(class);
+            assert_eq!(
+                StarKind::from_code(kind.code()),
+                kind,
+                "{class} did not survive its byte",
+            );
+        }
+
+        // A byte from a build that knew more kinds than this one.
+        assert_eq!(StarKind::from_code(200), StarKind::Unknown);
+
+        // And the two readings a route wants, off the byte rather than off
+        // the class string.
+        assert!(StarKind::of("K").scoops());
+        assert!(!StarKind::of("DA").scoops());
+        assert_eq!(
+            StarKind::of("N").boost(),
+            Some(crate::meta::Boost::Neutron)
+        );
+        assert_eq!(
+            StarKind::of("DA").boost(),
+            Some(crate::meta::Boost::WhiteDwarf)
+        );
+        assert_eq!(StarKind::of("G").boost(), None);
+
+        // Nothing said reads as nothing said, and says nothing.
+        assert_eq!(StarKind::of("").named(), None);
+        assert!(!StarKind::Unknown.scoops());
+    }
+
+    /// A ship refuels at the main sequence and nowhere else
+    ///
+    /// The fact a fuel-aware route is built on, and the one a first letter
+    /// gets wrong: the sky holds classes that begin with a scoopable letter
+    /// and hold no hydrogen to scoop. Worth a test rather than a glance,
+    /// because the failure is not a slower route — it is a ship stranded
+    /// between stars.
+    #[test]
+    fn a_fuel_scoop_takes_hydrogen_off_the_main_sequence() {
+        for class in [
+            "K",
+            "G",
+            "B",
+            "F",
+            "O",
+            "A",
+            "M",
+            "M_RedGiant",
+            "M_RedSuperGiant",
+            "K_OrangeGiant",
+            "A_BlueWhiteSuperGiant",
+            "F_WhiteSuperGiant",
+        ] {
+            assert!(
+                crate::meta::scoopable(class),
+                "{class} would not refuel a ship"
+            );
+        }
+
+        for class in [
+            // Too cool to have started fusing.
+            "L",
+            "T",
+            "Y",
+            // What is left after the hydrogen went.
+            "D",
+            "DA",
+            "DAB",
+            "N",
+            "H",
+            "SupermassiveBlackHole",
+            // The wrong element, or the wrong kind of star, under a letter
+            // that begins a scoopable class.
+            "MS",
+            "S",
+            "C",
+            "CN",
+            "CJ",
+            "AeBe",
+            "TTS",
+            "W",
+            "WN",
+            "WC",
+            // And nothing at all.
+            "",
+        ] {
+            assert!(
+                !crate::meta::scoopable(class),
+                "{class} would refuel a ship"
+            );
+        }
     }
 
     /// A route names systems the ship has never been to, and what burns in

@@ -80,6 +80,12 @@ impl Star {
             // reads as the epoch and so falls outside every span the Recency
             // filter asks about.
             updated_at: 0,
+            // A survey star's spectral class is not what the game's own
+            // classes are: the catalogues carry their own letters, the two
+            // are joined on nothing, and a route would read one as the
+            // other. Nothing said, which is the honest reading and what
+            // every unscanned system carries.
+            kind: galos_index::StarKind::Unknown,
         }
     }
 }

@@ -8,15 +8,95 @@ use big_space::prelude::*;
 
 /// What a route's line is painted, at `strength` of the full
 ///
-/// White, so a route reads against a sky of colored stars as a thing drawn
-/// over it rather than as more of it, and faint even at full strength: the
-/// line crosses systems the user is meant to go on seeing.
+/// White, and faint even at full strength: the line crosses systems the user
+/// is meant to go on seeing. What colour each *jump* of it is drawn is
+/// [`jump_color`]'s, carried per vertex and multiplied by this — so this is
+/// the fade and that is the reading.
 ///
-/// The color is left alone and the alpha carries the strength, so that a
+/// The hue is left alone here and the alpha carries the strength, so that a
 /// route held behind another reads as further off rather than as some other
 /// kind of route.
 pub fn line_color(strength: f32) -> Color {
-    Color::srgba(1., 1., 1., 0.25 * strength)
+    Color::srgba(1., 1., 1., FAINT * strength)
+}
+
+/// How faint a route's line is drawn at full strength
+///
+/// The alpha every jump is multiplied into, and the ceiling on how bright
+/// any of them can be: a route crosses systems that are meant to go on
+/// being seen. A charged jump takes all of it and an ordinary jump half,
+/// which is [`jump_color`]'s business — so this is twice the quarter the
+/// whole line used to be drawn at, and an ordinary jump still comes out at
+/// exactly that quarter.
+///
+/// The headroom is what lets the two be told apart by *light* as well as by
+/// hue. A saturated blue carries about a third of white's luminance at the
+/// same alpha, so a blue drawn at the same faintness reads as a dimmer
+/// white rather than as blue; drawn at twice the alpha it comes out at
+/// about the same brightness, and the difference left is the one worth
+/// seeing.
+const FAINT: f32 = 0.5;
+
+/// What one jump of a route is painted, by whether it was flown on a cone
+///
+/// **Blue where the ship charged off a jet cone**, white where it jumped
+/// unaided. The thing about a drawn route a reader cannot otherwise see:
+/// two routes between the same two systems look alike and are not — one is
+/// a hundred and forty jumps and the other four hundred and fifty-eight —
+/// and *within* one route the boosted stretches are where the distance went.
+///
+/// **Told apart twice over: by hue and by alpha.** A gentle blue at the
+/// faintness a route is drawn at was next to unreadable against the white
+/// beside it — reported as lines that could hardly be told apart — and the
+/// reason is that blending toward black takes a faint line's colour before
+/// it takes its light. So the blue keeps almost none of its red, and a
+/// charged jump is drawn at the whole of [`FAINT`] where an ordinary one is
+/// drawn at half. That extra alpha only buys back what the hue costs: the
+/// two come out at about the same light, differing in colour alone.
+///
+/// The alpha here is a share of [`line_color`]'s, the two being multiplied,
+/// so a route held behind another dims whole and keeps its reading.
+pub fn jump_color(charged: bool) -> [f32; 4] {
+    match charged {
+        true => [0.12, 0.55, 1., 1.],
+        // A quarter once [`FAINT`] has multiplied it, which is what the
+        // whole line was drawn at before any of this.
+        false => [1., 1., 1., 0.5],
+    }
+}
+
+/// Which jumps of a route could only have been flown on a cone
+///
+/// One flag a jump, from the places alone: a jump longer than the ship
+/// reaches unaided **is** a supercharged jump, there being no other way to
+/// cross it. That makes this a fact about the jump rather than about the
+/// ask — a route plotted for a supercharging drive is mostly ordinary
+/// jumps, and colouring the whole line blue for it would say the ship flew
+/// a cone at every stop.
+///
+/// The other direction is not decidable here and is not claimed: a jump
+/// *inside* the ship's plain range may still have set out from a cone, the
+/// charge going to waste. What the line says is "this one needed the cone",
+/// which is the reading that answers where a route's length came from.
+///
+/// `range` is what the ship reaches unaided, in light years, as it was
+/// asked for. Nothing charged where it will not parse — a route whose range
+/// is not a number is one the map cannot say anything about.
+pub fn charged(stops: &[DVec3], range: Option<f64>) -> Vec<bool> {
+    let jumps = stops.len().saturating_sub(1);
+    let Some(range) = range.filter(|range| *range > 0.) else {
+        return vec![false; jumps];
+    };
+
+    stops
+        .windows(2)
+        .map(|leg| {
+            // A shade over, so a jump flown at exactly the ship's range is
+            // an ordinary jump: the router's own test admits it, and float
+            // arithmetic on light years is not exact.
+            leg[0].distance(leg[1]) > range * 1.000_01
+        })
+        .collect()
 }
 
 /// Where a route sits, and how far it reaches from there
@@ -101,6 +181,14 @@ pub fn spawn_route(
         / stops.len() as f64;
     let (cell, translation) =
         grid.translation_to_grid(crate::space::metres(midpoint));
+    // Which jumps needed a cone, settled here off the places and the range
+    // the route was asked for — in light years, before any of this is
+    // turned into metres from the midpoint. A fact about the route, so it
+    // is settled once; see [`charged`].
+    let flown = charged(
+        &stops.iter().map(|(_, at)| *at).collect::<Vec<DVec3>>(),
+        route.range().and_then(|range| range.parse::<f64>().ok()),
+    );
     let path = super::Path::new(
         stops
             .iter()
@@ -108,6 +196,7 @@ pub fn spawn_route(
                 (*address, crate::space::metres(*at - midpoint).as_vec3())
             })
             .collect(),
+        flown.clone(),
     );
 
     // Whole to begin with, every stop taken as drawn. `super::trim` cuts it
@@ -116,9 +205,10 @@ pub fn spawn_route(
     let whole = path.whole();
     let shown = vec![true; whole.len()];
     commands.spawn((
-        Mesh3d(
-            meshes.add(super::LineList { points: super::legs(&whole, &shown) }),
-        ),
+        // Whole, the spawn taking every stop as drawn, so no dash is
+        // wanted yet: `super::trim` cuts it to the map and to the view
+        // before the frame is presented.
+        Mesh3d(meshes.add(super::legs(&whole, &shown, &flown, 0.))),
         // Its own material rather than one shared between the lines, so that
         // holding one route behind another is a write to that route's color.
         // Drawn as the active one, being the route just plotted;
@@ -221,5 +311,81 @@ mod tests {
         for place in places {
             assert!(middle.distance(place) as f32 <= extent);
         }
+    }
+
+    /// A jump that needed a cone is drawn blue, and an ordinary one white
+    ///
+    /// Per jump, not per route: a route plotted for a supercharging drive is
+    /// mostly ordinary jumps, and one colour over the whole line would say
+    /// the ship flew a cone at every stop.
+    #[test]
+    fn a_charged_jump_is_drawn_blue() {
+        let hue = |color: [f32; 4]| (color[0], color[1], color[2]);
+        let (charged, plain) = (jump_color(true), jump_color(false));
+
+        let (red, green, blue) = hue(charged);
+        assert!(blue > green && green > red, "{charged:?} is not blue");
+        assert_eq!(hue(plain), (1., 1., 1.), "an ordinary jump left white");
+
+        // Told apart twice over: the charged jump is bluer *and* drawn at
+        // more alpha, a faint line losing its hue to the black behind it
+        // before it loses its light.
+        assert!(
+            charged[3] > plain[3],
+            "a charged jump is not drawn at the more of the two",
+        );
+        assert!(red < 0.25, "the blue kept too much red to read as blue");
+        assert!(line_color(0.5).alpha() < line_color(1.).alpha());
+
+        // And the extra alpha only buys back what the hue costs: a
+        // saturated blue carries about a third of white's luminance, so the
+        // two come out at roughly the same light and the difference left is
+        // the one worth seeing.
+        let light = |color: [f32; 4]| {
+            (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2])
+                * color[3]
+        };
+        let (lit, white) = (light(charged), light(plain));
+        assert!(
+            (lit - white).abs() < white * 0.35,
+            "a charged jump carries {lit} of light against {white}",
+        );
+
+        // And an ordinary jump comes out where the whole line used to:
+        // a quarter, once the material's own faintness has multiplied it.
+        assert!(
+            (line_color(1.).alpha() * plain[3] - 0.25).abs() < 0.01,
+            "an ordinary jump moved: {}",
+            line_color(1.).alpha() * plain[3],
+        );
+    }
+
+    /// Which jumps needed a cone is read off the places and the range
+    ///
+    /// A jump longer than the ship reaches unaided is a supercharged jump,
+    /// there being no other way across it. The other direction is not
+    /// claimed: a short jump may still have set out from a cone.
+    #[test]
+    fn a_jump_longer_than_the_ship_reaches_was_charged() {
+        let stops = [
+            DVec3::ZERO,
+            DVec3::new(40., 0., 0.),
+            DVec3::new(240., 0., 0.),
+            DVec3::new(280., 0., 0.),
+        ];
+
+        assert_eq!(
+            charged(&stops, Some(50.)),
+            vec![false, true, false],
+            "the 200 Ly jump is the only one a 50 Ly ship could not make",
+        );
+
+        // A jump at exactly the range is an ordinary jump, the router's own
+        // test admitting it.
+        assert_eq!(charged(&[stops[0], stops[1]], Some(40.)), vec![false]);
+
+        // And nothing is claimed where there is no range to compare with.
+        assert_eq!(charged(&stops, None), vec![false; 3]);
+        assert!(charged(&stops[..1], Some(50.)).is_empty());
     }
 }

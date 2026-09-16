@@ -6,7 +6,7 @@ use crate::systems::Spyglass;
 use crate::systems::System;
 use crate::systems::bodies::spawn::{HeldSystem, Strength};
 use crate::systems::filter::{Filter, Filters};
-use crate::systems::route::graph::{Drive, Routing};
+use crate::systems::route::graph::{Drive, Routing, Tuning};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
@@ -18,6 +18,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SelectedFilter>();
     app.init_resource::<graph::Routing>();
     app.init_resource::<graph::Drive>();
+    app.init_resource::<graph::Tuning>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.
@@ -78,13 +79,30 @@ pub(crate) struct Path {
     stops: Vec<(i64, Vec3)>,
     /// Which of them were on the map when the line was last cut
     shown: Vec<bool>,
+    /// Which jumps were flown on a jet cone, one flag a jump
+    ///
+    /// Settled when the line is spawned and never again: it is a fact about
+    /// the route, where [`Self::shown`] is a fact about the camera. See
+    /// [`spawn::charged`].
+    charged: Vec<bool>,
+    /// How long the dashes it was last cut with are, in metres
+    ///
+    /// A fact about the camera, like [`Self::shown`]: a dash is a share of
+    /// the view, so zooming asks for another one. Nothing where the line has
+    /// never been cut for a view, which reads as a dash of no length and is
+    /// why a line is dashed on the first frame it is trimmed.
+    dash: f32,
 }
 
 impl Path {
     /// A path through `stops`, with nothing yet known about what is drawn
-    pub(crate) fn new(stops: Vec<(i64, Vec3)>) -> Path {
+    ///
+    /// Nor about the view: a line is spawned with every stop taken as drawn,
+    /// and a whole leg is drawn whole whatever a dash would be. [`trim`]
+    /// settles both against the camera before anything is seen of it.
+    pub(crate) fn new(stops: Vec<(i64, Vec3)>, charged: Vec<bool>) -> Path {
         let shown = vec![true; stops.len()];
-        Path { stops, shown }
+        Path { stops, shown, charged, dash: 0. }
     }
 
     /// The line as it stands, whole
@@ -93,12 +111,19 @@ impl Path {
     }
 }
 
-/// Cut each route's line back to what is on the map
+/// Cut each route's line back to what is on the map, and to the zoom
 ///
 /// Runs over the lines rather than over the systems, and rebuilds one only
 /// where the answer moved. The mesh is rebuilt in place, under the handle the
 /// line already holds, so nothing downstream has to be told.
+///
+/// Two things move it. Which stops are on the map decides what of the line is
+/// drawn at all, and how much sky the camera takes in decides how long the
+/// dashes running off the map are: a dash is a share of the view, so zooming
+/// asks for a new one — past [`REDASHED_AT`], which keeps a four hundred jump
+/// route off the rebuild queue for every click of the wheel.
 fn trim(
+    camera: Query<(&OrbitCamera, Option<&Projection>)>,
     systems: Query<(&System, &Visibility)>,
     mut lines: Query<(&mut Path, &Mesh3d)>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -106,12 +131,20 @@ fn trim(
     if lines.is_empty() {
         return;
     }
+    let Ok((orbit, lens)) = camera.single() else { return };
 
     let shown: HashSet<i64> = systems
         .iter()
         .filter(|(_, visibility)| **visibility != Visibility::Hidden)
         .map(|(system, _)| system.address)
         .collect();
+
+    // How long a dash wants to be for the view as it now stands. One answer
+    // for every line, the view being one view.
+    let dash = dash_of(
+        2. * crate::camera::framed(orbit.radius, lens) as f64
+            * crate::space::LIGHT_YEAR,
+    );
 
     for (mut path, mesh) in &mut lines {
         // A system the map never spawned is not on it, which is the same
@@ -121,11 +154,16 @@ fn trim(
             .iter()
             .map(|(address, _)| shown.contains(address))
             .collect();
-        if path.shown == wanted {
+        // Cut again where either answer moved, and only then: a line holding
+        // this view's dashes over this frame's systems is the line already
+        // drawn.
+        let held = 1. / REDASHED_AT..=REDASHED_AT;
+        let drifted = !held.contains(&(dash / path.dash));
+        if path.shown == wanted && !drifted {
             continue;
         }
 
-        let mut points = legs(&path.whole(), &wanted);
+        let mut line = legs(&path.whole(), &wanted, &path.charged, dash);
         // A cut that leaves nothing is a route with none of its systems on the
         // map, which the spyglass or the filters can do at any moment. Handing
         // the renderer a mesh of no vertices leaves its slab allocator holding
@@ -138,17 +176,21 @@ fn trim(
         // line's own `Visibility` is not free to say this instead: it carries
         // whether the route's row is turned on, and `follow_filters` writes it
         // every frame from that.
-        if points.is_empty() {
-            points = vec![Vec3::ZERO, Vec3::ZERO];
+        if line.points.is_empty() {
+            line = LineList {
+                points: vec![Vec3::ZERO, Vec3::ZERO],
+                colors: vec![spawn::jump_color(false); 2],
+            };
         }
 
         // Nothing to write to where the mesh has already gone. What was drawn
         // is left unrecorded with it, so the cut is tried again rather than
         // taken as done.
-        if meshes.insert(&mesh.0, LineList { points }.into()).is_err() {
+        if meshes.insert(&mesh.0, line.into()).is_err() {
             continue;
         }
         path.shown = wanted;
+        path.dash = dash;
     }
 }
 
@@ -486,6 +528,18 @@ pub(crate) struct PlottedRoute {
     /// How hard the search worked at it, carried along for the same reason.
     /// See [`crate::systems::route::graph::Routing`].
     pub(crate) how: Routing,
+    /// How the plan over the boost stars was worked out, carried along for
+    /// the same reason the rest are: it is part of what was asked, and part
+    /// of what tells two plots between the same ends apart. See
+    /// [`crate::systems::route::graph::Tuning`].
+    pub(crate) tune: Tuning,
+    /// How long it took, from the click to the answer landing
+    ///
+    /// Wall time and not the search's own: what it measures is the wait,
+    /// which includes the leg sitting in the pool's queue and the jump graph
+    /// being opened for the first route of a session. Kept beside the row
+    /// rather than in the filter; see [`crate::systems::filter::Entry::took`].
+    pub(crate) took: std::time::Duration,
 }
 
 impl PlottedRoute {
@@ -502,6 +556,7 @@ impl PlottedRoute {
             trip: self.trip.clone(),
             drive: self.drive,
             how: self.how,
+            tune: self.tune,
         }
     }
 }
@@ -596,6 +651,10 @@ fn plotted(
         // have to be those three in that order or the trip is a set again.
         let at = placed_at(&route.filter(), &filters);
         filters.insert(at, route.filter());
+        // After the row is in, the filter being what dedupes it: a route
+        // plotted again is the row already there, told how long the second
+        // search took.
+        filters.took(&route.filter(), route.took);
     }
 }
 
@@ -820,6 +879,7 @@ pub(crate) mod fetch;
 // resident names before the app is up.
 pub(crate) mod frontier;
 pub mod graph;
+pub(crate) mod highway;
 pub(crate) mod spawn;
 pub(crate) mod tour;
 
@@ -847,15 +907,41 @@ impl From<LineStrip> for Mesh {
 /// A strip joins everything handed to it, which a route cannot use: it has to
 /// leave gaps, between the dashes running out to a system that is not drawn
 /// and across the legs that are not drawn at all.
-#[derive(Debug, Clone)]
+///
+/// Each point carries a colour, because a route is not one colour: a jump
+/// flown on a jet cone is drawn blue and an ordinary jump white, and both
+/// are jumps of the same route. Per vertex rather than per entity so it
+/// stays one mesh and one material — the material's own colour is what the
+/// fade writes, and the two multiply.
+#[derive(Debug, Clone, Default)]
 pub(crate) struct LineList {
     pub(crate) points: Vec<Vec3>,
+    pub(crate) colors: Vec<[f32; 4]>,
+}
+
+impl LineList {
+    /// A line of one colour, which is most of them: an orbit, a crosshair,
+    /// a layer of a search. The colour is the material's alone, and no
+    /// attribute is written — a vertex colour per point is four floats a
+    /// vertex to say the same thing at every one of them.
+    pub(crate) fn plain(points: Vec<Vec3>) -> LineList {
+        LineList { points, colors: Vec::new() }
+    }
 }
 
 impl From<LineList> for Mesh {
     fn from(line: LineList) -> Self {
-        Mesh::new(PrimitiveTopology::LineList, RenderAssetUsages::RENDER_WORLD)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points)
+        let mesh = Mesh::new(
+            PrimitiveTopology::LineList,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, line.points);
+        match line.colors.is_empty() {
+            true => mesh,
+            false => {
+                mesh.with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, line.colors)
+            }
+        }
     }
 }
 
@@ -867,20 +953,63 @@ impl From<LineList> for Mesh {
 /// being shown.
 const SOLID: f32 = 0.35;
 
-/// How long a dash is, and the gap after it, in metres
+/// How many dashes, each with the gap after it, cross the view
 ///
-/// A length in the world rather than a share of the leg. A share cannot be
-/// read at more than one zoom: the legs of a route differ by tens of times
-/// over, so the same share draws a dash of one size out at one stop and
-/// another size at the next, and flying in leaves it a few pixels long against
-/// a leg that now runs off both edges of the screen. Held at a distance
-/// instead, a dash is the same thing everywhere on the route and grows on
-/// screen as the camera comes in, which is what everything else drawn in the
-/// world does.
+/// A count against the screen rather than a length in the world, which is how
+/// the rings inside a system are dashed as well — see `Spacing`'s `DASHES` in
+/// `galos_index::orbit`. **A dash held at a fixed distance cannot be read at
+/// more than one zoom**: half a light year is a clear mark with one stop in
+/// view and a hundredth of a pixel with the galaxy in view, so a leg trailing
+/// off the map read as a faint solid line exactly where the dashes were the
+/// thing saying the route goes on past what is drawn. Reported that way.
 ///
-/// Half a light year, which is a few pixels with a whole route in view and a
-/// clear mark by the time one stop is.
-const DASH: f32 = (0.5 * crate::space::LIGHT_YEAR) as f32;
+/// A share of the view instead, so a dash is the same size on screen at every
+/// zoom: the dashes stay dashes on the way out and do not swallow the leg on
+/// the way in. Twenty of them and their gaps across the sky the camera takes
+/// in, which is a dash of some tens of pixels — read as a dashed line rather
+/// than as a chain of ticks, and the same reading the rings give.
+const DASHES: f64 = 20.;
+
+/// How long a dash is, and the gap after it, for a camera taking in `across`
+/// metres of sky
+///
+/// In metres, a line's vertices being measured in them. What the camera takes
+/// in is the whole of the view top to bottom, and a dash and its gap are one
+/// [`DASHES`]th of that between them.
+pub(crate) fn dash_of(across: f64) -> f32 {
+    (across / (2. * DASHES)) as f32
+}
+
+/// The most dashes one leg running off the map is drawn with
+///
+/// The bound that keeps a dash a share of the *view* from becoming a mesh
+/// the size of memory. A dash is [`DASHES`]th of the height of what the
+/// camera takes in, which inside a system is thousandths of a light year,
+/// while the leg it is dashing stays tens of light years long — so the
+/// number of them is one divided by the other and grows without limit as
+/// the camera descends. Measured on a fifty light year leg with its far
+/// end off the map: 1,300 points with a light year in view, 1.28 million
+/// with a thousandth of one, **15.5 million with a ten-thousandth**, at 28
+/// bytes a point and rebuilt on every [`REDASHED_AT`] step of the zoom.
+///
+/// **A backstop and not a style.** What a dash should *look* like is the
+/// view's business and [`dash_of`] answers it; this only says how many of
+/// them may be built, so the zooms where the view's own answer is sane —
+/// which is every zoom that can see the leg — are left exactly as they
+/// were. Four thousand and ninety-six is past any of them and comes to
+/// 229 KB a leg at the worst, where the view's own answer came to 414 MB
+/// and climbing.
+const DASH_CAP: f32 = 4096.;
+
+/// How far off its dashes may drift before a line is cut again
+///
+/// As a ratio of the dash the view asks for. Zooming is continuous and a mesh
+/// is not: rebuilt on every scroll click a route of four hundred jumps would
+/// be rebuilt while the wheel is still turning, and rebuilt never it would be
+/// drawn for a zoom the camera has left. A third is under what the eye reads
+/// as a change of spacing, which is the same line the rings are redrawn on
+/// (`bodies::spawn::RELAID_AT`).
+const REDASHED_AT: f32 = 1.33;
 
 /// The line to draw for a route, as pairs of points
 ///
@@ -896,15 +1025,36 @@ const DASH: f32 = (0.5 * crate::space::LIGHT_YEAR) as f32;
 /// what is being shown, which is true and is the one thing the viewer cannot
 /// otherwise tell: a leg simply cut at the edge of the reach reads as a route
 /// that ends there.
-pub(super) fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
-    if points.len() != shown.len() {
-        return Vec::new();
+/// `charged` is one flag a jump, saying that jump was flown on a jet cone;
+/// see [`spawn::charged`]. Every point of a jump takes that jump's colour,
+/// so what the line says about a stretch is what the ship did on it.
+///
+/// `dash` is how long a dash and the gap after it are, in metres, which is
+/// the camera's business rather than the route's — see [`dash_of`]. Nothing
+/// is dashed at nothing, which is what a line spawned before the camera has
+/// been asked is drawn with: the solid stretch alone, until [`trim`] cuts it
+/// again with a dash the view has asked for.
+pub(super) fn legs(
+    points: &[Vec3],
+    shown: &[bool],
+    charged: &[bool],
+    dash: f32,
+) -> LineList {
+    if points.len() != shown.len() || charged.len() + 1 != points.len() {
+        return LineList::default();
     }
 
-    let mut drawn = Vec::new();
+    let mut drawn = LineList::default();
     for (leg, ends) in points.windows(2).enumerate() {
+        let color = spawn::jump_color(charged[leg]);
+        let draw = |from: Vec3, to: Vec3, drawn: &mut LineList| {
+            drawn.points.push(from);
+            drawn.points.push(to);
+            drawn.colors.push(color);
+            drawn.colors.push(color);
+        };
         match (shown[leg], shown[leg + 1]) {
-            (true, true) => drawn.extend_from_slice(ends),
+            (true, true) => draw(ends[0], ends[1], &mut drawn),
             (false, false) => {}
             // From whichever end is on the map, towards the one that is not.
             (here, _) => {
@@ -913,19 +1063,53 @@ pub(super) fn legs(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
                 let leg = (to - from).length();
                 let Some(along) = (to - from).try_normalize() else { continue };
 
-                drawn.push(from);
-                drawn.push(from + along * leg * SOLID);
+                draw(from, from + along * leg * SOLID, &mut drawn);
+
+                // Short enough that a couple of them fit the stretch given
+                // over to them, wherever the view asks for more than that.
+                // The view's dash is the one to draw where there is room for
+                // it, being the one that reads at this zoom; a leg too short
+                // to hold one would otherwise come back as the solid stub
+                // alone and say nothing about going on past the map.
+                let tail = leg * (1. - SOLID);
+                let dash = dash.min(tail / 5.);
+                // **And long enough that there is a bounded number of
+                // them.** A dash is a share of the view ([`dash_of`]), and
+                // the view goes all the way down to the inside of a system
+                // — thousandths of a light year, and light seconds past
+                // that — while a leg stays tens of light years long. The
+                // count is the one over the other, so it grows without
+                // bound as the camera descends: measured, one fifty light
+                // year leg with its far end off the map came to 1.28
+                // million points at a thousandth of a light year across
+                // and **15.5 million at a ten-thousandth, which is 414
+                // MB**. Zooming rebuilds it every [`REDASHED_AT`] step, so
+                // what that ate was the whole of memory. Reported exactly
+                // that way.
+                //
+                // [`DASH_CAP`] of them is the bound, and it lengthens the
+                // dash rather than stopping the run part way: a line that
+                // gave up half way along its leg would read as the route
+                // ending there, which is the one thing the dashes are
+                // drawn to deny.
+                let dash = dash.max(tail / (2. * DASH_CAP));
+                if dash <= 0. {
+                    continue;
+                }
 
                 // A dash and the gap after it are the same length, so the run
                 // reads as a dashed line rather than as marks left by one. It
                 // starts a gap clear of the solid stretch and stops a gap
                 // short of the system that is not drawn, so however many fit
                 // is however many the leg has room for.
-                let mut at = leg * SOLID + DASH;
-                while at + DASH <= leg - DASH {
-                    drawn.push(from + along * at);
-                    drawn.push(from + along * (at + DASH));
-                    at += DASH + DASH;
+                let mut at = leg * SOLID + dash;
+                while at + dash <= leg - dash {
+                    draw(
+                        from + along * at,
+                        from + along * (at + dash),
+                        &mut drawn,
+                    );
+                    at += dash + dash;
                 }
             }
         }
@@ -947,6 +1131,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -1028,12 +1213,135 @@ mod tests {
     ///
     /// Twenty light years apart, which is a jump a route is plotted in.
     const A: Vec3 = Vec3::ZERO;
-    const B: Vec3 = Vec3::new(20. * DASH / 0.5, 0., 0.);
+    const B: Vec3 = Vec3::new(20. * crate::space::LIGHT_YEAR as f32, 0., 0.);
+
+    /// A dash for a camera taking in four hundred light years of sky
+    ///
+    /// Which is a view a plotted route is read at, and leaves a dash of ten
+    /// light years: half a jump of `A` to `B`, so the legs below are long
+    /// enough to hold a couple of them and short enough for the count to be
+    /// read off by hand.
+    fn dash() -> f32 {
+        dash_of(400. * crate::space::LIGHT_YEAR)
+    }
+
+    /// One jump, unaided, for the tests that are about the geometry.
+    fn plain(points: &[Vec3], shown: &[bool]) -> Vec<Vec3> {
+        legs(points, shown, &vec![false; points.len() - 1], dash()).points
+    }
+
+    /// A leg running off the map is bounded however far the camera descends
+    ///
+    /// **The reported trouble: zooming into a system a route runs through
+    /// ate all of memory.** A dash is a share of the view ([`dash_of`]) and
+    /// the view runs down to the inside of a system — thousandths of a
+    /// light year, and light seconds past that — while the leg it dashes
+    /// stays tens of light years long. So the count was one over the other
+    /// and unbounded. Measured on one fifty light year leg with its far end
+    /// off the map, at 28 bytes a point:
+    ///
+    /// | in view | points | |
+    /// |---|---|---|
+    /// | 1 ly | 1,300 | 0.03 MB |
+    /// | 0.001 ly | 1,278,380 | 34 MB |
+    /// | 0.0001 ly | 15,517,262 | **414 MB** |
+    ///
+    /// and rebuilt on every [`REDASHED_AT`] step of the wheel.
+    ///
+    /// What is asserted is both halves: bounded where the view asks for the
+    /// absurd, and *untouched* where it does not — the cap is a backstop
+    /// and the view's own dash is still what a reader sees at any zoom that
+    /// can make out the leg at all.
+    #[test]
+    fn a_leg_off_the_map_is_dashed_within_a_bound() {
+        use crate::space::LIGHT_YEAR;
+        let ly = LIGHT_YEAR as f32;
+        let points = vec![Vec3::ZERO, Vec3::new(50. * ly, 0., 0.)];
+        let shown = vec![true, false];
+        let charged = vec![false];
+        let drawn = |across: f64| {
+            legs(&points, &shown, &charged, dash_of(across * LIGHT_YEAR))
+        };
+
+        // Two points a dash, and the solid stub on the front of it.
+        let ceiling = (2. * DASH_CAP) as usize + 2;
+        for across in [0.1, 0.01, 0.001, 0.0001, 0.000_001] {
+            let line = drawn(across);
+            assert!(
+                line.points.len() <= ceiling,
+                "{across} ly in view drew {} points",
+                line.points.len(),
+            );
+            assert_eq!(
+                line.colors.len(),
+                line.points.len(),
+                "a point uncoloured"
+            );
+        }
+
+        // And a zoom that can see the leg is left alone: the view's own
+        // dash, well under the cap, which is what keeps this a backstop
+        // rather than a rule about how a route looks.
+        let line = drawn(1.);
+        assert!(
+            line.points.len() < ceiling,
+            "an ordinary zoom hit the cap: {} points",
+            line.points.len(),
+        );
+        assert!(line.points.len() > 64, "the dashes went missing");
+
+        // The run still reaches the far end whatever the cap did, a line
+        // stopping half way along its leg reading as the route ending
+        // there — which is the one thing the dashes are drawn to deny.
+        let far = drawn(0.000_001);
+        let end = far.points.iter().map(|at| at.x).fold(0.0f32, f32::max);
+        assert!(
+            end > 40. * ly,
+            "the dashes stopped at {} of fifty light years",
+            end / ly,
+        );
+    }
 
     /// A leg between two systems on the map is drawn whole
     #[test]
     fn a_leg_between_two_drawn_systems_is_one_line() {
-        assert_eq!(legs(&[A, B], &[true, true]), vec![A, B]);
+        assert_eq!(plain(&[A, B], &[true, true]), vec![A, B]);
+    }
+
+    /// And each of its points carries its own jump's colour
+    ///
+    /// Per jump rather than per route, so a route reads as what the ship did
+    /// on each stretch of it: the two points of a charged jump are blue and
+    /// the two of an ordinary one white. Every vertex the leg draws takes
+    /// that colour, dashes and all, or a leg trailing off the map would
+    /// change colour halfway.
+    #[test]
+    fn each_jump_carries_its_own_colour() {
+        let middle = Vec3::new(B.x / 2., 0., 0.);
+
+        let line =
+            legs(&[A, middle, B], &[true, true, true], &[true, false], dash());
+
+        assert_eq!(line.points.len(), 4, "two jumps are four points");
+        assert_eq!(line.colors.len(), line.points.len(), "a point uncoloured");
+        assert_eq!(
+            line.colors,
+            vec![
+                spawn::jump_color(true),
+                spawn::jump_color(true),
+                spawn::jump_color(false),
+                spawn::jump_color(false),
+            ],
+        );
+
+        // And a leg that trails off the map keeps one colour over its
+        // solid stretch and every dash of it.
+        let trailing = legs(&[A, B], &[true, false], &[true], dash());
+        assert!(trailing.points.len() > 4, "the leg was not dashed");
+        assert!(
+            trailing.colors.iter().all(|&at| at == spawn::jump_color(true)),
+            "a dash of a charged jump came out another colour",
+        );
     }
 
     /// A leg between two systems that are not on the map is not drawn
@@ -1042,7 +1350,7 @@ mod tests {
     /// says nothing about what the viewer can see.
     #[test]
     fn a_leg_between_two_undrawn_systems_is_nothing() {
-        assert!(legs(&[A, B], &[false, false]).is_empty());
+        assert!(plain(&[A, B], &[false, false]).is_empty());
     }
 
     /// A leg with one end on the map runs out from that end and stops short
@@ -1054,7 +1362,7 @@ mod tests {
     fn a_leg_out_of_the_map_trails_off_before_it_arrives() {
         for (shown, near, far) in [([true, false], A, B), ([false, true], B, A)]
         {
-            let drawn = legs(&[A, B], &shown);
+            let drawn = plain(&[A, B], &shown);
 
             assert_eq!(drawn.first(), Some(&near), "did not start where drawn");
             assert!(
@@ -1069,33 +1377,78 @@ mod tests {
         }
     }
 
-    /// A dash is the same length on a short leg as on a long one
+    /// A leg away from `A`, `far` light years off
+    fn away(far: f32) -> Vec3 {
+        Vec3::new(far * crate::space::LIGHT_YEAR as f32, 0., 0.)
+    }
+
+    /// The first dash of a leg out of the map, which is the pair drawn
+    /// after the solid stretch
+    fn first_dash(to: Vec3, across: f32) -> f32 {
+        let drawn =
+            legs(&[A, to], &[true, false], &[false], dash_of(across as f64))
+                .points;
+        assert!(drawn.len() > 4, "the leg came back undashed: {drawn:?}");
+        (drawn[3] - drawn[2]).length()
+    }
+
+    /// A dash is the same length on any leg with the room for one
     ///
-    /// The whole reason for measuring it in the world. A share of the leg
-    /// draws one size out at one stop and another at the next, and a route's
-    /// legs differ by tens of times over.
+    /// It is a share of the view, so two legs read at one zoom are dashed
+    /// alike however far each of them runs. Both of these are long enough
+    /// to hold the dash this view asks for.
     #[test]
     fn a_dash_is_the_same_length_whatever_the_leg() {
-        let short = Vec3::new(B.x / 3., 0., 0.);
+        let view = 400. * crate::space::LIGHT_YEAR as f32;
 
-        let long = legs(&[A, B], &[true, false]);
-        let brief = legs(&[A, short], &[true, false]);
+        let long = first_dash(away(400.), view);
+        let longer = first_dash(away(1000.), view);
 
-        // The first dash of each, which is the pair after the solid run.
         assert!(
-            ((long[3] - long[2]).length() - (brief[3] - brief[2]).length())
-                .abs()
-                < 1.,
-            "a dash drew {} on one leg and {} on another",
-            (long[3] - long[2]).length(),
-            (brief[3] - brief[2]).length()
+            (long - longer).abs() < crate::space::LIGHT_YEAR as f32,
+            "a dash drew {long} on one leg and {longer} on another",
+        );
+    }
+
+    /// And it grows with the view, so zooming out leaves it still dashed
+    ///
+    /// The reported trouble, and the whole reason for measuring a dash
+    /// against the view: held at half a light year, a dash was a clear mark
+    /// with one stop in view and a hundredth of a pixel with the galaxy in
+    /// view, so the stretch that says a route goes on past the map read as a
+    /// faint solid line at the zoom a whole route is looked at from.
+    ///
+    /// Asked of the same leg at three zooms: the dash the wider view draws
+    /// is the longer one, until the leg itself is what is left to share out.
+    #[test]
+    fn a_dash_grows_with_the_view() {
+        let leg = away(50.);
+        let close = first_dash(leg, 20. * crate::space::LIGHT_YEAR as f32);
+        let out = first_dash(leg, 400. * crate::space::LIGHT_YEAR as f32);
+        let galaxy = first_dash(leg, 20_000. * crate::space::LIGHT_YEAR as f32);
+
+        assert!(out > close * 2., "{out} is not clear of {close}");
+
+        // And where the view asks for more than the leg can hold, the leg
+        // decides: a dash of a fifth of what trails off the map, which is
+        // two dashes and their gaps. Still a share of what is drawn rather
+        // than a length that vanished with the zoom -- the old half light
+        // year was a fortieth of this leg and this is better than a tenth
+        // of it.
+        assert!(galaxy >= out, "{galaxy} fell under {out}");
+        assert!(
+            galaxy > leg.length() / 10.,
+            "a dash of {galaxy} on a leg of {} is too small to read",
+            leg.length(),
         );
     }
 
     /// A line is cut only where its stops and what is drawn agree in length
     #[test]
     fn a_line_nothing_is_known_about_is_not_drawn() {
-        assert!(legs(&[A, B], &[true]).is_empty());
+        assert!(legs(&[A, B], &[true], &[false], dash()).points.is_empty());
+        // And where the flags and the stops disagree in length.
+        assert!(legs(&[A, B], &[true, true], &[], dash()).points.is_empty());
     }
 
     /// Nothing is reached from outside the system, whole mark or fading one
@@ -1133,6 +1486,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -1264,6 +1618,8 @@ mod tests {
                 trip: Some(trip.clone()),
                 drive: Drive::Unaided,
                 how: Routing::default(),
+                took: std::time::Duration::ZERO,
+                tune: Tuning::default(),
             });
             app.update();
         }
@@ -1311,6 +1667,8 @@ mod tests {
                     trip: Some(trip.clone()),
                     drive: Drive::Unaided,
                     how: Routing::default(),
+                    took: std::time::Duration::ZERO,
+                    tune: Tuning::default(),
                 });
                 app.update();
             }
@@ -1359,6 +1717,8 @@ mod tests {
                 trip,
                 drive: Drive::Unaided,
                 how: Routing::default(),
+                took: std::time::Duration::ZERO,
+                tune: Tuning::default(),
             });
             app.update();
         }
@@ -1655,6 +2015,8 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            took: std::time::Duration::ZERO,
+            tune: Tuning::default(),
         });
         app.update();
 

@@ -27,9 +27,9 @@
 //! write — so what is published stands untouched for the life of the run.
 //! See `galos_index::galaxy`.
 
+use galos_index::Galaxy;
 use galos_index::meta::PopulatedSystem;
 use galos_index::sidecars::{Counts, Moved, Sidecars};
-use galos_index::Galaxy;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -177,8 +177,8 @@ impl Tables {
                 moved.reaches |= self.held.reach(address, reach);
             }
 
-            if let Some(boost) = galaxy.boost_of(address) {
-                moved.boosts |= self.held.boost(address, boost);
+            if let Some(row) = galaxy.boost_of(address) {
+                moved.boosts |= self.held.boost(row);
             }
         }
         moved

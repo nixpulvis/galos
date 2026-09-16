@@ -29,7 +29,7 @@ use crate::space::Map;
 use crate::systems::aggregate::Planned;
 use crate::systems::bodies::spawn::HeldSystem;
 use crate::systems::fetch::{FetchTasks, RawSystem};
-use crate::systems::filter::{Candidate, Cut, Filtering, Filters};
+use crate::systems::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
@@ -327,6 +327,20 @@ fn collect(
     });
 }
 
+/// How many payload points one frame may weigh against the filters
+///
+/// The verdicts are a walk of every point of every resident payload, and
+/// the resident set at a wide zoom is measured at 152 million points over
+/// 151,619 cells. At 22.7 ns a point under a 334-stop route filter that is
+/// 3.4 seconds, which is what a cut used to spend in one frame and what was
+/// reported as the map hanging at the end of a long plot.
+///
+/// Two hundred thousand is some four milliseconds of it — a frame's worth
+/// of slack rather than a frame's whole budget, the walk itself already
+/// costing 22–29 ms at this scale. A cell is taken whole or not at all,
+/// its list being an all-or-nothing answer about that payload.
+const VERDICT_BUDGET: usize = 200_000;
+
 /// The orders a resident cell's points are drawn in, kept until what they are
 /// worked out from moves
 ///
@@ -352,8 +366,24 @@ fn collect(
 /// is in the order it is drawn in.
 #[derive(Resource, Default)]
 pub(crate) struct PointOrders {
-    /// The cut these were taken at
+    /// The cut being worked towards
     cut: u64,
+    /// Which cut each cell's lists were last taken at
+    ///
+    /// **A cut no longer throws the lists away.** It used to, and what
+    /// followed was one frame that walked every resident payload through
+    /// the filters again — measured over `.index/full`, 152 million points
+    /// at 22.7 ns apiece under a 334-stop route filter, which is **3.4
+    /// seconds** of frozen map. Reported as a hang at the end of plotting
+    /// a long route, and that is exactly when it fires: a route landing
+    /// adds a filter, which cuts.
+    ///
+    /// So a stale list is kept and drawn from until this frame's budget
+    /// reaches its cell. What that shows is the map filtering in over a
+    /// second or two rather than stopping dead, which is what every other
+    /// bounded thing here already does — see
+    /// [`super::spawn::SPAWN_BUDGET`].
+    at: HashMap<CellId, u64>,
     cells: HashMap<CellId, Vec<u32>>,
     peopled: HashMap<CellId, Vec<u32>>,
 }
@@ -366,10 +396,13 @@ impl PointOrders {
     /// is no business of the filters.
     fn hold(&mut self, cut: u64, asking: bool) {
         if self.cut != cut {
+            // Noted and not acted on: what each cell holds is stale from
+            // here, and [`Self::walk`] brings it forward a budget at a
+            // time. See [`Self::at`].
             self.cut = cut;
-            self.clear();
         } else if !asking {
             self.cells.clear();
+            self.at.clear();
         }
     }
 
@@ -377,6 +410,7 @@ impl PointOrders {
     fn clear(&mut self) {
         self.cells.clear();
         self.peopled.clear();
+        self.at.clear();
     }
 
     /// Work out whatever this cut has not asked about this cell yet
@@ -390,11 +424,30 @@ impl PointOrders {
         &mut self,
         id: CellId,
         points: &[Point],
-        filters: &Filters,
+        filters: &Prepared<'_>,
         populated: &Populated,
         now: DateTime<Utc>,
         by_population: bool,
+        budget: &mut usize,
     ) {
+        // Whether what is held about this cell was worked out against the
+        // filters as they stand. A cell nothing is held about at all is
+        // stale too, this being the first time it has been reached.
+        let fresh = self.at.get(&id) == Some(&self.cut);
+        // What the pass may still spend, in points. Nothing left is not a
+        // reason to drop what is held: a list one cut behind draws a system
+        // the filters no longer admit, or misses one they now do, which is
+        // a frame or two of the wrong dimming — against a map that stops
+        // for seconds.
+        if !fresh && *budget < points.len() {
+            return;
+        }
+        if !fresh {
+            *budget -= points.len();
+            self.at.insert(id, self.cut);
+            self.cells.remove(&id);
+            self.peopled.remove(&id);
+        }
         // Nothing asked of the filters admits everything, and there is no
         // order over them worth keeping; see [`Self::admits`].
         if filters.asking() {
@@ -452,6 +505,7 @@ impl PointOrders {
     pub(crate) fn forget(&mut self, id: CellId) {
         self.cells.remove(&id);
         self.peopled.remove(&id);
+        self.at.remove(&id);
     }
 }
 
@@ -674,6 +728,17 @@ fn reconcile(
     // nothing of who lives where — so what this settles is which of a held
     // cell's systems are drawn out of it.
     let by_population = by_population(&view_mode, &scale_population);
+    // What this frame may spend working out afresh what the filters admit.
+    // Spent down by the loop below and not refilled inside it: a cut leaves
+    // every resident cell stale at once, and a pass that walked them all
+    // would be the three-and-a-half-second hang this bounds. See
+    // [`VERDICT_BUDGET`].
+    let mut verdicts = VERDICT_BUDGET;
+    // The addresses the filters name, gathered once for the pass rather
+    // than walked per point: a route of three hundred stops is what made
+    // having one on the map cost seven times what any other filter does.
+    // See [`Filters::prepared`].
+    let asked_for = filtering.filters.prepared();
     // Whether the excluded are wanted on screen at all. Below the dim they are
     // never spawned ([`super::spawn`]) and dropped where they stand
     // ([`super::evict`]), so queueing them is a slot of the spawn budget spent
@@ -701,10 +766,11 @@ fn reconcile(
         orders.walk(
             id,
             &cell.points,
-            &filtering.filters,
+            &asked_for,
             &populated,
             wall,
             by_population,
+            &mut verdicts,
         );
         let admits = orders.admits(id);
         // Taken rather than walked lazily, since the two orders are different
@@ -717,8 +783,8 @@ fn reconcile(
         } else {
             drawn_first(&cell.points, admits, fill).take(target).collect()
         };
-        let order = taken.into_iter();
-        for point in order.map(|index| &cell.points[index]) {
+        for index in taken {
+            let point = &cell.points[index];
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
@@ -735,8 +801,15 @@ fn reconcile(
             // said last time. Queued either way, and `spawn_systems` replaces
             // it in place.
             if !existing.contains(&address) || refreshed {
-                pending.push(
-                    build_from_point(point, &populated, &names),
+                // Which point of which cell, not the system built out of
+                // it: most of what a walk offers is never drawn, and
+                // building it to queue it is a name and a political join
+                // thrown away. See [`super::spawn::Waiting`].
+                pending.push_point(
+                    address,
+                    id,
+                    index as u32,
+                    point.pos,
                     false,
                     now,
                 );
@@ -756,6 +829,8 @@ fn reconcile(
     // the map has not got and, below, what keeps the ones it has. Read out of
     // the resident names table, as a searched system is, and pinned so the
     // queue does not weigh them against the reach and forget them unread.
+    // Asked for, too: a stop is a system named by hand, and it is drawn
+    // before the galaxy of marks this same walk has just offered.
     //
     // Being on the map is not being in view. A stop the spyglass does not
     // reach is hidden by [`crate::systems::visibility`] and the line is cut
@@ -765,7 +840,7 @@ fn reconcile(
         wanted.insert(address);
         if !existing.contains(&address) {
             if let Some(system) = system_at(address, &populated, &names) {
-                pending.push(system, true, now);
+                pending.push(system, true, true, now);
             }
         }
     }
@@ -855,7 +930,7 @@ pub(crate) fn build_from_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::route::graph::{Drive, Routing};
+    use crate::systems::route::graph::{Drive, Routing, Tuning};
     use bevy::math::DVec3;
 
     /// A payload point becomes a system placed exactly at its own position,
@@ -869,6 +944,7 @@ mod tests {
             magnitude: 0.,
             temp_bucket: 0,
             updated_at: 0,
+            kind: galos_index::StarKind::G,
         };
 
         let system = build_from_point(
@@ -901,6 +977,7 @@ mod tests {
             magnitude: 0.,
             temp_bucket: 0,
             updated_at: (now - Span::seconds(ago)).timestamp() as u32,
+            kind: galos_index::StarKind::G,
         };
         let built = |point: &Point| {
             build_from_point(
@@ -934,6 +1011,7 @@ mod tests {
             magnitude: id as f32,
             temp_bucket: 0,
             updated_at: 0,
+            kind: galos_index::StarKind::G,
         }
     }
 
@@ -1032,7 +1110,7 @@ mod tests {
     /// redone when the filters move and not otherwise; see [`Cut`].
     #[test]
     fn the_verdicts_are_kept_until_the_filters_move() {
-        use crate::systems::filter::Filter;
+        use crate::systems::filter::{Filter, Filters};
         use galos_index::meta::PopulatedSystem;
 
         let points: Vec<Point> = (1..=4).map(point).collect();
@@ -1061,8 +1139,17 @@ mod tests {
         let now = Utc::now();
 
         let mut held = PointOrders::default();
+        let mut budget = VERDICT_BUDGET;
         held.hold(1, true);
-        held.walk(id, &points, &filters, &populated, now, false);
+        held.walk(
+            id,
+            &points,
+            &filters.prepared(),
+            &populated,
+            now,
+            false,
+            &mut budget,
+        );
         assert_eq!(
             held.admits(id),
             &[2],
@@ -1076,7 +1163,15 @@ mod tests {
             systems: vec![1, 4],
         });
         held.hold(2, true);
-        held.walk(id, &points, &filters, &populated, now, false);
+        held.walk(
+            id,
+            &points,
+            &filters.prepared(),
+            &populated,
+            now,
+            false,
+            &mut budget,
+        );
         assert_eq!(
             held.admits(id),
             &[0, 2, 3],
@@ -1085,8 +1180,98 @@ mod tests {
 
         // Nothing asked admits everything, so there is no order to hold.
         held.hold(2, false);
-        held.walk(id, &points, &Filters::default(), &populated, now, false);
+        held.walk(
+            id,
+            &points,
+            &Filters::default().prepared(),
+            &populated,
+            now,
+            false,
+            &mut budget,
+        );
         assert!(held.admits(id).is_empty());
+    }
+
+    /// A cut spends a budget rather than a frame
+    ///
+    /// **The reported hang.** A cut used to throw every cell's verdicts
+    /// away, and the next frame walked every resident payload through the
+    /// filters again: measured over `.index/full`, 152 million points at
+    /// 22.7 ns apiece under a 334-stop route filter, which is 3.4 seconds
+    /// of a frozen map. It fired at the end of plotting a long route,
+    /// because a route landing adds a filter and a filter added cuts.
+    ///
+    /// So a cell past the budget keeps the list it has and is brought
+    /// forward on a later frame. What that costs is a frame or two of the
+    /// wrong dimming on the cells at the back of the queue; what it buys
+    /// is a map that filters in rather than stopping.
+    #[test]
+    fn a_cut_is_worked_through_a_budget_at_a_time() {
+        use crate::systems::filter::{Filter, Filters};
+
+        let points: Vec<Point> = (1..=10).map(point).collect();
+        let cells = [CellId::ROOT, CellId { level: 1, x: 1, y: 0, z: 0 }];
+        let populated = Populated::default();
+        let now = Utc::now();
+        let mut filters = Filters::default();
+        filters.add(Filter::Systems { label: "one".into(), systems: vec![3] });
+
+        // Room for one cell's payload and no more, which is the shape of
+        // every frame after a cut: far more stale cells than budget.
+        let mut held = PointOrders::default();
+        held.hold(1, true);
+        let mut budget = points.len();
+        for id in cells {
+            held.walk(
+                id,
+                &points,
+                &filters.prepared(),
+                &populated,
+                now,
+                false,
+                &mut budget,
+            );
+        }
+        assert_eq!(held.admits(cells[0]), &[2], "the first cell was not read");
+        assert!(
+            held.admits(cells[1]).is_empty(),
+            "the second cell was read past the budget"
+        );
+
+        // And the next frame's budget reaches it, the cut not having moved.
+        let mut budget = points.len();
+        held.walk(
+            cells[1],
+            &points,
+            &filters.prepared(),
+            &populated,
+            now,
+            false,
+            &mut budget,
+        );
+        assert_eq!(held.admits(cells[1]), &[2], "it never caught up");
+
+        // A cut leaves what is held standing, so the map draws the last
+        // answer while the new one is worked out. Nothing to spend here,
+        // which is the frame a cut lands on.
+        filters
+            .add(Filter::Systems { label: "another".into(), systems: vec![5] });
+        held.hold(2, true);
+        let mut budget = 0;
+        held.walk(
+            cells[0],
+            &points,
+            &filters.prepared(),
+            &populated,
+            now,
+            false,
+            &mut budget,
+        );
+        assert_eq!(
+            held.admits(cells[0]),
+            &[2],
+            "a cut threw the old verdicts away instead of keeping them"
+        );
     }
 
     /// The clamp is the spyglass reach, and only while it is clearing
@@ -1284,6 +1469,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         });
         // The first stop already drawn, the other two never built, and a
         // system that is on no route at all.
@@ -1329,6 +1515,7 @@ mod tests {
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
+                kind: galos_index::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -1427,6 +1614,7 @@ mod tests {
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
+                kind: galos_index::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -1512,6 +1700,7 @@ mod tests {
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
+                kind: galos_index::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -1588,6 +1777,7 @@ mod tests {
             temperature: 5000.,
             age_bucket: 0,
             updated_at: when,
+            kind: galos_index::StarKind::G,
         };
         let built =
             Snapshot::build(&[at(1, 1_700_000_000)], &BuildParams::default());

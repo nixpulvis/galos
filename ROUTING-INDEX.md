@@ -204,6 +204,15 @@ a real contraction needs edge cost = unaided jumps between boost stars, which
 needs the systems in between to exist. At full-galaxy coverage they do. **The
 larger dataset buys feasibility of the formulation, not merely speed.**
 
+> **Settled, 2026-09-13, at 200,071,629 systems.** Both halves of that
+> paragraph held. The highway is 3,846,802 boost stars; flooded from Sol at
+> one supercharged hop it still reaches only **135** of them, and with four
+> ordinary jumps of bridging after each hop it reaches **2,419,398**, out
+> past 61,413 ly. The contraction is built and shipped —
+> `galos_map/src/systems/route/highway.rs`, planned coarse and flown leg by
+> leg — and Sol → Colonia charged is **139 jumps in 6.5 s** against the flat
+> search's **137 in 610 s**. See `TODO-map-scale.md` 2e.
+
 Four questions that would make the comparison mean something:
 
 1. Proven fewest jumps, or greedy/beam? Our `Quick` is already 72 ms unaided.
@@ -219,8 +228,9 @@ Four questions that would make the comparison mean something:
 
 ## 6. Leverage, ordered by measured size
 
-1. **Contracted boost graph.** Orders of magnitude, and the only path to parity
-   on supercharged routes. Blocked on (2).
+1. ~~**Contracted boost graph.**~~ Built; see the note in §5. Orders of
+   magnitude, and it was indeed the only path to parity on supercharged
+   routes.
 2. **Coverage.** 2.6 M positioned systems against the ~10² M known. An ingest
    problem, and it caps both route quality and any contraction.
 3. **Cell-sorted layout.** 1.6× on the neighbour query, −62 MB resident, ~40

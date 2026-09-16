@@ -69,6 +69,27 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
+    /// Bring a directory up to the format this build reads, in place.
+    Upgrade {
+        /// The index directory to upgrade.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+    },
+}
+
+/// Leave with `code`, having dropped whatever was holding the directory
+///
+/// **`std::process::exit` runs no destructors**, so a command that exits
+/// out of its error arm while holding [`galos_index::Lock`] leaves the lock
+/// file behind and the next run refuses the directory as "already being
+/// written" by a process that is gone. Reported twice in one sitting, once
+/// off `upgrade` and once off `pack`.
+///
+/// So the lock is handed over and dropped here, on the way out. A command
+/// that holds nothing passes nothing.
+fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
+    drop(lock);
+    std::process::exit(code)
 }
 
 fn main() {
@@ -79,6 +100,76 @@ fn main() {
         }
         Command::Pack { dir } => pack(&dir),
         Command::FoldNames { dir } => fold_names(&dir),
+        Command::Upgrade { dir } => upgrade(&dir),
+    }
+}
+
+/// Bring a directory up to the format this build reads
+///
+/// What [`galos_index::store`]'s version refusal names, so an operator met
+/// by "rebuild the directory" has one thing to run. It rewrites the
+/// payloads without reimporting the galaxy:
+///
+/// The payloads written before the columns hold every field the new ones do
+/// but the star kind, and that is derivable from `bodies/` — the scan
+/// record the class comes from. So this joins the two and rewrites each
+/// cell, where the alternative is running the importer over the dump again.
+///
+/// Idempotent and interruptible: a cell already columnar is left alone, and
+/// `index.bin` is rewritten last, so a directory stopped part way is one
+/// this finishes on the next run. Nothing else in the directory is touched —
+/// the names table, the bodies, the sidecars and the tree itself are all
+/// unchanged.
+fn upgrade(dir: &Path) {
+    let lock = held(dir);
+    let at = std::time::Instant::now();
+    // No stop flag of its own: a run cut short by a Ctrl-C leaves the
+    // directory in a state the next run takes up, `index.bin` being
+    // rewritten last.
+    let stop = || false;
+    let mut said = |wrote: &galos_index::upgrade::Rewrote| {
+        // The sweep first and the rewrite after it, which is the order they
+        // happen in: a line about cells while the scan record is still
+        // being read would be a line of zeroes.
+        match wrote.cells == 0 && wrote.kept == 0 {
+            true => {
+                eprint!("\r{} systems swept, {:.0?}", wrote.swept, at.elapsed())
+            }
+            false => eprint!(
+                "\r{} cells, {} systems, {} classed, {} already columnar, \
+                 {:.0?}",
+                wrote.cells,
+                wrote.systems,
+                wrote.classed,
+                wrote.kept,
+                at.elapsed(),
+            ),
+        }
+    };
+
+    match galos_index::upgrade::rewrite(dir, &stop, &mut said) {
+        Ok(wrote) => {
+            eprintln!();
+            println!(
+                "{} cells rewritten, {} systems, {} of them classed, \
+                 {} already columnar, in {:.1?}",
+                wrote.cells,
+                wrote.systems,
+                wrote.classed,
+                wrote.kept,
+                at.elapsed(),
+            );
+            // Only where there was a table to bring forward, which is a
+            // directory built before the place rode in the published row.
+            if wrote.placed > 0 {
+                println!("{} supercharge rows given their place", wrote.placed,);
+            }
+        }
+        Err(err) => {
+            eprintln!();
+            eprintln!("{}: {err}", dir.display());
+            leave(Some(lock), 1);
+        }
     }
 }
 
@@ -94,7 +185,7 @@ fn main() {
 /// Not safe to run against a directory something is *writing*, which is
 /// what [`held`] is for.
 fn pack(dir: &Path) {
-    let _lock = held(dir);
+    let lock = held(dir);
     let start = std::time::Instant::now();
     match galos_index::pack::pack(dir, &|| false) {
         Ok(done) => println!(
@@ -109,7 +200,7 @@ fn pack(dir: &Path) {
         ),
         Err(e) => {
             eprintln!("cannot pack {}: {e}", dir.display());
-            std::process::exit(2);
+            leave(Some(lock), 2);
         }
     }
 }
@@ -126,7 +217,7 @@ fn pack(dir: &Path) {
 /// to run against a directory a map is *reading*, the table being swapped
 /// in by one rename and the chunks removed only after.
 fn fold_names(dir: &Path) {
-    let _lock = held(dir);
+    let lock = held(dir);
     let start = std::time::Instant::now();
     match galos_index::names::fold_chunks(dir) {
         Ok(Some(named)) => println!(
@@ -135,7 +226,12 @@ fn fold_names(dir: &Path) {
             start.elapsed(),
         ),
         Ok(None) => println!("{}: no names chunks to fold", dir.display()),
-        Err(e) => fatal(dir, e),
+        // The lock goes with it: `fatal` exits, and an exit runs no
+        // destructors. See [`leave`].
+        Err(e) => {
+            eprintln!("cannot read {}: {e}", dir.display());
+            leave(Some(lock), 2);
+        }
     }
 }
 

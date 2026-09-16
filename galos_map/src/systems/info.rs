@@ -16,23 +16,27 @@ use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::bodies::mark_if_moved;
 use crate::systems::filter::{Filter, Filters};
+use crate::systems::route::graph::Crossing;
 use crate::systems::selection::{Picked, Selection};
 use crate::ui::MARGIN;
 use crate::ui::SystemAction;
 use crate::{Factions, Names, Populated};
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task};
 use bevy_egui::egui::{Context, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use chrono::{DateTime, Utc};
 use elite_journal::body::{Composition, Material, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
 use galos_photometry::{Distance, Magnitude};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::time::Duration;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Panels>();
+    app.init_resource::<StarClasses>();
     app.init_resource::<FactionNames>();
     app.add_systems(Update, refresh.in_set(MapSet::Present));
     app.add_systems(Update, name_factions.in_set(MapSet::Present));
@@ -359,9 +363,20 @@ impl Subject {
             Subject::Body(body) => {
                 egui::Id::new(("body-panel", body.system_address, body.id))
             }
-            Subject::Filter { filter, .. } => {
-                egui::Id::new(("filter-panel", filter))
-            }
+            // A trip's own panel is keyed on the trip and the ship rather
+            // than on the joined route, because the joined route *grows*:
+            // its legs land one at a time and the panel is rebuilt off
+            // whatever the bar now holds ([`crate::ui::trip_now`]). Keyed
+            // on the filter, every leg that landed would have been a new
+            // window, dropped back into the tiling and losing wherever the
+            // user had dragged the last one.
+            Subject::Filter { filter, .. } => match filter
+                .trip()
+                .zip(filter.ship())
+            {
+                Some((trip, ship)) => egui::Id::new(("trip-panel", trip, ship)),
+                None => egui::Id::new(("filter-panel", filter)),
+            },
         }
     }
 }
@@ -631,6 +646,7 @@ fn asked_of_panel(clicked: bool) -> Option<crate::ui::RowGesture> {
 /// Written here rather than alongside the rest of the UI because a
 /// [`System`]'s fields are the business of this module and its neighbours,
 /// and this is the one place they are read out rather than drawn with.
+#[allow(clippy::too_many_arguments)]
 fn panels(
     mut contexts: EguiContexts,
     mut panels: ResMut<Panels>,
@@ -642,6 +658,16 @@ fn panels(
     orbit: Query<&OrbitCamera>,
     mut camera: MessageWriter<MoveCamera>,
     contents: Res<crate::systems::bodies::Contents>,
+    // What is still being searched, so a trip's panel can say what is not
+    // in it yet.
+    searching: Res<crate::systems::route::frontier::Frontiers>,
+    // Which systems can supercharge, which is the one thing about a star's
+    // kind the index publishes for all of them.
+    boosts: Res<crate::Boosts>,
+    // And the real class of the stars a panel lists, looked up by address:
+    // a list is finite where the galaxy is not. See [`StarClasses`].
+    mut classes: ResMut<StarClasses>,
+    transport: Res<crate::Transport>,
 ) -> Result {
     if panels.open.is_empty() {
         return Ok(());
@@ -674,6 +700,23 @@ fn panels(
     let step = egui::vec2(-(width + MARGIN), panels.height + MARGIN);
     let down = ((room.height() - MARGIN) / step.y).floor().max(1.) as usize;
     let across = ((room.width() - MARGIN) / -step.x).floor().max(1.) as usize;
+
+    // What has landed since the last frame, and what the panels now list.
+    // Asked here rather than where the rows are drawn: the drawing borrows
+    // the panel, and one question a system is one question however many
+    // panels list it.
+    classes.poll();
+    let listed: Vec<i64> = panels
+        .open
+        .iter()
+        .filter_map(|panel| match &panel.subject {
+            Subject::Filter { systems: Some(systems), .. } => Some(systems),
+            _ => None,
+        })
+        .flatten()
+        .map(|system| system.address)
+        .collect();
+    classes.ask(listed, &transport);
 
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
@@ -747,6 +790,41 @@ fn panels(
             placed,
             &mut showing,
         );
+        // A trip's legs land one at a time, so its joined route is rebuilt
+        // from whatever the bar now holds rather than kept as it was when
+        // the panel opened. Without this a panel opened mid-plot describes
+        // a partial trip — its systems, its distance, its longest jump —
+        // as though that were the whole of it, and never corrects itself.
+        // The systems it fetched are for the route as it *was*, so they go
+        // back to being unasked and `fill_filters` asks again.
+        if let Subject::Filter { filter, legs, systems } = &mut panel.subject
+            && let Some((joined, flown)) = crate::ui::trip_now(filter, &filters)
+            && (*filter != joined || *legs != flown)
+        {
+            *filter = joined;
+            *legs = flown;
+            *systems = None;
+        }
+
+        // And how much of it is still being searched, for a trip: the
+        // legs each carry the trip they belong to, so the searches under
+        // way say how many of this one's are outstanding.
+        let outstanding = match &panel.subject {
+            Subject::Filter { filter, .. } => {
+                filter.trip().map_or(0, |trip| searching.plotting(trip))
+            }
+            _ => 0,
+        };
+
+        // What the search that answered this cost, read off the row before
+        // the panel is drawn: the drawing borrows the panel and the rows are
+        // written further down the same pass.
+        let timed = match &panel.subject {
+            Subject::Filter { filter, legs, .. } => {
+                took(filter, legs, &filters)
+            }
+            _ => None,
+        };
         let mut held = 0.;
         let window = window.show(ctx, |ui| {
             held = inside(ui, id, room, |ui| match &panel.subject {
@@ -774,6 +852,10 @@ fn panels(
                     filter,
                     legs,
                     systems.as_deref(),
+                    timed,
+                    outstanding,
+                    &boosts,
+                    &classes,
                     center,
                     &mut picked,
                     &mut picked_stops,
@@ -1359,20 +1441,392 @@ fn dated(at: Option<DateTime<Utc>>) -> String {
 /// Said in the panel rather than in the title, which is cut to the room a
 /// window has and would lose it. The other filters are named for the whole of
 /// what they are and have nothing to add here.
-fn summary(filter: &Filter, count: usize) -> String {
+fn summary(
+    filter: &Filter,
+    count: usize,
+    took: Option<Duration>,
+    plotting: usize,
+) -> String {
     let Some(range) = filter.range() else {
         return format!("{count} systems");
     };
     // Both are part of what was asked, and both are read off the route rather
     // than off the settings, which the user may have moved since.
     let boosted = filter.drive().and_then(|drive| drive.named());
+    // What was asked for, in its own words: "fewest jumps", or "within 5%
+    // of fewest", with ", shortest" where the ties were settled by
+    // distance. It used to be one of three mode names and a trailing
+    // "search", which said which button was pressed rather than what the
+    // route is.
     let how = filter.how().map(|how| how.named()).unwrap_or_default();
-    match boosted {
-        Some(boosted) => format!(
-            "{count} systems, {range} Ly range, {boosted}, {how} search"
-        ),
-        None => format!("{count} systems, {range} Ly range, {how} search"),
+    let mut said = match boosted {
+        Some(boosted) => {
+            format!("{count} systems, {range} Ly range, {boosted}, {how}")
+        }
+        None => format!("{count} systems, {range} Ly range, {how}"),
+    };
+    // What it cost to find, which is the other half of what the search mode
+    // means: `quick` and `direct` differ by a jump or two and by minutes,
+    // and the row that says which was asked for should say what it came to.
+    // Nothing for a route this session did not plot — one restored, or one
+    // whose row has been closed and re-added.
+    if let Some(took) = took {
+        said.push_str(&format!(", plotted in {}", crate::ui::waited(took)));
     }
+    // And what is *not* in it yet. A trip is plotted a leg at a time, so a
+    // panel read before the last of them lands describes a real route
+    // through some of the stops — which is not the trip it is titled after,
+    // and saying nothing about that is the panel lying by omission. The
+    // systems, the distance and the longest jump below are all of them
+    // about what has landed.
+    if plotting > 0 {
+        let legs = match plotting {
+            1 => "1 leg".to_owned(),
+            legs => format!("{legs} legs"),
+        };
+        said.push_str(&format!(" — {legs} still being plotted"));
+    }
+    said
+}
+
+/// The arrival star's class for the systems a panel lists
+///
+/// **A list is a finite thing, so it is looked up rather than guessed at.**
+/// The map has no star class resident for every system — the payload
+/// carries six temperature buckets and a route's stops are built from the
+/// names table, which carries none — but a panel lists tens or hundreds of
+/// systems, not two hundred million, and the index answers one address at a
+/// time ([`galos_index::Source::bodies`]). So the classes are read for
+/// exactly what is listed, off the task pool, once.
+///
+/// Held per address rather than per panel: two panels listing the same
+/// system ask one question between them, and a class does not change while
+/// the map is open.
+///
+/// [`None`] for a system nothing has scanned, which is most of the galaxy —
+/// and said as nothing rather than as a guess.
+#[derive(Resource, Default)]
+pub struct StarClasses {
+    known: HashMap<i64, Option<String>>,
+    /// What has been asked and not yet answered, so a frame does not ask
+    /// again while the pool is still reading.
+    asked: HashSet<i64>,
+    /// The reads under way, each answering for one address.
+    reading: Vec<(i64, Task<Option<String>>)>,
+}
+
+impl StarClasses {
+    /// The class where it is known, and [`None`] where it is not — whether
+    /// because nothing is scanned or because the read has not landed.
+    pub fn of(&self, address: i64) -> Option<&str> {
+        self.known.get(&address)?.as_deref()
+    }
+
+    /// Ask about every address in `listed` that has not been asked about
+    ///
+    /// One read a system, off the pool: the index's own answer is a file per
+    /// system, so there is nothing to batch.
+    fn ask(
+        &mut self,
+        listed: impl IntoIterator<Item = i64>,
+        transport: &crate::Transport,
+    ) {
+        for address in listed {
+            if self.known.contains_key(&address) || !self.asked.insert(address)
+            {
+                continue;
+            }
+            let reading = transport.0.clone();
+            self.reading.push((
+                address,
+                AsyncComputeTaskPool::get().spawn(async move {
+                    let inside =
+                        reading.bodies(address).await.unwrap_or_default();
+                    arrival_class(&inside)
+                }),
+            ));
+        }
+    }
+
+    /// Take in whatever has landed.
+    fn poll(&mut self) {
+        self.reading.retain_mut(|(address, task)| match bevy::tasks::block_on(
+            bevy::tasks::futures_lite::future::poll_once(task),
+        ) {
+            Some(class) => {
+                self.known.insert(*address, class);
+                false
+            }
+            None => true,
+        });
+    }
+}
+
+/// The class of the star a ship drops in at
+///
+/// The index's own rule, not another one beside it
+/// ([`galos_index::derive::arrival_class`]): the star nearest the arrival
+/// point, ties broken by body id. It matters that this is the same rule the
+/// published boost table was derived by — a panel that read the primary as
+/// "the star that goes round nothing" would name a different star in a close
+/// pair than the table saying whether that system can supercharge, and the
+/// two readings would disagree about the same system on the same screen.
+fn arrival_class(inside: &galos_index::meta::SystemBodies) -> Option<String> {
+    galos_index::derive::arrival_class(inside).map(str::to_owned)
+}
+
+/// How a jump's fuel goes with its length, drive by drive
+///
+/// **What the map can say about fuel, and what it cannot.** The game's cost
+/// of a jump is `multiplier x (distance x mass / optimal mass) ^ p`, which
+/// wants the drive's class and rating, the hull, the cargo and the tank —
+/// none of which the map is told. Dividing by the drive's own maximum
+/// cancels nearly all of it, because a ship's *range* is by definition the
+/// distance at which a jump costs that whole maximum:
+///
+/// ```text
+/// fuel(d) / max fuel per jump = (d / range) ^ p
+/// ```
+///
+/// The multiplier cancels, the laden mass cancels, the optimal mass
+/// cancels. What is left is the jump against the range the route was
+/// plotted at, and `p`, which is the drive's **class** and nothing else.
+///
+/// The exponent could be bounded — `p = 2.0` is the dearest any drive can
+/// be, since a jump is no longer than the range — and a ceiling over every
+/// drive in the game was what the panel said first. It read as a fact and
+/// was not one: **nobody flies a bound over all drives, they fly a class 5
+/// with a specific tank**, and a figure a third too high for their ship is
+/// worse than no figure. So the panel states the distance, which is exact,
+/// and this rule beside it, which is what turns the distance into fuel for
+/// the ship the reader actually has.
+///
+/// The tank in these units is its capacity divided by the max fuel per
+/// jump, both of which the outfitting screen states.
+fn fuel_rule() -> String {
+    let classes = POWERS
+        .iter()
+        .map(|(class, power)| format!("{class} → {power:.2}"))
+        .collect::<Vec<String>>()
+        .join(", ");
+
+    format!(
+        "A jump of d costs (d / range) ^ p of the drive's maximum fuel, \
+         where p is its class: {classes}. The tank holds its capacity \
+         divided by that maximum, so a 32 t tank at 0.90 t a jump is 35 \
+         jumps' worth at full range — and far more at half of it, fuel \
+         going as the square of the jump at least."
+    )
+}
+
+/// The exponent of each frame shift drive class
+///
+/// The one ship fact the cancellation above leaves, and it depends on the
+/// drive's size alone: a class 2 is the dearest per light year and a class
+/// 8 the cheapest. Written out rather than interpolated, since it is a
+/// table the game states and not a line anything derived.
+const POWERS: [(u8, f64); 7] = [
+    (2, 2.00),
+    (3, 2.15),
+    (4, 2.30),
+    (5, 2.45),
+    (6, 2.60),
+    (7, 2.75),
+    (8, 2.90),
+];
+
+/// What a route asks of a fuel tank, as far as the classes read say
+///
+/// The longest run of stops a ship crosses with **nothing to scoop**, and
+/// which stop it sets out from. A fuel scoop takes hydrogen off the main
+/// sequence and off nothing else (`galos_index::meta::scoopable`), so a
+/// stretch of white dwarfs, brown dwarfs and black holes is a stretch the
+/// ship crosses on the fuel it had — and where that stretch is longer than
+/// the tank, the route is not a slower route, it is a stranded ship.
+///
+/// Said as the **distance** the stretch takes to cross, not as a count of
+/// stops and not as a fuel figure. A count is the wrong reading on its own:
+/// six short hops and two long jumps are the same count and nothing like
+/// the same fuel, and what strands a ship is the fuel. A fuel figure is the
+/// wrong reading too, because the map is not told the ship — see
+/// [`fuel_rule`], which the line carries on hover so the reader can turn
+/// the distance into their own drive's answer.
+///
+/// **A class nothing has read is not counted as unscoopable.** The run is
+/// the stops *known* to have nothing to scoop, and the stops with no class
+/// on record are counted separately and said separately — a route across
+/// unexplored space is mostly unread, and reading that as a starving route
+/// would condemn every galactic plot. So the reading is a floor: at least
+/// this far, with this many unknown.
+#[derive(Debug, Default, PartialEq)]
+struct Scooping {
+    /// The longest run of stops known to have nothing to scoop
+    run: usize,
+    /// Which stop that run sets out from
+    from: Option<String>,
+    /// How far crossing that run takes, in light years
+    ///
+    /// From the last star that could refuel the ship to the next one: the
+    /// jumps out of the one up to and including the jump that lands on the
+    /// other, a tank filled at the one having to reach the other. Nothing
+    /// where the route states no distances.
+    across: Option<f64>,
+    /// How many of the route's stops have no class on record
+    unread: usize,
+}
+
+impl Scooping {
+    /// What a route's stops come to, walked in the order they are flown
+    ///
+    /// Each stop is its name, the class of the star waiting there, and how
+    /// far the jump onto it was. A run ends where a scoopable star arrives,
+    /// since the tank is full again there — and the jump that *landed* on
+    /// that star was flown on the old tank, so it belongs to the run it
+    /// ends. An unread stop ends a run as well rather than extending it:
+    /// the run is what is known, and the unknowns are said beside it.
+    fn of<'a>(
+        stops: impl IntoIterator<Item = (&'a str, Option<&'a str>, Option<f64>)>,
+    ) -> Scooping {
+        let mut said = Scooping::default();
+        let mut run = 0;
+        let mut from: Option<&str> = None;
+        // The jumps of the run standing, and the one that will land on the
+        // next star able to refuel the ship.
+        let mut jumps: Vec<f64> = Vec::new();
+
+        // A finished run, against the longest one held. Weighed only where
+        // a run *ends*, since the jump that lands on the star which refuels
+        // the ship belongs to the run it ends and the run's length does not
+        // grow to take it.
+        let mut settle = |run: usize, from: Option<&str>, jumps: &[f64]| {
+            if run > said.run {
+                said.run = run;
+                said.from = from.map(str::to_owned);
+                said.across = match jumps.is_empty() {
+                    true => None,
+                    false => Some(jumps.iter().sum()),
+                };
+            }
+        };
+
+        for (name, class, jump) in stops {
+            match class {
+                Some(class) if galos_index::meta::scoopable(class) => {
+                    // The jump that arrived here was flown before the tank
+                    // was filled here, so it is the run's to pay for.
+                    jumps.extend(jump);
+                    settle(run, from, &jumps);
+                    run = 0;
+                    jumps.clear();
+                }
+                Some(_) => {
+                    if run == 0 {
+                        from = Some(name);
+                        jumps.clear();
+                    }
+                    run += 1;
+                    jumps.extend(jump);
+                }
+                // Nothing is known about refuelling here, so the run of
+                // stops known to starve ends — without this jump, which
+                // may well be paid for out of a tank filled here.
+                None => {
+                    said.unread += 1;
+                    settle(run, from, &jumps);
+                    run = 0;
+                    jumps.clear();
+                }
+            }
+        }
+        // A route that ends mid-run: the ship still had to get there.
+        settle(run, from, &jumps);
+        said
+    }
+
+    /// What the panel says of it, or nothing where there is nothing to say
+    ///
+    /// Nothing for a route that can refuel at every stop it is known to
+    /// pass, which is most routes through settled space: a line saying a
+    /// route is fine is a line read every time to learn nothing.
+    fn said(&self) -> Option<String> {
+        let run = match self.run {
+            0 => return None,
+            1 => "1 stop".to_owned(),
+            run => format!("{run} stops in a row"),
+        };
+        let where_from = match &self.from {
+            Some(from) => format!(", from {from}"),
+            None => String::new(),
+        };
+        // How far it is to cross, which is the figure a reader can turn
+        // into their own drive's fuel. See [`fuel_rule`].
+        let across = match self.across {
+            Some(across) => format!(", {across:.1} Ly to cross"),
+            None => String::new(),
+        };
+        let unread = match self.unread {
+            0 => String::new(),
+            1 => ", 1 stop unread".to_owned(),
+            unread => format!(", {unread} stops unread"),
+        };
+        Some(format!("nothing to scoop at {run}{where_from}{across}{unread}"))
+    }
+}
+
+/// How the plan behind a route was worked out, where there was one
+///
+/// The other half of what a route was asked for. The line above says the
+/// range, the drive, the optimality and what the search cost; these are
+/// the settings that decide how the coarse plan over the boost stars went
+/// about it, and they are part of a route's own identity
+/// ([`Filter::Route`]) precisely because they change the answer — so the
+/// panel says what *this* route was planned with rather than what the
+/// settings happen to hold now.
+///
+/// [`None`] for anything that was not planned: a proven route is searched
+/// system by system, and an unaided one has no boost stars to plan over.
+/// See [`Filter::tune`].
+///
+/// **The gap width is not said, because it is not one number.** The plan
+/// climbs it — a chain that does not close on the goal is tried again a
+/// jump wider ([`super::route::highway::Highway::plan`]) — so
+/// [`Tuning::reach`] is where the climb started rather than what the plan
+/// used, and a line that quoted it would be describing a rung the answer
+/// may not have come from.
+///
+/// The plan's own percent is what was *asked* for, on the same footing:
+/// an exact plan that spends its allowance is worked leaned instead and
+/// this line cannot tell the two apart. The allowance is a method
+/// safeguard rather than part of the answer's description, and what it is
+/// worth is measured on [`Tuning::allowance`].
+fn planned_with(filter: &Filter) -> Option<String> {
+    let tune = filter.tune()?;
+    let crossing = match tune.crossing {
+        Crossing::Stepped => "stepped",
+        Crossing::Searched => "searched",
+    };
+    let plan = match tune.planning {
+        0 => "an exact plan".to_owned(),
+        over => format!("a plan leaned {over}%"),
+    };
+    Some(format!("{plan}, gaps {crossing}"))
+}
+
+/// How long the search that answered a filter took, for its panel
+///
+/// A trip is not a row of its own — it is the route its legs come to, joined
+/// by [`crate::ui::as_one`] — so its time is its legs', and the longest of
+/// them rather than the sum: the legs are searched at once, so the wait is
+/// the slowest of them.
+fn took(
+    filter: &Filter,
+    legs: &[Filter],
+    filters: &Filters,
+) -> Option<Duration> {
+    if let Some(took) = filters.took_of(filter) {
+        return Some(took);
+    }
+    legs.iter().filter_map(|leg| filters.took_of(leg)).max()
 }
 
 /// The systems a filter admits, and the one the user picks out of them
@@ -1387,11 +1841,20 @@ fn summary(filter: &Filter, count: usize) -> String {
 /// Each line ends in a distance, and which distance it is follows from what
 /// the list is: the jump that reaches the system where the filter is flown,
 /// and how far off it is from the camera where it is not.
+#[allow(clippy::too_many_arguments)]
 fn admitted(
     ui: &mut Ui,
     filter: &Filter,
     legs: &[Filter],
     systems: Option<&[System]>,
+    took: Option<Duration>,
+    // How many of a trip's legs are still being searched; see `summary`.
+    plotting: usize,
+    // Which stops can supercharge, for the class each line says.
+    boosts: &crate::Boosts,
+    // And what the arrival star of each listed system is, where it has been
+    // looked up; see [`StarClasses`].
+    classes: &StarClasses,
     center: Option<DVec3>,
     picked: &mut Option<(System, bool)>,
     picked_stops: &mut Option<(Vec<System>, bool)>,
@@ -1409,7 +1872,15 @@ fn admitted(
         return;
     }
 
-    ui.label(egui::RichText::new(summary(filter, systems.len())).weak());
+    ui.label(
+        egui::RichText::new(summary(filter, systems.len(), took, plotting))
+            .weak(),
+    );
+    // And how it was planned, on its own line: the first says what the
+    // route had to be, this says how the plan went about finding it.
+    if let Some(planned) = planned_with(filter) {
+        ui.label(egui::RichText::new(planned).weak());
+    }
 
     // What each line has to say about where its system is, which is not the
     // same question in the two kinds of list.
@@ -1465,10 +1936,16 @@ fn admitted(
         });
     }
 
-    // What flying it comes to, for a route. Under the summary, which says what
-    // the ship was plotted at, this says what the plot asks of it: how far it
-    // is all told, and the longest single jump, which is the one deciding
-    // whether the ship as it stands can make the trip at all.
+    // What flying it comes to, for a route. Under the summary, which says
+    // what the ship was plotted at, this says what the plot asks of it: how
+    // far it is all told, and the longest single jump, which is the one
+    // deciding whether the ship as it stands can make the trip at all.
+    //
+    // Distances, and no fuel figure. Fuel is what a reader actually wants
+    // to know and the map is not told the ship it would take to say it — so
+    // the rule for working it out is on hover instead, exact for whatever
+    // drive is fitted, where a figure of the map's own would have been a
+    // third out for most of them. See [`fuel_rule`].
     if filter.ordered()
         && let Some((total, longest)) =
             flying(order.iter().filter_map(|(_, leg)| *leg))
@@ -1478,7 +1955,22 @@ fn admitted(
                 "{total:.1} Ly flown, longest jump {longest:.1} Ly"
             ))
             .weak(),
-        );
+        )
+        .on_hover_text(fuel_rule());
+    }
+
+    // And what it asks of the tank between refuellings. Under the distance,
+    // because it is the other thing a plotted route can be impossible for: a
+    // stretch with nothing to scoop is flown on the fuel the ship set out
+    // with, and a stretch too far to cross on one tank strands it. Said only
+    // where there is something to say. See [`Scooping`].
+    if filter.ordered()
+        && let Some(said) = Scooping::of(order.iter().map(|(system, leg)| {
+            (system.name.as_str(), classes.of(system.address), *leg)
+        }))
+        .said()
+    {
+        ui.label(egui::RichText::new(said).weak()).on_hover_text(fuel_rule());
     }
 
     ui.add_space(MARGIN);
@@ -1539,14 +2031,60 @@ fn admitted(
         // where the row is drawn. Acting here would hold the borrow of it for
         // as long as the list, and the name over each leg has answers of its
         // own to write.
-        let line_of = |ui: &mut Ui,
-                       at: usize,
-                       system: &System,
-                       away: Option<f64>| {
-            // Said as well as sorted by, where it is what sorts them. A list
-            // in an order nobody can see reads as an order nobody chose.
-            let trailing = away.map(|away| format!("{away:.1} Ly"));
-            crate::ui::system_line(ui, &system.name, trailing, ("admitted", at))
+        // What stands after one stop's name: how far the jump onto it was,
+        // where it is what sorts the list — a list in an order nobody can
+        // see reads as an order nobody chose — and what kind of star waits
+        // there.
+        //
+        // The real class where the index has been asked and answered, and
+        // the one thing published for every system until then: a stop that
+        // can supercharge, which is why the route came this way. Nothing at
+        // all for a system nothing has scanned and no cone on, rather than a
+        // guess at a spectrum.
+        let reading = |system: &System, away: Option<f64>| {
+            let class =
+                classes.of(system.address).map(str::to_owned).or_else(|| {
+                    boosts
+                        .get(system.address)
+                        .map(|boost| boost.named().to_owned())
+                });
+            match (class, away) {
+                (Some(class), Some(away)) => {
+                    Some(format!("{class}, {away:.1} Ly"))
+                }
+                (Some(class), None) => Some(class),
+                (None, away) => away.map(|away| format!("{away:.1} Ly")),
+            }
+        };
+
+        // Where those readings go, settled for the whole route before a line
+        // of it is drawn: a stop whose class and distance have to go under
+        // its name in a list where the next stop's fit beside it reads as
+        // two kinds of row. See [`crate::ui::Rows`]. Said once and kept, the
+        // lines being drawn from the same strings that were measured.
+        let said: Vec<Option<String>> =
+            order.iter().map(|(system, away)| reading(system, *away)).collect();
+        let rows = crate::ui::Rows::of(
+            ui,
+            // A trip's stops are drawn indented under their leg's name, so
+            // they get that much less than the panel has. A route with no
+            // legs is drawn flush and gets the whole of it.
+            ui.available_width()
+                - if legs.is_empty() { 0. } else { ui.spacing().indent },
+            order.iter().zip(&said).map(|((system, _), reading)| {
+                (system.name.as_str(), reading.as_deref())
+            }),
+        );
+
+        // One row, and what a click on it asked for.
+        let line_of = |ui: &mut Ui, at: usize, system: &System| {
+            crate::ui::system_line(
+                ui,
+                &system.name,
+                said[at].clone(),
+                rows,
+                ("admitted", at),
+            )
         };
 
         // A trip is listed leg by leg. One run of forty systems says nothing
@@ -1565,11 +2103,28 @@ fn admitted(
             // a trip's panel offers what the bar and the search list offer
             // rather than being the one place a route cannot be reached from.
             if let Some(leg) = leg {
-                let heading = ui.add(
-                    egui::Label::new(egui::RichText::new(leg.name()).strong())
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                );
+                // Named, and how many jumps it is flown in beside the name:
+                // the same two readings its row in the bar gives, said by
+                // the same [`crate::ui::hops_said`] so a leg cannot read
+                // one way in the bar and another in the panel about it.
+                let heading = ui
+                    .horizontal(|ui| {
+                        let named = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(leg.name()).strong(),
+                            )
+                            .selectable(false)
+                            .sense(egui::Sense::click()),
+                        );
+                        if let Some(hops) = leg.hops() {
+                            ui.label(
+                                egui::RichText::new(crate::ui::hops_said(hops))
+                                    .weak(),
+                            );
+                        }
+                        named
+                    })
+                    .inner;
                 let settled = crate::ui::settled_click(
                     ui,
                     heading.id,
@@ -1638,8 +2193,8 @@ fn admitted(
                 heading.on_hover_cursor(egui::CursorIcon::PointingHand);
             }
             let mut rows = |ui: &mut Ui| {
-                for (step, (system, away)) in stops.iter().enumerate() {
-                    match line_of(ui, at + step, system, *away) {
+                for (step, (system, _)) in stops.iter().enumerate() {
+                    match line_of(ui, at + step, system) {
                         Some(SystemAction::Select { gathering }) => {
                             *picked = Some(((*system).clone(), gathering))
                         }
@@ -1896,7 +2451,7 @@ fn named<T: Display>(value: &Option<T>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::route::graph::{Drive, Routing};
+    use crate::systems::route::graph::{Crossing, Drive, Routing, Tuning};
     use crate::systems::tests::{system, tallied};
     use crate::tests::{context, painted, words};
     use chrono::DateTime;
@@ -2474,6 +3029,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
 
         let listed: Vec<i64> = fetch(&Populated::default(), &names, &ring)
@@ -2552,6 +3108,10 @@ mod tests {
                 &faction(7),
                 &[],
                 Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut None,
@@ -2573,6 +3133,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         painted(|ui| {
             admitted(
@@ -2580,6 +3141,10 @@ mod tests {
                 &route,
                 &[],
                 Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut None,
@@ -2944,6 +3509,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
 
         crate::tests::words(|ui| {
@@ -2952,6 +3518,10 @@ mod tests {
                 &route,
                 &[],
                 Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::new(100., 0., 0.)),
                 &mut None,
                 &mut None,
@@ -2999,6 +3569,10 @@ mod tests {
                 &faction(7),
                 &[],
                 Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut None,
@@ -3013,8 +3587,25 @@ mod tests {
     }
 
     /// A route between `label`'s ends, plotted for a ship reaching `range`
+    /// Proven rather than whatever the form opens at: the summary tests
+    /// below are about what a route *says* it was plotted for, so they say
+    /// what it was plotted for rather than reading the default and
+    /// following it wherever it moves.
     fn plotted_for(label: &str, range: &str) -> Filter {
-        plotted_with(label, range, Drive::Unaided, Routing::default())
+        plotted_with(label, range, Drive::Unaided, Routing::FEWEST)
+    }
+
+    /// A leg of a trip, named, through the stops it runs
+    fn route_through(label: &str, stops: &[i64]) -> Filter {
+        Filter::Route {
+            label: label.to_owned(),
+            systems: stops.to_vec(),
+            range: "50".to_owned(),
+            trip: Some("SOL -> LAVE -> DISO".to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+            tune: Tuning::default(),
+        }
     }
 
     /// The same, for a named drive and search mode
@@ -3031,6 +3622,7 @@ mod tests {
             trip: None,
             drive,
             how,
+            tune: Tuning::default(),
         }
     }
 
@@ -3050,8 +3642,8 @@ mod tests {
     #[test]
     fn a_route_panel_says_what_it_was_plotted_for() {
         assert_eq!(
-            summary(&plotted_for("SOL -> BARNARD", "10"), 12),
-            "12 systems, 10 Ly range, direct search"
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0),
+            "12 systems, 10 Ly range, optimal, fewest jumps"
         );
         assert_eq!(
             summary(
@@ -3059,12 +3651,373 @@ mod tests {
                     "SOL -> COLONIA",
                     "150",
                     Drive::Optimised,
-                    Routing::Quick
+                    Routing::QUICK
                 ),
-                116
+                116,
+                None,
+                0
             ),
-            "116 systems, 150 Ly range, SCO supercharged, quick search"
+            "116 systems, 150 Ly range, SCO supercharged, 95% optimality, \
+             fewest jumps, the nearest 512 expanded"
         );
+    }
+
+    /// And what the search cost, where this session is the one that paid it
+    ///
+    /// The other half of what a search mode means: `quick` and `direct`
+    /// differ by a jump or two and by minutes, so the row that says which
+    /// was asked should say what it came to. Nothing at all for a route
+    /// this session did not plot, rather than a zero.
+    #[test]
+    fn a_route_panel_says_what_the_search_cost() {
+        let said = summary(
+            &plotted_for("SOL -> BARNARD", "10"),
+            12,
+            Some(Duration::from_millis(2230)),
+            0,
+        );
+        assert!(said.ends_with("plotted in 2.2 s"), "{said}");
+
+        let untimed =
+            summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0);
+        assert!(!untimed.contains("plotted"), "{untimed}");
+    }
+
+    /// A stop that can supercharge says so, beside its jump
+    ///
+    /// Which is why the route came that way, and the jump *out* of it is the
+    /// long blue one on the line. The only class the index publishes for
+    /// every system is what it can supercharge on, so a stop with no cone
+    /// says nothing about its star rather than guessing at a spectrum.
+    #[test]
+    fn a_stop_that_can_supercharge_says_so() {
+        use galos_index::SystemBoost;
+        use galos_index::meta::Boost;
+
+        let route = route_through("SOL -> LAVE", &[1, 2, 3]);
+        let systems: Vec<System> = (1..=3).map(system).collect();
+        let boosts = crate::Boosts::of(vec![SystemBoost {
+            address: 2,
+            boost: Boost::Neutron,
+            position: [0., 0., 0.],
+        }]);
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &route,
+                &[],
+                Some(&systems),
+                None,
+                0,
+                &boosts,
+                &StarClasses::default(),
+                None,
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+            )
+        });
+
+        assert!(
+            said.iter().any(|line| line.contains("neutron star")),
+            "the cone on the route was not named: {said:?}"
+        );
+        assert_eq!(
+            said.iter().filter(|line| line.contains("neutron star")).count(),
+            1,
+            "a system with no cone was called one: {said:?}",
+        );
+    }
+
+    /// A leg's heading says how many jumps it is, as its row does
+    ///
+    /// The panel about a trip is about the same legs the bar has rows for,
+    /// so a leg had better not read one way in the one and another in the
+    /// other. Said by [`crate::ui::hops_said`] in both places rather than
+    /// formatted twice.
+    #[test]
+    fn a_legs_heading_says_its_hops() {
+        let trip = plotted_for("3 Leg Route", "50");
+        let legs = [
+            route_through("SOL -> LAVE", &[1, 2, 3]),
+            route_through("LAVE -> DISO", &[3, 4]),
+        ];
+        let systems: Vec<System> = (1..=4).map(system).collect();
+
+        let said = crate::tests::words(|ui| {
+            admitted(
+                ui,
+                &trip,
+                &legs,
+                Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
+                None,
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+            )
+        });
+
+        // Two jumps in the first leg, one in the second, said the way the
+        // bar says them.
+        assert!(said.iter().any(|line| line == "2 hops"), "{said:?}");
+        assert!(said.iter().any(|line| line == "1 hop"), "{said:?}");
+        assert_eq!(
+            crate::ui::hops_said(1),
+            "1 hop",
+            "the bar and the panel disagree about one jump",
+        );
+    }
+
+    /// A trip still being plotted says so, rather than describing part of
+    /// itself as the whole
+    ///
+    /// The reported trouble: a panel opened before the last leg lands reads
+    /// as a finished trip. Everything under the summary — the systems, the
+    /// distance flown, the longest jump — is about the legs that *have*
+    /// landed, and a route through some of the stops is not the route the
+    /// panel is titled after.
+    #[test]
+    fn a_trip_still_being_plotted_says_what_is_missing() {
+        let trip = plotted_for("3 Leg Route", "50");
+
+        let waiting = summary(&trip, 120, None, 1);
+        assert!(
+            waiting.ends_with("1 leg still being plotted"),
+            "nothing said a leg was missing: {waiting}"
+        );
+        let two = summary(&trip, 120, None, 2);
+        assert!(two.ends_with("2 legs still being plotted"), "{two}");
+
+        // And once they are all in, it says only what it is.
+        let whole = summary(&trip, 168, None, 0);
+        assert!(
+            !whole.contains("still being plotted"),
+            "a finished trip said it was waiting: {whole}"
+        );
+    }
+
+    /// And how it was planned, where it was planned at all
+    ///
+    /// What was *asked* is on the panel: how hard the plan was worked and
+    /// how its gaps were crossed, both of them part of a route's identity
+    /// because they change the answer. The gap width is not among them —
+    /// the plan climbs it, so there is no one number to quote.
+    ///
+    /// Nothing for a route nothing planned — a proven route is searched
+    /// system by system, and an unaided ship has no boost stars — where a
+    /// line about the plan would be describing machinery that never ran.
+    #[test]
+    fn a_route_panel_says_how_it_was_planned() {
+        let asked = |drive: Drive, how: Routing, tune: Tuning| Filter::Route {
+            label: "SOL -> COLONIA".to_owned(),
+            systems: vec![1, 2],
+            range: "50".to_owned(),
+            trip: None,
+            drive,
+            how,
+            tune,
+        };
+        let wide = Tuning { reach: 450, ..Tuning::default() };
+
+        assert_eq!(
+            planned_with(&asked(Drive::Standard, Routing::QUICK, wide))
+                .as_deref(),
+            Some("an exact plan, gaps stepped"),
+        );
+
+        // And the plan's own leaning, which is its own setting rather than
+        // the route's percent: a reader who leaned the plan has a
+        // different route and the panel is what says so.
+        let leaned = Tuning { planning: 20, ..wide };
+        assert_eq!(
+            planned_with(&asked(Drive::Standard, Routing::QUICK, leaned))
+                .as_deref(),
+            Some("a plan leaned 20%, gaps stepped"),
+        );
+
+        // And the reach is not quoted, the plan having climbed it.
+        assert!(
+            planned_with(&asked(Drive::Standard, Routing::QUICK, wide))
+                .is_some_and(|said| !said.contains("450")),
+            "the panel quoted a rung the answer may not have come from",
+        );
+
+        let searched = Tuning { crossing: Crossing::Searched, ..wide };
+        assert!(
+            planned_with(&asked(Drive::Standard, Routing::QUICK, searched))
+                .is_some_and(|said| said.ends_with("searched")),
+            "the crossing was not said",
+        );
+
+        // Nothing planned it: proven, and unaided.
+        assert_eq!(
+            planned_with(&asked(Drive::Standard, Routing::FEWEST, wide)),
+            None,
+            "a proven route was said to be planned",
+        );
+        assert_eq!(
+            planned_with(&asked(Drive::Unaided, Routing::QUICK, wide)),
+            None,
+            "an unaided route was said to be planned",
+        );
+    }
+
+    /// The longest stretch a route crosses with nothing to scoop
+    ///
+    /// The reading that says whether a plotted route is flyable at all
+    /// rather than merely long: a scoop takes hydrogen off the main
+    /// sequence, so a run of white dwarfs and brown dwarfs is crossed on
+    /// the fuel the ship set out with.
+    #[test]
+    fn a_route_says_its_longest_stretch_with_nothing_to_scoop() {
+        let said = Scooping::of([
+            ("SOL", Some("G"), None),
+            ("ONE", Some("DA"), Some(50.)),
+            ("TWO", Some("Y"), Some(50.)),
+            ("THREE", Some("H"), Some(50.)),
+            ("SCOOPABLE", Some("K"), Some(50.)),
+            ("FOUR", Some("N"), Some(50.)),
+        ]);
+
+        assert_eq!(said.run, 3, "the run was miscounted: {said:?}");
+        assert_eq!(said.from.as_deref(), Some("ONE"));
+        assert_eq!(said.unread, 0);
+        // Four jumps of fifty: the three onto the starving stops and the
+        // one that lands on the star which can refuel the ship.
+        assert_eq!(said.across, Some(200.));
+        assert_eq!(
+            said.said().as_deref(),
+            Some(
+                "nothing to scoop at 3 stops in a row, from ONE, \
+                 200.0 Ly to cross"
+            ),
+        );
+    }
+
+    /// The stretch is measured in light years, not in stops
+    ///
+    /// Two stretches of the same count and nothing like the same crossing:
+    /// what a tank answers is the distance, fuel going as the square of a
+    /// jump at least, and the count alone says neither.
+    #[test]
+    fn a_stretch_is_said_in_light_years() {
+        let stretch = |jump: f64| {
+            Scooping::of([
+                ("ONE", Some("DA"), Some(jump)),
+                ("TWO", Some("DA"), Some(jump)),
+                ("SCOOPABLE", Some("G"), Some(jump)),
+            ])
+        };
+
+        assert_eq!(stretch(50.).run, stretch(25.).run, "the counts differ");
+        assert_eq!(stretch(50.).across, Some(150.));
+        assert_eq!(stretch(25.).across, Some(75.));
+    }
+
+    /// A route that states no distances says the stops and nothing else
+    ///
+    /// There is nothing to add up. A list drawn with no camera to measure
+    /// from still names its stops, and saying nothing about the crossing is
+    /// the honest half of that.
+    #[test]
+    fn a_route_with_no_distances_says_only_its_stops() {
+        let said = Scooping::of([
+            ("ONE", Some("DA"), None),
+            ("TWO", Some("DA"), None),
+        ]);
+
+        assert_eq!(said.run, 2);
+        assert_eq!(said.across, None);
+        assert_eq!(
+            said.said().as_deref(),
+            Some("nothing to scoop at 2 stops in a row, from ONE"),
+        );
+    }
+
+    /// The fuel rule names every drive class the game has
+    ///
+    /// What the panel says instead of a fuel figure of its own. A reader
+    /// with a class 5 fitted needs the exponent for a class 5, and a
+    /// ceiling over all of them read as a fact about their ship — so the
+    /// rule is stated and the arithmetic left to the one person who knows
+    /// what is fitted.
+    #[test]
+    fn the_fuel_rule_names_each_drive_class() {
+        let said = fuel_rule();
+
+        for (class, power) in POWERS {
+            assert!(
+                said.contains(&format!("{class} → {power:.2}")),
+                "class {class} went unsaid: {said}",
+            );
+        }
+        assert!(said.contains("(d / range) ^ p"), "{said}");
+    }
+
+    /// A route that can refuel everywhere says nothing at all
+    ///
+    /// A line saying a route is fine is a line read every time to learn
+    /// nothing. Most routes through settled space are this.
+    #[test]
+    fn a_route_that_can_refuel_anywhere_is_not_remarked_on() {
+        let said = Scooping::of([
+            ("SOL", Some("G"), None),
+            ("BARNARD", Some("M"), Some(6.)),
+        ]);
+
+        assert_eq!(said.run, 0);
+        assert_eq!(said.said(), None, "{said:?}");
+    }
+
+    /// A class nothing has read is not counted as a starving stop
+    ///
+    /// The honest half. A route across unexplored space is mostly unread,
+    /// and reading unknown as unscoopable would condemn every galactic
+    /// plot — so the run is what is *known* to have nothing to scoop, and
+    /// the unknowns are counted beside it. The reading is a floor.
+    #[test]
+    fn an_unread_stop_is_said_rather_than_assumed() {
+        let said = Scooping::of([
+            ("SOL", Some("G"), None),
+            ("ONE", Some("DA"), Some(50.)),
+            ("UNREAD", None, Some(50.)),
+            ("TWO", Some("DA"), Some(50.)),
+        ]);
+
+        assert_eq!(said.run, 1, "an unread stop extended the run: {said:?}");
+        assert_eq!(said.unread, 1);
+        assert_eq!(
+            said.said().as_deref(),
+            Some(
+                "nothing to scoop at 1 stop, from ONE, 50.0 Ly to cross, \
+                 1 stop unread"
+            ),
+        );
+    }
+
+    /// And a giant is the same star grown, so it still refuels a ship
+    ///
+    /// The case a first-letter rule gets wrong in the other direction: `MS`
+    /// is an S-type star and not an `M` dwarf, while `M_RedGiant` is.
+    #[test]
+    fn a_giant_refuels_and_an_s_type_does_not() {
+        let said = Scooping::of([
+            ("GIANT", Some("M_RedGiant"), None),
+            ("S TYPE", Some("MS"), Some(50.)),
+            ("GIANT TOO", Some("K_OrangeGiant"), Some(50.)),
+        ]);
+
+        assert_eq!(said.run, 1, "{said:?}");
+        assert_eq!(said.from.as_deref(), Some("S TYPE"));
     }
 
     /// Two plots between the same ends are told apart by it
@@ -3074,8 +4027,8 @@ mod tests {
     /// the difference between them.
     #[test]
     fn two_routes_between_the_same_ends_read_apart() {
-        let near = summary(&plotted_for("SOL -> BARNARD", "10"), 12);
-        let far = summary(&plotted_for("SOL -> BARNARD", "20"), 7);
+        let near = summary(&plotted_for("SOL -> BARNARD", "10"), 12, None, 0);
+        let far = summary(&plotted_for("SOL -> BARNARD", "20"), 7, None, 0);
 
         assert_ne!(near, far);
         assert!(near.contains("10 Ly"), "{near}");
@@ -3088,14 +4041,16 @@ mod tests {
     /// that answered one for them would be answering for the user.
     #[test]
     fn a_filter_that_was_not_plotted_says_only_how_many() {
-        assert_eq!(summary(&faction(7), 12), "12 systems");
+        assert_eq!(summary(&faction(7), 12, None, 0), "12 systems");
         assert_eq!(
             summary(
                 &Filter::Systems {
                     label: "3 systems".to_owned(),
                     systems: vec![1, 2, 3],
                 },
-                3
+                3,
+                None,
+                0
             ),
             "3 systems"
         );
@@ -3115,6 +4070,10 @@ mod tests {
                 &plotted_for("SOL -> BARNARD", "10"),
                 &[],
                 Some(&systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut None,
@@ -3125,7 +4084,9 @@ mod tests {
         });
 
         assert!(
-            said.contains(&"2 systems, 10 Ly range, direct search".to_owned()),
+            said.contains(
+                &"2 systems, 10 Ly range, optimal, fewest jumps".to_owned()
+            ),
             "{said:?}"
         );
     }
@@ -3319,6 +4280,10 @@ mod tests {
     ///
     /// A faction's holdings are not flown in any order, so there is nothing
     /// about them to add up.
+    ///
+    /// Distances, and no fuel figure: the map is not told the ship a fuel
+    /// figure would take, so the rule for working one out is on hover
+    /// instead. See [`fuel_rule`].
     #[test]
     fn the_panel_says_what_a_route_comes_to_and_no_more() {
         let held = [
@@ -3363,6 +4328,7 @@ mod tests {
             trip: Some("A -> C -> E".to_owned()),
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let legs = vec![
             leg("FIRST LEG", vec![1, 2, 3]),
@@ -3375,6 +4341,10 @@ mod tests {
                 &leg("2 Leg Route", vec![1, 2, 3, 4, 5]),
                 &legs,
                 Some(&held),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
                 &mut None,
@@ -3385,11 +4355,13 @@ mod tests {
         });
         let at = |what: &str| {
             said.iter()
-                .position(|line| line == what)
+                .position(|line| line.starts_with(what))
                 .unwrap_or_else(|| panic!("{what} was painted: {said:?}"))
         };
 
-        // The whole trip's figures, above either leg.
+        // The whole trip's figures, above either leg. Matched on the start
+        // of the line, the fuel beside the distance being
+        // [`the_panel_says_what_a_route_comes_to_and_no_more`]'s business.
         assert!(at("26.0 Ly flown, longest jump 12.0 Ly") < at("FIRST LEG"));
         // Each leg's stops under its own name, in the order flown.
         assert!(at("FIRST LEG") < at("TEST 1"));
@@ -3442,6 +4414,10 @@ mod tests {
                 filter,
                 &[],
                 Some(systems),
+                None,
+                0,
+                &crate::Boosts::absent(),
+                &StarClasses::default(),
                 None,
                 &mut None,
                 &mut None,
@@ -3560,6 +4536,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let held = [
             placed(1, [0., 0., 0.]),
@@ -3575,6 +4552,10 @@ mod tests {
                     &route,
                     &[],
                     Some(&held),
+                    None,
+                    0,
+                    &crate::Boosts::absent(),
+                    &StarClasses::default(),
                     Some(DVec3::ZERO),
                     &mut None,
                     &mut None,
@@ -3639,6 +4620,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let legs = vec![
             Filter::Route {
@@ -3648,6 +4630,7 @@ mod tests {
                 trip: Some("SOL -> LAVE -> DISO".to_owned()),
                 drive: Drive::Unaided,
                 how: Routing::default(),
+                tune: Tuning::default(),
             },
             Filter::Route {
                 label: "LAVE -> DISO".to_owned(),
@@ -3656,6 +4639,7 @@ mod tests {
                 trip: Some("SOL -> LAVE -> DISO".to_owned()),
                 drive: Drive::Unaided,
                 how: Routing::default(),
+                tune: Tuning::default(),
             },
         ];
         let held = [
@@ -3677,6 +4661,10 @@ mod tests {
                     &trip,
                     &legs,
                     Some(&held),
+                    None,
+                    0,
+                    &crate::Boosts::absent(),
+                    &StarClasses::default(),
                     Some(DVec3::ZERO),
                     &mut None,
                     stops,
@@ -3812,6 +4800,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let legs = vec![trip.clone()];
         let held = [
@@ -3829,6 +4818,10 @@ mod tests {
                         &trip,
                         &legs,
                         Some(&held),
+                        None,
+                        0,
+                        &crate::Boosts::absent(),
+                        &StarClasses::default(),
                         Some(DVec3::ZERO),
                         &mut None,
                         stops,

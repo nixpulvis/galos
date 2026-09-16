@@ -3,7 +3,7 @@ use crate::schedule::MapSet;
 use crate::search::Plot;
 use crate::space::Galaxy;
 use crate::systems::bodies::spawn::{Body, Places};
-use crate::systems::route::graph::{Drive, Routing};
+use crate::systems::route::graph::{Drive, Routing, Tuning};
 use crate::systems::{
     Spyglass, System,
     fetch::FetchIndex,
@@ -39,7 +39,7 @@ use galos_photometry::{Magnitude, Temperature};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Deref,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub fn plugin(app: &mut App) {
@@ -553,8 +553,11 @@ pub fn spawn(
     // is the line the spawn is logged under. Nothing is stamped with it and
     // nothing measures how stale a row is by it, so the latest of them stands
     // for the batch rather than each row having to carry its own.
-    let mut arrived: Vec<(System, bool)> = Vec::new();
+    let mut arrived: Vec<(System, bool, bool)> = Vec::new();
     let mut arrived_at = time.startup();
+    // This frame's moment, which is when everything polled below landed as
+    // far as anyone watching is concerned.
+    let landed_at = time.last_update().unwrap_or_else(|| time.startup());
     // Taken down while the tasks are being walked and applied after, the walk
     // holding the tasks and the taking writing the surveys beside them.
     let mut answered: Vec<(FetchIndex, DateTime<Utc>)> = Vec::new();
@@ -570,8 +573,15 @@ pub fn spawn(
             if let Some(at) = at {
                 answered.push((index.clone(), at));
             }
-            if let FetchIndex::Route(start, end, range, trip, drive, how) =
-                index
+            if let FetchIndex::Route(
+                start,
+                end,
+                range,
+                trip,
+                drive,
+                how,
+                tune,
+            ) = index
             {
                 // A leg is a line between two systems, so one system is no
                 // leg. Coming back with nothing is how the router says it
@@ -593,8 +603,6 @@ pub fn spawn(
                     *plot = Plot::Failed(format!(
                         "No route from {start} to {end} at {range} Ly"
                     ));
-                } else if *plot == Plot::Working {
-                    *plot = Plot::Nothing;
                 }
 
                 // Said rather than acted on. What a route does to the map is
@@ -602,12 +610,19 @@ pub fn spawn(
                 // systems are in hand, so it is the one place that can say
                 // what they are. The systems arrive built, so the line is
                 // drawn straight from them before they join the spawn queue.
+                // The wait, from the frame the button was pressed to this
+                // one. Off the task's own stamp rather than a clock of its
+                // own: `fetched_at` is when the leg was handed to the pool,
+                // which is what a user waiting on a plot is timing.
+                let took = landed_at.saturating_duration_since(*fetched_at);
                 if let Some(landed) = plotted_route(
                     &new_systems,
                     range,
                     *drive,
                     *how,
+                    *tune,
                     trip.clone(),
+                    took,
                 ) {
                     spawn_route(
                         &landed.filter(),
@@ -628,14 +643,44 @@ pub fn spawn(
             // them: those are wanted wherever they lie, as the evictor keeps
             // them. A region and a route's stops are weighed against the reach.
             let pinned = matches!(index, FetchIndex::Systems(..));
-            arrived
-                .extend(new_systems.into_iter().map(|system| (system, pinned)));
+            // Asked for by name, both of them: a route's stops are the answer
+            // the user is waiting on and the systems of a search are what
+            // they typed. Those go in front of the region and the walk, which
+            // offer a galaxy nobody named — see [`PendingSpawns`]. A route
+            // landed with its stops behind tens of thousands of walk offers
+            // drew its line and then filled it in over the seconds it took
+            // the queue to reach them.
+            let asked = matches!(
+                index,
+                FetchIndex::Systems(..) | FetchIndex::Route(..)
+            );
+            arrived.extend(
+                new_systems.into_iter().map(|system| (system, pinned, asked)),
+            );
         }
         retain
     });
 
     for (index, at) in answered {
         tasks.surveyed(index, at);
+    }
+
+    // Still plotting while any leg of it is. A trip's legs land one at a
+    // time, and the first of them used to clear this: the spinner stopped,
+    // the stop button went, and the form read as finished while two legs
+    // were still searching. The tasks are the authority — a leg that landed
+    // was taken off `fetched` in the walk above — so what is left is what
+    // is still being worked out.
+    //
+    // Only where the form is still waiting. A leg that came back with
+    // nothing has already said so, and that answer outlives the rest of the
+    // trip landing.
+    let plotting = tasks
+        .fetched
+        .keys()
+        .any(|index| matches!(index, FetchIndex::Route(..)));
+    if *plot == Plot::Working && !plotting {
+        *plot = Plot::Nothing;
     }
 
     // Queue rather than spawn, and only what is not already on the map. The
@@ -647,11 +692,11 @@ pub fn spawn(
     // not resident, so it still re-queues and comes back.
     let resident: HashSet<i64> =
         systems.iter().map(|system| system.address).collect();
-    for (system, pinned) in arrived {
+    for (system, pinned, asked) in arrived {
         if resident.contains(&system.address) {
             continue;
         }
-        pending.push(system, pinned, arrived_at);
+        pending.push(system, pinned, asked, arrived_at);
     }
 }
 
@@ -667,12 +712,15 @@ pub fn spawn(
 /// Named for its two ends as the rows spell them, rather than as the user
 /// typed them: a leg of a trip is a route like any other, and the map's own
 /// spelling is what the rest of the map says.
+#[allow(clippy::too_many_arguments)]
 fn plotted_route(
     systems: &[System],
     range: &str,
     drive: Drive,
     how: Routing,
+    tune: Tuning,
     trip: Option<String>,
+    took: Duration,
 ) -> Option<PlottedRoute> {
     let (first, last) = (systems.first()?, systems.last()?);
     if systems.len() < 2 {
@@ -687,7 +735,9 @@ fn plotted_route(
         range: range.to_owned(),
         drive,
         how,
+        tune,
         trip,
+        took,
     })
 }
 
@@ -700,40 +750,179 @@ fn plotted_route(
 /// which the map already reads as a region drawing before it has fully loaded.
 const SPAWN_BUDGET: usize = 2048;
 
-/// Systems fetched and built, waiting to become entities
+/// How deep the queue is allowed to get
 ///
-/// The fetch tasks return whole regions at once, and [`spawn`] queues them
-/// here rather than spawning the lot in the frame they land. [`drain_spawns`]
-/// takes [`SPAWN_BUDGET`] of them a frame, in arrival order.
+/// Thirty-two frames' worth. What is offered past it is dropped unqueued,
+/// which costs nothing: the walk runs every frame and offers whatever is
+/// still wanted again, so the queue holds what the next half-second can
+/// draw rather than everything a view could ever want. Framing a route
+/// across the galaxy offered **two million** in one pass, against a picture
+/// that wanted a few thousand marks — see `TODO-map-scale.md` 3.
+const QUEUE_CEILING: usize = SPAWN_BUDGET * 32;
+
+/// One system waiting to be drawn
 ///
-/// Keyed by address so a system fetched twice before it is drawn holds one
+/// **A reference where there is one to keep.** A queued system is mostly a
+/// system that never gets drawn — the camera moves, the walk moves with it,
+/// and the queue is weighed against the reach before anything is taken from
+/// it — so building one to queue it is building what gets thrown away:
+/// a name off the names table, the political columns off the populated
+/// table, and a `System` the size of both. Millions of those, to draw
+/// thousands.
+///
+/// So what the walk queues is which point of which cell it wants, and the
+/// system is built out of the payload at the moment it is drawn. What is
+/// already built stays built: the fetch tasks build on their own threads on
+/// purpose, and a route's own stop comes out of the names table with no
+/// payload behind it at all.
+enum Waiting {
+    /// Built elsewhere and carried: off a fetch task, or out of the names
+    /// table for a stop no cell's prefix answers for.
+    ///
+    /// Boxed so an entry is the size of a reference and not the size of a
+    /// [`System`]: 48 bytes measured against 144, and none of the
+    /// allocation, since it is the references that come in millions. The
+    /// box costs one allocation on a path that has already allocated the
+    /// system's name.
+    Built(Box<System>),
+    /// A point of a cell the map holds, read when it is drawn.
+    Point {
+        /// The index's own cell, not the renderer's grid cell.
+        cell: galos_index::CellId,
+        at: u32,
+        /// Where it sits, kept here so the reach can be weighed against it
+        /// without reading the payload back.
+        position: [f64; 3],
+    },
+}
+
+impl Waiting {
+    /// Where the system sits, which is what the reach is weighed against.
+    fn position(&self) -> DVec3 {
+        match self {
+            Waiting::Built(system) => DVec3::from(system.position),
+            Waiting::Point { position, .. } => DVec3::from(*position),
+        }
+    }
+}
+
+/// What is waiting under one address, and how it is waiting
+struct Offered {
+    what: Waiting,
+    /// Wanted whatever the reach; see [`PendingSpawns::prune`].
+    pinned: bool,
+    /// Already in the queue that goes first, so a second asking does not
+    /// put the address in it twice.
+    asked: bool,
+}
+
+/// Systems waiting to become entities
+///
+/// The fetch tasks return whole regions at once and the walk offers a
+/// prefix of every cell it holds; both queue here rather than spawning the
+/// lot in the frame they land. [`drain_spawns`] takes [`SPAWN_BUDGET`] of
+/// them a frame, bounded by [`QUEUE_CEILING`] in total.
+///
+/// **Two queues, because a frame's offers are not equally wanted.** What the
+/// user asked for by name — the stops of a route just plotted, a system
+/// picked out and flown to — goes in `asked` and is drawn first. Everything
+/// the walk and the spyglass offer of their own accord goes in `order`,
+/// which is arrival order as before. One queue meant the hundred and forty
+/// stops of a plotted route waited behind every mark the walk had offered
+/// that frame — tens of thousands of them, at 2,048 a frame — so the line
+/// landed and then filled in slowly from whatever end the queue reached
+/// first.
+///
+/// Keyed by address so a system offered twice before it is drawn holds one
 /// entry, keeping the later row: a re-fetch is a refresh, and one entry is
 /// also what stops two entities landing for a system the world does not yet
 /// hold when the second copy is read.
 #[derive(Resource, Default)]
 pub struct PendingSpawns {
+    asked: VecDeque<i64>,
     order: VecDeque<i64>,
-    rows: HashMap<i64, (System, bool)>,
+    rows: HashMap<i64, Offered>,
     arrived_at: Option<Instant>,
 }
 
 impl PendingSpawns {
-    /// Queue `system`, keeping its place if it is already waiting and taking
-    /// the later row.
+    /// Queue a system already built, keeping its place if it is already
+    /// waiting and taking the later row.
+    ///
+    /// `asked` puts it in front of everything the map offered of its own
+    /// accord; see the type.
+    pub(crate) fn push(
+        &mut self,
+        system: System,
+        pinned: bool,
+        asked: bool,
+        at: Instant,
+    ) {
+        let address = system.address;
+        let what = Waiting::Built(Box::new(system));
+        self.waiting(address, what, pinned, asked, at);
+    }
+
+    /// Queue the `at`th point of `cell`, to be read when it is drawn.
+    pub(crate) fn push_point(
+        &mut self,
+        address: i64,
+        cell: galos_index::CellId,
+        at: u32,
+        position: [f64; 3],
+        pinned: bool,
+        now: Instant,
+    ) {
+        self.waiting(
+            address,
+            Waiting::Point { cell, at, position },
+            pinned,
+            // The walk offers a whole galaxy of these; none of them is
+            // anything anyone asked for by name.
+            false,
+            now,
+        );
+    }
+
+    /// Queue whichever of the two, under `address`.
     ///
     /// `pinned` marks a system wanted whatever the reach — one picked out and
     /// flown to — which [`prune`](Self::prune) never drops. A system queued
-    /// again as pinned stays pinned.
-    pub(crate) fn push(&mut self, system: System, pinned: bool, at: Instant) {
-        let address = system.address;
+    /// again as pinned stays pinned, and one queued again as asked for moves
+    /// up. An offer past [`QUEUE_CEILING`] is dropped rather than held,
+    /// unless it is pinned or asked for: the walk will offer it again next
+    /// frame if it is still wanted, and nothing else will offer a route's
+    /// own stops.
+    fn waiting(
+        &mut self,
+        address: i64,
+        what: Waiting,
+        pinned: bool,
+        asked: bool,
+        at: Instant,
+    ) {
         match self.rows.get_mut(&address) {
-            Some((held, held_pinned)) => {
-                *held = system;
-                *held_pinned |= pinned;
+            Some(held) => {
+                held.what = what;
+                held.pinned |= pinned;
+                // Moved up rather than left where it was. The stale copy of
+                // the address in `order` is skipped when it comes round,
+                // the row having been taken by then.
+                if asked && !held.asked {
+                    held.asked = true;
+                    self.asked.push_back(address);
+                }
             }
             None => {
-                self.rows.insert(address, (system, pinned));
-                self.order.push_back(address);
+                if !pinned && !asked && self.order.len() >= QUEUE_CEILING {
+                    return;
+                }
+                self.rows.insert(address, Offered { what, pinned, asked });
+                if asked {
+                    self.asked.push_back(address);
+                } else {
+                    self.order.push_back(address);
+                }
             }
         }
         self.arrived_at = Some(self.arrived_at.map_or(at, |prev| prev.max(at)));
@@ -753,33 +942,55 @@ impl PendingSpawns {
             return;
         }
         let rows = &mut self.rows;
-        self.order.retain(|address| {
-            let kept = rows.get(address).is_some_and(|(system, pinned)| {
-                *pinned || center.distance(DVec3::from(system.position)) <= keep
+        let mut weigh = |queue: &mut VecDeque<i64>| {
+            queue.retain(|address| {
+                let kept = rows.get(address).is_some_and(|held| {
+                    held.pinned || center.distance(held.what.position()) <= keep
+                });
+                if !kept {
+                    rows.remove(address);
+                }
+                kept
             });
-            if !kept {
-                rows.remove(address);
-            }
-            kept
-        });
+        };
+        weigh(&mut self.asked);
+        weigh(&mut self.order);
     }
 
     fn is_empty(&self) -> bool {
-        self.order.is_empty()
+        self.asked.is_empty() && self.order.is_empty()
     }
 
     /// How many systems are waiting, for the diagnostics panel to read.
     pub fn queued(&self) -> usize {
-        self.order.len()
+        self.asked.len() + self.order.len()
     }
 
-    /// Take up to `budget` systems, oldest first.
-    fn take(&mut self, budget: usize) -> Vec<System> {
-        let n = budget.min(self.order.len());
-        let mut batch = Vec::with_capacity(n);
-        while batch.len() < n {
-            let Some(address) = self.order.pop_front() else { break };
-            if let Some((system, _)) = self.rows.remove(&address) {
+    /// Take up to `budget` systems, building the ones that are still only a
+    /// reference
+    ///
+    /// What was asked for by name first, then arrival order. A pop that
+    /// finds no row is an address that was taken already — the stale copy a
+    /// promotion leaves behind — and costs nothing but the pop.
+    ///
+    /// `built` answers [`None`] where the payload a point named is gone or
+    /// no longer holds that system — a cell freed or republished while the
+    /// offer waited — and the offer is then dropped unread. The walk offers
+    /// it again next frame if it is still wanted, which is the same rule the
+    /// ceiling leans on.
+    fn take(
+        &mut self,
+        budget: usize,
+        mut built: impl FnMut(i64, Waiting) -> Option<System>,
+    ) -> Vec<System> {
+        let mut batch = Vec::with_capacity(budget.min(self.queued()));
+        while batch.len() < budget {
+            let next =
+                self.asked.pop_front().or_else(|| self.order.pop_front());
+            let Some(address) = next else { break };
+            if let Some(held) = self.rows.remove(&address)
+                && let Some(system) = built(address, held.what)
+            {
                 batch.push(system);
             }
         }
@@ -804,6 +1015,9 @@ fn drain_spawns(
     camera: Query<&OrbitCamera>,
     spyglass: Res<Spyglass>,
     bounded: Option<Res<crate::systems::bounded::LodFetch>>,
+    resident: Res<crate::systems::bounded::ResidentCells>,
+    populated: Res<Populated>,
+    names: Res<Names>,
     mut commands: Commands,
 ) {
     // Weigh the queue against the reach before drawing any of it, the same cut
@@ -823,7 +1037,25 @@ fn drain_spawns(
     }
     let Ok(grid) = grids.get(galaxy.0) else { return };
     let arrived_at = pending.arrived_at.unwrap_or_else(|| time.startup());
-    let batch = pending.take(SPAWN_BUDGET);
+    // The frame's worth, built here and not when it was offered: a queued
+    // system is mostly one that never gets drawn, and the name and the
+    // political columns are a join apiece. See [`Waiting`].
+    let batch = pending.take(SPAWN_BUDGET, |address, what| match what {
+        Waiting::Built(system) => Some(*system),
+        Waiting::Point { cell, at, .. } => {
+            let held = resident.0.cell(cell)?;
+            let point = held.points.get(at as usize)?;
+            // The cell may have been published again while the offer
+            // waited, which renumbers its members: a point that is no
+            // longer the system that was offered is not this offer's, and
+            // the walk offers whatever is there now next frame.
+            (point.id64 as i64 == address).then(|| {
+                crate::systems::bounded::build_from_point(
+                    point, &populated, &names,
+                )
+            })
+        }
+    });
     spawn_systems(
         batch,
         &systems_query,
@@ -1212,12 +1444,112 @@ mod tests {
             "10",
             Drive::Unaided,
             Routing::default(),
+            Tuning::default(),
             None,
+            Duration::from_millis(1200),
         )
         .unwrap();
 
         assert_eq!(landed.label, "SOL -> BARNARD");
         assert_eq!(landed.systems, vec![1, 2, 3]);
+    }
+
+    /// Take a batch, building whatever was queued as a reference
+    ///
+    /// The tests queue built systems, so nothing here reads a payload; what
+    /// it stands in for is [`drain_spawns`]'s closure, which does.
+    fn taken(pending: &mut PendingSpawns, budget: usize) -> Vec<System> {
+        pending.take(budget, |_, what| match what {
+            Waiting::Built(system) => Some(*system),
+            Waiting::Point { .. } => None,
+        })
+    }
+
+    /// An app that polls route tasks, with a galaxy to draw their lines in
+    fn landing() -> App {
+        use bevy::asset::AssetPlugin;
+        use big_space::prelude::BigSpace;
+
+        let mut app = App::new();
+        app.add_plugins((
+            bevy::app::TaskPoolPlugin::default(),
+            bevy::time::TimePlugin,
+            AssetPlugin::default(),
+        ));
+        app.init_asset::<Mesh>();
+        app.init_asset::<StandardMaterial>();
+        app.add_message::<route::PlottedRoute>();
+        app.init_resource::<FetchTasks>();
+        app.init_resource::<Plot>();
+        app.init_resource::<PendingSpawns>();
+        let galaxy = app
+            .world_mut()
+            .spawn((BigSpace::default(), crate::space::galaxy_grid()))
+            .id();
+        app.insert_resource(Galaxy(galaxy));
+        app.add_systems(Update, spawn);
+        app
+    }
+
+    /// Which leg a route task is keyed on, for the tests below.
+    fn leg(start: &str, end: &str) -> FetchIndex {
+        FetchIndex::Route(
+            start.to_owned(),
+            end.to_owned(),
+            "10".to_owned(),
+            Some("a trip".to_owned()),
+            Drive::Unaided,
+            Routing::default(),
+            Tuning::default(),
+        )
+    }
+
+    /// The form waits on the whole trip, not on its first leg
+    ///
+    /// The reported trouble. A trip's legs land one at a time, and the first
+    /// of them cleared the spinner: the stop button went with it and the
+    /// form read as finished while the other legs were still searching.
+    /// What says a plot is still running is whether any leg of it is.
+    #[test]
+    fn the_form_waits_for_the_last_leg_of_a_trip() {
+        let mut app = landing();
+        let pool = bevy::tasks::AsyncComputeTaskPool::get();
+        let now = Instant::now();
+        *app.world_mut().resource_mut::<Plot>() = Plot::Working;
+
+        // One leg landed, one still searching.
+        let landed = pool.spawn(async move {
+            (vec![called(1, "SOL"), called(2, "BARNARD")], None)
+        });
+        let searching = pool.spawn(async move {
+            std::future::pending::<(Vec<System>, Option<DateTime<Utc>>)>().await
+        });
+        {
+            let mut tasks = app.world_mut().resource_mut::<FetchTasks>();
+            tasks.fetched.insert(leg("SOL", "BARNARD"), (landed, now));
+            tasks.fetched.insert(leg("BARNARD", "WOLF 359"), (searching, now));
+        }
+
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<Plot>(),
+            Plot::Working,
+            "the first leg landing said the whole trip was done",
+        );
+
+        // And when the last leg goes, so does the wait.
+        app.world_mut()
+            .resource_mut::<FetchTasks>()
+            .fetched
+            .remove(&leg("BARNARD", "WOLF 359"));
+        app.update();
+
+        assert_eq!(
+            *app.world().resource::<Plot>(),
+            Plot::Nothing,
+            "the form is still waiting on a trip with nothing left",
+        );
     }
 
     /// A system queued twice waits as one entry
@@ -1229,11 +1561,11 @@ mod tests {
     fn a_system_queued_twice_waits_once() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        pending.push(system(1), false, now);
-        pending.push(system(2), false, now);
-        pending.push(system(1), false, now);
+        pending.push(system(1), false, false, now);
+        pending.push(system(2), false, false, now);
+        pending.push(system(1), false, false, now);
 
-        assert_eq!(about(&pending.take(10)), vec![1, 2]);
+        assert_eq!(about(&taken(&mut pending, 10)), vec![1, 2]);
     }
 
     /// A re-queued system keeps its place and takes the later row
@@ -1241,13 +1573,13 @@ mod tests {
     fn a_re_queued_system_keeps_its_place_and_the_later_row() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        pending.push(system(1), false, now);
-        pending.push(system(2), false, now);
+        pending.push(system(1), false, false, now);
+        pending.push(system(2), false, false, now);
         let mut later = system(1);
         later.position = [9., 9., 9.];
-        pending.push(later, false, now);
+        pending.push(later, false, false, now);
 
-        let batch = pending.take(10);
+        let batch = taken(&mut pending, 10);
         assert_eq!(about(&batch), vec![1, 2]);
         assert_eq!(batch[0].position, [9., 9., 9.]);
     }
@@ -1258,12 +1590,12 @@ mod tests {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
         for address in 1..=5 {
-            pending.push(system(address), false, now);
+            pending.push(system(address), false, false, now);
         }
 
-        assert_eq!(about(&pending.take(2)), vec![1, 2]);
-        assert_eq!(about(&pending.take(2)), vec![3, 4]);
-        assert_eq!(about(&pending.take(2)), vec![5]);
+        assert_eq!(about(&taken(&mut pending, 2)), vec![1, 2]);
+        assert_eq!(about(&taken(&mut pending, 2)), vec![3, 4]);
+        assert_eq!(about(&taken(&mut pending, 2)), vec![5]);
         assert!(pending.is_empty());
     }
 
@@ -1271,7 +1603,7 @@ mod tests {
     #[test]
     fn an_empty_queue_takes_nothing() {
         let mut pending = PendingSpawns::default();
-        assert!(pending.take(10).is_empty());
+        assert!(taken(&mut pending, 10).is_empty());
         assert!(pending.is_empty());
     }
 
@@ -1281,15 +1613,108 @@ mod tests {
     fn pruning_drops_the_unpinned_the_reach_has_left() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        pending.push(at(1, 5.), false, now);
-        pending.push(at(2, 50.), false, now);
-        pending.push(at(3, 50.), true, now);
+        pending.push(at(1, 5.), false, false, now);
+        pending.push(at(2, 50.), false, false, now);
+        pending.push(at(3, 50.), true, false, now);
 
         // radius 10 * margin 1.5 = kept within 15 ly.
         pending.prune(DVec3::ZERO, 15., true);
 
         // 1 is within reach, 2 is beyond it, 3 is beyond it but pinned.
-        assert_eq!(about(&pending.take(10)), vec![1, 3]);
+        assert_eq!(about(&taken(&mut pending, 10)), vec![1, 3]);
+    }
+
+    /// What the user asked for is drawn before what the map offered
+    ///
+    /// The reported slowness. A route's stops land behind everything the
+    /// walk offered that frame — tens of thousands of marks, at
+    /// [`SPAWN_BUDGET`] a frame — so the line was drawn and then filled in
+    /// over the seconds it took the queue to reach its stops. A stop is a
+    /// system named by hand; the marks are a galaxy nobody asked about.
+    #[test]
+    fn what_was_asked_for_is_drawn_first() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        for address in 1..=4 {
+            pending.push(system(address), false, false, now);
+        }
+        pending.push(system(9), false, true, now);
+
+        assert_eq!(about(&taken(&mut pending, 2)), vec![9, 1]);
+    }
+
+    /// A system already waiting moves up when it is asked for by name
+    ///
+    /// Which is the walk's own re-offer of a route's stops: the address is
+    /// usually in the queue already, somewhere behind a galaxy of marks.
+    #[test]
+    fn a_waiting_system_moves_up_when_it_is_asked_for() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        for address in 1..=4 {
+            pending.push(system(address), false, false, now);
+        }
+        pending.push(system(4), true, true, now);
+
+        assert_eq!(about(&taken(&mut pending, 2)), vec![4, 1]);
+        // And the copy left behind in arrival order is not drawn twice.
+        assert_eq!(about(&taken(&mut pending, 10)), vec![2, 3]);
+    }
+
+    /// A queued point is a reference until it is drawn
+    ///
+    /// The whole of what makes framing a galaxy affordable: what the walk
+    /// offers is which point of which cell it wants, and nothing is named,
+    /// coloured or built until the frame that draws it. A point whose cell
+    /// the map has since freed is dropped unbuilt, which is exactly the
+    /// system that would otherwise have been built and evicted in one
+    /// breath.
+    #[test]
+    fn a_queued_point_is_built_only_when_it_is_drawn() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        let cell = galos_index::CellId::ROOT;
+        pending.push_point(7, cell, 3, [1., 2., 3.], false, now);
+        pending.push_point(8, cell, 4, [4., 5., 6.], false, now);
+        assert_eq!(pending.queued(), 2);
+
+        // Standing in for the payload read: 7 is still there, 8 is not.
+        let batch = pending.take(10, |address, what| match what {
+            Waiting::Point { at, .. } if address == 7 => {
+                assert_eq!(at, 3, "the offer named another point");
+                Some(system(7))
+            }
+            _ => None,
+        });
+
+        assert_eq!(about(&batch), vec![7], "8 was built anyway");
+        assert!(pending.is_empty());
+    }
+
+    /// The queue is bounded, and what it turns away comes round again
+    ///
+    /// A galaxy-wide frame offers more than any second could draw —
+    /// measured at two million on a Sol to Colonia plot — and holding all
+    /// of it is holding what the next camera move throws away. Past the
+    /// ceiling an offer is dropped unqueued; the walk runs every frame and
+    /// offers whatever is still wanted again. A pinned system is never
+    /// turned away: it is a route's own stop, and nothing else will offer
+    /// it.
+    #[test]
+    fn the_queue_turns_away_what_it_cannot_hold() {
+        let mut pending = PendingSpawns::default();
+        let now = Instant::now();
+        for address in 1..=(QUEUE_CEILING as i64 + 16) {
+            pending.push(system(address), false, false, now);
+        }
+        assert_eq!(pending.queued(), QUEUE_CEILING, "held past the ceiling");
+
+        pending.push(system(-1), true, false, now);
+        assert_eq!(
+            pending.queued(),
+            QUEUE_CEILING + 1,
+            "a pinned stop was turned away"
+        );
     }
 
     /// A system queued again as pinned is kept where it would have been dropped
@@ -1297,12 +1722,12 @@ mod tests {
     fn re_queuing_as_pinned_keeps_a_far_system() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        pending.push(at(1, 50.), false, now);
-        pending.push(at(1, 50.), true, now);
+        pending.push(at(1, 50.), false, false, now);
+        pending.push(at(1, 50.), true, false, now);
 
         pending.prune(DVec3::ZERO, 15., true);
 
-        assert_eq!(about(&pending.take(10)), vec![1]);
+        assert_eq!(about(&taken(&mut pending, 10)), vec![1]);
     }
 
     /// Nothing is weighed against a spyglass that is not clearing, which is the
@@ -1311,11 +1736,11 @@ mod tests {
     fn pruning_is_off_while_not_clearing() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        pending.push(at(2, 50.), false, now);
+        pending.push(at(2, 50.), false, false, now);
 
         pending.prune(DVec3::ZERO, 15., false);
 
-        assert_eq!(about(&pending.take(10)), vec![2]);
+        assert_eq!(about(&taken(&mut pending, 10)), vec![2]);
     }
 
     /// A thing on the map to be clicked, told apart from the next by `which`

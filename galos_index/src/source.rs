@@ -184,6 +184,77 @@ pub struct Migrated {
     /// mapped base, or [`None`] where the directory had no chunks — which
     /// is every directory built since.
     pub names: Option<usize>,
+    /// Supercharge rows given the place they had always implied, or
+    /// [`None`] where the table already carried one.
+    pub boosts: Option<usize>,
+    /// The format version the directory claims, where this build cannot
+    /// read it and a manual upgrade is what is wanted
+    ///
+    /// Nothing was done in that case: see [`migrate`]. The caller's job is
+    /// to *say so*, naming `galos-index upgrade`, rather than to carry on
+    /// and let the refusal fall out of the first cell anybody asks for.
+    pub upgrade: Option<u16>,
+}
+
+/// The supercharge table's rows as they were published before they carried
+/// a place.
+///
+/// Read only by [`place_boosts`], which is how a directory written by an
+/// older builder is brought forward. Two fields, so it decodes exactly the
+/// rows [`SystemBoost`]'s three cannot.
+#[derive(serde::Deserialize)]
+struct Unplaced {
+    address: i64,
+    boost: crate::meta::Boost,
+}
+
+/// Give the supercharge table the places its rows always implied,
+/// answering how many rows were rewritten — or [`None`] where there was
+/// nothing to do.
+///
+/// The table used to be addresses and classes, which left the router to
+/// join four million of them against the names table's address column to
+/// find out where the jet cones are: 4 GB of mapping faulted and 7.9 s
+/// before a galactic route could start planning, once a session. The place
+/// belongs in the published row, and this is the one pass that puts it
+/// there — the same join, run once, by the side that publishes.
+///
+/// A row the names table cannot place is dropped rather than placed at the
+/// origin, which would put a jet cone at the galactic centre and plan every
+/// route through it. It is the rule the derivations already follow.
+///
+/// Not interruptible and it need not be: it is one read of the table, one
+/// pass over the address column, and one write.
+pub fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
+    let path = boosts_path(dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    // Already placed, which is every table written since. Asked first, so
+    // a current directory pays one decode and nothing else.
+    if rmp_serde::from_slice::<Vec<SystemBoost>>(&bytes).is_ok() {
+        return Ok(None);
+    }
+    let mut old: Vec<Unplaced> = rmp_serde::from_slice(&bytes)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    // The table is published in address order, and the join walks the
+    // column in that order; sorted here rather than trusted, since a file
+    // that says otherwise would answer places for the wrong systems.
+    old.sort_unstable_by_key(|row| row.address);
+    let addresses: Vec<i64> = old.iter().map(|row| row.address).collect();
+    let names = crate::names::Names::open(dir)?;
+    let mut placed: Vec<SystemBoost> = Vec::with_capacity(old.len());
+    names.places(&addresses, |which, position| {
+        placed.push(SystemBoost {
+            address: old[which].address,
+            boost: old[which].boost,
+            position,
+        });
+    });
+    write_meta(&path, &placed)?;
+    Ok(Some(placed.len()))
 }
 
 /// Bring an existing directory's *layout* up to date, before anything reads
@@ -208,14 +279,43 @@ pub struct Migrated {
 /// fold finishes the chunks are still what stands. A galaxy's worth of them
 /// is one external sort — minutes, against the afternoon that derived them
 /// — and it happens once, ever, per directory.
-pub fn migrate(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Migrated> {
+pub fn migrate(
+    dir: &Path,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<Migrated> {
+    // **Said rather than worked around.** Everything below moves files
+    // about without reading what is in them, so it would run to completion
+    // over a directory whose payloads this build cannot read — and the
+    // refusal would surface later, out of whatever first asked for a cell,
+    // as a failed open with no remedy attached. A layout this build does
+    // not read is not something an open can fix: it is hours of re-encoding
+    // and a sweep of the scan record, which is `galos-index upgrade`.
+    if let Some(found) = crate::store::stale(dir) {
+        return Ok(Migrated {
+            bodies: crate::pack::Packed { moved: 0, finished: true },
+            cells: None,
+            names: None,
+            boosts: None,
+            upgrade: Some(found),
+        });
+    }
+
     let bodies = crate::pack::pack(dir, stop)?;
     if !bodies.finished {
-        return Ok(Migrated { bodies, cells: None, names: None });
+        return Ok(Migrated {
+            bodies,
+            cells: None,
+            names: None,
+            boosts: None,
+            upgrade: None,
+        });
     }
     let cells = crate::store::reshard_cells(dir, stop)?;
     let names = crate::names::fold_chunks(dir)?;
-    Ok(Migrated { bodies, cells: Some(cells), names })
+    // After the fold, because it reads the names table and the fold is
+    // what decides which generation that is.
+    let boosts = place_boosts(dir)?;
+    Ok(Migrated { bodies, cells: Some(cells), names, boosts, upgrade: None })
 }
 
 /// Serialize a metadata value to a file, MessagePack-encoded. The builder's
@@ -561,6 +661,7 @@ mod tests {
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 0,
+            kind: crate::meta::StarKind::G,
         };
 
         let built = crate::tree::Snapshot::build(
@@ -741,10 +842,51 @@ mod tests {
     /// another `readdir` over a galaxy's worth of files. `cells` says which
     /// it is — [`None`] for a half that was never reached, against a
     /// [`Resharded`] that found nothing to do.
+    /// A directory this build cannot read is said so, not migrated
+    ///
+    /// Everything the migration does is content-blind — it moves files into
+    /// shards and folds chunks — so it would run happily over payloads of
+    /// another layout and leave the refusal to fall out of the first cell
+    /// anybody asked for, as a failed open with no remedy attached. The
+    /// remedy is hours of re-encoding (`galos-index upgrade`) and not
+    /// something an open can do, so the migration's job here is to name the
+    /// version it met and touch nothing.
+    #[test]
+    fn a_directory_of_another_layout_asks_for_an_upgrade() {
+        use super::{legacy_bodies_path, write_meta};
+
+        let dir = scratch("migratestale");
+        let address = 2_412_116_659_890_i64;
+        write_meta(&legacy_bodies_path(&dir, address), &inside(address))
+            .expect("a loose file writes");
+
+        // An index file of a layout this build does not read.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GIDX");
+        bytes.extend_from_slice(&(crate::INDEX_VERSION - 1).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        std::fs::write(dir.join(crate::store::INDEX_FILE), &bytes)
+            .expect("an index file writes");
+
+        let done = super::migrate(&dir, &|| false).expect("the migration runs");
+        assert_eq!(
+            done.upgrade,
+            Some(crate::INDEX_VERSION - 1),
+            "the layout met was not named",
+        );
+        // And nothing was moved: the loose file is still loose.
+        assert_eq!(done.bodies.moved, 0);
+        assert!(
+            legacy_bodies_path(&dir, address).exists(),
+            "the migration moved files it could not read the index of",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_migration_stopped_in_the_bodies_leaves_the_cells() {
         use super::{legacy_bodies_path, write_meta};
-        use std::cell::Cell;
 
         let dir = scratch("migratestop");
         for n in 0..4 {
@@ -758,10 +900,11 @@ mod tests {
         std::fs::write(&payload, b"\x90").expect("a loose payload writes");
 
         // Asked before each move, so the third question stops the third.
-        let questions = Cell::new(0usize);
+        // Atomic rather than a `Cell`: the packing deals its shards out to
+        // threads, so what it asks about stopping is shared.
+        let questions = std::sync::atomic::AtomicUsize::new(0);
         let stop = || {
-            questions.set(questions.get() + 1);
-            questions.get() > 2
+            questions.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 2
         };
         let part = super::migrate(&dir, &stop).expect("the migration runs");
         assert_eq!(part.bodies.moved, 2, "the bodies did not stop when asked");

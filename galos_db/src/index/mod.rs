@@ -13,8 +13,8 @@ use crate::{Database, Result};
 use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
 use galos_index::{
-    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport,
-    Ending, Index, Pending, Start, System, Taking, Tree,
+    Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport, Ending,
+    Index, Pending, Start, System, Taking, Tree, derive,
 };
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
@@ -167,6 +167,13 @@ fn input_from_row(
         temperature,
         age_bucket,
         updated_at,
+        // The arrival star's own class, off the same column the photometry
+        // fallback reads. A row with none reads as nothing having been
+        // said, which is what most of the galaxy is: see
+        // [`galos_index::StarKind`].
+        kind: class
+            .as_deref()
+            .map_or(galos_index::StarKind::Unknown, galos_index::StarKind::of),
     })
 }
 
@@ -304,6 +311,20 @@ async fn next_star(
 fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
     let asked = || stop();
     let done = galos_index::migrate(dir, &asked)?;
+    // Nothing was moved and nothing can be until the payloads are brought
+    // forward, which is not something an open does: said at `warn` rather
+    // than `info` because every read after this one fails, and the message
+    // is the only place the remedy appears before it does.
+    if let Some(found) = done.upgrade {
+        tracing::warn!(
+            found,
+            reads = galos_index::INDEX_VERSION,
+            dir = %dir.display(),
+            "the directory's payloads are of another layout; run \
+             `galos-index upgrade` over it",
+        );
+        return Ok(());
+    }
     if done.bodies.moved > 0 {
         info!(
             files = done.bodies.moved,
@@ -400,14 +421,13 @@ pub async fn build_to_dir(
         false => None,
         true => {
             let budget = galos_index::region_budget();
-            let built = build_cells(
-                db, dir, checkpoint, params, budget, since, stop,
-            )
-            .await?;
+            let built =
+                build_cells(db, dir, checkpoint, params, budget, since, stop)
+                    .await?;
             let report = match built {
                 Built::Index(report) => report,
                 Built::Stopped(abandoned) => {
-                    return Ok(Reached::Stopped(abandoned))
+                    return Ok(Reached::Stopped(abandoned));
                 }
             };
             info!(
@@ -514,12 +534,12 @@ pub async fn catch_up(
 ) -> Result<Reached<chrono::NaiveDateTime>> {
     if parts != Parts::ALL {
         let since = db.now().await?.naive_utc();
-        return Ok(build_to_dir(db, dir, checkpoint, parts, stop)
-            .await?
-            .map(|report| {
+        return Ok(build_to_dir(db, dir, checkpoint, parts, stop).await?.map(
+            |report| {
                 info!(dir = %dir.display(), %report, "index parts derived");
                 since
-            }));
+            },
+        ));
     }
     Ok(bring_level(db, dir, checkpoint, stop).await?.map(|it| it.cursor))
 }
@@ -587,7 +607,8 @@ pub async fn watch(
     interval: Duration,
     stop: &Stop<'_>,
 ) -> Result<()> {
-    let Reached::End(mut level) = bring_level(db, dir, checkpoint, stop).await?
+    let Reached::End(mut level) =
+        bring_level(db, dir, checkpoint, stop).await?
     else {
         info!(
             dir = %dir.display(),
@@ -666,9 +687,7 @@ async fn bring_level(
             );
             Level { tree, meta, cursor }
         }
-        None if stop() => {
-            return Ok(Reached::Stopped(Abandoned::unstarted()))
-        }
+        None if stop() => return Ok(Reached::Stopped(Abandoned::unstarted())),
         None => {
             info!(dir = %dir.display(), "building initial index (reading every system)");
             let start = Instant::now();
@@ -681,7 +700,7 @@ async fn bring_level(
             let report = match built {
                 Reached::End(report) => report,
                 Reached::Stopped(abandoned) => {
-                    return Ok(Reached::Stopped(abandoned))
+                    return Ok(Reached::Stopped(abandoned));
                 }
             };
             info!(
@@ -908,6 +927,7 @@ mod tests {
             temperature,
             age_bucket: 0,
             updated_at: 0,
+            kind: galos_index::StarKind::G,
         }
     }
 
@@ -942,10 +962,7 @@ mod tests {
         };
         let mut conn = db.acquire().await.expect("a connection");
         crate::systems::System::from_journal(
-            &mut conn,
-            happened,
-            "test",
-            &system,
+            &mut conn, happened, "test", &system,
         )
         .await
         .expect("the system should write");
@@ -1202,10 +1219,7 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             }),
-            ..elite_journal::system::System::new(
-                SETTLED,
-                "TEST SETTLED SYSTEM",
-            )
+            ..elite_journal::system::System::new(SETTLED, "TEST SETTLED SYSTEM")
         };
         crate::systems::System::from_journal(
             &mut conn,
@@ -1245,12 +1259,8 @@ mod tests {
         // A frame from an earlier run, still in the log because nothing has
         // compacted since. The pass below appends behind it, so replaying
         // both must land on one system and not two.
-        Pending::append(
-            &checkpoint,
-            None,
-            &[input(RECORDED, [7.0, 8.0, 9.0])],
-        )
-        .expect("a pending log should write");
+        Pending::append(&checkpoint, None, &[input(RECORDED, [7.0, 8.0, 9.0])])
+            .expect("a pending log should write");
 
         catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
             .await
@@ -1324,9 +1334,7 @@ mod tests {
         );
         assert!(!checkpoint.exists(), "a resume point was written");
         assert_eq!(
-            std::fs::read_dir(&dir)
-                .expect("the directory should read")
-                .count(),
+            std::fs::read_dir(&dir).expect("the directory should read").count(),
             0,
             "a stopping run wrote to the directory",
         );

@@ -23,7 +23,7 @@
 //! the map tells "small" from "not on record".
 
 use crate::meta::{
-    Boost, Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
+    Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
 };
 use crate::names::Names;
 use crate::source::{
@@ -108,7 +108,7 @@ pub struct Sidecars {
     names: Names,
     populated: HashMap<i64, PopulatedSystem>,
     reaches: HashMap<i64, f32>,
-    boosts: HashMap<i64, Boost>,
+    boosts: HashMap<i64, SystemBoost>,
     /// The faction names, in id order. Ids come from a sequence and a name is
     /// never rewritten, so this only ever grows.
     factions: Vec<Faction>,
@@ -174,7 +174,7 @@ impl Sidecars {
             boosts: boosts
                 .unwrap_or_default()
                 .into_iter()
-                .map(|it| (it.address, it.boost))
+                .map(|it| (it.address, it))
                 .collect(),
             factions: factions.unwrap_or_default(),
         };
@@ -301,13 +301,17 @@ impl Sidecars {
         self.reaches.remove(&address).is_some()
     }
 
-    /// Record what a system can supercharge, answering whether that changed
-    /// it.
-    pub fn boost(&mut self, address: i64, boost: Boost) -> bool {
-        match self.boosts.get(&address) {
-            Some(&held) if held == boost => false,
+    /// Record what a system can supercharge and where it is, answering
+    /// whether that changed either.
+    ///
+    /// The place is compared as the class is: a system corrected by a
+    /// later report is a row the table has to rewrite, and a system
+    /// reported again unchanged is not.
+    pub fn boost(&mut self, row: SystemBoost) -> bool {
+        match self.boosts.get(&row.address) {
+            Some(&held) if held == row => false,
             _ => {
-                self.boosts.insert(address, boost);
+                self.boosts.insert(row.address, row);
                 true
             }
         }
@@ -386,12 +390,9 @@ pub fn write_reaches(
 /// order so the same table is always the same bytes.
 pub fn write_boosts(
     dir: &Path,
-    boosts: &HashMap<i64, Boost>,
+    boosts: &HashMap<i64, SystemBoost>,
 ) -> io::Result<usize> {
-    let mut table: Vec<SystemBoost> = boosts
-        .iter()
-        .map(|(&address, &boost)| SystemBoost { address, boost })
-        .collect();
+    let mut table: Vec<SystemBoost> = boosts.values().copied().collect();
     table.sort_unstable_by_key(|it| it.address);
     write_meta(&boosts_path(dir), &table)?;
     Ok(table.len())
@@ -546,9 +547,7 @@ impl Rows {
         each_row(&reaches_path(served), |row: SystemReach| {
             rows.reach(row.address, row.reach)
         })?;
-        each_row(&boosts_path(served), |row: SystemBoost| {
-            rows.boost(row.address, row.boost)
-        })?;
+        each_row(&boosts_path(served), |row: SystemBoost| rows.boost(row))?;
         Ok(rows)
     }
 
@@ -576,8 +575,8 @@ impl Rows {
         if let Some(reach) = galaxy.reach_of(address) {
             self.reach(address, reach)?;
         }
-        if let Some(boost) = galaxy.boost_of(address) {
-            self.boost(address, boost)?;
+        if let Some(row) = galaxy.boost_of(address) {
+            self.boost(row)?;
         }
         Ok(())
     }
@@ -592,9 +591,9 @@ impl Rows {
         self.reaches.push(&SystemReach { address, reach })
     }
 
-    /// What one system's arrival star can supercharge.
-    pub fn boost(&mut self, address: i64, boost: Boost) -> io::Result<()> {
-        self.boosts.push(&SystemBoost { address, boost })
+    /// What one system's arrival star can supercharge, and where it is.
+    pub fn boost(&mut self, row: SystemBoost) -> io::Result<()> {
+        self.boosts.push(&row)
     }
 
     /// Everything pushed, on disk.
@@ -893,6 +892,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::Boost;
 
     /// A table one chunk of a pass moved is still written for the pass
     ///
@@ -947,8 +947,17 @@ mod tests {
         assert!(!held.populate(system()), "the same row read as a change");
         assert!(held.reach(1, 4.0), "the first reach was not a change");
         assert!(!held.reach(1, 4.0), "the same reach read as a change");
-        assert!(held.boost(1, Boost::Neutron));
-        assert!(!held.boost(1, Boost::Neutron), "the same boost moved it");
+        let cone = SystemBoost {
+            address: 1,
+            boost: Boost::Neutron,
+            position: [1., 2., 3.],
+        };
+        assert!(held.boost(cone));
+        assert!(!held.boost(cone), "the same boost moved it");
+        assert!(
+            held.boost(SystemBoost { position: [1., 2., 4.], ..cone }),
+            "a corrected place was not a change"
+        );
 
         assert!(held.depopulate(1), "the row was not there to withdraw");
         assert!(!held.depopulate(1), "withdrawing nothing was a change");
@@ -1050,7 +1059,12 @@ mod tests {
         let mut rows = Rows::onto(&spill, &dir).expect("the tables back");
         rows.populate(&populated(3)).expect("a row");
         rows.reach(3, 16.0).expect("a reach");
-        rows.boost(3, Boost::Neutron).expect("a boost");
+        rows.boost(SystemBoost {
+            address: 3,
+            boost: Boost::Neutron,
+            position: [0., 0., 0.],
+        })
+        .expect("a boost");
         // The same system again, as a resumed read re-deriving the line it
         // stopped on would: the newer row wins and there is still one of it.
         rows.reach(1, 5.0).expect("a reach");

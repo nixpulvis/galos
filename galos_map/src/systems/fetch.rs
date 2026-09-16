@@ -1,6 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::systems::route::graph::{Drive, Routing};
+use crate::systems::route::graph::{Drive, Routing, Tuning};
 use crate::systems::selection::Selection;
 use crate::systems::spawn::system_at;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
@@ -26,6 +26,12 @@ pub fn plugin(app: &mut App) {
     // before the read — see [`crate::Boosts::absent`].
     app.init_resource::<crate::Boosts>();
     app.init_resource::<crate::systems::route::graph::Jumps>();
+    // And how the form says a plot is getting on, which the route fetch
+    // writes: a click that takes a route back leaves nothing to wait on,
+    // and the spinner has to stop. The form's own plugin inits this too;
+    // said here as well so the system that writes it cannot be registered
+    // without it.
+    app.init_resource::<crate::search::Plot>();
 
     // The region fetch is the spyglass source's own, and stands down while the
     // walk is the one loading systems.
@@ -153,7 +159,7 @@ pub enum FetchIndex {
     /// the same pair supercharged and unsupercharged are two routes through
     /// different systems. The search mode last, on the same argument again: a
     /// route that was not asked to prove the fewest jumps may not take them.
-    Route(String, String, String, Option<String>, Drive, Routing),
+    Route(String, String, String, Option<String>, Drive, Routing, Tuning),
     /// Named systems, by address
     ///
     /// What the map is asked for a row at a time rather than by where it is:
@@ -238,7 +244,7 @@ impl fmt::Debug for FetchIndex {
                 "<({},{},{}),{}>",
                 center.x, center.y, center.z, radius
             ),
-            Route(start, end, range, trip, drive, how) => {
+            Route(start, end, range, trip, drive, how, _) => {
                 let boosted = drive.named().unwrap_or("unaided");
                 let how = how.named();
                 match trip {
@@ -406,6 +412,8 @@ pub fn fetch_searched(
     names: Res<Names>,
     boosts: Res<crate::Boosts>,
     populated: Res<Populated>,
+    mut plot: ResMut<crate::search::Plot>,
+    tune: Res<crate::systems::route::graph::Tuning>,
 ) {
     for event in search_events.read() {
         match event {
@@ -416,6 +424,18 @@ pub fn fetch_searched(
             // The mode comes with the ask rather than off the setting, as
             // the range and the drive do: what the route is, is what was
             // asked for, and the setting may have moved since.
+            // Stop what is running and ask for nothing. Its own gesture
+            // rather than a second meaning for the plot button; see
+            // [`crate::search::Search::Stop`].
+            Search::Stop => {
+                crate::systems::route::fetch::stop_routes(
+                    &mut tasks,
+                    &mut searching,
+                );
+                // Nothing is left for the form to wait on, and the only
+                // other thing that clears `Working` is a route landing.
+                *plot = crate::search::Plot::Nothing;
+            }
             Search::Route { stops, range, drive, how } => {
                 fetch_route(
                     stops.clone(),
@@ -426,6 +446,11 @@ pub fn fetch_searched(
                     &time,
                     &mut jumps,
                     *how,
+                    // Read where the route is asked for, as the range and
+                    // the drive are: what a plot is, is what was asked for,
+                    // and a knob moved while it runs does not change the
+                    // answer under it.
+                    *tune,
                     &names,
                     &boosts,
                     &populated,
@@ -735,6 +760,7 @@ pub(crate) mod tests {
         app.init_resource::<Selection>();
         app.init_resource::<crate::systems::bounded::LodFetch>();
         app.init_resource::<crate::systems::route::graph::Routing>();
+        app.init_resource::<crate::systems::route::graph::Tuning>();
         app.init_resource::<crate::systems::route::frontier::Frontiers>();
         // The same systems twice over: the names table the search box reads,
         // and the built galaxy the router walks.
@@ -824,20 +850,95 @@ pub(crate) mod tests {
         );
     }
 
-    /// A trip asked for again does not walk the legs it already holds
+    /// A trip asked for again while it runs is left to finish
     ///
-    /// The leg is the key, so the same pair asked twice is the one question.
-    /// Walking it again would drop the answer already in hand on the floor.
+    /// The same question twice is one question: a leg already under way
+    /// keeps the seconds it has spent rather than starting over. Asking is
+    /// only ever asking now — stopping is [`crate::search::Search::Stop`]'s
+    /// own gesture, for the reason that variant gives at length.
     #[test]
-    fn a_leg_already_under_way_is_not_asked_twice() {
+    fn a_trip_asked_again_while_it_runs_is_left_alone() {
         let (mut app, _dir) = plotting();
 
         trip(&mut app, &["Start", "End", "Onward"]);
-        let first = legs(&app);
+        let under_way = legs(&app);
+        assert_eq!(under_way.len(), 2, "the trip was never asked for");
+
         trip(&mut app, &["Start", "End", "Onward"]);
 
-        assert_eq!(legs(&app), first);
-        assert_eq!(legs(&app).len(), 2);
+        assert_eq!(
+            legs(&app),
+            under_way,
+            "asking again disturbed the legs already searching",
+        );
+    }
+
+    /// And the stop takes every leg of it back
+    ///
+    /// Every leg at once, because that is what the gesture means: the form
+    /// waits on the plot as a whole, and a trip half stopped is a spinner
+    /// nothing will ever clear. Until this the plot button carried the
+    /// meaning, and on a trip it half worked — the legs land at different
+    /// moments, so a second click took back the ones still searching and
+    /// *re-asked the ones that had already landed*.
+    ///
+    /// The searches are told to give up as well as dropped: a body the pool
+    /// has begun does not stop for being dropped. See
+    /// [`crate::systems::route::graph::Frontier::abandon`].
+    #[test]
+    fn a_stop_takes_back_every_leg_of_a_trip() {
+        let (mut app, _dir) = plotting();
+
+        trip(&mut app, &["Start", "End", "Onward"]);
+        assert_eq!(legs(&app).len(), 2, "the trip was never asked for");
+
+        app.world_mut().write_message(crate::search::Search::Stop);
+        app.update();
+
+        assert!(legs(&app).is_empty(), "a leg was left searching");
+        assert_eq!(
+            *app.world().resource::<crate::search::Plot>(),
+            crate::search::Plot::Nothing,
+            "the form is still saying it is working",
+        );
+    }
+
+    /// And a route whose form has moved cancels the old one and asks the new
+    ///
+    /// The other meaning of the same click: what is under way is dropped
+    /// either way, and what is asked for is whatever the form now says. Here
+    /// it is the range that moved, which is part of the leg's key.
+    #[test]
+    fn a_route_asked_at_another_range_replaces_the_one_running() {
+        let (mut app, _dir) = plotting();
+
+        plot(&mut app);
+        assert_eq!(legs(&app).len(), 1, "the route was never asked for");
+
+        app.world_mut().write_message(Search::Route {
+            stops: vec!["Start".into(), "End".into()],
+            range: "20".into(),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+        });
+        app.update();
+
+        assert_eq!(
+            legs(&app),
+            vec![("Start".to_owned(), "End".to_owned())],
+            "the new range was not asked for",
+        );
+        let ranges: Vec<String> = app
+            .world()
+            .resource::<FetchTasks>()
+            .fetched
+            .keys()
+            .filter_map(|index| match index {
+                FetchIndex::Route(_, _, range, ..) => Some(range.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ranges, vec!["20".to_owned()], "the old range still runs");
     }
 
     /// And a trip replaces the one before it, leg for leg
@@ -1085,6 +1186,7 @@ pub(crate) mod tests {
             None,
             Drive::Unaided,
             Routing::default(),
+            Tuning::default(),
         );
 
         assert!(!region_asked([route].iter()));
@@ -1172,6 +1274,7 @@ pub(crate) mod tests {
             None,
             Drive::Unaided,
             Routing::default(),
+            Tuning::default(),
         );
         assert!(!route.refreshes(&region(0, 10)));
         assert!(!region(0, 10).refreshes(&route));

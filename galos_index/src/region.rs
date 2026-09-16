@@ -291,6 +291,7 @@ impl Crown {
                         system.absolute_magnitude,
                         system.temperature,
                         system.updated_at,
+                        system.kind,
                     ));
                     break;
                 }
@@ -395,6 +396,7 @@ mod tests {
                     ],
                     absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0
                         - 5.0,
+                    kind: crate::meta::StarKind::G,
                     temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                     age_bucket: (rng.next() % 8) as u32,
                     updated_at: 1_700_000_000 + (id as u32 % 1_000),

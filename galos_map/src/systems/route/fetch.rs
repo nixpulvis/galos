@@ -1,6 +1,6 @@
 use crate::systems::fetch::{FetchIndex, FetchTasks, RawSystem};
 use crate::systems::route::frontier::Frontiers;
-use crate::systems::route::graph::{Drive, Frontier, Jumps, Routing};
+use crate::systems::route::graph::{Drive, Frontier, Jumps, Routing, Tuning};
 use crate::systems::spawn::build_system;
 use crate::{Names, Populated};
 use bevy::math::DVec3;
@@ -26,6 +26,31 @@ use std::sync::Arc;
 /// the last region asked for; a route is not a region, and resetting it here
 /// put off the next region read by the throttle for no better reason than that
 /// the user had plotted something.
+///
+/// Stop every route being searched, and ask for nothing
+///
+/// Dropping the tasks is not enough on its own: a body the pool has begun
+/// does not stop for being dropped, so each search is told to give up as
+/// well ([`Frontiers::abandon_others`] with nothing to keep) and reads that
+/// on its next expansion — measured at 90–150 µs for a ten-minute galactic
+/// crossing.
+///
+/// Every leg of every trip at once, because that is what the gesture means:
+/// the form is waiting on the plot as a whole, and a trip half stopped is a
+/// spinner nothing will ever clear.
+pub fn stop_routes(
+    tasks: &mut ResMut<FetchTasks>,
+    searching: &mut ResMut<Frontiers>,
+) {
+    tasks.fetched.retain(|index, _| !matches!(index, FetchIndex::Route(..)));
+    searching.abandon_others(&[]);
+}
+
+/// Answers whether anything is now being searched: a route asked for while
+/// it is still being searched is **taken back** rather than asked twice, so
+/// a second click on the plot button stops the work and the form stops
+/// waiting. A trip whose legs are not the ones under way cancels those and
+/// asks for its own, which is the same gesture meaning the other thing.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_route(
     stops: Vec<String>,
@@ -36,6 +61,7 @@ pub fn fetch_route(
     time: &Res<Time<Real>>,
     jumps: &mut ResMut<Jumps>,
     how: Routing,
+    tune: Tuning,
     names: &Res<Names>,
     boosts: &Res<crate::Boosts>,
     populated: &Res<Populated>,
@@ -64,6 +90,7 @@ pub fn fetch_route(
                 trip.clone(),
                 drive,
                 how,
+                tune,
             )
         })
         .collect();
@@ -71,13 +98,13 @@ pub fn fetch_route(
     // One trip at a time, rather than one route at a time. The legs of this
     // trip stand; a leg left over from the trip before it goes, since two
     // trips landing at once would draw lines nobody asked for together and
-    // the form has room to say how one of them is getting on. Dropping the
-    // task is what stops it.
+    // the form has room to say how one of them is getting on.
     //
-    // And the frontier it was filling in goes with the task. A task dropped
-    // before the pool has begun polling it never runs, so nothing in the
-    // search would ever say the frontier was done with; said here, so the
-    // layers come down with the line.
+    // Dropping the task is half of stopping it: nothing will read the
+    // answer, but a body the pool has already begun runs to its end, and a
+    // route walk has nothing to await. So the frontier it was filling in is
+    // told to give up as well — which takes its layers off the map and stops
+    // the search where it is. See `Frontier::abandon`.
     tasks.fetched.retain(|index, _| {
         !matches!(index, FetchIndex::Route(..)) || legs.contains(index)
     });
@@ -88,9 +115,10 @@ pub fn fetch_route(
     let range = range.parse::<f64>().ok();
 
     for (leg, index) in stops.windows(2).zip(legs) {
-        // Already under way or already answered. The retain above kept it,
-        // and asking again would drop the answer on the floor and walk the
-        // same leg a second time.
+        // Already under way: left alone. The same leg asked for twice is one
+        // question, and starting it again would throw away the seconds it
+        // has already spent. Stopping is [`Search::Stop`]'s, not a second
+        // meaning for asking.
         if tasks.fetched.contains_key(&index) {
             continue;
         }
@@ -116,7 +144,7 @@ pub fn fetch_route(
             Frontier::between(DVec3::from(from), DVec3::from(goal))
         });
         if let Some(watching) = &watching {
-            searching.watch(index.clone(), Arc::clone(watching));
+            searching.watch(index.clone(), Arc::clone(watching), now);
         }
         // Cheap Arc handles onto the graph and tables, so the hops are
         // walked, named and colored on the task's own thread rather than on
@@ -131,7 +159,15 @@ pub fn fetch_route(
         let task = pool.spawn(async move {
             let systems = match (graph, ends, range) {
                 (Some(graph), Some((start, end)), Some(range)) => graph
-                    .route(start, end, range, how, drive, watching.as_ref())
+                    .route(
+                        start,
+                        end,
+                        range,
+                        how,
+                        drive,
+                        tune,
+                        watching.as_ref(),
+                    )
                     .map(|hops| {
                         hops.into_iter()
                             .map(|(address, position)| {

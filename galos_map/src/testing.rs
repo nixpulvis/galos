@@ -74,6 +74,7 @@ fn built(
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 0,
+            kind: galos_index::StarKind::G,
         })
         .collect();
     Snapshot::build(&systems, params).write(dir).expect("a built galaxy");

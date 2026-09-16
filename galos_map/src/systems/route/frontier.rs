@@ -41,15 +41,17 @@
 //! paid and what put the cost at ninety-eight per cent.
 
 use super::LineList;
-use super::graph::Frontier;
+use super::graph::{Drawn, Frontier};
 use crate::camera::OrbitCamera;
 use crate::space::Galaxy;
 use crate::systems::fetch::FetchIndex;
 use crate::systems::labels::world_per_pixel;
 use bevy::math::DVec3;
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use big_space::prelude::*;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// How many cells of the closed set span the route being plotted
 ///
@@ -132,6 +134,74 @@ fn reaching_color() -> Color {
     Color::srgba(1., 0.72, 0.30, 0.95)
 }
 
+/// What the stretch still to be crossed is painted
+///
+/// Cold and faint, and the one layer that is not a route at all: it is the
+/// straight line from the furthest the search has got to where it is going,
+/// which is the part nothing has planned yet.
+///
+/// Drawn because without it the picture lies. A search's chain ends at the
+/// closest system it has reached, and on a galactic plot that is hundreds
+/// of light years short of the goal — a gap of a few hundred light years
+/// over twenty-two thousand is sub-pixel, so a route still being worked out
+/// read as a finished one, and the wait after it looked like the map doing
+/// nothing. Reported exactly that way, and only visible on zooming in.
+///
+/// Only while there is no coarse plan: once there is one it spans the whole
+/// route itself ([`planned_color`]) and a line to the goal would be drawn
+/// twice.
+fn left_color() -> Color {
+    Color::srgba(0.55, 0.60, 0.72, 0.30)
+}
+
+/// What the coarse plan is painted
+///
+/// Deeper and much fainter than the branches drawn over it, so the two read
+/// as a promise and the keeping of it. They were one colour to begin with
+/// and that was a picture of nothing: most of a plan's legs are a single
+/// supercharged jump, so their branch lies exactly along the hop it refines
+/// and the ones that do deviate are a few hundred light years out of
+/// twenty-two thousand. Same line, same colour, no fork to see.
+fn planned_color() -> Color {
+    Color::srgba(0.85, 0.45, 0.12, 0.40)
+}
+
+/// The stretch still to be crossed, as a chain of two places
+///
+/// From the furthest anything has reached to the goal. Empty where there is
+/// nothing to say: a coarse plan already spans the whole route, a search
+/// that has reached nothing has no tip to draw from, and a tip standing on
+/// the goal has arrived.
+///
+/// The tip is the end of the last strand, the strands being the legs flown
+/// in order and then the leg under way — so on a flat search it is the
+/// closest system reached, and on a plan being searched it is the last cone
+/// the coarse graph got to.
+fn left(drawn: &Drawn) -> Vec<DVec3> {
+    if !drawn.plan.is_empty() {
+        return Vec::new();
+    }
+    let Some(tip) =
+        drawn.reaching.iter().rev().find_map(|strand| strand.last())
+    else {
+        return Vec::new();
+    };
+    match *tip == drawn.goal {
+        true => Vec::new(),
+        false => vec![*tip, drawn.goal],
+    }
+}
+
+/// One chain of places as the jumps between them
+///
+/// Line segments and not a strip, which is what lets several chains share a
+/// layer: a plan and the branches refining it are separate runs, and a strip
+/// would join the end of one to the start of the next.
+fn jumps(chain: &[DVec3], here: impl Fn(DVec3) -> Vec3) -> Vec<Vec3> {
+    let places: Vec<Vec3> = chain.iter().map(|at| here(*at)).collect();
+    places.windows(2).flat_map(|leg| [leg[0], leg[1]]).collect()
+}
+
 /// The searches running, and what each has drawn
 ///
 /// One per leg: a trip's legs are searched at once and each has its own
@@ -146,6 +216,13 @@ struct Watched {
     leg: FetchIndex,
     /// What the search is filling in, shared with the task running it
     reached: Arc<Frontier>,
+    /// When it was handed to the pool, so the form can say how long it has
+    /// been at it
+    ///
+    /// Taken here rather than off the task's own start: what a user waiting
+    /// on a plot is timing is the click, and a leg may sit in the pool's
+    /// queue before a thread picks it up.
+    asked: Instant,
     /// The closed set's marks, the window's jumps, and the chain
     layers: Option<Layers>,
     /// Where the search set out, once its ends resolved
@@ -169,19 +246,30 @@ struct Watched {
     scaled: f32,
 }
 
-/// The three entities one search draws through.
+/// The five entities one search draws through.
 struct Layers {
     closed: Entity,
     edge: Entity,
+    /// The coarse plan, where there was one to draw
+    planned: Entity,
+    /// A branch per leg flown, and the leg under way
     reaching: Entity,
+    /// The straight line from the furthest reached to the goal
+    left: Entity,
 }
 
 impl Frontiers {
     /// Watch `reached`, which a search over `leg` is about to start filling in.
-    pub(crate) fn watch(&mut self, leg: FetchIndex, reached: Arc<Frontier>) {
+    pub(crate) fn watch(
+        &mut self,
+        leg: FetchIndex,
+        reached: Arc<Frontier>,
+        asked: Instant,
+    ) {
         self.0.push(Watched {
             leg,
             reached,
+            asked,
             layers: None,
             from: None,
             shown: 0,
@@ -192,11 +280,17 @@ impl Frontiers {
 
     /// Give up on every watched search whose leg is not one of `legs`
     ///
-    /// The other half of [`super::fetch::fetch_route`]'s cancelling a trip:
-    /// dropping the task stops the search, and a task the pool never began
-    /// polling never runs at all, so nothing there would ever have said the
-    /// frontier was done with. Said here instead, and [`draw`] takes the
-    /// layers down on the next frame as it does for a search that ended.
+    /// Two callers, and one rule between them. A new ask abandons whatever
+    /// the form has moved off ([`super::fetch::fetch_route`]), and the stop
+    /// gesture abandons the lot by keeping nothing
+    /// ([`super::fetch::stop_routes`]).
+    ///
+    /// Dropping the task means nothing will read the answer; this is what
+    /// stops the work and takes the picture down — a search the pool has
+    /// begun reads [`Frontier::stopped`] and gives up, and one it never
+    /// began would otherwise have left its layers standing for the rest of
+    /// the session. [`draw`] takes them down on the next frame, as it does
+    /// for a search that ended of its own accord.
     pub(crate) fn abandon_others(&self, legs: &[FetchIndex]) {
         for watched in &self.0 {
             if !legs.contains(&watched.leg) {
@@ -214,15 +308,68 @@ impl Frontiers {
         self.0.iter().map(|watched| watched.reached.expanded()).sum()
     }
 
-    /// How close the nearest search has got to what it is looking for, in
-    /// light years, where any of them has reached anything.
-    pub(crate) fn closest(&self) -> Option<f64> {
+    /// How long the searches under way have been at it
+    ///
+    /// The longest of them, which for a trip is the whole wait: the legs are
+    /// searched at once, so the trip is not plotted until the slowest is.
+    /// Counted from the click and not from the first expansion, that being
+    /// what a user waiting on it is timing.
+    ///
+    /// A search that has finished still counts until [`draw`] takes its
+    /// layers down, a frame later; it is done before the form is, the answer
+    /// having to land and be drawn.
+    pub(crate) fn asked_for(&self) -> Option<Duration> {
+        self.0.iter().map(|watched| watched.asked.elapsed()).max()
+    }
+
+    /// How far the whole plot still has to find, in light years
+    ///
+    /// **Summed over the legs still running, not the nearest of them.** Each
+    /// leg closes on its own end, so the *smallest* of those distances is
+    /// whichever leg happens to be nearly done — which on a trip through
+    /// three stops reads as almost arrived while two legs have twenty
+    /// thousand light years between them, and jumps about as each lands.
+    /// Added up it is one number about the trip: it falls as every leg
+    /// closes, and falls again as a leg finishes and leaves the set.
+    ///
+    /// [`None`] until something has been reached. A leg whose search has
+    /// not closed on anything yet holds an infinite distance, and one
+    /// infinity would swallow the sum, so those are left out — the count
+    /// [`Self::legs`] is what says the number is not the whole story yet.
+    pub(crate) fn left(&self) -> Option<f64> {
+        let mut left = None;
+        for watched in &self.0 {
+            let Some(drawn) = watched.reached.drawn() else { continue };
+            if drawn.closest.is_finite() {
+                left = Some(left.unwrap_or(0.) + drawn.closest);
+            }
+        }
+        left
+    }
+
+    /// How many searches are under way, which for a trip is how many of its
+    /// legs are still being worked out.
+    pub(crate) fn legs(&self) -> usize {
+        self.0.len()
+    }
+
+    /// How many legs of `trip` are still being searched
+    ///
+    /// What a panel about a trip has to know before it describes one: the
+    /// legs land one at a time, so a trip read halfway through is a real
+    /// route through some of its stops and *not* the thing the panel is
+    /// titled after. Counted off the leg each search is watching, which
+    /// carries the trip it belongs to.
+    pub(crate) fn plotting(&self, trip: &str) -> usize {
         self.0
             .iter()
-            .filter_map(|watched| watched.reached.drawn())
-            .map(|drawn| drawn.closest)
-            .filter(|closest| closest.is_finite())
-            .min_by(f64::total_cmp)
+            .filter(|watched| match &watched.leg {
+                FetchIndex::Route(.., under, _, _, _) => {
+                    under.as_deref() == Some(trip)
+                }
+                _ => false,
+            })
+            .count()
     }
 }
 
@@ -321,11 +468,17 @@ pub(crate) fn draw(
                         &mut materials,
                     ),
                     edge: layer(edge_color(), &mut commands, &mut materials),
+                    planned: layer(
+                        planned_color(),
+                        &mut commands,
+                        &mut materials,
+                    ),
                     reaching: layer(
                         reaching_color(),
                         &mut commands,
                         &mut materials,
                     ),
+                    left: layer(left_color(), &mut commands, &mut materials),
                 });
                 watched.layers.as_ref().expect("the layers just spawned")
             }
@@ -355,16 +508,38 @@ pub(crate) fn draw(
             }
             put(&mut commands, &mut meshes, layers.edge, points);
         }
-        // A chain of jumps rather than a list of places, so it is drawn as the
-        // legs between them: what `super::legs` does for a route.
+        // Chains of jumps rather than lists of places, so each is drawn as
+        // the legs between them: what `super::legs` does for a route. Both
+        // of these move together — a leg flown is a branch gained — so one
+        // revision covers the pair.
         if drawn.reaching_at != reaching_at {
-            let places: Vec<Vec3> =
-                drawn.reaching.iter().map(|at| here(*at)).collect();
-            let points = places
-                .windows(2)
-                .flat_map(|leg| [leg[0], leg[1]])
-                .collect::<Vec<Vec3>>();
+            put(
+                &mut commands,
+                &mut meshes,
+                layers.planned,
+                jumps(&drawn.plan, here),
+            );
+            // A branch apiece: the legs flown, and the leg under way. Drawn
+            // over the plan and brighter, so a refinement that deviates from
+            // the hop it was promised shows as the fork it is.
+            let mut points = Vec::new();
+            for strand in &drawn.reaching {
+                points.extend(jumps(strand, here));
+            }
             put(&mut commands, &mut meshes, layers.reaching, points);
+            // And what nothing has reached yet: the straight line from the
+            // furthest the search has got to where it is going. Without it
+            // a chain that stops a few hundred light years short of the
+            // goal reads as a finished route, that gap being sub-pixel on a
+            // galactic plot. Nothing where a plan is drawn — the plan spans
+            // the whole route itself — and nothing once the tip is the
+            // goal.
+            put(
+                &mut commands,
+                &mut meshes,
+                layers.left,
+                jumps(&left(&drawn), here),
+            );
         }
         watched.shown = drawn.revision;
         watched.layered = (drawn.cells_at, drawn.edge_at, drawn.reaching_at);
@@ -379,7 +554,13 @@ pub(crate) fn draw(
             return true;
         }
         if let Some(layers) = &watched.layers {
-            for entity in [layers.closed, layers.edge, layers.reaching] {
+            for entity in [
+                layers.closed,
+                layers.edge,
+                layers.planned,
+                layers.reaching,
+                layers.left,
+            ] {
                 commands.entity(entity).despawn();
             }
         }
@@ -401,7 +582,7 @@ fn put(
     if points.len() < 2 {
         points = vec![Vec3::ZERO, Vec3::ZERO];
     }
-    commands.entity(entity).insert(Mesh3d(meshes.add(LineList { points })));
+    commands.entity(entity).insert(Mesh3d(meshes.add(LineList::plain(points))));
 }
 
 /// How wide a mark is drawn, in metres, for a cell `cell` light years across
@@ -517,13 +698,9 @@ mod tests {
         let mut cells = 0;
         for step in 0..(STRIDE * BATCH as u64 * 40) {
             let here = at(step as f64);
-            sampler.expanded(
-                node((step % 10) as u32),
-                here,
-                at(6400.),
-                &came,
-                |it| at(it.at as f64 * 100.),
-            );
+            sampler.expanded(node((step % 10) as u32), here, &came, |it| {
+                at(it.at as f64 * 100.)
+            });
             if let Some(drawn) = frontier.drawn() {
                 assert!(
                     drawn.cells.len() >= cells,
@@ -570,27 +747,197 @@ mod tests {
 
         // Expanded in that order, the last of them the closest to the goal.
         for n in 0..3 {
-            sampler.expanded(node(n), places[n as usize], goal, &came, place);
+            sampler.expanded(node(n), places[n as usize], &came, place);
         }
         sampler.done();
 
         let drawn = frontier.drawn().expect("something reached");
         assert_eq!(
             drawn.reaching,
-            vec![at(0.), at(100.), at(200.)],
-            "the chain to the closest system expanded"
+            vec![vec![at(0.), at(100.), at(200.)]],
+            "the one chain of a flat search, to the closest system expanded"
         );
+        assert!(drawn.plan.is_empty(), "a flat search plans nothing");
         assert_eq!(
             drawn.closest, 200.,
             "and how far that still is from the goal"
         );
     }
 
+    /// A plan is drawn whole, with a branch for every leg refined off it
+    ///
+    /// The reported trouble, measured over the real index: a galactic route
+    /// is planned coarsely and then flown leg by leg, and each leg is its
+    /// own search that can only hand over its own two-to-six-jump chain. So
+    /// the drawn chain went from 116 links to 2 the moment the first leg
+    /// began — the crossing replaced by a stub for the two seconds the legs
+    /// take, which reads as the picture being taken down early.
+    ///
+    /// The plan is said outright now and each leg is a strand beside it, so
+    /// what is drawn is the promise and the way the ship can really fly it.
+    #[test]
+    fn a_plan_is_drawn_with_a_branch_for_every_leg() {
+        let goal = at(400.);
+        let frontier = Frontier::between(DVec3::ZERO, goal);
+        let mut sampler = frontier.sampler();
+
+        // Three waypoints planned; the first leg flown two ways off the
+        // straight hop, the second still being searched.
+        sampler.planned(vec![at(0.), at(200.), goal]);
+        sampler.flew(vec![at(0.), at(90.), at(200.)]);
+        sampler.reached(at(300.), || vec![at(200.), at(300.)]);
+        sampler.done();
+
+        let drawn = frontier.drawn().expect("something reached");
+        assert_eq!(
+            drawn.plan,
+            vec![at(0.), at(200.), goal],
+            "the plan, on its own layer and under the branches"
+        );
+        assert_eq!(
+            drawn.reaching,
+            vec![vec![at(0.), at(90.), at(200.)], vec![at(200.), at(300.)],],
+            "a branch for the leg flown and one for the leg under way"
+        );
+        assert_eq!(
+            drawn.closest, 100.,
+            "how close the route has come, not how close the leg has"
+        );
+    }
+
+    /// What is left to cross is drawn, so a chain short of the goal reads
+    /// as one
+    ///
+    /// The reported trouble, and it took a zoom to see: a search's chain
+    /// ends at the closest thing it has reached, which on a galactic plot
+    /// is hundreds of light years short — sub-pixel at that zoom — so a
+    /// route still being worked out read as a finished one and the minutes
+    /// after it looked like the map doing nothing.
+    #[test]
+    fn what_is_left_to_cross_is_drawn() {
+        let goal = at(400.);
+        let frontier = Frontier::between(DVec3::ZERO, goal);
+        let mut sampler = frontier.sampler();
+        sampler.reached(at(300.), || vec![at(0.), at(300.)]);
+        sampler.done();
+
+        let drawn = frontier.drawn().expect("something reached");
+        assert_eq!(
+            left(&drawn),
+            vec![at(300.), goal],
+            "the hundred light years nothing has reached were not drawn"
+        );
+    }
+
+    /// And not drawn twice
+    ///
+    /// A coarse plan spans the whole route itself, so a second line to the
+    /// goal would be the same claim in two colours. Nor is there anything
+    /// to say for a search standing on its goal, or one that has reached
+    /// nothing at all.
+    #[test]
+    fn what_is_left_is_not_drawn_twice() {
+        let goal = at(400.);
+        let frontier = Frontier::between(DVec3::ZERO, goal);
+        let mut sampler = frontier.sampler();
+
+        sampler.done();
+        let nothing = frontier.drawn().expect("a frontier");
+        assert!(left(&nothing).is_empty(), "a search that reached nothing");
+
+        let mut sampler = frontier.sampler();
+        sampler.planned(vec![at(0.), at(200.), goal]);
+        sampler.reached(at(100.), || vec![at(0.), at(100.)]);
+        sampler.done();
+        let planned = frontier.drawn().expect("a plan");
+        assert!(left(&planned).is_empty(), "the plan already spans it");
+
+        let mut sampler = frontier.sampler();
+        sampler.reached(goal, || vec![at(0.), goal]);
+        sampler.done();
+        let arrived = frontier.drawn().expect("an arrival");
+        assert!(left(&arrived).is_empty(), "a tip on the goal has arrived");
+    }
+
+    /// A strand of no length is not drawn
+    ///
+    /// A leg that came back with one place, and a search that has reached
+    /// nothing, are both a line of no length — and the renderer handed a
+    /// mesh of no vertices says so every frame.
+    #[test]
+    fn a_strand_of_no_length_is_not_drawn() {
+        let frontier = Frontier::between(DVec3::ZERO, at(400.));
+        let mut sampler = frontier.sampler();
+
+        sampler.planned(vec![at(0.), at(200.), at(400.)]);
+        sampler.flew(vec![at(0.)]);
+        sampler.done();
+
+        let drawn = frontier.drawn().expect("something reached");
+        assert_eq!(drawn.plan, vec![at(0.), at(200.), at(400.)]);
+        assert!(drawn.reaching.is_empty(), "a branch of one place was drawn");
+    }
+
+    /// The readouts are about the plot, not about a leg of it
+    ///
+    /// A trip's legs are searched at once, so every reading the form gives
+    /// has to be an aggregate: the longest wait, the expansions added up,
+    /// and the distances left added up. The last was a *minimum* over the
+    /// legs, which on a trip through three stops reads as almost arrived
+    /// while two legs have twenty thousand light years between them — and
+    /// jumps about as each lands.
+    #[test]
+    fn the_readouts_are_about_the_whole_plot() {
+        let mut frontiers = Frontiers::default();
+        let asked = Instant::now();
+        // Three legs: two that have reached something, at 900 and 100 ly
+        // from their own ends, and one that has reached nothing yet.
+        for (leg, reached) in [(1, Some(900.)), (2, Some(100.)), (3, None)] {
+            let frontier = Frontier::between(DVec3::ZERO, at(1_000.));
+            if let Some(away) = reached {
+                let mut sampler = frontier.sampler();
+                sampler.reached(at(1_000. - away), || vec![DVec3::ZERO]);
+                sampler.done();
+            }
+            frontiers.watch(
+                FetchIndex::Route(
+                    format!("{leg}"),
+                    "end".into(),
+                    "50".into(),
+                    Some("a trip".into()),
+                    crate::systems::route::Drive::Standard,
+                    crate::systems::route::Routing::QUICK,
+                    crate::systems::route::graph::Tuning::default(),
+                ),
+                frontier,
+                asked,
+            );
+        }
+
+        assert_eq!(frontiers.legs(), 3, "a leg was not watched");
+        assert_eq!(
+            frontiers.left(),
+            Some(1_000.),
+            "the distances left were not added up",
+        );
+        assert_eq!(
+            frontiers.plotting("a trip"),
+            3,
+            "the trip's own legs were not counted",
+        );
+        assert_eq!(
+            frontiers.plotting("another trip"),
+            0,
+            "another trip's legs were counted",
+        );
+    }
+
     /// A running search is drawn, and what it drew goes when it finishes
     ///
-    /// Three layers up while it runs and none after: the answer is drawn as a
-    /// route by then, and what the search touched on the way is not what the
-    /// map is for.
+    /// Five layers up while it runs and none after — the closed set, the
+    /// leading edge, the plan, the branches refining it, and the stretch
+    /// still to be crossed: the answer is drawn as a route by then, and
+    /// what the search touched on the way is not what the map is for.
     #[test]
     fn a_search_is_drawn_while_it_runs_and_taken_down_after() {
         use big_space::prelude::BigSpace;
@@ -617,28 +964,26 @@ mod tests {
                 "50".into(),
                 None,
                 crate::systems::route::Drive::Standard,
-                crate::systems::route::Routing::Direct,
+                crate::systems::route::Routing::FEWEST,
+                crate::systems::route::graph::Tuning::default(),
             ),
             Arc::clone(&frontier),
+            Instant::now(),
         );
         let mut sampler = frontier.sampler();
         let came = chain(10);
 
         for step in 0..(STRIDE * BATCH as u64 * 2) {
             let here = at(step as f64);
-            sampler.expanded(
-                node((step % 10) as u32),
-                here,
-                goal,
-                &came,
-                |it| at(it.at as f64 * 100.),
-            );
+            sampler.expanded(node((step % 10) as u32), here, &came, |it| {
+                at(it.at as f64 * 100.)
+            });
         }
         app.update();
-        assert_eq!(lines(&mut app), 3, "the three layers of one search");
+        assert_eq!(lines(&mut app), 5, "the five layers of one search");
 
         app.update();
-        assert_eq!(lines(&mut app), 3, "three layers, not three a frame");
+        assert_eq!(lines(&mut app), 5, "five layers, not five a frame");
 
         sampler.done();
         app.update();

@@ -12,6 +12,7 @@
 
 use crate::aggregate::temp_bucket;
 use crate::geometry::CellId;
+use crate::meta::StarKind;
 use crate::walk::Needed;
 use std::collections::{HashMap, HashSet};
 
@@ -44,6 +45,15 @@ pub struct Point {
     pub magnitude: f32,
     pub temp_bucket: u8,
     pub updated_at: u32,
+    /// What kind of star a ship arrives at
+    ///
+    /// **Here because the router reads it per expansion.** Whether a ship
+    /// can refuel and whether it can supercharge are both this one byte,
+    /// and a route over the galaxy asks it of every system it reaches — so
+    /// it rides beside the position, which that same loop has already
+    /// faulted, rather than in a table of ninety-five million rows. See
+    /// [`crate::meta::StarKind`].
+    pub kind: StarKind,
 }
 
 impl Point {
@@ -57,6 +67,7 @@ impl Point {
         magnitude: f64,
         temperature: f64,
         updated_at: u32,
+        kind: StarKind,
     ) -> Point {
         Point {
             id64,
@@ -64,6 +75,7 @@ impl Point {
             magnitude: magnitude as f32,
             temp_bucket: temp_bucket(temperature) as u8,
             updated_at,
+            kind,
         }
     }
 }
@@ -98,6 +110,16 @@ impl Resident {
     /// Drop a cell's payload, returning it if it was held.
     pub fn remove(&mut self, id: CellId) -> Option<ResidentCell> {
         self.cells.remove(&id)
+    }
+
+    /// One cell's payload, where it is held
+    ///
+    /// For a reader that has noted *which point of which cell* it wants and
+    /// comes back for it: the client queues a point that way rather than
+    /// building a system out of it, most of what it queues never being
+    /// drawn.
+    pub fn cell(&self, id: CellId) -> Option<&ResidentCell> {
+        self.cells.get(&id)
     }
 
     /// Every resident cell and its payload, for a draw that reads the whole set
@@ -135,6 +157,7 @@ mod tests {
             magnitude: 4.0,
             temp_bucket: 2,
             updated_at: 1_757_260_000,
+            kind: StarKind::G,
         }
     }
 

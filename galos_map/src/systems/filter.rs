@@ -27,7 +27,7 @@ use crate::search::Pending;
 use crate::systems::System;
 use crate::systems::fetch::FetchTasks;
 use crate::systems::fetch::Poll;
-use crate::systems::route::graph::{Drive, Routing};
+use crate::systems::route::graph::{Drive, Routing, Tuning};
 use crate::systems::spawn::system_at;
 use crate::{Factions, Names, Populated};
 use bevy::ecs::system::SystemParam;
@@ -226,6 +226,16 @@ pub enum Filter {
         /// and reads under its own row. Carried rather than read off the
         /// setting, which the user may have moved since.
         how: Routing,
+        /// How the plan over the boost stars was worked out
+        ///
+        /// Part of the question for the reason the rest are: two plots
+        /// between the same ends, for the same ship, at the same optimality
+        /// but planned over different gaps are two different answers — so
+        /// they are two rows and two lines rather than one that overwrote
+        /// the other. And what a panel says a route was plotted with is
+        /// then the whole of what was asked, rather than the part that
+        /// happened to be in the filter.
+        tune: Tuning,
     },
     /// The systems the user picked out by hand
     ///
@@ -339,10 +349,10 @@ impl Filter {
     /// Nothing for a filter that was never plotted. See [`Self::range`],
     /// [`Self::drive`] and [`Self::how`], which are these one at a time for
     /// whoever wants only one.
-    pub fn ship(&self) -> Option<(&str, Drive, Routing)> {
+    pub fn ship(&self) -> Option<(&str, Drive, Routing, Tuning)> {
         match self {
-            Filter::Route { range, drive, how, .. } => {
-                Some((range, *drive, *how))
+            Filter::Route { range, drive, how, tune, .. } => {
+                Some((range, *drive, *how, *tune))
             }
             _ => None,
         }
@@ -426,6 +436,23 @@ impl Filter {
     pub fn drive(&self) -> Option<Drive> {
         match self {
             Filter::Route { drive, .. } => Some(*drive),
+            _ => None,
+        }
+    }
+
+    /// How the plan was worked out, for a route, where it was planned
+    ///
+    /// [`None`] for anything that is not a route, and for a route that was
+    /// never planned: at 100% optimality, or unaided, the boost stars are
+    /// not used and what the planning settings said is not part of the
+    /// answer. See [`Routing::approximates`].
+    pub fn tune(&self) -> Option<Tuning> {
+        match self {
+            Filter::Route { tune, how, drive, .. }
+                if how.approximates() && drive.named().is_some() =>
+            {
+                Some(*tune)
+            }
             _ => None,
         }
     }
@@ -638,9 +665,81 @@ fn resolve(
 pub struct Entry {
     pub filter: Filter,
     pub enabled: bool,
+    /// How long the search that answered it took, for a route
+    ///
+    /// Beside the filter rather than in it: two plots between the same ends
+    /// for the same ship are the same filter, which is what dedupes the row
+    /// and finds the line to take off the map, and a route that took 2.2 s
+    /// is not a different route from one that took 2.3. [`None`] for a
+    /// filter nothing was searched for, and for a route restored from a
+    /// session rather than plotted in this one.
+    pub took: Option<std::time::Duration>,
 }
 
 /// Every filter the user has added
+/// The filters with the addresses they name gathered up
+///
+/// One pass asks whether the filters admit each of a great many systems,
+/// and a route names its stops as a list in travel order — which is the
+/// right shape for drawing a line and the wrong one for asking whether a
+/// system is on it. So the addresses every picking filter names are
+/// gathered once for the pass and asked as a set. See
+/// [`Filters::prepared`].
+pub(crate) struct Prepared<'a> {
+    filters: &'a Filters,
+    named: rustc_hash::FxHashSet<i64>,
+    /// Whether anything names addresses at all, which is not the same as
+    /// the set being empty: a route of no stops names nothing and admits
+    /// nothing, where no route at all leaves the question to the others.
+    names: bool,
+}
+
+impl Prepared<'_> {
+    /// Whether the enabled filters admit `system`; see [`Filters::admit`].
+    pub(crate) fn admit(&self, system: &System, now: DateTime<Utc>) -> bool {
+        self.admits(&system.candidate(), now)
+    }
+
+    /// Whether the enabled filters admit what `candidate` says
+    ///
+    /// The same rule as [`Filters::admits`] — a span is asked of every
+    /// candidate and the filters that pick admit between them — with the
+    /// address-naming filters answered out of the set rather than walked.
+    pub(crate) fn admits(
+        &self,
+        candidate: &Candidate,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let mut picked = None;
+        if self.names {
+            *picked.get_or_insert(false) |=
+                self.named.contains(&candidate.address);
+        }
+        for active in self.filters.asked.iter().filter(|active| active.enabled)
+        {
+            match &active.filter {
+                timed @ Filter::Recency { .. } => {
+                    if !timed.admits(candidate, now) {
+                        return false;
+                    }
+                }
+                // Already answered, out of the set.
+                Filter::Route { .. } | Filter::Systems { .. } => {}
+                picking => {
+                    *picked.get_or_insert(false) |=
+                        picking.admits(candidate, now);
+                }
+            }
+        }
+        picked.unwrap_or(true)
+    }
+
+    /// Whether any filter is being asked at all; see [`Filters::asking`].
+    pub(crate) fn asking(&self) -> bool {
+        self.filters.asking()
+    }
+}
+
 #[derive(Resource, Default, Clone)]
 pub struct Filters {
     asked: Vec<Entry>,
@@ -795,6 +894,43 @@ impl Filters {
         picked.unwrap_or(true)
     }
 
+    /// The filters with their address lookups built, for a pass that asks
+    /// about many systems
+    ///
+    /// **A route filter used to cost what its route was long.**
+    /// [`Filter::admits`] tests a route by walking its stops, so a
+    /// galactic crossing weighed every payload point against three hundred
+    /// and thirty-four addresses. Measured over a million points:
+    ///
+    /// | filter | a point costs | over the resident 152 M |
+    /// |---|---|---|
+    /// | a faction | 3.6 ns | 0.55 s |
+    /// | a span | 3.2 ns | 0.48 s |
+    /// | a route of 2 stops | 3.6 ns | 0.55 s |
+    /// | a route of 40 stops | 5.5 ns | 0.84 s |
+    /// | a route of 334 stops | **24.0 ns** | **3.65 s** |
+    ///
+    /// Reported as a route being far worse to have on the map than any
+    /// other filter, which is exactly what that column says. Built once
+    /// for a whole pass — [`reconcile`] does it a frame and the walk does
+    /// it a cell — the stops become one lookup instead, and a long route
+    /// costs what a short one does.
+    ///
+    /// [`reconcile`]: super::bounded::reconcile
+    pub(crate) fn prepared(&self) -> Prepared<'_> {
+        let mut named = rustc_hash::FxHashSet::default();
+        let mut names = false;
+        for active in self.asked.iter().filter(|active| active.enabled) {
+            if let Filter::Route { systems, .. }
+            | Filter::Systems { systems, .. } = &active.filter
+            {
+                names = true;
+                named.extend(systems.iter().copied());
+            }
+        }
+        Prepared { filters: self, named, names }
+    }
+
     /// Whether any filter is being asked at all
     ///
     /// What tells a map with nothing on it from one whose filters happen to
@@ -813,7 +949,7 @@ impl Filters {
         if self.asked.iter().any(|active| active.filter == filter) {
             return;
         }
-        self.asked.push(Entry { filter, enabled: true });
+        self.asked.push(Entry { filter, enabled: true, took: None });
         self.revision += 1;
     }
 
@@ -828,8 +964,28 @@ impl Filters {
             return;
         }
         let at = index.min(self.asked.len());
-        self.asked.insert(at, Entry { filter, enabled: true });
+        self.asked.insert(at, Entry { filter, enabled: true, took: None });
         self.revision += 1;
+    }
+
+    /// Say how long the search that answered `filter` took
+    ///
+    /// Said after the row is in, rather than passed in with it, because what
+    /// dedupes a row is the filter alone: a route plotted a second time is
+    /// the row already there, and this is the only part of the answer that
+    /// is allowed to differ between the two.
+    pub fn took(&mut self, filter: &Filter, took: std::time::Duration) {
+        if let Some(entry) =
+            self.asked.iter_mut().find(|entry| &entry.filter == filter)
+        {
+            entry.took = Some(took);
+        }
+    }
+
+    /// How long the search that answered `filter` took, where it is a row
+    /// that was plotted in this session
+    pub fn took_of(&self, filter: &Filter) -> Option<std::time::Duration> {
+        self.asked.iter().find(|entry| &entry.filter == filter)?.took
     }
 
     /// Stop asking the filter at `index`
@@ -930,7 +1086,11 @@ impl Filters {
                 active.filter = asked;
                 active.enabled = true;
             }
-            None => self.asked.push(Entry { filter: asked, enabled: true }),
+            None => self.asked.push(Entry {
+                filter: asked,
+                enabled: true,
+                took: None,
+            }),
         }
         self.revision += 1;
     }
@@ -1206,6 +1366,10 @@ fn mark(
 
     let filters_changed =
         filters.is_changed() || populated.is_changed() || recut;
+    // The addresses the filters name, gathered once for the pass. A route
+    // of three hundred stops asked per entity is a walk of three hundred
+    // addresses apiece; see [`Filters::prepared`].
+    let asked_for = filters.prepared();
     // Said once here rather than worked out again by everything that keeps an
     // answer about what the filters admit. See [`Cut`].
     if filters_changed {
@@ -1218,7 +1382,7 @@ fn mark(
             continue;
         }
 
-        match (filters.admit(&system, now), marked) {
+        match (asked_for.admit(&system, now), marked) {
             (false, false) => {
                 commands.entity(entity).insert(Filtered);
             }
@@ -1233,6 +1397,7 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::systems::route::graph::Crossing;
     use crate::systems::tests::{heard, system};
 
     /// A moment `secs` after the epoch
@@ -1470,6 +1635,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -1619,6 +1785,51 @@ mod tests {
         assert_eq!(filters.iter().count(), 1);
     }
 
+    /// And a plot asked for differently is a plot of its own
+    ///
+    /// Every part of the question is part of the route: the same two ends
+    /// for the same ship at the same optimality, planned over different
+    /// gaps or crossing them another way, is a different answer — so it is
+    /// a row and a line of its own rather than one that overwrote the
+    /// other. What is *asked* is what tells two plots apart; what the
+    /// search happened to find is not.
+    #[test]
+    fn a_plot_asked_for_differently_is_its_own_route() {
+        let (wide, narrow) = (
+            Tuning::default(),
+            Tuning {
+                reach: Tuning::default().reach + 100,
+                ..Tuning::default()
+            },
+        );
+        let searched =
+            Tuning { crossing: Crossing::Searched, ..Tuning::default() };
+
+        let asked = |tune: Tuning, how: Routing| Filter::Route {
+            label: "A -> B".to_owned(),
+            systems: vec![1, 2],
+            range: "10".to_owned(),
+            trip: None,
+            drive: Drive::Standard,
+            how,
+            tune,
+        };
+
+        let mut filters = Filters::default();
+        filters.add(asked(wide, Routing::QUICK));
+        filters.add(asked(wide, Routing::QUICK));
+        assert_eq!(filters.iter().count(), 1, "the same ask landed twice");
+
+        filters.add(asked(narrow, Routing::QUICK));
+        filters.add(asked(searched, Routing::QUICK));
+        filters.add(asked(wide, Routing::FEWEST));
+        assert_eq!(
+            filters.iter().count(),
+            4,
+            "an ask that differs was swallowed by the one before it",
+        );
+    }
+
     /// And leaves the factions where they are
     #[test]
     fn a_route_leaves_the_factions_alone() {
@@ -1692,6 +1903,84 @@ mod tests {
         filters.remove(0);
 
         assert!(filters.admit(&member(1, &[]), now()));
+    }
+
+    /// The gathered filters answer exactly what walking them answers
+    ///
+    /// **A route filter used to cost what its route was long.**
+    /// [`Filter::admits`] tests one by walking its stops, so a galactic
+    /// crossing weighed every payload point against three hundred and
+    /// thirty-four addresses — measured over a million points, 27.5 ns
+    /// apiece against 3.8 for a faction, which is 4.18 seconds over the
+    /// 152 million points a wide zoom holds resident. Reported as a route
+    /// being far worse to have on the map than any other filter.
+    /// [`Filters::prepared`] gathers the addresses once a pass instead:
+    /// 3.9 ns, and a long route costs what a short one does.
+    ///
+    /// What it must not do is answer differently, and the mix is where
+    /// that could go wrong: a span is asked of every candidate, the
+    /// filters that pick admit between them, and nothing asked admits
+    /// everything. So the two are set side by side over every combination
+    /// of the kinds.
+    #[test]
+    fn the_gathered_filters_answer_what_walking_them_answers() {
+        use crate::systems::route::graph::{Drive, Routing, Tuning};
+
+        let route = |stops: Vec<i64>| Filter::Route {
+            label: "route".to_owned(),
+            systems: stops,
+            range: "50".to_owned(),
+            trip: None,
+            drive: Drive::Standard,
+            how: Routing::default(),
+            tune: Tuning::default(),
+        };
+        let picked = |systems: Vec<i64>| Filter::Systems {
+            label: "picked".to_owned(),
+            systems,
+        };
+
+        // Every shape that could be got wrong: nothing asked, each kind
+        // alone, a span beside a picking filter, two picking filters, and a
+        // route naming nothing at all — which admits nothing, where no
+        // route leaves the question to whatever else is asked.
+        let asks: Vec<Vec<Filter>> = vec![
+            vec![],
+            vec![faction(7)],
+            vec![within(60)],
+            vec![route(vec![1, 3])],
+            vec![picked(vec![2])],
+            vec![route(vec![])],
+            vec![route(vec![1, 3]), within(60)],
+            vec![faction(7), within(60)],
+            vec![route(vec![1]), picked(vec![2])],
+            vec![route(vec![1]), faction(7)],
+            vec![route(vec![1]), faction(7), within(60)],
+        ];
+
+        for ask in asks {
+            let mut filters = Filters::default();
+            for filter in &ask {
+                filters.add(filter.clone());
+            }
+            let gathered = filters.prepared();
+            // Systems the filters have something to say about and systems
+            // they do not, heard from inside the span and outside it.
+            for address in [1i64, 2, 3, 4] {
+                for factions in [vec![], vec![7], vec![3]] {
+                    for heard in [moment(199), moment(100)] {
+                        let mut held = member(address, &factions);
+                        held.updated_at = Some(heard);
+                        assert_eq!(
+                            filters.admit(&held, now()),
+                            gathered.admit(&held, now()),
+                            "{ask:?} disagreed about {address} in \
+                             {factions:?} heard at {heard}",
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// A world with nothing in it but the filters and the mark

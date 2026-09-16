@@ -470,6 +470,7 @@ mod tests {
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 1_700_000_000 + id as u32,
+            kind: galos_index::StarKind::G,
         }
     }
 

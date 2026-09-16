@@ -47,9 +47,9 @@
 
 use elite_journal::entry::{Entry, Event};
 use galos::sink::{Db, Index, Reporter, Sink};
+use galos_db::Database;
 use galos_db::index::{Parts, never};
 use galos_db::testing::Scratch;
-use galos_db::Database;
 use galos_index::meta::{Boost, PopulatedSystem, SystemBodies};
 use galos_index::{FsSource, Source as _};
 use spansh::galaxy::System;
@@ -286,7 +286,10 @@ struct Published {
     names: HashMap<i64, (String, [f32; 3])>,
     populated: HashMap<i64, PopulatedSystem>,
     reaches: HashMap<i64, f32>,
-    boosts: HashMap<i64, Boost>,
+    /// Address to supercharge and place. The place is in the table so a
+    /// router needs no other, which makes it something the two derivations
+    /// have to agree about.
+    boosts: HashMap<i64, (Boost, [f32; 3])>,
     bodies: HashMap<i64, SystemBodies>,
 }
 
@@ -330,7 +333,7 @@ impl Published {
             .expect("a published boosts table")
             .into_iter()
             .filter(|it| ours(&it.address))
-            .map(|it| (it.address, it.boost))
+            .map(|it| (it.address, (it.boost, it.position)))
             .collect();
 
         let mut bodies = HashMap::new();
@@ -413,6 +416,11 @@ async fn both_derivations_publish_the_same_galaxy() {
     // two barycentres nothing draws but everything inside the system is
     // placed about.
     assert_eq!(from_events.boosts.len(), 1, "the neutron star was not read");
+    assert_eq!(
+        from_events.boosts[&mine(1)],
+        (Boost::Neutron, from_events.names[&mine(1)].1),
+        "the supercharge is published somewhere the system is not",
+    );
     let inside = &from_events.bodies[&mine(1)];
     assert_eq!(inside.stars.len(), 1);
     // Both sides by name, rather than one and the equality above: the rows

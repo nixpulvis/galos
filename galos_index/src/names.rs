@@ -301,6 +301,52 @@ impl Names {
             }))
     }
 
+    /// Where each of `sorted` sits, as one pass rather than a search apiece
+    ///
+    /// For a table keyed by address that needs the places beside it: the
+    /// supercharge table is four million of two hundred million rows, and
+    /// the router has to know where those four million *are*. A binary
+    /// search apiece touches nearly every page of the address column
+    /// anyway — the rows it wants are scattered one in fifty — so this
+    /// walks the column once, in order, beside the addresses asked for.
+    ///
+    /// `sorted` is expected ascending, which is how every published table
+    /// is written. `found` is handed the index into `sorted` and the
+    /// place, and is not called at all for an address the table does not
+    /// name.
+    ///
+    /// The delta is the later word, as it is everywhere else: a row the
+    /// feed has moved answers with where it moved to, and one it withdrew
+    /// answers with nothing.
+    pub fn places(
+        &self,
+        sorted: &[i64],
+        mut found: impl FnMut(usize, [f32; 3]),
+    ) {
+        debug_assert!(
+            sorted.windows(2).all(|pair| pair[0] <= pair[1]),
+            "the addresses are walked in order against the column",
+        );
+        let column = self.base.addresses();
+        let mut cursor = 0;
+        for (which, &address) in sorted.iter().enumerate() {
+            match self.delta.said(address) {
+                Some(Held::Named(entry)) => {
+                    found(which, entry.position);
+                    continue;
+                }
+                Some(Held::Gone) => continue,
+                None => {}
+            }
+            while cursor < column.len() && column[cursor] < address {
+                cursor += 1;
+            }
+            if column.get(cursor) == Some(&address) {
+                found(which, self.base.position_at(cursor));
+            }
+        }
+    }
+
     /// Every address the table names, in no order a caller may rely on.
     ///
     /// What the sink's agreement check walks at open, which is why it is an
@@ -1650,6 +1696,45 @@ mod tests {
         assert_eq!(table.position_at(1), [2.0, 0.0, 0.0]);
         assert_eq!(table.index_of(20), Some(1));
         assert_eq!(table.index_of(11), None);
+    }
+
+    /// The places join walks the column once and the log wins on it
+    ///
+    /// What the router asks of this table: a published table keyed by
+    /// address — which systems can supercharge a drive — needs the places
+    /// of its rows, and there are four million of them against two hundred
+    /// million names. The answers have to be the base's where the feed has
+    /// said nothing, the log's where it has moved a system, and absent
+    /// where it has withdrawn one or where the row is about a system this
+    /// table has never named.
+    #[test]
+    fn the_places_join_answers_off_the_base_and_the_log() {
+        let dir = Scratch::new("places");
+        published(
+            &dir.0,
+            &[
+                entry(10, "SOL", 1.0),
+                entry(20, "ALPHA CENTAURI", 2.0),
+                entry(30, "MAIA", 3.0),
+                entry(40, "COLONIA", 4.0),
+            ],
+        );
+        let mut names = Names::open(&dir.0).expect("the table opens");
+        // The feed moves one system and withdraws another.
+        assert!(names.name(entry(20, "ALPHA CENTAURI", 9.0)));
+        assert!(names.unname(30));
+
+        let mut found = Vec::new();
+        // Ascending, as every published table is, and with a row about a
+        // system nothing has named among them.
+        names.places(&[10, 20, 30, 40, 50], |which, at| {
+            found.push((which, at[0]));
+        });
+        assert_eq!(
+            found,
+            vec![(0, 1.0), (1, 9.0), (3, 4.0)],
+            "the base, the log's correction, and nothing for the rest",
+        );
     }
 
     /// The by-name index answers an exact name without a scan, and the

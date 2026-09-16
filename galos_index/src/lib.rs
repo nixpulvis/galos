@@ -50,6 +50,7 @@ pub mod source;
 pub mod spill;
 pub mod store;
 pub mod tree;
+pub mod upgrade;
 pub mod walk;
 
 // The core API, re-exported at the crate root so a caller writes
@@ -69,14 +70,15 @@ pub use inside::STAND_IN;
 pub use lock::Lock;
 pub use meta::{
     Barycenter, Body, Boost, Economies, Faction, NameEntry, Parent,
-    PopulatedSystem, Star, Surface, SystemBodies, SystemBoost, SystemReach,
+    PopulatedSystem, Star, StarKind, Surface, SystemBodies, SystemBoost,
+    SystemReach,
 };
 pub use moments::Moments;
 pub use name::SystemName;
 pub use names::{Delta, Names, Said, Table, Writer};
 pub use orbit::{Orbit, Orbits, Spacing};
 pub use report::SystemReport;
-pub use serialization::{Codec, Decode, Encode, FixedCodec};
+pub use serialization::{Codec, Decode, Encode, FixedCodec, INDEX_VERSION};
 pub use sidecars::{Rows, Sidecars};
 pub use sky::{Node, Sky};
 pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};

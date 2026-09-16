@@ -175,6 +175,7 @@ mod tests {
             temperature: 5_000.0 + id as f64,
             age_bucket: (id % 8) as u32,
             updated_at: 1_700_000_000 + id as u32,
+            kind: crate::meta::StarKind::G,
         }
     }
 

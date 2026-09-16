@@ -83,11 +83,7 @@ impl Sky {
 
     /// The same over an index already read, which every client has.
     pub fn of(dir: &Path, index: Index) -> Sky {
-        Sky {
-            dir: dir.to_owned(),
-            index,
-            held: Mutex::new(Held::default()),
-        }
+        Sky { dir: dir.to_owned(), index, held: Mutex::new(Held::default()) }
     }
 
     /// The cell tree, for a caller that wants the aggregates.
@@ -153,11 +149,7 @@ impl Sky {
                 let place = payload.position_at(i);
                 let away = dist2(at, place);
                 if away <= reach {
-                    found(
-                        Node { cell, at: i as u32 },
-                        place,
-                        away.sqrt(),
-                    );
+                    found(Node { cell, at: i as u32 }, place, away.sqrt());
                 }
             }
         }
@@ -196,8 +188,7 @@ impl Sky {
         while radius < crate::geometry::ROOT_EDGE_LY {
             let mut found = None;
             self.each_near(near, radius, |node, _, _| {
-                if found.is_none()
-                    && self.address(node) == Some(wanted as i64)
+                if found.is_none() && self.address(node) == Some(wanted as i64)
                 {
                     found = Some(node);
                 }
@@ -258,6 +249,7 @@ mod tests {
                         temperature: 5000.0,
                         age_bucket: 0,
                         updated_at: 0,
+                        kind: crate::meta::StarKind::G,
                     });
                     id += 1;
                 }

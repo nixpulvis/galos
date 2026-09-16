@@ -58,6 +58,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering::Relaxed;
 
 /// How many shards the addresses are spread over.
 pub const SHARDS: u64 = 4096;
@@ -247,8 +248,38 @@ struct Header {
     base: usize,
 }
 
-/// Read and check an index file's header.
+/// Read and check an index file's header, against the whole file
+///
+/// `bytes` is the file — the mapping or the read of it — because the check
+/// that a base of `n` entries has `n` entries behind it can only be made
+/// where those bytes are in hand. See [`header_fields`] for the caller
+/// that holds the header alone.
 fn header_of(bytes: &[u8], path: &Path) -> io::Result<Header> {
+    let header = header_fields(bytes, path)?;
+    let entries = (bytes.len() - HEADER) / ENTRY;
+    if header.base > entries {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{}: a base of {} entries in a file holding {entries}",
+                path.display(),
+                header.base,
+            ),
+        ));
+    }
+    Ok(header)
+}
+
+/// What the first sixteen bytes say, and nothing about what follows them
+///
+/// **Split out because [`append`] holds only those sixteen.** It reads the
+/// header off the front of the file to learn the generation and the base,
+/// and handing that buffer to [`header_of`] asked it whether a base of
+/// 8,218 entries fitted in sixteen bytes — which it does not, so every
+/// append to a shard that had ever been folded failed with "a base of 8218
+/// entries in a file holding 0". Reported from a real directory, where it
+/// stopped the packing of every loose body file the moment it reached one.
+fn header_fields(bytes: &[u8], path: &Path) -> io::Result<Header> {
     let refused = |said: String| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -270,12 +301,6 @@ fn header_of(bytes: &[u8], path: &Path) -> io::Result<Header> {
         u16::from_le_bytes(bytes[6..8].try_into().expect("two bytes"));
     let base = u32::from_le_bytes(bytes[8..12].try_into().expect("four bytes"))
         as usize;
-    let entries = (bytes.len() - HEADER) / ENTRY;
-    if base > entries {
-        return Err(refused(format!(
-            "a base of {base} entries in a file holding {entries}"
-        )));
-    }
     Ok(Header { generation, base })
 }
 
@@ -497,7 +522,20 @@ fn append(dir: &Path, shard: u64, batch: &[(i64, Vec<u8>)]) -> io::Result<()> {
     let (generation, base) = match length >= HEADER as u64 {
         true => {
             index.read_exact(&mut head)?;
-            let header = header_of(&head, &path)?;
+            // The header alone: what follows it is the file, which this has
+            // not read and [`header_fields`] does not ask about.
+            let header = header_fields(&head, &path)?;
+            let entries = (length as usize - HEADER) / ENTRY;
+            if header.base > entries {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{}: a base of {} entries in a file holding {entries}",
+                        path.display(),
+                        header.base,
+                    ),
+                ));
+            }
             (header.generation, header.base)
         }
         false => {
@@ -607,6 +645,90 @@ pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
 }
 
 /// Every system the pack holds bodies for, in address order.
+/// What every packed system's arrival star is, shard by shard
+///
+/// **Sequential on purpose.** [`find`] maps a shard's index, searches it and
+/// seeks the data file, which is right for one system and wrong for ninety
+/// five million: a sweep that asked it per address would map the same index
+/// a thousand times a shard and seek at random through gigabytes. This maps
+/// each shard once and walks its live entries in the order they were
+/// written.
+///
+/// `each` is handed the address and the class of the star a ship arrives
+/// at — [`crate::derive::arrival_class`]'s answer, which is the rule the
+/// boost table and the map's own panels read by. Systems with nothing
+/// scanned are not offered at all.
+///
+/// Interruptible, a galaxy of scans being minutes of them, and what it
+/// abandons costs nothing: the caller is filling in a column it can fill
+/// again.
+pub fn each_arrival_class(
+    dir: &Path,
+    stop: &dyn Fn() -> bool,
+    each: &mut dyn FnMut(i64, &str),
+) -> io::Result<u64> {
+    let mut swept = 0u64;
+    let bodies = dir.join(BODIES_DIR);
+    let Ok(entries) = std::fs::read_dir(&bodies) else {
+        return Ok(swept);
+    };
+    for shard in entries.flatten() {
+        if stop() {
+            return Ok(swept);
+        }
+        let path = shard.path();
+        if path.extension().is_none_or(|it| it != "idx") {
+            continue;
+        }
+        let table = Table::read(&path)?;
+        let live = table.live();
+        if live.is_empty() {
+            continue;
+        }
+        let Some(shard) = path
+            .file_stem()
+            .and_then(|it| it.to_str())
+            .and_then(|it| u64::from_str_radix(it, 16).ok())
+        else {
+            continue;
+        };
+        let data = data_path(dir, shard, table.generation);
+        let Ok(file) = File::open(&data) else { continue };
+        // SAFETY: a shard's data file is appended to and never rewritten in
+        // place, and the mapping is dropped before the next shard.
+        let mapped = unsafe { memmap2::Mmap::map(&file)? };
+
+        // In the order the records were written rather than by address: a
+        // sweep is a sequential read of the file and the addresses are
+        // whatever order that gives.
+        let mut rows: Vec<(i64, u64, u32)> = live
+            .into_iter()
+            .map(|(address, entry)| (address, entry.offset, entry.len))
+            .collect();
+        rows.sort_unstable_by_key(|&(_, offset, _)| offset);
+
+        for (address, offset, len) in rows {
+            if stop() {
+                return Ok(swept);
+            }
+            let from = offset as usize + 4;
+            let Some(bytes) = mapped.get(from..from + len as usize) else {
+                continue;
+            };
+            let Ok(inside) =
+                rmp_serde::from_slice::<crate::meta::SystemBodies>(bytes)
+            else {
+                continue;
+            };
+            if let Some(class) = crate::derive::arrival_class(&inside) {
+                each(address, class);
+                swept += 1;
+            }
+        }
+    }
+    Ok(swept)
+}
+
 pub fn addresses(dir: &Path) -> io::Result<Vec<i64>> {
     let mut addresses = Vec::new();
     let bodies = dir.join(BODIES_DIR);
@@ -649,7 +771,10 @@ const BATCH: usize = 512;
 /// A system the pack already holds wins over a loose file of the same
 /// address: the pack is where the newer write went, and reading the loose
 /// one back over it would put a stale scan back.
-pub fn pack(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Packed> {
+pub fn pack(
+    dir: &Path,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<Packed> {
     let bodies = dir.join(BODIES_DIR);
     let mut moved = 0;
     let mut loose: Vec<PathBuf> = Vec::new();
@@ -666,40 +791,202 @@ pub fn pack(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Packed> {
     }
 
     let mut finished = true;
-    if !take(dir, loose, &mut moved, stop)? {
+    // The loose files at the top level are of every shard at once, so they
+    // are removed as they are taken: there is no directory to drop.
+    if take(dir, loose, &mut moved, stop, Removal::Eager)? == Took::Stopped {
         return Ok(Packed { moved, finished: false });
     }
-    for shard in shards {
-        let listed: Vec<PathBuf> = match std::fs::read_dir(&shard) {
-            Ok(entries) => entries.flatten().map(|it| it.path()).collect(),
-            Err(_) => continue,
-        };
-        if !take(dir, listed, &mut moved, stop)? {
-            finished = false;
-            break;
+    // **A shard at a time, several shards at once.** Each directory's
+    // files belong to one shard, and a shard is its own index and its own
+    // data file, so two of them share nothing but the disk. What the work
+    // is bound by is small reads and metadata — measured at 2,100 files a
+    // second on one thread, where the drive will take several times that
+    // in flight — so the directories are dealt out to a few threads and
+    // each keeps its own `Holds` and its own batches.
+    //
+    // Sequential inside a shard all the same: its index is appended to and
+    // folded, and two threads doing that to one file is a corrupt shard.
+    let hands = std::thread::available_parallelism()
+        .map(|it| it.get().min(PACKERS))
+        .unwrap_or(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let packed = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::atomic::AtomicBool::new(true);
+    let shards = &shards;
+    std::thread::scope(|threads| {
+        for _ in 0..hands {
+            threads.spawn(|| {
+                let mut mine = 0usize;
+                loop {
+                    let at = next.fetch_add(1, Relaxed);
+                    let Some(shard) = shards.get(at) else { break };
+                    match one_shard(dir, shard, &mut mine, stop) {
+                        Ok(true) => {}
+                        // Stopped, or a shard that would not pack: either
+                        // way the run is not finished and the rest of the
+                        // list is left for the next one.
+                        Ok(false) | Err(_) => {
+                            done.store(false, Relaxed);
+                            break;
+                        }
+                    }
+                }
+                packed.fetch_add(mine, Relaxed);
+            });
         }
-        // Empty now, or holding something this does not recognise; either
-        // way the removal is allowed to fail.
-        let _ = std::fs::remove_dir(&shard);
+    });
+    moved += packed.load(Relaxed);
+    if !done.load(Relaxed) {
+        finished = false;
     }
     Ok(Packed { moved, finished })
 }
 
-/// Pack a list of paths, answering whether it got through them all.
+/// How many shards are packed at once
+///
+/// A few, not a core each: the work is the disk's and a queue of thirty-two
+/// readers deep is no faster than eight. Bounded so a pack running beside a
+/// map leaves it some.
+const PACKERS: usize = 8;
+
+/// Pack one shard's directory, answering whether it got through it
+///
+/// Its own function because a thread wants it whole: the directory's files
+/// are all one shard's, so the appends, the fold they may trigger and the
+/// removal are one shard's business and no other thread's.
+fn one_shard(
+    dir: &Path,
+    shard: &Path,
+    moved: &mut usize,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> io::Result<bool> {
+    {
+        let listed: Vec<PathBuf> = match std::fs::read_dir(shard) {
+            Ok(entries) => entries.flatten().map(|it| it.path()).collect(),
+            Err(_) => return Ok(true),
+        };
+        // **The directory goes in one call, not a file at a time.** Fifty
+        // million `unlink`s is what a galaxy of loose files costs, and on a
+        // directory of thirteen thousand entries each one walks its
+        // metadata: measured at 670 files a second, and 1,350 once the
+        // membership question stopped being a `find` apiece. A shard's
+        // files are all one shard's, so they are appended in batches and
+        // the directory taken away whole once its records are durable.
+        //
+        // Sound where a file at a time was sound, and for the same reason:
+        // the records go in before anything is removed, and a run cut
+        // short leaves files the next run recognises as already held and
+        // drops. Only where *everything* in it was taken — a directory
+        // holding something this does not understand keeps that thing, and
+        // the files are then removed one by one as before.
+        match take(dir, listed, moved, stop, Removal::Deferred)? {
+            Took::Stopped => return Ok(false),
+            Took::Every(count) => {
+                std::fs::remove_dir_all(shard)?;
+                *moved += count;
+            }
+            Took::Some => {
+                // Something unrecognised stands in it; whatever this took
+                // has already been removed a file at a time.
+                let _ = std::fs::remove_dir(shard);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// What the pack already holds, one shard's worth at a time
+///
+/// **Why a pack of fifty million files took twenty hours.** The question
+/// asked of every loose file is whether the pack already holds that
+/// system — the pack being the newer of the two wherever both exist — and
+/// it used to be asked with [`find`], which maps the shard's index, scans
+/// its tail backwards, binary searches its base and reads the data file.
+/// Fifty million times over, that is the whole of the cost: measured at
+/// 670 files a second, where the reads and unlinks alone are thousands.
+///
+/// One entry, not a map of every shard: the walk takes a shard's directory
+/// at a time, so the answer wanted is nearly always the one already
+/// loaded, and a galaxy's worth of live sets held at once would be
+/// hundreds of megabytes for nothing.
+struct Holds {
+    shard: Option<u64>,
+    live: std::collections::HashSet<i64>,
+}
+
+impl Holds {
+    fn new() -> Holds {
+        Holds { shard: None, live: std::collections::HashSet::new() }
+    }
+
+    /// Whether the pack holds `address` already.
+    fn holds(&mut self, dir: &Path, address: i64) -> io::Result<bool> {
+        let shard = shard_of(address);
+        if self.shard != Some(shard) {
+            let table = Table::read(&index_path(dir, shard))?;
+            self.live = table.live().into_keys().collect();
+            self.shard = Some(shard);
+        }
+        Ok(self.live.contains(&address))
+    }
+
+    /// And what this run has just put there, so a second loose file of the
+    /// same address is dropped rather than appended twice — which is what
+    /// asking [`find`] afresh would have concluded.
+    fn took(&mut self, address: i64) {
+        if self.shard == Some(shard_of(address)) {
+            self.live.insert(address);
+        }
+    }
+}
+
+/// Whether a packed file is removed as it goes or left for its directory
+#[derive(Copy, Clone, PartialEq)]
+enum Removal {
+    /// Removed one at a time, there being no directory to take away.
+    Eager,
+    /// Left where it is: the caller drops the whole directory, which is
+    /// one call against thirteen thousand.
+    Deferred,
+}
+
+/// What a pass over a list of paths came to.
+#[derive(Copy, Clone, PartialEq, Debug)]
+enum Took {
+    /// Every path, and how many — so a caller dropping the directory whole
+    /// can still say what it moved.
+    Every(usize),
+    /// All it could; something in the list was not a loose body file.
+    Some,
+    /// Asked to stop part way.
+    Stopped,
+}
+
+/// Pack a list of paths, answering what it got through.
 fn take(
     dir: &Path,
     paths: Vec<PathBuf>,
     moved: &mut usize,
-    stop: &dyn Fn() -> bool,
-) -> io::Result<bool> {
+    stop: &(dyn Fn() -> bool + Sync),
+    removal: Removal,
+) -> io::Result<Took> {
     let mut batch: HashMap<u64, Vec<(i64, PathBuf, Vec<u8>)>> = HashMap::new();
+    let mut holds = Holds::new();
     let mut held = 0usize;
+    // What this took, against what stood there: a directory is only taken
+    // away whole where the two agree.
+    let mut taken = 0usize;
+    let mut every = true;
+    // What was packed and not yet removed, where the caller meant to drop
+    // the whole directory. See the `Took::Some` arm below.
+    let mut deferred: Vec<PathBuf> = Vec::new();
     for path in paths {
         if stop() {
-            settle(dir, &mut batch, moved)?;
-            return Ok(false);
+            settle(dir, &mut batch, moved, &mut holds, removal, &mut deferred)?;
+            return Ok(Took::Stopped);
         }
         if path.extension().is_none_or(|it| it != "bin") {
+            every = false;
             continue;
         }
         let Some(address) = path
@@ -707,12 +994,19 @@ fn take(
             .and_then(|it| it.to_str())
             .and_then(|it| it.parse::<i64>().ok())
         else {
+            every = false;
             continue;
         };
+        taken += 1;
         // The pack is the newer of the two wherever both exist.
-        if find(dir, address)? != Found::Absent {
-            std::fs::remove_file(&path)?;
-            *moved += 1;
+        if holds.holds(dir, address)? {
+            match removal {
+                Removal::Eager => {
+                    std::fs::remove_file(&path)?;
+                    *moved += 1;
+                }
+                Removal::Deferred => deferred.push(path),
+            }
             continue;
         }
         let bytes = match std::fs::read(&path) {
@@ -726,12 +1020,23 @@ fn take(
             .push((address, path, bytes));
         held += 1;
         if held >= BATCH {
-            settle(dir, &mut batch, moved)?;
+            settle(dir, &mut batch, moved, &mut holds, removal, &mut deferred)?;
             held = 0;
         }
     }
-    settle(dir, &mut batch, moved)?;
-    Ok(true)
+    settle(dir, &mut batch, moved, &mut holds, removal, &mut deferred)?;
+    if every {
+        // The caller drops the directory, which takes these with it.
+        return Ok(Took::Every(taken));
+    }
+
+    // Something in there is not a loose body file, so the directory stays
+    // and what was packed out of it goes a file at a time after all.
+    for path in deferred {
+        std::fs::remove_file(&path)?;
+        *moved += 1;
+    }
+    Ok(Took::Some)
 }
 
 /// Append a batch and drop the loose files it came from.
@@ -742,14 +1047,32 @@ fn settle(
     dir: &Path,
     batch: &mut HashMap<u64, Vec<(i64, PathBuf, Vec<u8>)>>,
     moved: &mut usize,
+    holds: &mut Holds,
+    removal: Removal,
+    deferred: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for (shard, rows) in batch.drain() {
-        let records: Vec<(i64, Vec<u8>)> =
-            rows.iter().map(|(a, _, b)| (*a, b.clone())).collect();
+        // The paths kept aside and the bytes handed over: a batch of five
+        // hundred records is a megabyte, and copying it to hand it on was
+        // a hundred and twenty gigabytes of `memcpy` over a galaxy.
+        let mut paths = Vec::with_capacity(rows.len());
+        let mut records = Vec::with_capacity(rows.len());
+        for (address, path, bytes) in rows {
+            paths.push((address, path));
+            records.push((address, bytes));
+        }
         append(dir, shard, &records)?;
-        for (_, path, _) in rows {
-            std::fs::remove_file(&path)?;
-            *moved += 1;
+        for (address, path) in paths {
+            holds.took(address);
+            match removal {
+                Removal::Eager => {
+                    std::fs::remove_file(&path)?;
+                    *moved += 1;
+                }
+                // Kept, in case the directory turns out to hold something
+                // this does not understand and cannot be dropped whole.
+                Removal::Deferred => deferred.push(path),
+            }
         }
     }
     Ok(())
@@ -797,6 +1120,92 @@ mod tests {
             }],
             ..SystemBodies::default()
         }
+    }
+
+    /// A shard directory is taken away whole, unless it holds something else
+    ///
+    /// The removal is one call against thirteen thousand `unlink`s, which is
+    /// what a galaxy of loose files costs — but only where everything in
+    /// the directory was a loose body file this understood. A directory
+    /// holding anything else keeps that thing, and its body files go one at
+    /// a time as they always did.
+    #[test]
+    fn a_shard_directory_keeps_what_the_pack_does_not_understand() {
+        let dir = scratch("stray");
+        let address = 7_700_017_i64;
+        crate::source::write_meta(
+            &crate::source::bodies_path(&dir, address),
+            &inside(1),
+        )
+        .expect("a sharded file writes");
+
+        // Something the pack has no idea about, beside it.
+        let shard = crate::source::bodies_path(&dir, address)
+            .parent()
+            .expect("a shard directory")
+            .to_path_buf();
+        let stray = shard.join("notes.txt");
+        std::fs::write(&stray, b"nothing to do with bodies")
+            .expect("a stray file writes");
+
+        let done = pack(&dir, &|| false).expect("the pack runs");
+        assert!(done.finished);
+        assert_eq!(done.moved, 1, "the body file was not counted");
+        assert!(matches!(held(&dir, address), Found::Bodies(_)));
+        assert!(
+            !crate::source::bodies_path(&dir, address).exists(),
+            "a packed file was left loose",
+        );
+        assert!(
+            stray.exists(),
+            "the pack removed a file it did not understand",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shard that has been folded still takes an append
+    ///
+    /// **The bug this is here for.** [`append`] reads the sixteen header
+    /// bytes to learn the generation and the base, and handed that buffer to
+    /// the header check it asked whether a base of *n* entries fitted in
+    /// sixteen bytes. It does not, so every append to a shard that had ever
+    /// been folded failed — `a base of 8218 entries in a file holding 0` —
+    /// and with it every pack of a loose body file into that shard.
+    ///
+    /// Reported off a real directory, where the packing stopped at the
+    /// first folded shard and the upgrade that called it stopped with it.
+    /// Nothing in the suite caught it because nothing appended to a folded
+    /// shard: a fold happens when a tail grows past thousands of entries,
+    /// which no test had reached. This one folds by hand instead.
+    #[test]
+    fn a_folded_shard_still_takes_an_append() {
+        let dir = scratch("foldappend");
+        let address = 4_611_686_020_061_657_985_i64;
+        let shard = shard_of(address);
+
+        write(&dir, HashMap::from([(address, inside(1))]));
+        // Into the base, which is what a fold does with a tail.
+        fold(&dir, shard).expect("the shard folds");
+        let folded = Table::read(&index_path(&dir, shard)).expect("a table");
+        assert_eq!(folded.base.len(), 1, "the fold left nothing in the base");
+        assert!(folded.tail.is_empty());
+
+        // And now another system into the same shard, which is the step
+        // that used to fail. The shard is a hash of the address, so the
+        // next one is looked for rather than guessed at.
+        let next = (1..10_000)
+            .map(|n| address + n)
+            .find(|&it| shard_of(it) == shard)
+            .expect("another address in the same shard");
+        let wrote = write(&dir, HashMap::from([(next, inside(2))]));
+        assert!(wrote.failed.is_none(), "{:?}", wrote.failed);
+
+        // Both readable, the folded one and the appended one.
+        assert!(matches!(held(&dir, address), Found::Bodies(_)));
+        assert!(matches!(held(&dir, next), Found::Bodies(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What was written is what is read, and the newer write is what is read
@@ -959,11 +1368,10 @@ mod tests {
             .expect("a sharded file writes");
         }
 
-        let some = std::cell::Cell::new(0);
-        let stop = || {
-            some.set(some.get() + 1);
-            some.get() > 4
-        };
+        // Atomic rather than a `Cell`: the pack deals shards out to
+        // threads now, so what it asks about stopping is shared.
+        let some = std::sync::atomic::AtomicUsize::new(0);
+        let stop = || some.fetch_add(1, Relaxed) > 4;
         let part = pack(&dir, &stop).expect("the migration runs");
         assert!(!part.finished, "an abandoned migration claimed to be done");
 

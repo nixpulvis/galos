@@ -41,7 +41,9 @@ use crate::systems::labels::{NameLimit, NameRadius};
 use crate::systems::pointing::PRIMARY;
 use crate::systems::route::SelectedFilter;
 use crate::systems::route::frontier::Frontiers;
-use crate::systems::route::graph::{Drive, Routing};
+use crate::systems::route::graph::{
+    self as graph, Crossing, Drive, Routing, Tuning, Weigh,
+};
 use crate::systems::route::tour::Shape;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -533,6 +535,18 @@ pub(crate) const INFO: &str = "ℹ";
 
 /// The mark on the control that lets go of what a row names
 const CLOSE: &str = "x";
+
+/// The mark on the control that stops what is running
+///
+/// A heavy multiplication x, U+2716, and the choice is not free: the map
+/// letters its chrome in egui's own faces and nothing else, so a mark is
+/// drawn only if one of them holds it. A plain U+2715 does not — it reached
+/// the screen as an empty box, which is what a missing glyph looks like, and
+/// was reported as a broken button. U+2716 is there, as is the 🗙 egui
+/// letters its own window close with. [`a_lettered_mark_is_one_the_font_has`]
+/// is what says so, rather than the next reader having to find out the way
+/// this was found out.
+const STOP: &str = "✖";
 
 /// How far the selection's row stands from what is around it
 ///
@@ -1361,6 +1375,7 @@ pub(crate) fn chrome(
         &mut bar.plot,
         &mut bar.how,
         &mut bar.drive,
+        &mut bar.tune,
         &bar.boosts,
         &bar.searching,
         &mut filter,
@@ -1997,6 +2012,7 @@ fn ask_bar(
     plot: &mut Plot,
     how: &mut Routing,
     drive: &mut Drive,
+    tune: &mut Tuning,
     boosts: &crate::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
@@ -2158,7 +2174,7 @@ fn ask_bar(
                     );
                     let range = route_body(
                         ui, search, selection, searched, plot, how, drive,
-                        boosts, searching,
+                        tune, boosts, searching,
                     );
                     taken |= range.gained_focus();
                     range_box = Some(range.id);
@@ -2580,6 +2596,8 @@ pub(crate) struct SearchBar<'w> {
     /// Which of the fewest-jumps routes to ask for
     how: ResMut<'w, Routing>,
     drive: ResMut<'w, Drive>,
+    /// How a long supercharged route is planned; see [`planning`]
+    tune: ResMut<'w, Tuning>,
     /// Whether the index publishes a supercharge table at all, which is what
     /// a route for a supercharging drive needs before it can be asked for
     boosts: Res<'w, crate::Boosts>,
@@ -2938,6 +2956,27 @@ pub(crate) fn system_list<'a>(
     let mut systems = systems.peekable();
     systems.peek()?;
 
+    // Gathered before any of it is drawn, since how the first line reads
+    // depends on what the last one needs -- see [`Rows`]. Each line's
+    // distance is said once here rather than measured once and formatted
+    // again.
+    let listed: Vec<(&NameEntry, Option<String>)> = systems
+        .map(|system| {
+            let at = crate::systems::system_to_vec(system);
+            // How far off it is, where there is anywhere to measure from.
+            let away =
+                center.map(|center| format!("{:.1} Ly", center.distance(at)));
+            (system, away)
+        })
+        .collect();
+    let rows = Rows::of(
+        ui,
+        ui.available_width(),
+        listed
+            .iter()
+            .map(|(system, away)| (system.name.as_str(), away.as_deref())),
+    );
+
     let height = ui.text_style_height(&egui::TextStyle::Body)
         + LINE_PADDING * 2.
         + ui.spacing().item_spacing.y;
@@ -2947,12 +2986,9 @@ pub(crate) fn system_list<'a>(
     let mut chose = None;
 
     scrolling(ui, height * OFFERED as f32, salt, |ui| {
-        for (index, system) in systems.enumerate() {
-            let at = crate::systems::system_to_vec(system);
-            // How far off it is, where there is anywhere to measure from.
-            let trailing =
-                center.map(|center| format!("{:.1} Ly", center.distance(at)));
-            let asked = system_line(ui, &system.name, trailing, (salt, index));
+        for (index, (system, away)) in listed.into_iter().enumerate() {
+            let asked =
+                system_line(ui, &system.name, away, rows, (salt, index));
             if let Some(asked) = asked {
                 chose = Some((system, asked));
             }
@@ -3355,14 +3391,1076 @@ pub(crate) fn thousands(count: u64) -> String {
     grouped
 }
 
+/// A wait said as a length of time
+///
+/// Three scales, because a plot spans all three: a route across the bubble
+/// comes back in tens of milliseconds, a supercharged crossing in a couple
+/// of seconds, and a proven fewest-jumps crossing in ten minutes. Two
+/// significant figures at each scale — nobody waiting on a search is
+/// counting microseconds, and nobody reading `612.4 s` knows how long that
+/// is without doing the division themselves.
+pub(crate) fn waited(took: std::time::Duration) -> String {
+    let seconds = took.as_secs_f64();
+    if seconds < 1. {
+        format!("{} ms", took.as_millis())
+    } else if seconds < 60. {
+        format!("{seconds:.1} s")
+    } else {
+        format!("{}m {:02}s", took.as_secs() / 60, took.as_secs() % 60)
+    }
+}
+
 /// How a route is written: the two systems it runs between, in order
 pub(crate) const ARROW: &str = " -> ";
+
+#[cfg(test)]
+mod marks {
+    use super::{ARROW, CLOSE, CUT, INFO, STOP};
+    use crate::tests::context;
+    use bevy_egui::egui;
+
+    /// Every mark the chrome letters is one the face actually holds
+    ///
+    /// The map draws its chrome in egui's own faces and adds none of its
+    /// own, so a character outside them is drawn as an empty box. That is
+    /// how a stop button reached the screen as a hollow square and was
+    /// reported as broken text: the mark was U+2715, which Hack does not
+    /// carry and neither of the fallbacks does either.
+    ///
+    /// Asked of the two styles the chrome letters in, since a family is
+    /// resolved per style and the fallbacks differ between them. Nothing
+    /// here is about how a mark looks — only that there is something to
+    /// look at, which is the part that can be checked without eyes.
+    #[test]
+    fn a_lettered_mark_is_one_the_font_has() {
+        let ctx = context();
+        // Fonts are built on the first pass, and asking before one panics.
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.label("first pass");
+        });
+
+        for style in [egui::TextStyle::Body, egui::TextStyle::Button] {
+            let font = style.resolve(&ctx.global_style());
+            for mark in [INFO, CLOSE, STOP, ARROW, CUT] {
+                assert!(
+                    ctx.fonts_mut(|fonts| fonts.has_glyphs(&font, mark)),
+                    "{mark:?} is drawn as an empty box in {style:?}",
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod rows {
+    use super::{Rows, system_line};
+    use crate::tests::{context, words};
+    use bevy_egui::egui;
+
+    /// A long name with a long reading, and a short one with a short one
+    const LONG: (&str, &str) =
+        ("SWOIWNS TW-F C26-1204", "neutron star, 279.6 Ly");
+    const SHORT: (&str, &str) = ("SOL", "61.5 Ly");
+
+    /// How a list of these lines reads in a panel `room` wide
+    fn reading(room: f32, lines: &[(&str, &str)]) -> Rows {
+        let ctx = context();
+        let mut rows = Rows::Beside;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            rows = Rows::of(
+                ui,
+                room,
+                lines.iter().map(|(name, after)| (*name, Some(*after))),
+            );
+        });
+        rows
+    }
+
+    /// One line's height, drawn the way `rows` says
+    ///
+    /// The height is the observable: a truncated galley still reports its
+    /// whole text, so what says the reading moved to its own line is that
+    /// the row came out two lines tall.
+    fn tall(room: f32, rows: Rows) -> f32 {
+        let ctx = context();
+        let mut tall = 0.;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_max_width(room);
+            let top = ui.cursor().top();
+            system_line(ui, LONG.0, Some(LONG.1.to_owned()), rows, "measured");
+            tall = ui.cursor().top() - top;
+        });
+        tall
+    }
+
+    /// A name is not crushed to make room for what stands after it
+    ///
+    /// The reported trouble: a route's stops carry a star class and a jump
+    /// distance, and against the panel's width that left `CO…` and `SW…`
+    /// where a system's name should be. A name is the one thing a row
+    /// cannot do without, so where the two will not fit the reading goes
+    /// under it and the name takes the width — two lines of a scrolling
+    /// list, which the panel has room for, against a name that has lost its
+    /// letters.
+    #[test]
+    fn a_narrow_list_puts_the_reading_under_the_name() {
+        assert_eq!(reading(110., &[LONG]), Rows::Under);
+        assert_eq!(reading(600., &[LONG]), Rows::Beside);
+
+        let under = tall(110., Rows::Under);
+        let beside = tall(110., Rows::Beside);
+        assert!(
+            under > beside * 1.5,
+            "a spilled row came out {under} tall against {beside}, so the \
+             reading did not move under the name",
+        );
+    }
+
+    /// And every line of that list reads the same way
+    ///
+    /// Reported after the first go at it, which decided line by line: one
+    /// long name among short ones put its own reading underneath and left
+    /// the rest beside their names, so the column of readings broke
+    /// wherever a long name happened to fall. A list is one thing and reads
+    /// one way, so the line that needs the room decides for all of them.
+    #[test]
+    fn one_long_name_settles_the_whole_list() {
+        assert_eq!(reading(230., &[SHORT, SHORT]), Rows::Beside);
+        assert_eq!(reading(230., &[SHORT, LONG, SHORT]), Rows::Under);
+    }
+
+    /// A line with nothing after its name settles nothing
+    ///
+    /// A list where some systems have a reading and some have none is not a
+    /// reason to spend the height on any of them: what cannot fit is a name
+    /// and a reading together, and a name on its own has the width already.
+    #[test]
+    fn a_line_with_no_reading_does_not_settle_it() {
+        let ctx = context();
+        let mut rows = Rows::Under;
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            rows = Rows::of(
+                ui,
+                110.,
+                [(LONG.0, None), (SHORT.0, Some(SHORT.1))].into_iter(),
+            );
+        });
+
+        assert_eq!(rows, Rows::Beside);
+    }
+
+    /// Both are still said, either way round
+    #[test]
+    fn a_row_says_the_name_and_the_reading() {
+        for rows in [Rows::Beside, Rows::Under] {
+            let said = words(|ui| {
+                ui.set_max_width(400.);
+                system_line(
+                    ui,
+                    "SOL",
+                    Some("neutron star, 61.5 Ly".to_owned()),
+                    rows,
+                    "both",
+                );
+            });
+
+            assert!(said.iter().any(|line| line == "SOL"), "{said:?}");
+            assert!(
+                said.iter().any(|line| line.contains("neutron star")),
+                "{said:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod plans {
+    use super::{Crossing, Routing, Tuning, Weigh, planning};
+    use crate::tests::words;
+
+    /// The gap width is not a question any more
+    ///
+    /// **The rail used to open where a hop became expressible** — one
+    /// supercharged jump plus one ordinary one — and every notch under the
+    /// default could do one thing only: leave the boost stars
+    /// disconnected, so there was no plan and the route was searched flat
+    /// instead. Raising the floor fixed half of that; the other half is
+    /// that no floor is right everywhere, and a corridor whose own
+    /// bottleneck is wider fails just as expensively. Measured at 45 Ly,
+    /// Sol to a system 2 kly out: 60 stops in **32.3 s** at a 405 Ly reach
+    /// against 32 stops in **6.2 ms** at 495.
+    ///
+    /// So the plan climbs the reach itself and the reader is not asked.
+    /// What this pins is that the form no longer offers the number: a
+    /// control whose wrong settings are unreachable is better than one
+    /// whose wrong settings are a cliff. See
+    /// [`crate::systems::route::highway::Highway::plan`].
+    #[test]
+    fn the_gap_width_is_not_asked_for() {
+        let mut tune = Tuning::default();
+        let said = words(|ui| planning(ui, &mut tune));
+
+        assert!(
+            !said.iter().any(|line| line.contains("Gap")),
+            "the gap rail is still offered: {said:?}"
+        );
+        assert_eq!(
+            tune.reach,
+            Tuning::default().reach,
+            "the form moved a reach nobody asked about",
+        );
+    }
+
+    /// And both remaining settings are drawn
+    ///
+    /// A fold that opened onto nothing would leave them unreachable. The
+    /// plan's own rail reads `optimal` at the top rather than a
+    /// percentage, that being where it opens and the one stop that is not
+    /// a percentage of anything.
+    #[test]
+    fn the_planning_fold_holds_every_setting() {
+        let mut tune = Tuning::default();
+        let said = words(|ui| planning(ui, &mut tune));
+
+        for wanted in ["Plan", "Crossing a gap"] {
+            assert!(
+                said.iter().any(|line| line == wanted),
+                "{wanted} was not offered: {said:?}"
+            );
+        }
+        assert!(
+            said.iter().any(|line| line == "optimal"),
+            "the plan rail did not say where it stands: {said:?}"
+        );
+
+        // And a leaned plan reads as the percentage it is.
+        let mut leaned = Tuning { planning: 20, ..Tuning::default() };
+        let said = words(|ui| planning(ui, &mut leaned));
+        assert!(
+            said.iter().any(|line| line == "80%"),
+            "a leaned plan did not say its own percent: {said:?}"
+        );
+    }
+
+    /// A proven route's fold says why there is nothing to plan
+    ///
+    /// The reported confusion: the fold used to vanish, which reads as a
+    /// control that comes and goes rather than as an answer. An answer
+    /// that has to be *true* leaves only the flat search — the plan's edges
+    /// are lower bounds and bound nothing about the route they lead to — so
+    /// there is no plan to work out, and that is now said where the
+    /// controls were.
+    ///
+    /// Both proven asks, because they are two different top stops: the
+    /// `Within` rail's, and — at an unpriced hop, where the percent is
+    /// inert — the cap rail's `all`. See [`Routing::approximates`].
+    #[test]
+    fn the_fold_says_why_a_proven_route_is_not_planned() {
+        for proven in [
+            Routing::at(100, Weigh::Jumps),
+            Routing::at(95, Weigh::Fuel { hop: 0, expand: 0 }),
+        ] {
+            let said = crate::tests::words(|ui| {
+                let mut tune = Tuning::default();
+                super::planned(ui, proven, &mut tune);
+            });
+            assert!(
+                said.iter().any(|line| line.contains("unused when proven")),
+                "{proven:?} did not say the plan is not used: {said:?}"
+            );
+        }
+    }
+
+    /// And what crosses a gap is named for what it promises
+    ///
+    /// It was `Legs` offering `Leaned`, `Proven` and `Step across`: the
+    /// first name collides with a trip's legs, which is what a user means
+    /// by the word, and the rest were the algorithm's vocabulary. Two are
+    /// left, and they read against the optimality asked for above them.
+    #[test]
+    fn crossing_a_gap_is_named_for_what_it_promises() {
+        let mut tune =
+            Tuning { crossing: Crossing::Searched, ..Tuning::default() };
+        let searched = words(|ui| planning(ui, &mut tune));
+        assert!(searched.iter().any(|line| line == "Searched"), "{searched:?}");
+
+        let mut tune =
+            Tuning { crossing: Crossing::Stepped, ..Tuning::default() };
+        let nearest = words(|ui| planning(ui, &mut tune));
+        assert!(nearest.iter().any(|line| line == "Stepped"), "{nearest:?}");
+    }
+
+    /// The trade's ends are the two asks that used to be modes
+    ///
+    /// **The reported confusion.** "Optimal" beside "least fuel" claimed a
+    /// superlative that the shortest-hop rail moved: measured over
+    /// `.index/full`, the same corridor proven at a 50% hop burns 0.876 of
+    /// a tank against 0.191 at nothing — 4.6 times the least fuel there
+    /// is. The dropdown's fewest-jumps entry was the rail's own top stop
+    /// besides, a hop of the whole range pricing a jump at a tankful: 3
+    /// stops either way. So the two are one rail now, and it says so at
+    /// both ends rather than showing a percentage at each.
+    #[test]
+    fn the_trade_names_its_own_ends() {
+        use super::{Weigh, traded};
+        use crate::systems::route::graph::EXPAND;
+
+        // The rail's reading of each ask, which is what its handle stands
+        // at: the fewest-jumps ask is the top of the trade and not a
+        // separate axis.
+        assert_eq!(traded(Weigh::Jumps), (100, EXPAND));
+        assert_eq!(traded(Weigh::Fuel { hop: 0, expand: 8 }), (0, 8));
+        assert_eq!(traded(Weigh::Fuel { hop: 50, expand: 64 }), (50, 64));
+
+        // And what a route made of each says it is, which is where the
+        // superlative was wrong: only one end of the rail is the least
+        // fuel there is.
+        assert_eq!(
+            Routing::at(100, Weigh::Fuel { hop: 0, expand: 0 }).named(),
+            "optimal, the least fuel there is"
+        );
+        assert_eq!(
+            Routing::at(100, Weigh::Fuel { hop: 50, expand: 0 }).named(),
+            "optimal, fuel over jumps at 50% hops"
+        );
+        assert_eq!(
+            Routing::at(100, Weigh::Jumps).named(),
+            "optimal, fewest jumps"
+        );
+    }
+
+    /// The rail says the hop in light years, and which end is which
+    ///
+    /// A percentage of a range is arithmetic nobody should have to do to
+    /// learn whether the route will split its jumps to eleven light years
+    /// or to two — and a bare figure at each end says nothing about which
+    /// way the trade runs. So the value is the hop the ship would actually
+    /// fly, off the range typed above, and the ends are marked.
+    #[test]
+    fn the_rail_says_the_hop_in_light_years() {
+        use super::{Weigh, trading};
+        use crate::systems::route::graph::EXPAND;
+
+        // A fifty light year ship, so half the rail is twenty-five.
+        let painted = |weigh| {
+            let mut how = Routing::at(100, weigh);
+            words(|ui| trading(ui, &mut how, Some(50.)))
+        };
+        let says = |said: &[String], wanted: &str| {
+            said.iter().any(|line| line.contains(wanted))
+        };
+
+        let top = painted(Weigh::Jumps);
+        assert!(says(&top, "50.0 Ly"), "the top was not the range: {top:?}");
+        for end in ["least fuel", "fewest jumps"] {
+            assert!(says(&top, end), "{end} was not marked: {top:?}");
+        }
+
+        let bottom = painted(Weigh::Fuel { hop: 0, expand: EXPAND });
+        assert!(says(&bottom, "0.0 Ly"), "{bottom:?}");
+
+        let between = painted(Weigh::Fuel { hop: 50, expand: EXPAND });
+        assert!(says(&between, "25.0 Ly"), "half of fifty: {between:?}");
+
+        // Without a ship there is nothing to take a percentage of, and the
+        // rail says the percentage rather than a light year figure it
+        // cannot work out.
+        let unshipped = {
+            let mut how = Routing::at(100, Weigh::Fuel { hop: 50, expand: 0 });
+            words(|ui| trading(ui, &mut how, None))
+        };
+        assert!(says(&unshipped, "50%"), "{unshipped:?}");
+
+        // The shortest ask is the rail's top with its tick on, and the tick
+        // is offered only there — as `Expand nearest` is offered only to
+        // the weighing that has one.
+        let ticked =
+            |said: &[String]| said.iter().any(|line| line == "Shortest");
+        let ties = painted(Weigh::Shortest);
+        assert!(says(&ties, "50.0 Ly"), "{ties:?}");
+        assert!(ticked(&ties), "no tick at the end that has ties: {ties:?}");
+        assert!(ticked(&top), "no tick for the fewest jumps: {top:?}");
+        assert!(
+            !ticked(&bottom),
+            "the tick was offered where it has no ties: {bottom:?}"
+        );
+    }
+
+    /// A weighing offers the trade it has and not the other one
+    ///
+    /// **The reported confusion, and it was the form's fault.** One
+    /// optimality rail stood for two unlike things: a bounded weight on
+    /// the estimate, which a route counted in jumps spends extremely well
+    /// — 89 expansions at 75% against 5,876 at 95% for the same 45 stops —
+    /// and a cap on what is looked at, which is the only lever that moves
+    /// a fuel-weighed route. So the rail read as two sliders doing the
+    /// same job, and at a shortest hop of nothing it did no job at all.
+    ///
+    /// Each weighing names its own now. What is asserted here is the pair
+    /// of absences as much as the presences: a control that does nothing
+    /// is the thing this form is not allowed to show.
+    #[test]
+    fn a_weighing_offers_only_the_trade_it_has() {
+        use super::{Weigh, approximating};
+        use crate::systems::route::graph::EXPAND;
+
+        let offered = |weigh| {
+            let mut how = Routing::at(95, weigh);
+            words(|ui| approximating(ui, &mut how))
+        };
+        let says = |said: &[String], wanted: &str| {
+            said.iter().any(|line| line.contains(wanted))
+        };
+
+        // Counted in jumps: a percent off the fewest, and nothing about
+        // neighbours — the same cap tightened there made a charged three
+        // thousand light year crossing slower for the same stops.
+        let jumps = offered(Weigh::Jumps);
+        assert!(says(&jumps, "Within"), "no percent for jumps: {jumps:?}");
+        assert!(
+            !says(&jumps, "Expand"),
+            "a jumps route was offered a cap it cannot use: {jumps:?}"
+        );
+
+        // A priced hop: the percent, and no cap — measured at 1.0x from a
+        // quarter of the range up, the search being over before a cap
+        // could save anything.
+        let priced = offered(Weigh::Fuel { hop: 50, expand: EXPAND });
+        assert!(says(&priced, "Within"), "no percent at a priced hop");
+        assert!(
+            !says(&priced, "Expand nearest"),
+            "a cap where it measures nothing: {priced:?}"
+        );
+
+        // And unpriced: the cap, and no percent, each for the reason the
+        // other is there.
+        let fuel = offered(Weigh::Fuel { hop: 0, expand: EXPAND });
+        assert!(says(&fuel, "Expand nearest"), "no cap for fuel: {fuel:?}");
+        assert!(says(&fuel, "64"), "the cap did not say its own count");
+        assert!(
+            !says(&fuel, "Within"),
+            "a percent where nothing bounds the answer: {fuel:?}"
+        );
+
+        // Every count on the rail is a real one, including the largest:
+        // spheres do exceed a thousand candidates — measured at 1,170 in
+        // the bubble at a 100 ly range — so a cap of 1024 is a different
+        // search from no cap and may not be read as "all of them".
+        let most = offered(Weigh::Fuel { hop: 0, expand: 1024 });
+        assert!(says(&most, "1024"), "the largest count was not offered");
+        assert!(
+            !most.iter().any(|line| line == "all"),
+            "a count was painted as all of them: {most:?}"
+        );
+
+        // And the rail's top stop says what it is rather than a number
+        // that would read as a thousand and twenty-four's big brother:
+        // every system the jump reaches, which is the graph a proven route
+        // searches.
+        let all = offered(Weigh::Fuel { hop: 0, expand: 0 });
+        // Whole, so it cannot pass on a stray "all" inside some other
+        // label that happens to be painted beside it.
+        assert!(
+            all.iter().any(|line| line == "all"),
+            "the top stop was a number: {all:?}"
+        );
+    }
+
+    /// And the percent is not drawn where it means nothing
+    ///
+    /// At a shortest hop of nothing there is no positive lower bound on the
+    /// fuel left to burn, so the estimate the percent multiplies is zero
+    /// and pushing the rail changes neither the route nor the wait —
+    /// measured, 100% and 95% coming back identical in 6.1 s and 6.3 s. A
+    /// rail that cannot move the answer is worse than no rail: it is the
+    /// form promising a trade it cannot make, which is what sent a reader
+    /// looking for the difference between two identical plots.
+    #[test]
+    fn the_percent_goes_where_no_bound_exists() {
+        use super::{Weigh, bounded};
+        use crate::systems::route::graph::EXPAND;
+
+        let unpriced = Routing::at(95, Weigh::Fuel { hop: 0, expand: EXPAND });
+        assert!(!bounded(&unpriced), "an unpriced hop claimed a bound");
+
+        for weigh in [
+            Weigh::Jumps,
+            Weigh::Shortest,
+            Weigh::Fuel { hop: 5, expand: EXPAND },
+        ] {
+            let how = Routing::at(95, weigh);
+            assert!(bounded(&how), "{weigh:?} lost its bound");
+        }
+
+        // And gone from the form there, where every other dead control is.
+        let said = words(|ui| {
+            let mut how = unpriced;
+            super::approximating(ui, &mut how);
+        });
+        assert!(
+            !said.iter().any(|line| line.contains("Within")),
+            "the percent was offered where it cannot move: {said:?}"
+        );
+        // Drawn wherever it can, which is the half that would otherwise
+        // pass by the form having no controls at all.
+        let priced = words(|ui| {
+            let mut how = Routing::at(95, Weigh::Fuel { hop: 5, expand: 0 });
+            super::approximating(ui, &mut how);
+        });
+        assert!(
+            priced.iter().any(|line| line.contains("Within")),
+            "the percent went missing at a priced hop: {priced:?}"
+        );
+    }
+
+    /// The proven ask is the top stop of whichever rail applies
+    ///
+    /// **What the `Optimal` tick used to be.** It was a second control
+    /// over one number: ticking it hid the rails, unticking it had to
+    /// remember where they stood, and the same state was reachable two
+    /// ways. The top of each rail says it now — `optimal` where the
+    /// percent bites, `all` where it does not — and the two cannot
+    /// disagree, because [`Routing::approximates`] reads the ask rather
+    /// than the percent alone.
+    #[test]
+    fn the_top_of_the_rail_is_the_proven_ask() {
+        use super::approximating;
+        use crate::systems::route::graph::EXPAND;
+
+        // Where the percent bites, its own rail carries the word.
+        let said = words(|ui| {
+            let mut how = Routing::at(100, Weigh::Jumps);
+            approximating(ui, &mut how);
+        });
+        assert!(
+            said.iter().any(|line| line == "optimal"),
+            "the percent's top stop did not say what it is: {said:?}"
+        );
+        assert!(
+            said.iter().any(|line| line == "Within"),
+            "the rail went missing at its own top stop: {said:?}"
+        );
+
+        // And where it does not, the cap does the promising: `all` is the
+        // whole sphere, which is the graph a proven route searches.
+        let all = Routing::at(95, Weigh::Fuel { hop: 0, expand: 0 });
+        assert!(
+            !all.approximates(),
+            "every system in range still claimed an approximation",
+        );
+        let capped = Routing::at(100, Weigh::Fuel { hop: 0, expand: EXPAND });
+        assert!(
+            capped.approximates(),
+            "a capped search claimed to be proven for want of slack",
+        );
+
+        // And what the trade rail lands on when a proven ask runs down to
+        // the fuel end: the cap's own top stop, so the promise survives
+        // the trip rather than being lost to whatever count the rail
+        // remembered.
+        assert!(
+            !Routing::at(100, Weigh::Fuel { hop: 0, expand: 0 }).approximates(),
+            "the fuel end of a proven ask was not proven",
+        );
+    }
+}
+
+#[cfg(test)]
+mod waits {
+    use super::waited;
+    use std::time::Duration;
+
+    /// A wait reads at the scale it happened on
+    ///
+    /// All three are real: a route across the bubble comes back in tens of
+    /// milliseconds, a supercharged galactic crossing in a couple of
+    /// seconds, and a proven fewest-jumps crossing of the same two ends in
+    /// ten minutes. `612.4 s` is a number nobody converts in their head.
+    #[test]
+    fn a_wait_is_said_at_its_own_scale() {
+        assert_eq!(waited(Duration::from_millis(73)), "73 ms");
+        assert_eq!(waited(Duration::from_millis(2230)), "2.2 s");
+        assert_eq!(waited(Duration::from_secs(612)), "10m 12s");
+    }
+}
 
 /// What stands where a name was cut short
 ///
 /// Two stops rather than an ellipsis, an ellipsis being one character that
 /// reads as three and a name being cut to make room in the first place.
 const CUT: &str = "..";
+
+/// The fold the planning settings stand in, and what it says of a proven
+/// route
+///
+/// Offered whenever a supercharging drive is fitted rather than only where
+/// it does something, because a fold that comes and goes reads as a control
+/// the map is hiding — which is how it read. A route that is being proven
+/// has nothing to plan, and it says so: the plan's own edges are lower
+/// bounds that bound nothing about the route they lead to, so an answer
+/// that has to be *true* leaves only the flat search. See
+/// [`Routing::approximates`], which is where either rail's top stop lands.
+fn planned(ui: &mut Ui, how: Routing, tune: &mut Tuning) {
+    let plans = how.approximates();
+    // Said in the header, not inside the fold: the fold is shut by default,
+    // and a reason nobody opens is no reason at all.
+    let title = match plans {
+        true => "Planning",
+        false => "Planning (unused when proven)",
+    };
+    let why = match plans {
+        true => "How the plan over the boost stars is worked out",
+        false => {
+            "An optimal route is searched system by system and never \
+             planned, there being no bound to be had off a plan. Ask for \
+             less than optimal to plan one."
+        }
+    };
+    egui::CollapsingHeader::new(title)
+        .id_salt("route-planning")
+        .show(ui, |ui| {
+            ui.add_enabled_ui(plans, |ui| planning(ui, tune));
+        })
+        .header_response
+        .on_hover_text(why);
+}
+
+/// Where the shortest tie-break is remembered while the trade's handle is
+/// away from the end that has it
+///
+/// The fuel end of the rail has no ordering the tick refines, so the ask
+/// cannot live in [`Routing`] while the handle is down there — and a reader
+/// who ticked it does not expect a trip down the rail and back to have
+/// unticked it.
+const SHORTEST: fn() -> egui::Id = || egui::Id::new("route-shortest");
+
+/// What the route is weighed by: one rail, and the tie-break its top has
+///
+/// **Two controls where there were three, because two of the three were the
+/// ends of one line.** A hop of the whole range prices a jump at a tankful,
+/// which is the fewest-jumps ask arrived at from the other side — so the
+/// dropdown's first entry and the hop rail's top stop were the same
+/// question, and nothing on the form said so. Measured over `.index/full`,
+/// Sol to Col 285 Sector ZQ-K C9-12 at a hundred light years of range, all
+/// of them proven:
+///
+/// | asked | stops | fuel |
+/// |---|---|---|
+/// | fewest jumps | 3 | 1.774 |
+/// | hop 100% | 3 | 1.740 |
+/// | hop 75% | 4 | 1.157 |
+/// | hop 50% | 5 | 0.876 |
+/// | hop 25% | 8 | 0.508 |
+/// | hop 0% | 36 | 0.191 |
+///
+/// One line, monotone in both columns. It is a rail now, and its ends say
+/// what they are rather than showing a percentage a reader has to convert.
+///
+/// **And the shortest ask is a tick under it rather than a mode beside
+/// it**, because that is what it is: `Weigh::Shortest` breaks the tie
+/// between chains of the *same jump count*, which is only an ordering at
+/// the top of the rail. As a third mode it hid the rail whenever it was
+/// chosen, which read as the trade being unavailable rather than as the
+/// tick being a refinement of one end of it.
+fn trading(ui: &mut Ui, how: &mut Routing, jump: Option<f64>) {
+    let (hop, expand) = traded(how.weigh);
+    let mut asked = hop as f64;
+    // In light years, off the range typed above. A percentage of a range is
+    // arithmetic a reader should not have to do to find out whether the
+    // route will split its jumps to eleven light years or to two — and the
+    // ends are the whole travel of it, so they are said as the ends rather
+    // than as 0% and 100%. Without a range on record there is nothing to
+    // take a percentage of, and the rail says the percentage itself.
+    let said = move |held: f64, _: std::ops::RangeInclusive<usize>| match (
+        jump,
+        held.round() as u32,
+    ) {
+        (Some(range), hop) => format!("{:.1} Ly", range * hop as f64 / 100.),
+        (None, hop) => format!("{hop}%"),
+    };
+    let rail = ui
+        .horizontal(|ui| {
+            // The ends name the routes they are, which is what a reader
+            // came for, and the figure between them is the hop that gets
+            // there. No name of its own: "shortest hop" said what the
+            // number is where the ends say what it is *for*, and the two
+            // together read as three labels on one control.
+            ui.label(egui::RichText::new("least fuel").weak());
+            let rail = ui.add(
+                egui::Slider::new(&mut asked, 0.0..=100.0)
+                    .step_by(5.)
+                    .custom_formatter(said)
+                    .show_value(true),
+            );
+            ui.label(egui::RichText::new("fewest jumps").weak());
+            rail
+        })
+        .inner;
+    // Whether the tie-break was asked for, kept across a trip down the
+    // rail and back: the fuel end has no such ordering, so the ask cannot
+    // be held in `how` while the handle is down there.
+    let ties =
+        ui.data_mut(|data| data.get_temp::<bool>(SHORTEST())).unwrap_or(false);
+    if rail.changed() {
+        how.weigh = match asked.round() as u32 {
+            // The named ask at the top, which has a cheaper cost of its
+            // own: a jump count is one integer where the trade is two.
+            100 => match ties {
+                true => Weigh::Shortest,
+                false => Weigh::Jumps,
+            },
+            // **A proven ask stays proven at the fuel end**, where the
+            // cap is the whole of the promise: the percent means nothing
+            // there, so a reader who asked for optimal and then ran the
+            // trade down to it would otherwise have the rail's remembered
+            // cap quietly make the answer unprovable. See
+            // [`Routing::approximates`].
+            0 if how.over == 0 => Weigh::Fuel { hop: 0, expand: 0 },
+            hop => Weigh::Fuel { hop, expand },
+        };
+    }
+    rail.on_hover_text(
+        "How short a jump the route may split down to. At the maximum it \
+         splits none of them, which is the fewest jumps: the quickest to \
+         fly and the thirstiest, a jump at full range costing the drive's \
+         whole maximum fuel. At the minimum it is the least fuel there is — \
+         as many short hops as the sky offers, ninety-four of a third of a \
+         light year to cross three hundred, and slow to work out. Halfway \
+         is roughly twice the jumps on half the fuel.",
+    );
+
+    // The tie-break, offered only where there are ties of its kind to
+    // break. It settles which of the chains of *equal jump count* is
+    // taken, which is an ordering the fewest-jumps end of the rail has and
+    // no other position on it does — so it is not drawn elsewhere, as
+    // `Within` is not drawn where nothing bounds the answer and
+    // `Expand nearest` is not drawn for a weighing with no such setting.
+    if matches!(how.weigh, Weigh::Jumps | Weigh::Shortest) {
+        let mut shortest = matches!(how.weigh, Weigh::Shortest);
+        if ui
+            .checkbox(&mut shortest, "Shortest")
+            .on_hover_text(
+                "Of the routes that are the fewest jumps, find the \
+                 shortest. Slower: the chains of one length are many, and \
+                 knowing which is shortest means walking them.",
+            )
+            .changed()
+        {
+            ui.data_mut(|data| data.insert_temp(SHORTEST(), shortest));
+            how.weigh = match shortest {
+                true => Weigh::Shortest,
+                false => Weigh::Jumps,
+            };
+        }
+    }
+}
+
+/// What this weighing is allowed to trade, and where the proven ask lives
+///
+/// **One group per weighing, because the two approximations are not the
+/// same kind of thing.** A percent off the fewest is a weight on the
+/// estimate and a bounded claim — weighted A\* answers inside
+/// `1 + over/100` — and a jump-counted route spends it extremely well: 89
+/// expansions at 75% against 5,876 at 95% for the same 45 stops. A cap on
+/// what is expanded bounds nothing at all, and it is the only lever that
+/// moves a fuel-weighed route: the nearest 64 come within a fiftieth of
+/// the proven fuel at three to twenty-seven times the speed.
+///
+/// **A control that does not apply is not drawn**, which is the one rule
+/// this form follows throughout, and the two here are each other's
+/// opposite:
+///
+/// - The percent goes at a shortest hop of *nothing*, where the fuel left
+///   to burn has no positive lower bound, so the estimate it multiplies is
+///   zero and the rail is provably inert — measured, the identical route
+///   in the identical time at 100% and 95%.
+/// - `Expand nearest` is drawn *only* there, for the mirror reason: a
+///   priced hop is over in under a millisecond and the cap measures 1.0x
+///   from 25% of the range up, where unpriced it is worth 6 to 8 times.
+///
+/// So the least-fuel end of the trade offers the cap and no percent, and
+/// everywhere else offers the percent and no cap. Offering either where it
+/// changes nothing is the thing that caused the confusion this form was
+/// rebuilt out of.
+///
+/// **And the proven ask is the top stop of whichever one is drawn** —
+/// `Within` at `optimal`, `Expand nearest` at `all` — rather than a tick
+/// standing over both. The tick was two controls for one number: it hid
+/// these rails, had to remember where they stood to give them back, and
+/// left the same state reachable two ways. What makes one control enough
+/// is that [`Routing::approximates`] reads the ask: where the percent
+/// cannot approximate anything, the cap is the promise.
+fn approximating(ui: &mut Ui, how: &mut Routing) {
+    // The fuel weighing's own lever first, it being the one that moves
+    // such a route: what the search looks at rather than what it settles
+    // for. The percent under it is the other kind of trade and is dead at
+    // this weighing's own far end, so the live control stands first.
+    //
+    // **At an unpriced hop and nowhere else**, which is where the
+    // measurements put it. A priced hop takes long jumps and few of them —
+    // nine stops at half the range — and the search is over in under a
+    // millisecond before a cap could save anything: measured at 1.0x
+    // across the whole rail from 25% up. Unpriced, the same route is
+    // fifty-five short hops and every expansion weighs a thousand
+    // candidates. See [`graph::EXPAND`] for where it bites hardest.
+    if let Weigh::Fuel { hop: 0, expand } = how.weigh {
+        // **A rail over its own stops, not over the counts.** Doubling
+        // each step is what the measurements want — eight is 17x the speed
+        // of taking every system in range and 64 is within a fiftieth of
+        // the fuel, where everything above 64 changes almost nothing — and
+        // the last stop is *every* system in reach, which is the graph a
+        // proven route searches. So the rail's top stop **is** the proven
+        // ask here, there being nothing else at an unpriced hop that could
+        // approximate anything: the estimate is zero and weighting zero is
+        // zero. See [`Routing::approximates`].
+        //
+        // Stepping through an index rather than putting the sentinel
+        // inside the numbers: a rail from 8 to 1024 that read 1024 as
+        // "all" would be lying about a count spheres really do exceed —
+        // measured at 1,170 candidates in the bubble at a 100 ly range, so
+        // a cap of 1024 is a different search from no cap — and it left
+        // 512 as the largest number anybody could ask for, for no reason
+        // but that it was the constant this replaced.
+        let mut at = STOPS
+            .iter()
+            .position(|held| *held == expand)
+            .unwrap_or(STOPS.len()) as f64;
+        let rail = ui.add(
+            egui::Slider::new(&mut at, 0.0..=STOPS.len() as f64)
+                .step_by(1.)
+                .custom_formatter(|held, _| {
+                    match STOPS.get(held.round() as usize) {
+                        Some(count) => count.to_string(),
+                        None => "all".to_owned(),
+                    }
+                })
+                .text("Expand nearest"),
+        );
+        if rail.changed() {
+            let asked =
+                STOPS.get(at.round() as usize).copied().unwrap_or_default();
+            // **The slack goes with it**, so the two never disagree about
+            // whether the answer is proven. A cap of nothing is the proven
+            // ask and the percent has to say so — it is what the route
+            // carries into its own description ([`Routing::named`]) and
+            // what the trade rail hands on if the reader moves off this
+            // end — and a cap that bites has to leave the percent
+            // standing somewhere it can be read, which is the default's
+            // own knee.
+            *how = Routing {
+                over: match asked {
+                    0 => 0,
+                    _ if how.over > 0 => how.over,
+                    _ => Routing::default().over,
+                },
+                weigh: Weigh::Fuel { hop: 0, expand: asked },
+            };
+        }
+        rail.on_hover_text(
+            "How many of each system's neighbours the search looks at, \
+             nearest first. A route flown on the least fuel only ever takes \
+             short jumps, so the far half of what a jump reaches is \
+             systems it would never use: the nearest 64 come within a \
+             fiftieth of the fuel for a fraction of the wait. Fewer is \
+             quicker and may miss a long way round. `all` is every system \
+             in reach, which is the proven route: nothing is planned or \
+             thinned, and across the galaxy that is minutes to hours.",
+        );
+    }
+
+    // How close to the best it has to come, where there is a best to
+    // measure against. Not drawn where there is not: at a shortest hop of
+    // nothing the fuel left to burn has no positive lower bound, so the
+    // estimate this multiplies is zero and the rail is provably inert —
+    // measured, the identical route in the identical time. The cap above
+    // is that ask's own promise. See [`bounded`].
+    if bounded(how) {
+        // **A hundred is a stop of this rail and it reads `optimal`**,
+        // which is what the `Optimal` tick used to be. Two controls for
+        // one number is what made the tick confusing: it hid the rail,
+        // remembered where the rail had been, and put the same state
+        // behind two gestures. The top of the rail is the promise now, as
+        // the top of the planning rail is.
+        let mut optimality = how.optimality() as f64;
+        let rail = ui.add(
+            egui::Slider::new(&mut optimality, 0.0..=100.0)
+                .step_by(5.)
+                .custom_formatter(|held, _| match held.round() as u32 {
+                    100 => "optimal".to_owned(),
+                    within => format!("{within}%"),
+                })
+                .text("Within"),
+        );
+        if rail.changed() {
+            *how = Routing::at(optimality.round() as u32, how.weigh);
+        }
+        rail.on_hover_text(
+            "How close to the best the route has to come. 95% is a route \
+             inside 105% of it, and the slack is what lets the search stop \
+             early — the useful range is nowhere near the top: 75% found \
+             the same route as 95% in a sixtieth of the expansions. \
+             Optimal proves it instead, system by system, which across the \
+             galaxy is minutes to hours.",
+        );
+    }
+}
+
+/// Where on the jumps-against-fuel trade a weighing sits, and what it looks
+/// at
+///
+/// The rail's own reading of [`Weigh`]. The fewest-jumps ask is the top of
+/// it — a hop of the whole range prices a jump at a tankful, which is the
+/// same question — and every position below is the fuel weighing with that
+/// hop. A weighing that is not on the trade at all reads as the top, which
+/// is where the rail stands when it is not shown.
+///
+/// The cap comes along so that running the rail down from the top and back
+/// does not lose it: the fewest-jumps ask has no such setting of its own,
+/// and a reader who set it to eight would not expect to find sixty-four on
+/// the way back.
+fn traded(weigh: Weigh) -> (u32, u32) {
+    match weigh {
+        Weigh::Fuel { hop, expand } => (hop, expand),
+        Weigh::Jumps | Weigh::Shortest => (100, graph::EXPAND),
+    }
+}
+
+/// Whether a percent off the best means anything to this ask
+///
+/// It does not at a shortest hop of nothing: the fuel left to burn has no
+/// positive lower bound there, a jump being able to be arbitrarily short,
+/// so the estimate the percent multiplies is zero and the answer comes back
+/// identical however hard the rail is pushed. Measured over `.index/full`,
+/// 100% and 95% returning the same route in 6.1 s and 6.3 s.
+fn bounded(how: &Routing) -> bool {
+    !matches!(how.weigh, Weigh::Fuel { hop: 0, .. })
+}
+
+/// What `Expand nearest` offers, and one stop past the end of it for every
+/// system in reach
+///
+/// Doubling, because that is the shape of what it buys: measured over
+/// `.index/full`, eight is seventeen times the speed of taking every system
+/// in range and sixty-four is within a fiftieth of the proven fuel, while
+/// everything above sixty-four changes almost nothing. Nought is not a stop
+/// — it is what [`Weigh::Fuel`] holds for the stop past the last, there
+/// being no count that means "all of them".
+const STOPS: [u32; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
+/// How a long supercharged route is planned, asked for beside the route
+///
+/// Two settings about *method*, where the two controls above are about the
+/// answer: how large a gap between boost stars the coarse plan may string
+/// together, and how the jumps that cross one are found. They are here
+/// because this is where a route is asked for — they were briefly on a
+/// route's own info panel, which reads as controls for the next plot
+/// standing under a description of the last one.
+///
+/// A **gap**, because the two words a reader already has are taken: a *leg*
+/// is a part of a multi-stop trip, which the bar says outright, and a *hop*
+/// is one jump of a route, which every row says. Neither is this.
+///
+/// Every one of them was a constant until a ship that jumps 25 light years
+/// met a graph tuned against one that jumps 50: the hop reach fell to 200
+/// light years, the boost stars stopped being a connected graph, the plan
+/// answered nothing in 0.3 ms and the flat search spent **233 s** on the
+/// fallback. See [`Tuning`] for what each measured out at.
+///
+/// **The gap width used to be asked for here and is not any more.** It was
+/// a rail from the least reach that connects the cones upward, and the
+/// measurements turned it into a trap: a corridor whose own bottleneck is
+/// wider than the setting does not fail cheaply — the coarse search never
+/// closes on the goal, spends its stall allowance, and the stretch left
+/// over becomes one enormous gap for the legs. Measured at 45 Ly, Sol to a
+/// system 2 kly out: **60 stops in 32.3 s** at the old 405 Ly default
+/// against **32 stops in 6.2 ms** at 495. A wider reach only adds edges to
+/// the cone graph, so it can never cost stops, and no reader can be
+/// expected to know which corridor wants which number. The plan climbs the
+/// reach itself now ([`highway::RUNGS`]) and the floor it starts from is
+/// where the curve flattens ([`highway::GAPS_LY`] = 500 Ly).
+fn planning(ui: &mut Ui, tune: &mut Tuning) {
+    ui.label(
+        egui::RichText::new("How the next long supercharged plot is planned")
+            .weak(),
+    );
+
+    // How hard the plan itself is worked, which is **not** the question
+    // the `Within` rail above answers. That one says how good the route
+    // has to be; this says how near the fewest hops the chain of cones
+    // has to come, and a coarse hop is a lower bound on a gap either way
+    // — the plan bounds nothing about the route it leads to, whatever it
+    // is weighed with. Until this the plan was leaned by the route's own
+    // percent with no way to say the one without the other.
+    //
+    // **The top stop is the default and the allowance is why it can be.**
+    // Measured over `.index/full` from Sol at 45 Ly against the plan
+    // leaned by the route's own percent: an exact plan buys **nothing to
+    // six percent of the stops** — 156 against 166 on Colonia, 137
+    // against 137 sixteen thousand light years out — and unbounded it
+    // costs two to nineteen times the wait to find out which. So it is
+    // tried rather than promised: [`Tuning::allowance`] drops an exact
+    // pass that has spent 2,048 expansions, which is 40 ms at the worst,
+    // and the plan is worked leaned instead. Measured either way, a
+    // corridor whose exact plan lands answers in 4.3 ms against 4.0 ms.
+    //
+    // What the rest of the rail is for is the other direction: a corridor
+    // where even leaning by the route's own percent crawls can be leaned
+    // harder here, which is EDDA's own answer to the same plateau (a
+    // coarse weight of 1.5, `long_range.rs:52-57`).
+    let mut optimality = 100 - tune.planning.min(100);
+    let plan = ui.add(
+        egui::Slider::new(&mut optimality, 50..=100)
+            .step_by(5.)
+            .custom_formatter(|held, _| match held.round() as u32 {
+                100 => "optimal".to_owned(),
+                within => format!("{within}%"),
+            })
+            .text("Plan"),
+    );
+    if plan.changed() {
+        tune.planning = 100 - optimality;
+    }
+    plan.on_hover_text(
+        "How near the fewest hops the chain of boost stars has to come. \
+         Optimal is tried first and kept where it lands cheaply — a plan \
+         is a guess about the gaps at any setting, and proving it out is \
+         worth at most a few stops in a hundred. Leaning harder is for a \
+         corridor where the cones pile up and the plan crawls.",
+    );
+
+    // Which of the two the legs are refined by. The hover on the box says
+    // what a leg is at all; the two rows inside say what each does with it.
+    egui::ComboBox::from_label("Crossing a gap")
+        .selected_text(match tune.crossing {
+            Crossing::Searched => "Searched",
+            Crossing::Stepped => "Stepped",
+        })
+        .show_ui(ui, |ui| {
+            for (kind, said, hint) in [
+                (
+                    Crossing::Stepped,
+                    "Stepped",
+                    "Take each jump toward the next boost star, whichever \
+                     one is cheapest for the ground it closes — the \
+                     nearest where the route counts jumps, the least \
+                     thirsty where it counts fuel. Fastest by far; a gap \
+                     where no jump gets closer is searched instead.",
+                ),
+                (
+                    Crossing::Searched,
+                    "Searched",
+                    "Search each gap at the optimality asked for above. \
+                     Slower, and the same bargain rather than a better one.",
+                ),
+            ] {
+                ui.selectable_value(&mut tune.crossing, kind, said)
+                    .on_hover_text(hint);
+            }
+        })
+        .response
+        .on_hover_text(
+            "How the jumps from one boost star to the next are worked out",
+        );
+}
 
 /// Say a route in `room` characters, keeping both of its ends
 ///
@@ -3736,6 +4834,7 @@ fn route_body(
     plot: &mut Plot,
     how: &mut Routing,
     drive: &mut Drive,
+    tune: &mut Tuning,
     boosts: &crate::Boosts,
     searching: &Frontiers,
 ) -> Response {
@@ -3778,38 +4877,31 @@ fn route_body(
     }
     ui.add_space(FIELD_GAP);
 
-    // How hard the map should work at it. Two of the three are the fewest
-    // jumps and differ in whether the map may spend the time proving the
-    // shortest of them; the third declines to prove anything and comes back
-    // in a hundredth of the time. What each gives up is said on hover rather
-    // than in the label, a route being something the reader either has an
-    // opinion about or does not. See `Routing` for what they measured out at.
-    egui::ComboBox::from_label("Search")
-        .selected_text(match *how {
-            Routing::Quick => "Quick",
-            Routing::Direct => "Direct",
-            Routing::Shortest => "Shortest",
-        })
-        .show_ui(ui, |ui| {
-            // One line each, as the pane's hints are: what taking it gets
-            // you, in the words the rows use. What each of them gives up in
-            // exchange is [`Routing`]'s to say at length.
-            for (mode, said, hint) in [
-                (
-                    Routing::Quick,
-                    "Quick",
-                    "Fastest to find, up to 5% more jumps",
-                ),
-                (Routing::Direct, "Direct", "Fewest jumps, straightest path"),
-                (
-                    Routing::Shortest,
-                    "Shortest",
-                    "Fewest jumps, shortest distance, slowest to find",
-                ),
-            ] {
-                ui.selectable_value(&mut *how, mode, said).on_hover_text(hint);
-            }
-        });
+    // What the route is weighed by, which is the first question: the trade
+    // between the fewest jumps and the least fuel, and the tie-break the
+    // one end of it has. Shown in light years off the range typed above,
+    // that being the number a reader is holding.
+    let jump = search
+        .route_range
+        .as_deref()
+        .and_then(|range| range.parse::<f64>().ok());
+    trading(ui, how, jump);
+
+    // Then what it is allowed to trade for the wait, which is a question
+    // about the *search* and not about the route — so it stands under
+    // what it qualifies rather than over it. Two rails and each other's
+    // opposite, and the proven ask is the **top stop of whichever one
+    // applies**: `Within` at optimal where the percent bites, and
+    // `Expand nearest` at `all` where it does not.
+    //
+    // There was an `Optimal` tick over them until the top of the rail
+    // could say it. It was two controls for one number: ticking it hid
+    // the rails, unticking it had to remember where they had been, and
+    // the same state was reachable two ways. See
+    // [`Routing::approximates`], which is now the one place the question
+    // is answered.
+    approximating(ui, how);
+    ui.add_space(FIELD_GAP);
     // Whether a jet cone counts, and what it is worth. A neutron star
     // supercharges a drive for one jump — four times the range, six off the
     // drive built for it — so a route that may use one runs through the
@@ -3846,6 +4938,14 @@ fn route_body(
                     .on_hover_text(hint);
             }
         });
+
+    // And how a long supercharged route is planned, which is a question
+    // about the *method* rather than about the answer: the two above say
+    // what the route has to be, and these say how the coarse plan over the
+    // boost stars goes about finding one. See [`planned`].
+    if drive.named().is_some() {
+        planned(ui, *how, tune);
+    }
 
     // Return in the range asks for the route, as pressing the button does. It
     // is the last thing a route waits on, and a form with one thing left to
@@ -3921,38 +5021,90 @@ fn route_body(
         let turning = ui.text_style_height(&egui::TextStyle::Button) * SPINNER;
         atoms.push_left(egui::Atom::custom(slot, egui::Vec2::splat(turning)));
     }
-    let button = ui
-        .add_enabled_ui(asked.is_some(), |ui| {
-            egui::Button::new(atoms).atom_ui(ui)
+    // The plot button and, while something is running, a stop beside it.
+    // Stopping used to be the plot button's second meaning, which was wrong
+    // twice: a control whose meaning depends on invisible state cannot be
+    // read before it is pressed, and on a *trip* it half worked — the legs
+    // land at different moments, so a second click took back the ones still
+    // searching and re-asked the ones that had landed. See
+    // [`crate::search::Search::Stop`].
+    let (button, stopped) = ui
+        .horizontal(|ui| {
+            let button = ui
+                .add_enabled_ui(asked.is_some(), |ui| {
+                    egui::Button::new(atoms).atom_ui(ui)
+                })
+                .inner;
+            let stopped = *plot == Plot::Working
+                && ui.button(STOP).on_hover_text("Stop searching").clicked();
+            (button, stopped)
         })
         .inner;
+    if stopped {
+        searched.write(Search::Stop);
+    }
     // A route is worked out against a database that takes as long as it
     // takes, and a button that has gone quiet says nothing about whether it
     // heard.
     if let Some(turning) = button.rect(slot) {
         egui::Spinner::new().paint_at(ui, turning);
     }
+    // What the button means while something is running: asking again is
+    // asking, never cancelling. A leg already under way is left to finish —
+    // the same question twice is one question — and a leg the form has
+    // moved off is dropped for the new one.
+    if *plot == Plot::Working {
+        button.response.clone().on_hover_text(format!(
+            "Searching. Plot again to ask for the route as it now \
+                 stands, or press {STOP} to stop"
+        ));
+    }
     // How far the search has got. A route across the galaxy expands hundreds
     // of thousands of systems over several seconds, and a spinner says the map
     // is working without saying whether it is getting anywhere. The map draws
     // the same progress out on the sky; this is the number beside the button.
-    let expanded = searching.expanded();
-    if *plot == Plot::Working && expanded > 0 {
-        // How much has been looked at, and how close it has got. The second is
-        // the one that answers the question a wait asks: the map draws the
-        // chain to that system out on the sky, and this is how far it still
-        // has to go.
-        let said = match searching.closest() {
-            Some(away) => format!(
-                "{} systems searched, {} Ly to go",
-                crate::ui::thousands(expanded),
-                crate::ui::thousands(away.round() as u64),
-            ),
-            None => {
-                format!("{} systems searched", crate::ui::thousands(expanded))
-            }
-        };
-        ui.label(egui::RichText::new(said).weak());
+    // Four readings, and each is asked separately because each arrives at
+    // its own moment: the clock the moment the button is pressed, the count
+    // once the graph is open and the first systems are expanded, and how
+    // far there is to go once anything has been reached at all. How long it
+    // has been at it first, that being the reading a wait is actually about
+    // — and the one that says a search is still alive when a gap between
+    // two boost stars is expanding nothing anybody can see.
+    //
+    // **One line about the plot, not one per leg.** A trip's legs are
+    // searched at once, and each of these is an aggregate over them: the
+    // longest wait, the expansions added up, and the distances left added
+    // up. How many legs are still being worked out is said where there is
+    // more than one, since the other three read differently when they are
+    // about four searches than when they are about one.
+    if *plot == Plot::Working {
+        let expanded = searching.expanded();
+        let mut said = Vec::with_capacity(4);
+        if let Some(took) = searching.asked_for() {
+            said.push(crate::ui::waited(took));
+        }
+        let legs = searching.legs();
+        if legs > 1 {
+            said.push(format!("{legs} legs"));
+        }
+        if expanded > 0 {
+            said.push(format!(
+                "{} systems searched",
+                crate::ui::thousands(expanded)
+            ));
+        }
+        // What answers the question a wait asks: the map draws the chains
+        // out on the sky, and this is how far they still have to go, over
+        // every leg still looking.
+        if let Some(left) = searching.left() {
+            said.push(format!(
+                "{} Ly to go",
+                crate::ui::thousands(left.round() as u64)
+            ));
+        }
+        if !said.is_empty() {
+            ui.label(egui::RichText::new(said.join(", ")).weak());
+        }
     }
 
     if (button.response.clicked() || submitted)
@@ -4356,7 +5508,11 @@ struct RowAsk {
 /// The range comes off the legs, they having all been plotted for the one
 /// ship. The trip it names is its own, so a panel about a trip is one panel
 /// however often the row is pressed.
-fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
+pub(crate) fn as_one(
+    trip: &str,
+    rows: &[usize],
+    filters: &Filters,
+) -> Option<Filter> {
     let legs: Vec<&Filter> = rows
         .iter()
         .filter_map(|index| filters.get(*index))
@@ -4368,6 +5524,14 @@ fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
     // search mode with them, all the legs having been asked the one way.
     let drive = legs.first()?.drive()?;
     let how = legs.first()?.how()?;
+    // And how they were planned, which is the same for all of them for the
+    // same reason: one ask, one set of settings, however many legs it came
+    // to. A leg that was never planned carries what it was asked with all
+    // the same, so the trip's own filter matches its legs'.
+    let tune = legs.first().and_then(|leg| match leg {
+        Filter::Route { tune, .. } => Some(*tune),
+        _ => None,
+    })?;
 
     let mut systems: Vec<i64> = Vec::new();
     for leg in legs {
@@ -4386,7 +5550,37 @@ fn as_one(trip: &str, rows: &[usize], filters: &Filters) -> Option<Filter> {
         trip: Some(trip.to_owned()),
         drive,
         how,
+        tune,
     })
+}
+
+/// A trip's panel as its legs now stand, and the legs it is made of
+///
+/// **A trip is plotted a leg at a time, so a panel opened before the last
+/// of them lands describes a route that is not finished.** It used to
+/// describe it *once*, when it was opened: the joined filter was built
+/// there and kept, so a leg landing afterwards changed nothing and the
+/// panel went on saying a partial trip's systems, distance and longest jump
+/// as though they were the whole of it. Rebuilt here every frame instead,
+/// off whatever legs the bar now holds.
+///
+/// [`None`] where `filter` is not a trip's joined route, or where its legs
+/// have gone: a trip whose rows were closed has nothing left to describe,
+/// and the panel keeps what it last had rather than emptying.
+pub(crate) fn trip_now(
+    filter: &Filter,
+    filters: &Filters,
+) -> Option<(Filter, Vec<Filter>)> {
+    let trip = filter.trip()?;
+    let section = Section::of(filter)?;
+    let rows = section.rows(filters);
+    let legs: Vec<Filter> = rows
+        .iter()
+        .filter_map(|index| filters.get(*index))
+        .map(|active| active.filter.clone())
+        .collect();
+
+    Some((as_one(trip, &rows, filters)?, legs))
 }
 
 /// Which group of the bar's filter rows a filter stands in
@@ -4422,6 +5616,12 @@ enum Section {
         drive: Drive,
         /// How hard the search was asked to work at it
         how: Routing,
+        /// How the plan over the boost stars was worked out
+        ///
+        /// Part of what a trip is for the reason the rest are: the same
+        /// stops planned over different gaps are two trips and two sets of
+        /// rows, not one that swallowed the other's legs.
+        tune: Tuning,
     },
     /// The count standing over every route drawn, trips and loose alike
     ///
@@ -4469,13 +5669,14 @@ impl Section {
     /// Nothing for a route asked for on its own and nothing for a filter that
     /// is no route, neither of which is a leg of anything.
     fn of(filter: &Filter) -> Option<Section> {
-        let (range, drive, how) = filter.ship()?;
+        let (range, drive, how, tune) = filter.ship()?;
 
         Some(Section::Trip {
             stops: filter.trip()?.to_owned(),
             range: range.to_owned(),
             drive,
             how,
+            tune,
         })
     }
 
@@ -4485,9 +5686,10 @@ impl Section {
             Section::Filters => !filter.is_route(),
             // Every leg of the one plot: the same stops asked for again at
             // another range is another trip, and its legs are its own.
-            Section::Trip { stops, range, drive, how } => {
+            Section::Trip { stops, range, drive, how, tune } => {
                 filter.trip() == Some(stops.as_str())
-                    && filter.ship() == Some((range.as_str(), *drive, *how))
+                    && filter.ship()
+                        == Some((range.as_str(), *drive, *how, *tune))
             }
             // Every route drawn, so the count over them reaches all of them
             // at once: a leg is a route, whatever else it is part of.
@@ -4630,23 +5832,31 @@ impl Section {
     }
 }
 
-/// How many jumps a row says its route is flown in, laid out to paint
+/// How many jumps a route is flown in, as it is said anywhere it is said
 ///
 /// What a route says at the end of its row, faint beside the name, where a
-/// selection's row says how far off its system is. One place rather than one
-/// per kind of row: a trip's row says the same about the whole of it as its
-/// legs' rows say about each of them, and the two reading differently would
-/// be two answers to the one question.
-fn hops_said(ui: &Ui, hops: usize) -> std::sync::Arc<egui::Galley> {
-    let said =
-        if hops == 1 { "1 hop".to_owned() } else { format!("{hops} hops") };
+/// selection's row says how far off its system is — and what a leg's own
+/// heading says in a trip's panel, the panel being about the same legs the
+/// bar has rows for. One place rather than one per kind of row: a trip's
+/// row says the same about the whole of it as its legs' rows say about each
+/// of them, and the two reading differently would be two answers to the one
+/// question.
+pub(crate) fn hops_said(hops: usize) -> String {
+    match hops {
+        1 => "1 hop".to_owned(),
+        hops => format!("{hops} hops"),
+    }
+}
 
-    egui::WidgetText::from(egui::RichText::new(said).weak()).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Body,
-    )
+/// The same reading, laid out to paint in a row of the bar
+fn hops_galley(ui: &Ui, hops: usize) -> std::sync::Arc<egui::Galley> {
+    egui::WidgetText::from(egui::RichText::new(hops_said(hops)).weak())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
 }
 
 /// Draw a row for each filter at `rows`, and say what a click asked of one
@@ -4671,7 +5881,7 @@ fn section_rows(
         // What a route says at its end, where a selection row says how far
         // off its system is. Nothing on the others: a faction's name says all
         // there is to say, and a set says how many it holds in its own name.
-        let hops = active.filter.hops().map(|hops| hops_said(ui, hops));
+        let hops = active.filter.hops().map(|hops| hops_galley(ui, hops));
 
         // No info button where nothing could be said: a span admits the
         // galaxy over and what it admits is on the map already.
@@ -4958,7 +6168,7 @@ fn whole_set(
     // As a row below lays its own out: the name is cut to whatever the dot,
     // the jumps and the marks leave, so a trip too long to spell out never
     // paints over what it is flown in.
-    let hops = hops.map(|hops| hops_said(ui, hops));
+    let hops = hops.map(|hops| hops_galley(ui, hops));
     let room = ui.available_width()
         - ROW_PADDING * 2.
         - DOT
@@ -6123,6 +7333,73 @@ pub(crate) fn line(
     }
 }
 
+/// How wide a piece of body text lays out
+///
+/// Laid out in nothing and thrown away, which is what measuring is: the
+/// width a line *wants*, before anything decides how much it gets.
+fn width(ui: &Ui, text: &str) -> f32 {
+    egui::WidgetText::from(egui::RichText::new(text))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        .x
+}
+
+/// Whether a list's lines carry their reading beside the name or under it
+///
+/// **Settled for the list, not for the line.** A name is the one thing a row
+/// cannot do without — `CO…` is not a system — so where a name and its
+/// reading will not both fit, the name takes the width and the reading goes
+/// on a line of its own beneath. Deciding that per line meant a list in
+/// which some stops read one way and some the other, the column of readings
+/// breaking wherever a long name happened to fall, and it was reported as
+/// exactly that. So the widest line in the list decides for all of them: a
+/// list is one thing and reads one way.
+///
+/// The cost is height, which a list of a hundred stops spends carefully, and
+/// it is spent on the whole list or none of it. Short lists — a search's
+/// results, a system's neighbours — go on reading in one line each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rows {
+    /// The reading at the right hand end, so the column reads down
+    Beside,
+    /// The reading indented under the name, the name having the width
+    Under,
+}
+
+impl Rows {
+    /// How a list reads, given the room it gets and every name and reading
+    /// it is about to draw
+    ///
+    /// `room` is the width one of its lines will be drawn in, which is the
+    /// caller's to say rather than this to assume: a trip's stops are
+    /// indented under their leg's name and so get an indent less than the
+    /// panel they stand in. Asked before any of the lines are drawn, since
+    /// the first line has to know what the last one needs.
+    pub(crate) fn of<'a>(
+        ui: &Ui,
+        room: f32,
+        lines: impl Iterator<Item = (&'a str, Option<&'a str>)>,
+    ) -> Self {
+        let gap = ui.spacing().item_spacing.x;
+        // What is left for the name and the reading once the line's own
+        // padding and the mark that opens a panel have taken theirs.
+        let room = room - LINE_PADDING * 2. - gap - width(ui, INFO);
+
+        for (name, trailing) in lines {
+            let Some(trailing) = trailing else { continue };
+            if width(ui, name) + gap + width(ui, trailing) > room {
+                return Self::Under;
+            }
+        }
+        Self::Beside
+    }
+}
+
 /// One system's line in a list, and what a click on it asked for
 ///
 /// Every list of systems the map draws is this line: the ones a search found
@@ -6134,6 +7411,9 @@ pub(crate) fn line(
 /// how far off the system is, and in the same slot whatever it says, so the
 /// column reads down.
 ///
+/// `rows` is where that reading goes, and is the list's to decide rather
+/// than the line's — see [`Rows`].
+///
 /// `salt` keys the mark apart from the marks on the lines around it. The
 /// caller chooses it, knowing what its own list does between one pass and the
 /// next.
@@ -6141,6 +7421,7 @@ pub(crate) fn system_line(
     ui: &mut Ui,
     name: &str,
     trailing: Option<String>,
+    rows: Rows,
     salt: impl std::hash::Hash,
 ) -> Option<SystemAction> {
     let gap = ui.spacing().item_spacing.x;
@@ -6170,9 +7451,15 @@ pub(crate) fn system_line(
         )
     };
 
-    let reserved = mark.size().x
-        + gap
-        + trailing.as_ref().map_or(0., |text| text.size().x + gap);
+    // The reading's own room, where it is beside the name: under it the
+    // name has the whole line.
+    let beside = match rows {
+        Rows::Beside => {
+            trailing.as_ref().map_or(0., |text| text.size().x + gap)
+        }
+        Rows::Under => 0.,
+    };
+    let reserved = mark.size().x + gap + beside;
     let (rect, answer) = line(ui, egui::RichText::new(name), reserved, true);
     let middle = rect.center().y;
 
@@ -6206,16 +7493,34 @@ pub(crate) fn system_line(
         (at, answer.on_hover_cursor(egui::CursorIcon::PointingHand))
     };
 
-    // Between the name and the mark, right against the mark, so the distances
-    // line up down the list rather than following the names.
+    // Between the name and the mark, right against the mark, so the
+    // distances line up down the list rather than following the names — or,
+    // where the two would not fit on one line, under the name in its own
+    // row. Indented there, so a run of them reads as belonging to the names
+    // above rather than as a list of its own.
     if let Some(text) = trailing {
-        let size = text.size();
-        let right = describing.0.left() - gap;
-        ui.painter().galley(
-            egui::pos2(right - size.x, middle - size.y / 2.),
-            text,
-            egui::Color32::PLACEHOLDER,
-        );
+        match rows {
+            Rows::Beside => {
+                let size = text.size();
+                let right = describing.0.left() - gap;
+                ui.painter().galley(
+                    egui::pos2(right - size.x, middle - size.y / 2.),
+                    text,
+                    egui::Color32::PLACEHOLDER,
+                );
+            }
+            Rows::Under => {
+                ui.horizontal(|ui| {
+                    ui.add_space(LINE_PADDING + gap);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text.text()).weak(),
+                        )
+                        .selectable(false),
+                    );
+                });
+            }
+        }
     }
 
     // The mark first, then the double. Egui answers the first click of a pair
@@ -7923,6 +9228,10 @@ mod tests {
         assert_eq!(said.iter().filter(|line| *line == INFO).count(), 2);
     }
 
+    // Only the debug-only passes below use it: egui compiles its
+    // between-pass id check out of a release build. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     /// A faction the search found, by id, called after it
     fn faction_row(id: i32, name: &str) -> DbFaction {
         DbFaction { id, name: name.to_owned() }
@@ -7937,6 +9246,10 @@ mod tests {
     /// says so in red across the bar, and these two lists are the pair most
     /// likely to do it: both hang directly under the field, and a tab is a
     /// click.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn one_modes_list_does_not_take_the_last_modes_place() {
         let systems = results(&["SOL", "SOLATI"], true);
@@ -8547,6 +9860,10 @@ mod tests {
         assert!(selection_said(&[]).is_empty());
     }
 
+    // Only the debug-only passes below use it: egui compiles its
+    // between-pass id check out of a release build. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     /// Draw the results list holding `names`
     fn draw_found<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
@@ -8565,6 +9882,10 @@ mod tests {
         }
     }
 
+    // Only the debug-only passes below use it: egui compiles its
+    // between-pass id check out of a release build. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     /// Draw the selection rows holding `names`
     fn draw_selected<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
@@ -8770,6 +10091,10 @@ mod tests {
     ///
     /// The list stands between the search box and the rows, so clearing it
     /// moves every row up into a rectangle a result line was drawn in.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn clearing_the_results_does_not_change_the_row_ids() {
         let said = crate::tests::between_passes(
@@ -8788,6 +10113,10 @@ mod tests {
     /// the arrangement, and this is what holds it to it: numbered the other
     /// way round, every filter row would land in a rectangle a selection row
     /// was drawn in.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn letting_go_of_the_selection_does_not_change_the_filter_row_ids() {
         let said = crate::tests::between_passes(
@@ -8868,6 +10197,10 @@ mod tests {
     ///
     /// Both ways round it, since a system is let go of from a scrolling list
     /// as easily as it is added to one.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn gathering_past_the_bar_does_not_change_the_filter_row_ids() {
         let held = [
@@ -8900,6 +10233,10 @@ mod tests {
     /// column, so dropping a selection row moves every row under it up by
     /// exactly one. The summary line stays put through this, more than one
     /// system being held either way, so nothing else takes up the slack.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn dropping_one_of_several_does_not_hand_its_place_to_a_filter() {
         let said = crate::tests::between_passes(
@@ -8917,6 +10254,10 @@ mod tests {
     /// that finds nothing says only that nothing was heard, which is not the
     /// same as nothing being said: the listener is installed once per process
     /// and quietly does nothing if something else got there first.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn between_passes_hears_a_real_id_change() {
         let at =
@@ -8940,6 +10281,10 @@ mod tests {
     /// id is taken from the `Ui` it is drawn in. The rows keep their
     /// rectangles across that change, so an id taken from the scroll area's
     /// own `Ui` would be a new id at an old rectangle.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn outgrowing_the_bar_does_not_change_the_row_ids() {
         let five = ["SOL", "BARNARD", "WOLF 359", "LUYTEN", "ROSS 128"];
@@ -8958,6 +10303,10 @@ mod tests {
     ///
     /// Gathering a second system stands a line saying how many over the rows,
     /// which moves every one of them down a line.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn gathering_a_second_system_does_not_change_the_row_ids() {
         let said = crate::tests::between_passes(
@@ -8968,6 +10317,10 @@ mod tests {
         assert!(said.is_empty(), "{said:?}");
     }
 
+    // Only the debug-only passes below use it: egui compiles its
+    // between-pass id check out of a release build. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     /// Drawn filter rows for `names`
     fn draw_filters<'a>(names: &'a [&'a str]) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
@@ -8983,6 +10336,10 @@ mod tests {
         }
     }
 
+    // Only the debug-only passes below use it: egui compiles its
+    // between-pass id check out of a release build. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     /// Drawn filter rows for a faction and `routes` routes
     fn draw_sections<'a>(routes: usize) -> impl FnMut(&mut Ui) + 'a {
         move |ui: &mut Ui| {
@@ -9003,6 +10360,10 @@ mod tests {
     /// rectangle the first route's row was drawn in and moves that row down.
     /// The places are counted across the whole column, so the rectangle keeps
     /// its id and what stands there changes underneath it.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn a_section_gaining_its_count_does_not_change_the_row_ids() {
         let said =
@@ -9012,6 +10373,10 @@ mod tests {
     }
 
     /// And losing it does not either
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn a_section_losing_its_count_does_not_change_the_row_ids() {
         let said =
@@ -9024,6 +10389,10 @@ mod tests {
     ///
     /// The other half of what the bar does when a row goes: the rows below
     /// move up into the rectangle it left.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn dropping_a_filter_is_not_an_id_change() {
         let said = crate::tests::between_passes(
@@ -9040,6 +10409,10 @@ mod tests {
     /// row up one place. Two rows go at once, which is the shape egui reads
     /// as a widget taking another's state if the ids do not follow the
     /// places.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn dropping_to_one_filter_does_not_change_the_row_ids() {
         let said = crate::tests::between_passes(
@@ -9295,6 +10668,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -9427,6 +10801,7 @@ mod tests {
             trip: trip.map(|trip| trip.to_owned()),
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -9437,6 +10812,7 @@ mod tests {
             range: range.to_owned(),
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         }
     }
 
@@ -9505,6 +10881,7 @@ mod tests {
             trip: Some(trip.to_owned()),
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let mut filters = Filters::default();
         filters.add(hops(1, 3));
@@ -9827,6 +11204,7 @@ mod tests {
             trip: Some(trip.to_owned()),
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         };
         let mut filters = Filters::default();
         filters.add(flown("SOL", "LAVE", 3));
@@ -10026,6 +11404,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         });
         let mut panels = Panels::default();
 
@@ -10051,6 +11430,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         });
         let mut panels = Panels::default();
 
@@ -10088,6 +11468,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         });
         let mut panels = Panels::default();
 
@@ -10105,6 +11486,10 @@ mod tests {
     /// fresh search and a replaced selection are both exactly that shape, so
     /// the rows are keyed on where they sit and the ids stay put while what
     /// they are about changes underneath.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::tests::between_passes`].
+    #[cfg(debug_assertions)]
     #[test]
     fn a_list_whose_items_change_is_not_an_id_change() {
         let results = crate::tests::between_passes(
@@ -10562,6 +11947,7 @@ mod tests {
             trip: None,
             drive: Drive::Unaided,
             how: Routing::default(),
+            tune: Tuning::default(),
         });
         let mut panels = Panels::default();
 

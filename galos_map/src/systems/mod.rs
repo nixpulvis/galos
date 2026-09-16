@@ -957,6 +957,7 @@ pub(crate) mod tests {
                 trip: None,
                 drive: Drive::Unaided,
                 how: Routing::default(),
+                tune: route::graph::Tuning::default(),
             },
         );
 

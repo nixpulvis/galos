@@ -118,6 +118,16 @@ pub(crate) enum Search {
         /// How hard to work at it, on the same argument
         how: Routing,
     },
+    /// Stop whatever is being plotted, and ask for nothing
+    ///
+    /// Its own gesture rather than a second meaning for the plot button. A
+    /// click on that used to take back whatever was running, which on a
+    /// trip is wrong twice over: the legs land at different moments, so a
+    /// second click cancelled the ones still searching *and re-asked the
+    /// ones that had already landed* — half a trip stopped and half of it
+    /// started again. And a button whose meaning depends on invisible state
+    /// cannot be read before it is pressed.
+    Stop,
 }
 
 /// The row for a named system a route may run to, or why it may not
@@ -302,6 +312,10 @@ fn searched(
                     stops.iter().find_map(|stop| locate(&names, stop).err());
                 locating.ask((), now, pool.spawn(async move { trouble }));
             }
+            // Nothing to look up: stopping asks for no names and answers
+            // none. What it does to the searches is
+            // [`crate::systems::route::fetch::stop_routes`]'s.
+            Search::Stop => {}
         };
     }
 

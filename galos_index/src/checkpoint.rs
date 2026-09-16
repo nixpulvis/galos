@@ -87,7 +87,7 @@ const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSCKP");
 
 /// The format the records and the header are in. A base that says anything
 /// else is refused.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// What stands in a header or a frame for "no cursor": an event run has no
 /// database clock to record, and a publish that could not read one leaves
@@ -604,6 +604,7 @@ mod tests {
             temperature: 3000.0 + id as f64,
             age_bucket: (id % 8) as u32,
             updated_at: 1_700_000_000 + id as u32,
+            kind: crate::meta::StarKind::G,
         }
     }
 
