@@ -178,26 +178,57 @@ anywhere else.
 
 ## The next steps, in order
 
-### 1. `JumpGraph::STEPS` is the last constant tuned against a 50 Ly ship
+### 1. A gap walk dead-ends at a short jump range, and the cap was not why
 
-A gap walk gives up after **32 steps**, on the reasoning that "a gap is one
-supercharged jump and a few ordinary ones by construction, so a walk that
-has taken this many is wandering". That reasoning is the reach divided by
-the range, and the reach is a distance: at 10 Ly a 500 Ly hop is **47
-jumps**, so *every* wide gap exceeds the cap, the walk gives up, and the
-gap goes to the search — which is the expensive path stepping exists to
-avoid (0.30 s stepped against 2.60 s searched on one Colonia crossing,
-17.9 s for a single gap near the core).
+**The symptom, measured.** Sol to a system 2 kly out, 80% optimality,
+standard drive, with the gaps counted:
 
-What is measured is the symptom: Sol to a system 2 kly out at 10 Ly plots
-495 stops in **896 s** where its coarse plan takes 1.31 s, so the legs are
-essentially all of it. That the step cap is the cause is arithmetic rather
-than an A/B — nothing has yet run the same plot with a scaled cap.
+| range | stops | found in | gaps walked | gaps searched |
+|---|---|---|---|---|
+| 10 Ly | 290 | **13.4 s** | 1 | **6** |
+| 25 Ly | 79 | 5.5 ms | 10 | 0 |
+| 45 Ly | 32 | 7.1 ms | 6 | 0 |
 
-The fix is the shape [`Tuning::reach`] already took: derive the cap from
-the reach in jumps — about `reach / range`, with slack — rather than from
-a constant. The fuel-weighed walk already has its own bound for the same
-reason (`HOPS` = 512, measured against walks of 11–61 steps).
+At 25 and 45 Ly the walk carries every gap and the route is milliseconds;
+at 10 Ly it carries one of seven and the six searches are the whole 13.4 s.
+Sol to Colonia at 10 Ly is the same shape at scale: **1,781 stops in
+2,049 s**, one gap walked and two searched — and those two are enormous,
+the coarse plan having handed over three hops for 22 kly.
+
+**What it is not is `JumpGraph::STEPS`.** The guess was that a gap needs
+`reach / range` steps — 50 at 10 Ly against the constant's 32 — so every
+wide gap was being cut off. Tried: the cap derived from the reach (three
+times the jumps a hop takes, 150 at 10 Ly and 36 at 45) changed **nothing**
+— same 1 gap walked, same 13.4 s — and instrumenting every give-up says
+why. All six are the *progress rule*, never the cap:
+
+```text
+gave up: no closer after  3 steps, 389.4 Ly left
+gave up: no closer after  5 steps, 321.0 Ly left
+gave up: no closer after  7 steps, 402.1 Ly left
+gave up: no closer after 13 steps,  68.0 Ly left
+gave up: no closer after 25 steps, 105.7 Ly left
+gave up: no closer after 50 steps,  78.2 Ly left
+```
+
+A step has to land closer to the far cone than the last, and at 10 Ly a
+sphere that holds nothing nearer is the rule rather than the exception. The
+walk is a beam of width one, and that is what dead-ends.
+
+**Two candidate fixes, and the second is what the measurement argues for.**
+A wider beam is the textbook answer and was tried at eight strands; on this
+corridor it carried the same gaps in the same time, and on a *fuel*-weighed
+walk it is unsound — strands that have spent different amounts are not
+comparable by a per-step price, and one that took a long jump looks cheap
+afterwards (measured on a line of stepping stones: nine stops where width
+one takes all sixteen). The other is to keep the walk's own progress: the
+rows above give up with 68–402 Ly left after 3–50 steps of real ground
+closed, and all of that work is thrown away when the gap goes to the
+search. Handing the search the *remainder* — splice the walked prefix,
+search from its tip — turns six 500 Ly searches into six of 68–402 Ly.
+Unbuilt, and the cheaper of the two by construction.
+
+Nothing was kept from the attempt: the cap is the constant it was.
 
 ### 2. The screen walk is 22–29 ms a frame
 
