@@ -297,6 +297,26 @@ impl Routing {
     /// stays at [`FANOUT`] and says so in the route's own description
     /// ([`Self::named`]) instead of offering a handle that makes things
     /// worse.
+    ///
+    /// **And it is not a setting at a priced hop either, because the form
+    /// does not draw it there.** `Expand nearest` is offered at an
+    /// unpriced hop alone — a priced one takes long jumps and few of them
+    /// — but the count the rail last held travelled along with the ask
+    /// ([`crate::ui::traded`]) and went on biting where nobody could see
+    /// it. Measured over `.index/full` at 45 ly, least fuel at a 5% hop,
+    /// the remembered 64 against the valve:
+    ///
+    /// | corridor | the nearest 64 | [`FANOUT`] |
+    /// |---|---|---|
+    /// | 186 ly out | 47 stops, 0.733 tanks, 206 ms | 49, **0.716**, 487 ms |
+    /// | 700 ly out | 197, 2.225, 6.76 s | 199, **2.206**, 11.6 s |
+    ///
+    /// Two percent of the tank decided by a control that was not on
+    /// screen. At a quarter of the range and up it really is inert — 15
+    /// stops and 1.251 tanks either way — which is what the form was told
+    /// when it stopped drawing the rail, and what made the leak so quiet.
+    /// So the cap applies where it is asked for and the valve holds
+    /// everywhere else.
     fn fanout(&self) -> Option<usize> {
         if !self.approximates() {
             return None;
@@ -304,9 +324,9 @@ impl Routing {
         match self.weigh {
             // Every system in range, which is the top of the setting's own
             // travel and the same graph a proven route searches.
-            Weigh::Fuel { expand: 0, .. } => None,
-            Weigh::Fuel { expand, .. } => Some(expand as usize),
-            Weigh::Jumps | Weigh::Shortest => Some(FANOUT),
+            Weigh::Fuel { hop: 0, expand: 0 } => None,
+            Weigh::Fuel { hop: 0, expand } => Some(expand as usize),
+            Weigh::Fuel { .. } | Weigh::Jumps | Weigh::Shortest => Some(FANOUT),
         }
     }
 
@@ -915,12 +935,19 @@ pub(crate) const HOP: u32 = 50;
 /// nothing was measured, and a setting that sometimes comes back with no
 /// route at all is worse than a slow one.
 ///
-/// **And it is worth anything only at an unpriced hop**, which is the one
-/// place the form offers it. A priced hop takes long jumps and few of
-/// them — nine stops at half the range — and the search is done in under a
-/// millisecond before a cap could save a thing: measured at 1.0x from a
-/// quarter of the range up. Unpriced, what the cap is worth is decided by
-/// how many systems one jump reaches, at 95% over `.index/full`:
+/// **And it is the reader's only at an unpriced hop**, which is the one
+/// place the form offers it — and now the one place it applies, because
+/// the two were not the same thing. A priced hop takes long jumps and few
+/// of them, so from a quarter of the range up a cap really is inert: 15
+/// stops and 1.251 tanks at 64 or at 512, measured. **Under a quarter it
+/// is not**, and the count the rail last held went on deciding two
+/// percent of the tank where nothing on screen said so — 0.733 tanks
+/// against 0.716 at a 5% hop. So [`Routing::fanout`] holds the valve
+/// there instead, and what this number means is exactly what the rail
+/// shows.
+///
+/// Unpriced, what the cap is worth is decided by how many systems one
+/// jump reaches, at 95% over `.index/full`:
 ///
 /// | corridor | in one jump | nearest 8 | nearest 64 | all in range |
 /// |---|---|---|---|---|
@@ -4145,22 +4172,31 @@ mod tests {
             let over = Routing { over: 5, weigh };
             assert!(over.highway(), "{over:?} would not plan coarsely");
             assert_eq!(over.weight(), WHOLE + 5);
-            // And the cap is the weighing's own: a setting where the
-            // reader has one, the fixed valve where a small one would only
-            // make things slower. See [`Routing::fanout`].
+            // And the cap is the weighing's own where the form offers it,
+            // the fixed valve everywhere else — including at a *priced*
+            // hop, where the rail is not drawn and the count it last held
+            // used to go on biting unseen. See [`Routing::fanout`].
             let kept = match weigh {
-                Weigh::Fuel { expand, .. } => expand as usize,
-                Weigh::Jumps | Weigh::Shortest => FANOUT,
+                Weigh::Fuel { hop: 0, expand } => expand as usize,
+                Weigh::Fuel { .. } | Weigh::Jumps | Weigh::Shortest => FANOUT,
             };
             assert_eq!(over.fanout(), Some(kept), "{over:?} did not thin");
         }
 
-        // Nothing asked of a fuel route is every system in range, which is
-        // the graph a proven route searches — so the rail's top stop and
-        // the proven ask meet rather than leaving a gap between them.
-        let all =
-            Routing { over: 5, weigh: Weigh::Fuel { hop: HOP, expand: 0 } };
+        // Nothing asked of an *unpriced* fuel route is every system in
+        // range, which is the graph a proven route searches — so the
+        // rail's top stop and the proven ask meet rather than leaving a
+        // gap between them. A priced hop keeps the valve, the rail not
+        // being drawn there to ask for anything else.
+        let all = Routing { over: 5, weigh: Weigh::Fuel { hop: 0, expand: 0 } };
         assert_eq!(all.fanout(), None, "the rail's top stop still capped");
+        let priced =
+            Routing { over: 5, weigh: Weigh::Fuel { hop: HOP, expand: 0 } };
+        assert_eq!(
+            priced.fanout(),
+            Some(FANOUT),
+            "a priced hop took a cap nobody could see",
+        );
 
         // **And at an unpriced hop the cap is the whole of the promise.**
         // The percent cannot approximate anything there — the estimate is

@@ -3832,14 +3832,21 @@ mod plans {
             "a jumps route was offered a cap it cannot use: {jumps:?}"
         );
 
-        // A priced hop: the percent, and no cap — measured at 1.0x from a
-        // quarter of the range up, the search being over before a cap
-        // could save anything.
+        // A priced hop: the percent, and no cap — inert from a quarter of
+        // the range up, 15 stops and 1.251 tanks at 64 or 512.
         let priced = offered(Weigh::Fuel { hop: 50, expand: EXPAND });
         assert!(says(&priced, "Within"), "no percent at a priced hop");
         assert!(
             !says(&priced, "Expand nearest"),
             "a cap where it measures nothing: {priced:?}"
+        );
+        // And because it is not drawn there it does not apply there: the
+        // count this rail leaves behind used to decide two percent of the
+        // tank at a 5% hop unseen. See [`Routing::fanout`].
+        assert_eq!(
+            Routing::at(95, Weigh::Fuel { hop: 5, expand: 8 }).named(),
+            Routing::at(95, Weigh::Fuel { hop: 5, expand: 1024 }).named(),
+            "a priced hop still reads the cap the rail remembered",
         );
 
         // And unpriced: the cap, and no percent, each for the reason the
@@ -4184,9 +4191,13 @@ fn trading(ui: &mut Ui, how: &mut Routing, jump: Option<f64>) {
 ///   to burn has no positive lower bound, so the estimate it multiplies is
 ///   zero and the rail is provably inert — measured, the identical route
 ///   in the identical time at 100% and 95%.
-/// - `Expand nearest` is drawn *only* there, for the mirror reason: a
-///   priced hop is over in under a millisecond and the cap measures 1.0x
-///   from 25% of the range up, where unpriced it is worth 6 to 8 times.
+/// - `Expand nearest` is drawn *only* there, for the mirror reason: from a
+///   quarter of the range up a cap is inert — 15 stops and 1.251 tanks at
+///   64 or 512 — where unpriced it is worth 6 to 8 times. And because it
+///   is drawn only there, it now *applies* only there: the count the rail
+///   remembered used to travel along with a priced ask and decide two
+///   percent of the tank at a 5% hop with nothing on screen to say so.
+///   See [`Routing::fanout`].
 ///
 /// So the least-fuel end of the trade offers the cap and no percent, and
 /// everywhere else offers the percent and no cap. Offering either where it
@@ -4207,12 +4218,15 @@ fn approximating(ui: &mut Ui, how: &mut Routing) {
     // this weighing's own far end, so the live control stands first.
     //
     // **At an unpriced hop and nowhere else**, which is where the
-    // measurements put it. A priced hop takes long jumps and few of them —
-    // nine stops at half the range — and the search is over in under a
-    // millisecond before a cap could save anything: measured at 1.0x
-    // across the whole rail from 25% up. Unpriced, the same route is
-    // fifty-five short hops and every expansion weighs a thousand
-    // candidates. See [`graph::EXPAND`] for where it bites hardest.
+    // measurements put it and, since they were taken again, where the cap
+    // applies at all. A priced hop takes long jumps and few of them —
+    // nine stops at half the range — and from a quarter of the range up a
+    // cap changes nothing: 15 stops and 1.251 tanks whether it is 64 or
+    // 512. Under that it does change things, which is why the valve rather
+    // than this rail's leftovers holds there ([`Routing::fanout`]).
+    // Unpriced, the same route is fifty-five short hops and every
+    // expansion weighs a thousand candidates. See [`graph::EXPAND`] for
+    // where it bites hardest.
     if let Weigh::Fuel { hop: 0, expand } = how.weigh {
         // **A rail over its own stops, not over the counts.** Doubling
         // each step is what the measurements want — eight is 17x the speed

@@ -60,6 +60,24 @@ reach itself and nobody is asked.
   21.9**, both with the chain they had before, and a corridor that closes
   on the goal never reaches the rule at all — Colonia answers off rung
   zero in 90 ms.
+- **`Expand nearest` keeps its `8`, and stops biting where it is not
+  drawn.** Two questions, both measured at 45 Ly and 95% optimality. The
+  rail's bottom stop earns its place: unpriced, 186 Ly out is 51 stops and
+  0.743 tanks in 121 ms at `8` against 53 and 0.727 in 326 ms at `64` and
+  56 and 0.709 in 2.24 s at `all`, and 700 Ly out is 216/2.221/6.87 s,
+  233/2.184/14.7 s, 241/2.164/55.1 s — about two percent of the tank for
+  two to three times the speed, which is the same shape as the rest of the
+  rail. The other half was not a question but a **leak**: `traded` carries
+  the count along so a trip down the trade rail and back does not lose it,
+  and `fanout` was reading it for every fuel-weighed ask — including the
+  hops where the form does not draw the control. From a quarter of the
+  range up that is genuinely inert (15 stops, 1.251 tanks at 64 or 512,
+  measured), which is why nobody noticed; at a 5% hop it decided **two
+  percent of the tank** — 0.733 tanks against 0.716, and 197 stops against
+  199 on the long corridor. The cap is the reader's where the rail is drawn
+  and the `FANOUT` valve everywhere else now, so the number means what the
+  form shows. The guard's own least-fuel row is unmoved at 170 stops,
+  that ask sitting at a 50% hop where the cap measures nothing.
 - **The exact plan can be paid for.** `Tuning::allowance` drops an exact
   coarse plan that has spent 2,048 expansions, which is what lets the
   `Plan` rail open at exact — and on the corridors where it drops one, the
@@ -262,20 +280,14 @@ frame at 200 M, which is a hard ~35 fps ceiling independent of everything
 above. Not a hitch — a floor. Untouched, and the biggest remaining cost in
 the map.
 
-### 3. Two smaller things, both measured
+### 3. The far rim's start bridge
 
-- **`Expand nearest` is worth 1.0× above a quarter of the range**, so it is
-  drawn only at an unpriced hop. It is worth 18× at the bottom of the trade
-  on a 45 Ly ship and 1.3× on a 25 Ly one, where the sphere barely holds
-  more than the cap. Consider dropping the rail's `8` stop: it buys 2.3× on
-  a long route for +2.6% fuel, and 64 already gets within a fiftieth. And
-  it has a default nobody sees — every other position of the trade carries
-  `EXPAND` = 64 invisibly, which measures 1.0× there and so is harmless,
-  but it is a number the form does not admit to holding.
-- **The far rim has cones that connect to nothing** — the nearest cone to
-  `[0, 0, -20,000]` is 4,378 Ly out and joins no chain at any reach. No gap
-  setting helps there; `START_BRIDGE` is what carries such a start, and
-  whether it does was not measured.
+**The far rim has cones that connect to nothing** — the nearest cone to
+`[0, 0, -20,000]` is 4,378 Ly out and joins no chain at any reach. No gap
+setting helps there; `START_BRIDGE` is what carries such a start, and
+whether it does was not measured. What *is* measured now is what trying
+costs: the ladder stalls 4,574 Ly short of that goal and stops climbing
+after the second rung, 20.9 s of coarse plan before the flat fallback.
 
 ## What the theory says, so nobody re-derives it
 

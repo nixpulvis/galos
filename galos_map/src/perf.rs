@@ -632,6 +632,42 @@
 //! Three to seven times less waiting for the same answer, and nothing at
 //! all where the plan closes — which is every corridor a commander
 //! actually plots.
+//!
+//! ## Measured again, a cap that bit where it was not drawn
+//!
+//! Two questions about `Expand nearest`: whether its `8` stop is worth
+//! keeping, and what the count it leaves behind does at the positions of
+//! the trade where the rail is not drawn. Least fuel at 45 Ly, unaided,
+//! 95% optimality:
+//!
+//! | corridor | nearest 8 | nearest 64 | nearest 1024 | all in range |
+//! |---|---|---|---|---|
+//! | 186 ly out | 51 stops, 0.743 t, 121 ms | 53, 0.727, 326 ms | 56, 0.709, 2.27 s | 56, 0.709, 2.24 s |
+//! | 700 ly out | 216, 2.221, 6.87 s | 233, 2.184, 14.7 s | 241, 2.164, 55.6 s | 241, 2.164, 55.1 s |
+//!
+//! **The `8` stop stays.** Two percent of the tank for two to three times
+//! the speed is the same shape as the rest of the rail, and 1024 against
+//! `all` is the last hundredth of a percent for nothing — which is what
+//! the rail's last two stops have always said.
+//!
+//! **And the count it leaves behind was not inert.** `ui::traded` carries
+//! the cap along so a trip down the rail and back does not lose it, and
+//! `Routing::fanout` was reading it for *every* fuel-weighed ask — at hops
+//! where the form does not draw the control:
+//!
+//! | ask | the nearest 64 | the `FANOUT` valve |
+//! |---|---|---|
+//! | 186 ly, hop 5% | 47 stops, 0.733 t, 206 ms | 49, **0.716**, 487 ms |
+//! | 186 ly, hop 25% | 15, 1.251, 17.8 ms | 15, 1.251, 19.0 ms |
+//! | 186 ly, hop 50% | 9, 2.019, 0.59 ms | 9, 2.019, 0.69 ms |
+//! | 700 ly, hop 5% | 197, 2.225, 6.76 s | 199, **2.206**, 11.6 s |
+//!
+//! From a quarter of the range up it is inert, which is what the form was
+//! told when it stopped drawing the rail there and what made the leak so
+//! quiet — but under that it decided **two percent of the tank** with
+//! nothing on screen to say so. The cap is the reader's where the rail is
+//! drawn and the fixed valve everywhere else now, so what the number means
+//! is what the form shows.
 
 #![cfg(test)]
 
