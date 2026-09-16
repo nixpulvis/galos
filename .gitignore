@@ -38,7 +38,7 @@ galos_catalog/data/*
 /TODO.md
 TODO-*
 
-# Run artifacts: `galos-sky`'s default output, and a sample figure file
-# handed to its `--figures`.
+# `galos-sky`'s default output. The figure file it draws from is *not* here:
+# `galos_sky/figures.fab` is a fixture like `bright.csv` and tracked beside
+# it, being the Plough and Orion over the HIPs that catalog carries.
 /sky.png
-galos_sky/figures.fab

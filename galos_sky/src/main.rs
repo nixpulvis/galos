@@ -100,6 +100,8 @@ struct Cli {
     /// Draw constellation figures from a Stellarium-format lines file: one
     /// constellation per line, an IAU abbreviation, a segment count, then that
     /// many Hipparcos-number pairs. Lines join stars the catalog carries.
+    /// `galos_sky/figures.fab` is the one in the tree: the Plough and Orion,
+    /// over the HIPs `galos_catalog`'s `bright.csv` holds.
     #[arg(long, value_name = "FILE")]
     constellations: Option<PathBuf>,
 
