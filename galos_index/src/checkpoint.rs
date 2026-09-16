@@ -23,7 +23,7 @@
 //! as this machine holds one. [`Checkpoint::read`] maps the file and hands
 //! [`Tree::build`](crate::Tree::build) a `&[System]` pointing into the
 //! mapping: mapped, not decoded, so the inputs cost no heap. Decoding *is*
-//! the allocation. See `TODO-scale.md`.
+//! the allocation.
 //!
 //! The cost is that the file is one machine's, native order and native
 //! layout, and one this build cannot read is refused rather than misread:

@@ -2,7 +2,7 @@
 //!
 //! [`Snapshot::build`] wants every system at once, and what does not fit is
 //! the build rather than the input. So the galaxy is cut into regions, each
-//! built alone, and the pieces joined. See `TODO-scale.md`.
+//! built alone, and the pieces joined.
 //!
 //! A region is a cell and the systems inside it, not a level: one cell at
 //! level 2 can hold half the galaxy. A cut is any set of cells, at any
@@ -437,8 +437,10 @@ mod tests {
     ///
     /// Aggregates are compared for their counts and not their sums: a
     /// rolled-up `f64` depends on the order the merges happened in, which a
-    /// regional build changes by construction. See `TODO-source-sink.md`
-    /// item 5.
+    /// regional build changes by construction. Measured, a whole build and a
+    /// pieced one differ in six low mantissa bytes of `index.bin` and in
+    /// nothing else, and closing that wants order-independent arithmetic
+    /// rather than a sort of the inputs.
     #[test]
     fn a_regional_build_is_the_whole_build() {
         let params = BuildParams::default();

@@ -196,8 +196,8 @@ impl Highway {
             return None;
         }
         // Sorted by cell so a cell's stars are a run of the arrays and a
-        // query reads them in one sweep, which is the layout
-        // `ROUTING-INDEX.md` §3 measured at 1.6x the neighbour query.
+        // query reads them in one sweep, which measured 1.6x the neighbour
+        // query against an address-ordered directory.
         let mut order: Vec<(u64, u32)> = rows
             .iter()
             .enumerate()
@@ -1008,10 +1008,9 @@ fn cell_of(at: [f32; 3]) -> [i32; 3] {
 /// A cell key that sorts the stars into their cells.
 ///
 /// Row-major over the grid rather than Z-ordered: what the sort has to do
-/// is put a cell's stars together, and `ROUTING-INDEX.md` §3 measured
-/// Morton's ordering buying nothing over a directory that is asked for
-/// cells by name. Twenty-one bits an axis holds the galaxy at 250 light
-/// years with room over.
+/// is put a cell's stars together, and Morton's ordering measured nothing
+/// over a directory that is asked for cells by name. Twenty-one bits an
+/// axis holds the galaxy at 250 light years with room over.
 fn key_of(at: [f32; 3]) -> u64 {
     let cell = cell_of(at);
     let bias = |n: i32| (n + (1 << 20)).clamp(0, (1 << 21) - 1) as u64;

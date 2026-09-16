@@ -764,7 +764,7 @@ const SPAWN_BUDGET: usize = 2048;
 /// still wanted again, so the queue holds what the next half-second can
 /// draw rather than everything a view could ever want. Framing a route
 /// across the galaxy offered **two million** in one pass, against a picture
-/// that wanted a few thousand marks — see `TODO-map-scale.md` 3.
+/// that wanted a few thousand marks.
 const QUEUE_CEILING: usize = SPAWN_BUDGET * 32;
 
 /// One system waiting to be drawn

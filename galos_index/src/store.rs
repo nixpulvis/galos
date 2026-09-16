@@ -244,8 +244,8 @@ impl Index {
     /// Write the index file, and nothing else.
     ///
     /// Rewritten whole every time: the aggregates and the rank ranges, a few
-    /// megabytes over today's galaxy. Writing it whole per publish is its own
-    /// item in `TODO-scale.md`.
+    /// megabytes over today's galaxy, and some 73 MB at two hundred million
+    /// systems — written entire on every publish, which is what it costs.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
         fs::write(dir.join(INDEX_FILE), self.to_bytes())

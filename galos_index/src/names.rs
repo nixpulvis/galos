@@ -971,8 +971,10 @@ impl Table {
     /// A prefix is `O(log N)` off `byname.bin` and touches ~28 pages. The
     /// names it no longer finds are the ones with the query in the middle
     /// — `SOL` no longer answers with `NEW SOL` — and the way to have
-    /// those back is a word index, not a scan. See `TODO-map-scale.md`
-    /// item 1f.
+    /// those back is a word index keyed by every word start, not a scan:
+    /// Elite's names run to some four words, so that is ~800 M entries and
+    /// ~6.4 GB mapped at a full galaxy, which wants measuring against how
+    /// much anybody searches mid-name.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<usize> {
         self.rows_starting(needle, limit)
     }

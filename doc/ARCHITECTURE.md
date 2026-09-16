@@ -382,7 +382,7 @@ leaves.
 
 Measured over 2.73 M systems: **1.14 GB peak resident and 98 s** for a full
 build, against **5.19 GB and 162 s** when its reads were buffers rather than
-cursors (`TODO-scale.md`). A watch pass still reads its chunk with
+cursors. A watch pass still reads its chunk with
 `= ANY($1)`: it is bounded by the chunk, and it needs the whole group to say
 which addresses came back with nothing.
 
@@ -664,14 +664,17 @@ say why. The ones worth reading first, in order: `galos_index/src/walk.rs`,
 **`galos_map/README.md`** covers using the map: the mouse gestures, the key
 bindings, and a short account of how it draws.
 
-Longer write-ups exist beside the code and are deliberately **kept out of the
-repository** (see the note in `.gitignore`), so a fresh clone will not have
-them: `galos_map/docs/galaxy.md` (the spatial hierarchy and the level of
-detail, ~2,150 lines), `galos_sky/docs/sky.md` (the photometry, and a record of
-the colour-luminance bug), `galos_index/docs/serving.md` (what serving the
-index over HTTP would take — a plan, not built), `galos_catalog/docs/name_mapping.md`
-(resolving catalog names against Elite's — a plan, not built), `CONTINUE.md`
-(what is mapped and unbuilt) and `galos_map/IDEAS.md`.
+The rest of `doc/` is **kept out of the repository** (see the note in
+`.gitignore`), so a fresh clone holds this file and nothing else beside it:
+`doc/ROUTING-INDEX.md` (the routing-index spike the router grew out of),
+`doc/galaxy.md` (the spatial hierarchy and the level of detail, ~2,150
+lines), `doc/sky.md` (the photometry, and a record of the colour-luminance
+bug), `doc/serving.md` (what serving the index over HTTP would take — a plan,
+not built), `doc/name_mapping.md` (resolving catalog names against Elite's —
+a plan, not built) and `doc/IDEAS.md`. `TODO.md` stays at the root, where it
+is in the way: it is everything still open — including what is designed and
+not built, which `CONTINUE.md` used to hold — with the measurement behind
+each item.
 
 ## Honest notes
 
@@ -711,5 +714,5 @@ beside the working tree, and two of a crate in one graph means two of every
 type in it. Cargo will not say so, so the workflow greps `cargo tree
 --duplicates` for each of them (`.github/workflows/ci.yml`).
 
-See [README.md](./README.md) for prerequisites, database setup and how to run
+See [README.md](../README.md) for prerequisites, database setup and how to run
 each program.

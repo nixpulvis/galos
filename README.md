@@ -16,7 +16,7 @@ own machine, and `galos-sync` reads both into one place: naming the feed and
 the journal together merges the world and the commander as they are written,
 so the map draws the pair out of one directory with no database in the path.
 
-[ARCHITECTURE.md](./ARCHITECTURE.md) is the map of it: what each of the nine
+[doc/ARCHITECTURE.md](./doc/ARCHITECTURE.md) is the map of it: what each of the nine
 crates is for, which way the data runs, what crosses the seam between the
 database and the index, and which module header to open for a given decision.
 

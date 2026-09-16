@@ -1,6 +1,6 @@
 //! The same events through both derivations publish the same galaxy.
 //!
-//! The last thing item 7 of `TODO-source-sink.md` asked for, and the reason
+//! The last thing the source and sink rework asked for, and the reason
 //! `sink/` is in the library rather than in the binary: no integration test
 //! could reach it there.
 //!

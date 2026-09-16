@@ -31,16 +31,21 @@ galos_db/backups/*
 galos_catalog/data/*
 !galos_catalog/data/bright.csv
 
-# Working notes and design write-ups kept beside the code but out of the
-# repository. Listed rather than left merely untracked because a wide
-# `git add` has swept them in before.
-/CLEANUP.md
-/CONTINUE.md
+# Working notes and design write-ups, gathered in one place and kept out of
+# the repository. Listed rather than left merely untracked because a wide
+# `git add` has swept them in before. `ARCHITECTURE.md` is the exception:
+# it describes the code that exists rather than work that does not, and the
+# top-level README points a reader at it.
+/doc/*
+!/doc/ARCHITECTURE.md
+
+# Whatever is open, in whatever shape it is in. Not under `doc/`: a TODO is
+# a scratch file that wants to be in the way, and one collapsed file today
+# is several again the moment a new thread starts.
+/TODO.md
+TODO-*
+
+# `galos-sky`'s default output, and a sample figure file handed to
+# `--figures`. Both are run artifacts rather than sources.
 /sky.png
-galos_map/IDEAS.md
-galos_map/docs/galaxy.md
-galos_index/docs/serving.md
-galos_index/docs/serving.html
-galos_sky/docs/sky.md
 galos_sky/figures.fab
-galos_catalog/docs/name_mapping.md
