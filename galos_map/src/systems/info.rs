@@ -1794,20 +1794,23 @@ impl Scooping {
 /// used, and a line that quoted it would be describing a rung the answer
 /// may not have come from.
 ///
-/// The plan's own percent is what was *asked* for, on the same footing:
-/// an exact plan that spends its allowance is worked leaned instead and
-/// this line cannot tell the two apart. The allowance is a method
-/// safeguard rather than part of the answer's description, and what it is
-/// worth is measured on [`Tuning::allowance`].
+/// The plan's own ask is said in its three forms, because they are three
+/// different answers: a plan leaned by a percent, an exact plan that was
+/// *tried* inside [`Tuning::allowance`] and may have ended up leaned
+/// anyway, and an exact plan that was paid for and therefore is one. The
+/// middle one says "where it was cheap" rather than claiming the chain it
+/// may not have got — which is what this line could not do while the two
+/// exact asks were one setting.
 fn planned_with(filter: &Filter) -> Option<String> {
     let tune = filter.tune()?;
     let crossing = match tune.crossing {
         Crossing::Stepped => "stepped",
         Crossing::Searched => "searched",
     };
-    let plan = match tune.planning {
-        0 => "an exact plan".to_owned(),
-        over => format!("a plan leaned {over}%"),
+    let plan = match (tune.planning, tune.allowance) {
+        (0, None) => "an exact plan".to_owned(),
+        (0, Some(_)) => "an exact plan where it was cheap".to_owned(),
+        (over, _) => format!("a plan leaned {over}%"),
     };
     Some(format!("{plan}, gaps {crossing}"))
 }
@@ -3828,8 +3831,16 @@ mod tests {
         };
         let wide = Tuning { reach: 450, ..Tuning::default() };
 
+        // The exact ask in both its forms, because they are two answers:
+        // one tried inside the allowance and one paid for.
         assert_eq!(
             planned_with(&asked(Drive::Standard, Routing::QUICK, wide))
+                .as_deref(),
+            Some("an exact plan where it was cheap, gaps stepped"),
+        );
+        let paid = Tuning { allowance: None, ..wide };
+        assert_eq!(
+            planned_with(&asked(Drive::Standard, Routing::QUICK, paid))
                 .as_deref(),
             Some("an exact plan, gaps stepped"),
         );

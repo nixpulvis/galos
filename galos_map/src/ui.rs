@@ -44,6 +44,7 @@ use crate::systems::route::frontier::Frontiers;
 use crate::systems::route::graph::{
     self as graph, Crossing, Drive, Routing, Tuning, Weigh,
 };
+use crate::systems::route::highway;
 use crate::systems::route::tour::Shape;
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::selection::{Picked, SELECTION, Selection};
@@ -3614,9 +3615,10 @@ mod plans {
     /// And both remaining settings are drawn
     ///
     /// A fold that opened onto nothing would leave them unreachable. The
-    /// plan's own rail reads `optimal` at the top rather than a
-    /// percentage, that being where it opens and the one stop that is not
-    /// a percentage of anything.
+    /// plan's rail reads its two exact stops by name rather than as
+    /// percentages of anything — `optimal if cheap` is the default, and
+    /// `optimal` is the one that pays for the chain the allowance would
+    /// have dropped.
     #[test]
     fn the_planning_fold_holds_every_setting() {
         let mut tune = Tuning::default();
@@ -3629,8 +3631,16 @@ mod plans {
             );
         }
         assert!(
-            said.iter().any(|line| line == "optimal"),
+            said.iter().any(|line| line == "optimal if cheap"),
             "the plan rail did not say where it stands: {said:?}"
+        );
+
+        // The stop past it, which is the exact plan paid for.
+        let mut paid = Tuning { allowance: None, ..Tuning::default() };
+        let said = words(|ui| planning(ui, &mut paid));
+        assert!(
+            said.iter().any(|line| line == "optimal"),
+            "the paid stop read as the tried one: {said:?}"
         );
 
         // And a leaned plan reads as the percentage it is.
@@ -4346,6 +4356,16 @@ fn bounded(how: &Routing) -> bool {
 /// — it is what [`Weigh::Fuel`] holds for the stop past the last, there
 /// being no count that means "all of them".
 const STOPS: [u32; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
+
+/// What the `Plan` rail offers, and the two asks past the end of it
+///
+/// Percents while a percent is what the plan is leaning by, then the two
+/// exact stops, which are asks rather than numbers: `optimal if cheap`
+/// tries the exact plan inside [`Tuning::allowance`] and takes a leaned
+/// chain where it overruns, and `optimal` pays whatever it costs. Fifty is
+/// the far end because that is EDDA's own coarse weight of 1.5
+/// (`long_range.rs:52-57`) and nothing measured wanted more.
+const PLANS: [u32; 10] = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
 /// How a long supercharged route is planned, asked for beside the route
 ///
 /// Two settings about *method*, where the two controls above are about the
@@ -4391,39 +4411,70 @@ fn planning(ui: &mut Ui, tune: &mut Tuning) {
     // is weighed with. Until this the plan was leaned by the route's own
     // percent with no way to say the one without the other.
     //
-    // **The top stop is the default and the allowance is why it can be.**
-    // Measured over `.index/full` from Sol at 45 Ly against the plan
-    // leaned by the route's own percent: an exact plan buys **nothing to
-    // six percent of the stops** — 156 against 166 on Colonia, 137
-    // against 137 sixteen thousand light years out — and unbounded it
-    // costs two to nineteen times the wait to find out which. So it is
-    // tried rather than promised: [`Tuning::allowance`] drops an exact
-    // pass that has spent 2,048 expansions, which is 40 ms at the worst,
-    // and the plan is worked leaned instead. Measured either way, a
-    // corridor whose exact plan lands answers in 4.3 ms against 4.0 ms.
+    // **Two exact stops, because they are two answers.** Measured over
+    // `.index/full` from Sol at 45 Ly at 80% optimality, leaned against
+    // tried against paid: Colonia is 164 stops in 187 ms, 164 in 98 ms,
+    // and **154 in 2.83 s**; 22 kly out is 174 in 482 ms, 174 in 467 ms,
+    // and **168 in 4.42 s**; and a 2 kly corridor whose exact plan lands
+    // inside the allowance is 32 stops in 4.2 ms whichever of the two is
+    // asked. So `optimal if cheap` tries the exact plan inside
+    // [`Tuning::allowance`] — 2,048 expansions, some 40 ms — and takes a
+    // leaned chain where it runs past that; `optimal` pays for it, which
+    // is three to six percent of the jumps flown for nine to twenty-nine
+    // times the wait.
     //
-    // What the rest of the rail is for is the other direction: a corridor
-    // where even leaning by the route's own percent crawls can be leaned
-    // harder here, which is EDDA's own answer to the same plateau (a
-    // coarse weight of 1.5, `long_range.rs:52-57`).
-    let mut optimality = 100 - tune.planning.min(100);
+    // Before the second stop existed there was no way to ask for that
+    // difference: the rail only leaned *harder* than exact, and an
+    // allowance counted in expansions is not a control.
+    //
+    // And the rest of the rail is the other direction, for a corridor
+    // where even leaning by the route's own percent crawls — EDDA's own
+    // answer to the same plateau is a coarse weight of 1.5
+    // (`long_range.rs:52-57`).
+    //
+    // Stepping through an index rather than over the percentages, as
+    // `Expand nearest` does: the two stops past the end are asks rather
+    // than numbers, and a rail that read `100%` twice would be two
+    // handles for one word.
+    let mut at = match (tune.planning, tune.allowance) {
+        (0, None) => PLANS.len() + 1,
+        (0, Some(_)) => PLANS.len(),
+        (over, _) => PLANS
+            .iter()
+            .position(|&within| within == 100 - over.min(100))
+            .unwrap_or(PLANS.len()),
+    } as f64;
     let plan = ui.add(
-        egui::Slider::new(&mut optimality, 50..=100)
-            .step_by(5.)
-            .custom_formatter(|held, _| match held.round() as u32 {
-                100 => "optimal".to_owned(),
-                within => format!("{within}%"),
+        egui::Slider::new(&mut at, 0.0..=PLANS.len() as f64 + 1.)
+            .step_by(1.)
+            .custom_formatter(|held, _| {
+                match PLANS.get(held.round() as usize) {
+                    Some(within) => format!("{within}%"),
+                    None if held.round() as usize == PLANS.len() => {
+                        "optimal if cheap".to_owned()
+                    }
+                    None => "optimal".to_owned(),
+                }
             })
             .text("Plan"),
     );
     if plan.changed() {
-        tune.planning = 100 - optimality;
+        let asked = at.round() as usize;
+        *tune = Tuning {
+            planning: PLANS.get(asked).map_or(0, |within| 100 - within),
+            allowance: match asked > PLANS.len() {
+                true => None,
+                false => Some(highway::ALLOWANCE),
+            },
+            ..*tune
+        };
     }
     plan.on_hover_text(
         "How near the fewest hops the chain of boost stars has to come. \
-         Optimal is tried first and kept where it lands cheaply — a plan \
-         is a guess about the gaps at any setting, and proving it out is \
-         worth at most a few stops in a hundred. Leaning harder is for a \
+         `optimal if cheap` tries the exact plan and keeps it where it \
+         lands quickly, falling back to a leaned one where it does not; \
+         `optimal` pays for it, which is worth a few stops in a hundred \
+         and can be twenty times the wait. Leaning harder is for a \
          corridor where the cones pile up and the plan crawls.",
     );
 

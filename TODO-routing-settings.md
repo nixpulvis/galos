@@ -48,6 +48,21 @@ reach itself and nobody is asked.
 
 ## Landed this pass
 
+- **The exact plan can be paid for.** `Tuning::allowance` drops an exact
+  coarse plan that has spent 2,048 expansions, which is what lets the
+  `Plan` rail open at exact — and on the corridors where it drops one, the
+  chain it drops is a real answer nothing on the form could ask for.
+  Measured at 45 Ly and 80% optimality, leaned against the bounded try
+  against the same plan paid for: Colonia **164 stops in 187 ms, 164 in
+  98 ms, 154 in 2.83 s**; 22 kly out 174 in 482 ms, 174 in 467 ms, **168
+  in 4.42 s**; and a 2 kly corridor whose exact plan lands inside the
+  allowance 32 stops in 4.2 ms whichever exact stop is asked. Three to six
+  percent of the jumps flown for nine to twenty-nine times the wait. So
+  the allowance is an `Option` and the rail has **two** exact stops —
+  `optimal if cheap`, which may quietly end up leaned, and `optimal`,
+  which pays — because they are two answers, and one word for both left
+  the route panel unable to say which it had. It says it now: "an exact
+  plan where it was cheap" is not the claim "an exact plan" is.
 - **The gap width climbs itself, and the rail is gone.** Asked why the
   reach is never under 400 Ly even at a 10 Ly range: because the cliff is
   a distance, and that much held up — re-measured on whole plans at 10,
@@ -203,18 +218,7 @@ Ly out and joins no chain at any reach.
 `Tuning::stall` is the number that bounds it, and it was measured against
 a single pass rather than against nine.
 
-### 4. The exact chain is not reachable from the form
-
-`Tuning::allowance` drops an exact coarse plan that has spent 2,048
-expansions, and on Colonia the plan it refuses to pay for is **156 stops
-against 166** — six percent of the jumps flown, for 1.90 s against 98 ms.
-Nothing on the form asks for it: the `Plan` rail only leans *harder* than
-exact, and the allowance's unit is expansions, which is not a thing to put
-in front of a reader. Either it wants a stop past the rail's top that
-means "and pay for it", or the answer is that a reader who wants the best
-chain there is ticks nothing and waits for the flat search.
-
-### 5. Two smaller things, both measured
+### 4. Two smaller things, both measured
 
 - **`Expand nearest` is worth 1.0× above a quarter of the range**, so it is
   drawn only at an unpriced hop. It is worth 18× at the bottom of the trade

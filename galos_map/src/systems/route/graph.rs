@@ -519,7 +519,7 @@ pub(crate) struct Tuning {
     /// leaning crawls.
     pub(crate) planning: u32,
     /// Expansions an exact coarse plan may spend before the plan is worked
-    /// leaned instead
+    /// leaned instead, or [`None`] to pay whatever it costs
     ///
     /// The bound that lets [`Self::planning`] open at exact. The exact
     /// pass runs first and is abandoned the moment it has spent this much;
@@ -538,10 +538,25 @@ pub(crate) struct Tuning {
     /// every one of those three answers the same stops it did before,
     /// inside the spread of its own clock.
     ///
-    /// Far under [`Self::stall`], deliberately: the stall rule belongs to
-    /// the pass that has to answer, and an exact pass is abandoned long
-    /// before it could stall.
-    pub(crate) allowance: u64,
+    /// **And [`None`] is a rail stop, because the plan it refuses to pay
+    /// for is a real answer.** Measured at 45 ly and 80% optimality, the
+    /// bounded try against the paid one: Colonia 164 stops in 98 ms
+    /// against **154 in 2.83 s**, 22 kly out 174 in 467 ms against **168
+    /// in 4.42 s**, and a 2 kly corridor whose exact plan lands inside the
+    /// allowance 32 stops in 4.2 ms either way. Three to six percent of
+    /// the jumps flown for nine to twenty-nine times the wait, and the
+    /// reader who wants them had nowhere to ask: the `Plan` rail only
+    /// leans *harder* than exact, and expansions are not a unit to put in
+    /// front of anybody. So the rail's last stop is this at nothing — an
+    /// exact plan, whole, however long it takes — and the stop below it is
+    /// the bounded try that may quietly end up leaned. Two stops because
+    /// they are two answers; one word for both is what left the panel
+    /// unable to say which it had.
+    ///
+    /// Far under [`Self::stall`] where it is set at all, deliberately:
+    /// the stall rule belongs to the pass that has to answer, and a
+    /// bounded exact pass is abandoned long before it could stall.
+    pub(crate) allowance: Option<u64>,
     /// How the jumps that cross one gap of the plan are found
     pub(crate) crossing: Crossing,
 }
@@ -553,7 +568,7 @@ impl Default for Tuning {
             reach: super::highway::GAPS_LY,
             stall: super::highway::STALL,
             planning: 0,
-            allowance: super::highway::ALLOWANCE,
+            allowance: Some(super::highway::ALLOWANCE),
             crossing: Crossing::default(),
         }
     }

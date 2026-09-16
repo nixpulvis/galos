@@ -571,6 +571,34 @@
 //! 645 ms**. Thirty to sixty percent of a plot's milliseconds for two to
 //! three percent of the jumps a commander actually flies, which is the
 //! trade in the right direction.
+//!
+//! ## Measured again, the exact plan the allowance refused to pay for
+//!
+//! `Tuning::allowance` drops an exact coarse plan that has spent 2,048
+//! expansions, which is what lets the `Plan` rail open at exact for 40 ms
+//! of risk — and on the corridors where it drops one, the chain it drops
+//! is a real answer nothing on the form could ask for. Measured at 45 Ly
+//! and 80% optimality, the plan leaned by the route's own percent against
+//! the bounded try against the same plan paid for:
+//!
+//! | corridor | leaned | `optimal if cheap` | `optimal` |
+//! |---|---|---|---|
+//! | Sol → 2 kly | 33 stops, 4.2 ms | 32, 4.2 ms | 32, 4.3 ms |
+//! | Sol → Colonia | 164, 187 ms | 164, 98 ms | **154, 2.83 s** |
+//! | Sol → 22 kly out | 174, 482 ms | 174, 467 ms | **168, 4.42 s** |
+//!
+//! Three to six percent of the jumps flown for nine to twenty-nine times
+//! the wait, and nothing where the exact plan lands inside the allowance
+//! anyway. At 95% optimality the same three corridors read 32/32/32 stops,
+//! 156/156/**154**, and 171/171/**168** — the paid column is the same
+//! chain either way, the route's own percent having nothing to do with the
+//! plan's since `Tuning::planning` split off.
+//!
+//! So `allowance` is an `Option` and the rail has two exact stops rather
+//! than one word for both: `optimal if cheap` tries and may end up leaned,
+//! `optimal` pays. The route panel says which it was — an exact plan
+//! "where it was cheap" is not the same claim as an exact plan — which is
+//! the honesty the single setting could not offer.
 
 #![cfg(test)]
 

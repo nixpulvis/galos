@@ -464,7 +464,7 @@ impl Highway {
     ) -> Planned {
         let asked = tune.weight();
         let leaned = how.weight();
-        let allowance = (asked < leaned).then_some(tune.allowance);
+        let allowance = tune.allowance.filter(|_| asked < leaned);
         match self.coarse(
             from,
             to,
@@ -1351,17 +1351,21 @@ mod tests {
 
         for (what, tune) in [
             // Exact asked for, and not a single expansion to try it in.
-            ("no allowance", Tuning { allowance: 0, ..Tuning::default() }),
-            // Exact asked for, with room to land.
             (
-                "every allowance",
-                Tuning { allowance: u64::MAX, ..Tuning::default() },
+                "no allowance",
+                Tuning { allowance: Some(0), ..Tuning::default() },
             ),
+            // Exact asked for and paid for, which is the rail's last stop.
+            ("paid for", Tuning { allowance: None, ..Tuning::default() }),
             // Leaned harder than the route: the reader's own ask, which
             // the allowance has no say over.
             (
                 "leaned by hand",
-                Tuning { planning: 20, allowance: 0, ..Tuning::default() },
+                Tuning {
+                    planning: 20,
+                    allowance: Some(0),
+                    ..Tuning::default()
+                },
             ),
         ] {
             let plan = highway
