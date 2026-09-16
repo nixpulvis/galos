@@ -433,15 +433,36 @@ impl Highway {
                 watched.as_deref_mut(),
             ) {
                 Planned::Chain(cones) => return Some(cones),
+                // **A rung that comes no closer ends the climb**, which is
+                // the same progress rule [`Tuning::stall`] is one level
+                // down, and it is what keeps a corridor no reach can plan
+                // from paying for all of them. Measured over
+                // `.index/full` at 45 ly, the plan alone, rung by rung:
+                //
+                // ```text
+                // far rim   0: stalled 5,460 Ly, 6.19 s
+                //           1: stalled 4,574 Ly, 7.74 s
+                //         2-8: stalled 4,574 Ly, 48 s for nothing
+                // under     0: stalled 6,090 Ly, 1.40 s
+                //         1-8: stalled 6,090 Ly, 20 s for nothing
+                // ```
+                //
+                // So the far rim is 21 s against 63 and the corridor
+                // under the disc 3.0 s against 21.9, both keeping the
+                // chain they kept before — and a corridor that closes on
+                // the goal never gets here, Colonia answering off rung
+                // zero in 89 ms.
                 Planned::Stalled { cones, closest: came } => {
-                    if came < closest {
-                        closest = came;
-                        stalled = cones;
+                    if came >= closest {
+                        break;
                     }
+                    closest = came;
+                    stalled = cones;
                 }
                 // Nothing reached at this reach: a wider scan may still
                 // find a cone the narrower one could not, so the ladder
-                // goes on.
+                // goes on. It is the cheap answer too — a start with no
+                // cone in reach empties the heap at once.
                 Planned::Nothing | Planned::Spent => {}
             }
         }

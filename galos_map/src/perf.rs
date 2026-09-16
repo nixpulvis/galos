@@ -599,6 +599,39 @@
 //! `optimal` pays. The route panel says which it was — an exact plan
 //! "where it was cheap" is not the same claim as an exact plan — which is
 //! the honesty the single setting could not offer.
+//!
+//! ## Measured again, what the reach ladder cost where no rung works
+//!
+//! The ladder tries a wider gap where a plan does not close on the goal,
+//! up to eight rungs, and it was unbounded on the corridors where none of
+//! them can plan: each rung pays its own stall allowance first. Measured
+//! at 45 Ly, the coarse plan alone, rung by rung:
+//!
+//! ```text
+//! far rim [0, 0, -20,000]   0: stalled 5,460 Ly, 6.19 s
+//!                           1: stalled 4,574 Ly, 7.74 s
+//!                         2-8: stalled 4,574 Ly, 48 s for nothing
+//! under the disc [0, -8,000, 0]
+//!                           0: stalled 6,090 Ly, 1.40 s
+//!                         1-8: stalled 6,090 Ly, 20 s for nothing
+//! Sol → Colonia             0: chain of 131, 89.7 ms
+//! ```
+//!
+//! Seven rungs of the far rim and eight of the corridor under the disc
+//! came back at **exactly the same distance** as the rung below them —
+//! wider hops over a chain of cones that does not reach the goal at any
+//! width. So a rung that comes no closer ends the climb, which is the
+//! same progress rule `Tuning::stall` is one level down:
+//!
+//! | corridor | before | after | chain |
+//! |---|---|---|---|
+//! | far rim | 63.1 s | **20.9 s** | 84 cones, unchanged |
+//! | under the disc | 21.9 s | **3.04 s** | 19 cones, unchanged |
+//! | Sol → Colonia | 89.4 ms | 90.8 ms | 131 cones, off rung zero |
+//!
+//! Three to seven times less waiting for the same answer, and nothing at
+//! all where the plan closes — which is every corridor a commander
+//! actually plots.
 
 #![cfg(test)]
 

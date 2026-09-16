@@ -48,6 +48,18 @@ reach itself and nobody is asked.
 
 ## Landed this pass
 
+- **The ladder stops where it stops getting closer.** Each rung pays its
+  own stall allowance before the next is tried, so a corridor no reach can
+  plan was paying for all nine. Measured at 45 Ly, the plan alone, rung by
+  rung: the far rim stalls 5,460 Ly out at rung 0 and 4,574 at rung 1, and
+  then **rungs 2 to 8 all stall at exactly 4,574** — 48 s for nothing; the
+  corridor under the disc stalls at 6,090 Ly on every one of nine rungs,
+  20 s of it for nothing. So a rung that comes no closer ends the climb,
+  which is the progress rule `Tuning::stall` already is one level down:
+  the far rim is **20.9 s against 63.1**, under the disc **3.04 s against
+  21.9**, both with the chain they had before, and a corridor that closes
+  on the goal never reaches the rule at all — Colonia answers off rung
+  zero in 90 ms.
 - **The exact plan can be paid for.** `Tuning::allowance` drops an exact
   coarse plan that has spent 2,048 expansions, which is what lets the
   `Plan` rail open at exact — and on the corridors where it drops one, the
@@ -250,19 +262,7 @@ frame at 200 M, which is a hard ~35 fps ceiling independent of everything
 above. Not a hitch — a floor. Untouched, and the biggest remaining cost in
 the map.
 
-### 3. What the ladder costs where no rung works
-
-A rung that does not close on the goal pays its stall allowance before the
-next is tried — measured at 1.0–1.3 s on the 2 kly corridor at 405 Ly — so
-a corridor no reach can plan now pays up to nine of those before the flat
-galaxy-wide fallback it used to reach immediately. Unmeasured, and the far
-rim is where to measure it: the nearest cone to `[0, 0, -20,000]` is 4,378
-Ly out and joins no chain at any reach.
-
-`Tuning::stall` is the number that bounds it, and it was measured against
-a single pass rather than against nine.
-
-### 4. Two smaller things, both measured
+### 3. Two smaller things, both measured
 
 - **`Expand nearest` is worth 1.0× above a quarter of the range**, so it is
   drawn only at an unpriced hop. It is worth 18× at the bottom of the trade
