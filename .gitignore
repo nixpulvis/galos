@@ -1,35 +1,28 @@
-**/dumps
+# Build output, editor litter, and the one file with credentials in it.
 **/target
 *~
 *.swp
 .env
-galos_db/backups/*
-.galos_index
-# An index written under another name, which is what `--index DIR`
-# invites, and the lock a run takes beside whichever it writes. A built
-# directory is derived and large, and a lock is one process's claim on it;
-# none of it belongs here. Named one at a time on purpose: a glob over
-# `*.lock` would take `Cargo.lock` with it.
-.galos_index.lock
-.galos_journal_index
-.galos_journal_index.lock
-/my_index
-/my_index.lock
-# Where a build under test is put when several are wanted at once:
-# `--index .index/NAME`, each with its own lock and resume point beside
-# it.
-/.index
-# A resume point is named after the directory it resumes, so an index
-# written anywhere but the default carries its own. The bare
-# `.galos_checkpoint` is what runs older than that wrote.
-*.checkpoint
-*.checkpoint.pending
-.galos_checkpoint*
-# Catalogs are downloaded and handed to `galos-catalog` as a path, not
-# vendored. `bright.csv` is the exception: it is `include_str!`d as the
-# fixture the consistency and comparison tests read, so it stays.
+
+# Downloaded, not vendored: a dump or a catalog is handed to a command as a
+# path (`--from spansh=FILE`, `galos-catalog PATH`) and a database backup is
+# whatever `pg_dump` was pointed at. `bright.csv` is the exception, being
+# `include_str!`d as the fixture the photometry tests read.
+**/dumps
+*.dump
+galos_db/backup*/
 galos_catalog/data/*
 !galos_catalog/data/bright.csv
+
+# A built index is derived and large, the lock beside it is one process's
+# claim on it, and the resume point is named after whichever directory it
+# resumes -- `.checkpoint`, and the `.pending`, `.mark` and `.rows` a build
+# leaves next to one. `.galos_index` is the default and `.index/NAME` is
+# where a build under test goes; anything else `--index DIR` writes wants a
+# line of its own. Never a bare `*.lock` glob: it would take `Cargo.lock`.
+/.galos_index*
+/.index
+*.checkpoint*
 
 # Working notes and design write-ups, gathered in one place and kept out of
 # the repository. Listed rather than left merely untracked because a wide
@@ -45,7 +38,7 @@ galos_catalog/data/*
 /TODO.md
 TODO-*
 
-# `galos-sky`'s default output, and a sample figure file handed to
-# `--figures`. Both are run artifacts rather than sources.
+# Run artifacts: `galos-sky`'s default output, and a sample figure file
+# handed to its `--figures`.
 /sky.png
 galos_sky/figures.fab
