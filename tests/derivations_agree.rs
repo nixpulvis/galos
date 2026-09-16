@@ -52,7 +52,7 @@ use galos_db::testing::Scratch;
 use galos_db::Database;
 use galos_index::meta::{Boost, PopulatedSystem, SystemBodies};
 use galos_index::{FsSource, Source as _};
-use spansh::galaxy::System;
+use spansh::System;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

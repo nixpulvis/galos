@@ -20,26 +20,34 @@
 //! Were a dump ever to arrive as one long line, [`Lines`] would read the
 //! whole file into memory.
 //!
-//! The two forms of a system are two modules. [`systems`] is the brief
-//! one, which `systems.json` and its dated slices hold; [`galaxy`] is the
-//! full one, which `galaxy.json` and its dated slices hold. They share the
-//! framing and nothing else: the full form spells the system's update time
-//! `date`, carries no `mainStar`, and hangs a body on the system for every
-//! star, planet and barycentre anybody has looked at.
+//! **One system, however much of it a given file carries.** Spansh
+//! publishes the same object twice over: `systems.json` states a name, a
+//! place and the prose for the star at the middle, and `galaxy.json`
+//! states that with the system's standing and every body anybody has
+//! looked at hung off it. The schema says so itself — everything but the
+//! address, the name, the place and the time is optional — so the reader
+//! does not ask which file it was handed and the caller does not either.
+//! The one difference that is not an absence is the spelling of the
+//! system's own time, `updateTime` in the brief file and `date` in the
+//! full one, which is one serde alias.
+//!
+//! What a system says it does not know reads as [`None`], the same
+//! whether the file never carries it or this copy has not been scanned:
+//! [`System::class`] answers off the prose where there is prose and off
+//! the arrival star where there are bodies, and [`System::scans`] is
+//! empty where there are none.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek};
 use std::path::Path;
 
-/// One system as the full dump gives it, and the scans it stands for.
-pub mod galaxy;
 /// Translating the dump's prose for a star class into the game's own.
 pub mod star;
-/// One system as the brief dump gives it.
-pub mod systems;
+/// One system as a dump gives it, and the scans it stands for.
+pub mod system;
 
 pub use star::class_of;
-pub use systems::System;
+pub use system::{Body, Kind, System};
 
 /// How much of the file to hold while a line is being found.
 ///
@@ -129,126 +137,45 @@ impl Lines {
     }
 }
 
-/// Which of the two forms a dump is in.
+/// Every system of a dump, parsed — whichever dump it is.
 ///
-/// They are told apart by the fields that are not in both: the full form
-/// spells the system's own time `date` and hangs `bodies` off it, where
-/// the brief form has `updateTime` and no bodies at all. A body of the
-/// full form carries an `updateTime` of its own, so the tell for the
-/// brief form is that field *and* neither of the other two.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Form {
-    /// `systems.json` and its dated slices: [`System`].
-    Brief,
-    /// `galaxy.json` and its dated slices: [`galaxy::System`].
-    Full,
-}
-
-impl Form {
-    /// The form an object's text is in, or [`None`] where it says
-    /// neither.
-    fn of(text: &str) -> Option<Form> {
-        match text.contains("\"bodies\":") || text.contains("\"date\":") {
-            true => Some(Form::Full),
-            false => text.contains("\"updateTime\":").then_some(Form::Brief),
-        }
-    }
-
-    /// What to say about a line that will not parse as this form.
-    ///
-    /// The brief reader over a full dump fails on line 1 with `missing
-    /// field `updateTime``, which says nothing about which file is in
-    /// hand — and these two are named alike, published together and tens
-    /// of gigabytes each, so that is the mistake to expect rather than a
-    /// corrupt line.
-    fn mistaken(self, text: &str) -> Option<&'static str> {
-        match (self, Form::of(text)?) {
-            (Form::Brief, Form::Full) => {
-                Some("this is a full dump; read it with `Galaxy`")
-            }
-            (Form::Full, Form::Brief) => {
-                Some("this is a brief dump; read it with `Systems`")
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Which form the dump at `path` is in, off its first object, or [`None`]
-/// for a file with no object in it at all.
-pub fn form(path: &Path) -> io::Result<Option<Form>> {
-    Ok(Lines::open(path)?.next()?.and_then(Form::of))
-}
-
-/// The next object of `lines` as a `T`, naming the line and the form when
-/// it will not parse.
-fn next_as<T: serde::de::DeserializeOwned>(
-    lines: &mut Lines,
-    form: Form,
-) -> io::Result<Option<T>> {
-    let at = lines.at() + 1;
-    let Some(text) = lines.next()? else {
-        return Ok(None);
-    };
-    serde_json::from_str(text).map(Some).map_err(|err| {
-        io::Error::other(match form.mistaken(text) {
-            Some(hint) => format!("line {at}: {err} — {hint}"),
-            None => format!("line {at}: {err}"),
-        })
-    })
-}
-
-/// Every system of a `systems.json`, parsed.
-///
-/// The brief form: a name, a place, the class of the main star and when the
-/// system was last heard about. 34.9 GB rather than 610.4 GB.
-pub struct Systems {
+/// `systems.json`, `galaxy.json` and their dated slices all read through
+/// this, because they are one object with more or less of it filled in.
+/// What a brief file does not carry comes back as [`None`] and an empty
+/// [`System::bodies`].
+pub struct Dump {
     lines: Lines,
 }
 
-impl Systems {
-    /// Open a `systems.json`.
-    pub fn open(path: &Path) -> io::Result<Systems> {
-        Ok(Systems { lines: Lines::open(path)? })
+impl Dump {
+    /// Open a dump.
+    pub fn open(path: &Path) -> io::Result<Dump> {
+        Ok(Dump { lines: Lines::open(path)? })
     }
 
     /// The next system, or [`None`] at the end.
     ///
-    /// A line that will not parse is an error naming the line it was on, so
-    /// the caller decides whether one bad row ends the read.
+    /// A line that will not parse is an error naming the line it was on,
+    /// so the caller decides whether one bad row ends the read.
     pub fn next(&mut self) -> io::Result<Option<System>> {
-        next_as(&mut self.lines, Form::Brief)
+        let at = self.lines.at() + 1;
+        let Some(text) = self.lines.next()? else {
+            return Ok(None);
+        };
+        serde_json::from_str(text)
+            .map(Some)
+            .map_err(|err| io::Error::other(format!("line {at}: {err}")))
     }
 
     /// Which line the reader is on.
     pub fn at(&self) -> u64 {
         self.lines.at()
     }
-}
 
-/// Every system of a `galaxy.json`, parsed.
-///
-/// The full form: the same system with its standing and every body anybody
-/// has looked at hung off it. What [`galaxy::System::scans`] turns into the
-/// entries the rest of the ecosystem is fed.
-pub struct Galaxy {
-    lines: Lines,
-}
-
-impl Galaxy {
-    /// Open a `galaxy.json`.
-    pub fn open(path: &Path) -> io::Result<Galaxy> {
-        Ok(Galaxy { lines: Lines::open(path)? })
-    }
-
-    /// The next system, or [`None`] at the end.
-    pub fn next(&mut self) -> io::Result<Option<galaxy::System>> {
-        next_as(&mut self.lines, Form::Full)
-    }
-
-    /// Which line the reader is on.
-    pub fn at(&self) -> u64 {
-        self.lines.at()
+    /// How much of the file has been read, in bytes, which is always a
+    /// line boundary. What [`Lines::open_at`] takes to carry on from.
+    pub fn bytes(&self) -> u64 {
+        self.lines.bytes()
     }
 }
 
@@ -256,11 +183,12 @@ impl Galaxy {
 ///
 /// `schema/{systems,galaxy}.schema.json` are Spansh's own, copied from
 /// <https://docs.spansh.co.uk/schema/> unedited. They are here because
-/// three of this crate's lists — the star classes, the planet classes and
-/// the fields each form is told apart by — *are* the schema, and a list
-/// transcribed by hand goes stale the day the format moves and says
-/// nothing: a class missed drops a whole family of star to the fallback,
-/// silently, over the whole galaxy.
+/// two of this crate's lists — the star classes and the planet classes —
+/// *are* the schema, and a list transcribed by hand goes stale the day
+/// the format moves and says nothing: a class missed drops a whole
+/// family of star to the fallback, silently, over the whole galaxy. The
+/// third thing they pin is that [`System`] is enough for both files: its
+/// only required fields are the ones both schemas require.
 ///
 /// So the tests read the file. Refreshing it from the site is how this
 /// crate finds out the format moved, and a refresh that adds a value
@@ -290,24 +218,24 @@ pub(crate) mod schema {
         schema["items"].clone()
     }
 
-    /// What a form's schema says an object cannot be without.
-    pub fn required(form: &Value) -> Vec<String> {
-        strings(&form["required"])
+    /// What a file's schema says an object cannot be without.
+    pub fn required(of: &Value) -> Vec<String> {
+        strings(&of["required"])
     }
 
-    /// Every value `mainStar` may take in the brief form: the prose for a
-    /// star, and for the planet or barycentre a ship can arrive at
+    /// Every value `mainStar` may take in the brief file: the prose for
+    /// a star, and for the planet or barycentre a ship can arrive at
     /// instead.
     pub fn main_stars() -> Vec<String> {
         strings(&systems()["properties"]["mainStar"]["enum"])
     }
 
-    /// Every value a body's `subType` may take in the full form, by the
+    /// Every value a body's `subType` may take in the full file, by the
     /// arm of the `anyOf` it belongs to — `"Planet"` or `"Star"`, as the
     /// schema's own descriptions spell them.
     ///
-    /// The two arms are shorter than [`main_stars`]: the full form lists
-    /// 43 stars where the brief form's `mainStar` lists the same classes
+    /// The two arms are shorter than [`main_stars`]: the full file lists
+    /// 43 stars where the brief file's `mainStar` lists the same classes
     /// and the eighteen planets together.
     pub fn sub_types(kind: &str) -> Vec<String> {
         let body = galaxy()["properties"]["bodies"]["items"].clone();
@@ -341,37 +269,58 @@ pub(crate) mod schema {
 mod tests {
     use super::*;
 
-    /// The fields a dump is told apart by are the fields its schema says
-    /// it cannot be without.
+    /// One [`System`] is enough for both files, and the schemas are what
+    /// says so: what either requires, this type requires, and everything
+    /// else it may leave out.
     ///
-    /// [`Form::of`] rests on exactly this: were `bodies` to become
-    /// optional, or the brief form to grow a `date`, the sniff would start
-    /// answering the wrong form for a whole file and nothing else here
-    /// would notice.
+    /// The whole of the difference is two spellings of one field. Were
+    /// the brief file to start requiring something the full one does not,
+    /// or either to require a field this reads as optional, a line would
+    /// arrive with nowhere to put it and only this would notice.
     #[test]
-    fn each_form_requires_what_it_is_told_apart_by() {
+    fn one_system_is_enough_for_either_file() {
         let brief = schema::required(&schema::systems());
         let full = schema::required(&schema::galaxy());
 
+        // What both demand, which is what this type demands.
+        for shared in ["id64", "name", "coords"] {
+            assert!(brief.contains(&shared.to_string()), "{brief:?}");
+            assert!(full.contains(&shared.to_string()), "{full:?}");
+        }
+        // And the one field spelled two ways, each required of its own
+        // file and of neither the other.
         assert!(brief.contains(&"updateTime".to_string()), "{brief:?}");
-        assert!(!brief.contains(&"date".to_string()), "{brief:?}");
-        assert!(!brief.contains(&"bodies".to_string()), "{brief:?}");
-
         assert!(full.contains(&"date".to_string()), "{full:?}");
-        assert!(full.contains(&"bodies".to_string()), "{full:?}");
+        assert!(!brief.contains(&"date".to_string()), "{brief:?}");
+        assert!(!full.contains(&"updateTime".to_string()), "{full:?}");
+
+        // Nothing else is required of either file, so nothing else may be
+        // anything but optional here.
+        let optional = |it: &String| {
+            !["id64", "name", "coords", "updateTime", "date"]
+                .contains(&it.as_str())
+        };
+        assert_eq!(brief.iter().filter(|it| optional(it)).count(), 0);
+        assert_eq!(
+            full.iter().filter(|it| optional(it)).collect::<Vec<_>>(),
+            vec!["bodies"],
+            "the full file requires something this reads as optional",
+        );
     }
 
-    /// And an object of either form reads as the form it is.
+    /// The least either file can say still reads, and reads the same.
     #[test]
-    fn an_object_says_which_form_it_is() {
-        let brief = r#"{"id64":1,"name":"N","coords":{"x":0,"y":0,"z":0},"updateTime":"2020-01-01T00:00:00Z"}"#;
-        let full = r#"{"id64":1,"name":"N","coords":{"x":0,"y":0,"z":0},"date":"2020-01-01T00:00:00Z","bodies":[{"bodyId":1,"name":"N A","updateTime":"2020-01-01T00:00:00Z"}]}"#;
+    fn the_least_either_file_can_say_reads() {
+        let brief = r#"{"id64":1,"name":"N","coords":{"x":1,"y":2,"z":3},"updateTime":"2020-01-01T00:00:00Z"}"#;
+        let full = r#"{"id64":1,"name":"N","coords":{"x":1,"y":2,"z":3},"date":"2020-01-01T00:00:00Z","bodies":[]}"#;
 
-        assert_eq!(Form::of(brief), Some(Form::Brief));
-        assert_eq!(Form::of(full), Some(Form::Full));
-        // A body of the full form carries an `updateTime` of its own, so
-        // that field alone cannot be the brief form's tell.
-        assert!(full.contains("\"updateTime\""));
-        assert_eq!(Form::of(r#"{"id64":1}"#), None);
+        let brief: System = serde_json::from_str(brief).expect("the brief");
+        let full: System = serde_json::from_str(full).expect("the full");
+
+        assert_eq!(brief.update_time, full.update_time);
+        assert_eq!(brief.coords, full.coords);
+        assert!(brief.bodies.is_empty() && full.bodies.is_empty());
+        assert_eq!(brief.class(), None);
+        assert_eq!(full.class(), None);
     }
 }

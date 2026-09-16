@@ -861,7 +861,7 @@ fn cold(
 
     // Every table the dump can fill, read back off the rows the read
     // spilled and written in address order. Not the factions: the dump's
-    // own faction lists are passed over by `spansh::galaxy::System`, and
+    // own faction lists are passed over by `spansh::System`, and
     // nothing reading records could number a faction anyway — an empty
     // table would say the galaxy has none where an absent one says this
     // index cannot tell.

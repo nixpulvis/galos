@@ -1,10 +1,13 @@
-//! Reading a `galaxy.json`, over lines cut out of the real file.
+//! Reading a dump, over lines cut out of the real files.
 //!
-//! `galaxy.json` is five systems and the array's own punctuation: a triple
-//! star round a barycentre, a system nobody has looked into, a system
-//! holding a star nobody has measured, a red dwarf with twelve planets and
-//! a gas giant, and a populated one. Between them they carry every shape
-//! the mapping has to answer for.
+//! One reader and one [`System`] for both of Spansh's files, so both
+//! fixtures are read the same way here. `galaxy.json` is five systems of
+//! the full file and the array's own punctuation: a triple star round a
+//! barycentre, a system nobody has looked into, a system holding a star
+//! nobody has measured, a red dwarf with twelve planets and a gas giant,
+//! and a populated one. Between them they carry every shape the mapping
+//! has to answer for. `systems.json` is three systems of the brief file,
+//! which says a fraction of that about each.
 //!
 //! `galaxy_twins.json` is the two systems that carry one star twice; see
 //! [`one_star_listed_twice_is_one_star`].
@@ -14,8 +17,7 @@ use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::entry::Event;
 use elite_journal::system::Security;
 use elite_journal::{Allegiance, Government};
-use spansh::galaxy::System;
-use spansh::Lines;
+use spansh::{Dump, System};
 use std::path::Path;
 
 /// Every system of the five-system fixture, in the file's order.
@@ -27,17 +29,10 @@ fn fixture() -> Vec<System> {
 fn read(fixture: &str) -> Vec<System> {
     let path =
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/")).join(fixture);
-    let mut lines = Lines::open(&path).expect("the fixture opens");
+    let mut dump = Dump::open(&path).expect("the fixture opens");
     let mut systems = Vec::new();
-    loop {
-        let at = lines.at() + 1;
-        let Some(text) = lines.next().expect("the fixture reads") else {
-            break;
-        };
-        systems.push(
-            serde_json::from_str(text)
-                .unwrap_or_else(|err| panic!("line {at}: {err}")),
-        );
+    while let Some(system) = dump.next().expect("the fixture reads") {
+        systems.push(system);
     }
     systems
 }
@@ -101,30 +96,57 @@ fn a_stars_class_is_the_games_token() {
     assert_eq!(scan.star_pos, Some(system.coords));
 }
 
-/// The full form names the star a ship arrives at, and it is the same
-/// answer the brief form's `mainStar` gives for the same system.
+/// One reader, one type, either file — and the same questions answered
+/// off each, from whichever of the two things a file states.
 ///
-/// The flag is the dump's, not a rule of ours: the body carrying
-/// `mainStar: true` is the one, whatever its number or its distance.
+/// The class is the point: the brief file says it in prose on the
+/// system, the full file says it by flagging a body, and neither the
+/// caller nor the reader is told which file it has.
 #[test]
-fn the_main_star_is_the_one_the_dump_flags() {
-    let systems = fixture();
+fn either_file_answers_the_same_questions() {
+    let full = fixture();
+    let brief = read("systems.json");
 
-    let dwarf = &systems[named(&systems, "Phua Scrua AA-A h1")];
-    let class = dwarf.class().expect("a red dwarf has a class");
-    assert_eq!(class.token(), "M");
+    // The full file: a flagged body, no prose, and the class off the body.
+    let dwarf = &full[named(&full, "Phua Scrua AA-A h1")];
+    assert_eq!(dwarf.main_star, None);
     assert_eq!(
-        dwarf.main_star().map(|body| body.name.as_str()),
+        dwarf.arrival().map(|body| body.name.as_str()),
         Some("Phua Scrua AA-A h1"),
     );
+    assert_eq!(dwarf.class().expect("a red dwarf has a class").token(), "M",);
+    assert_eq!(dwarf.update_time.to_rfc3339(), "2026-09-04T16:52:50+00:00");
 
-    // A system nobody has looked into has no bodies, so no arrival star
-    // and no class -- which is not the same answer as a system whose
-    // middle is a planet, and the tally of a read tells the two apart.
-    let empty = &systems[named(&systems, "Traikoa EG-Y g0")];
+    // The brief file: prose, no bodies, and the same kind of answer. Its
+    // `updateTime` is the `date` of the other file under another name.
+    let hole = &brief[named(&brief, "Cygni X-3")];
+    assert_eq!(hole.main_star.as_deref(), Some("Black Hole"));
+    assert!(hole.bodies.is_empty());
+    assert!(hole.arrival().is_none());
+    assert_eq!(hole.class().expect("a black hole has a class").token(), "H");
+    assert_eq!(hole.update_time.to_rfc3339(), "2026-07-27T13:33:12+00:00");
+    assert_eq!(hole.id64, 688319);
+    assert_eq!(hole.coords.x, -36417.71875);
+
+    // Read in the file's order either way, since a bulk build reads a
+    // dump once and in one direction.
+    assert!(brief[0].id64 < brief[1].id64 && brief[1].id64 < brief[2].id64);
+
+    // A system nobody has looked into says nothing about its middle, in
+    // either file, and that is not the same answer as a planet there.
+    let empty = &full[named(&full, "Traikoa EG-Y g0")];
     assert!(empty.bodies.is_empty());
-    assert!(empty.main_star().is_none());
+    assert!(empty.arrival().is_none());
+    assert_eq!(empty.main_star, None);
     assert_eq!(empty.class(), None);
+}
+
+/// A dump that is not there is an error and not a panic.
+#[test]
+fn a_missing_dump_is_an_error() {
+    let missing =
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/nope.json"));
+    assert!(Dump::open(missing).is_err());
 }
 
 #[test]

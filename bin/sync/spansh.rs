@@ -344,7 +344,7 @@ impl Reading {
             // One line nothing can parse is one system missed rather than a
             // run ended: a file this size is not going to be read again for
             // it.
-            let system: spansh::galaxy::System =
+            let system: spansh::System =
                 match serde_json::from_str(text) {
                     Ok(system) => system,
                     Err(err) => {
@@ -394,7 +394,7 @@ impl Reading {
 /// accumulator directly. Two of these that had drifted apart would be two
 /// directories that disagree about the political columns of every system in
 /// the galaxy.
-fn reported(system: spansh::galaxy::System) -> SystemReport {
+fn reported(system: spansh::System) -> SystemReport {
     SystemReport {
         name: Some(SystemName::new(system.name)),
         position: Some(system.coords),

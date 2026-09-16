@@ -64,18 +64,27 @@ const AU: f64 = 149_597_870_700.;
 /// materials are percentages in both.
 const PERCENT: f64 = 0.01;
 
-/// A system in the full dump: where it is, how it is run, and what is in
-/// it.
+/// A system as a dump gives it: where it is, how it is run, and what is
+/// in it.
 ///
-/// The dump's own field names are kept, save that its `date` is the system
-/// [`System::update_time`] to go with each body's own. Its standing is
-/// read into `elite_journal`'s enums, which spell every value the schema
-/// lists.
+/// **One type for both files.** `systems.json` fills in the address, the
+/// name, the place, the time and the prose for the star at the middle;
+/// `galaxy.json` fills in the standing as well and hangs a [`Body`] on
+/// the system for every star, planet and barycentre anybody has looked
+/// at. Everything the brief file leaves out is what the schema itself
+/// leaves out of `required`, so it is [`None`] or empty here and no
+/// caller has to know which file it came from.
+///
+/// The dump's own field names are kept. The one spelling that differs
+/// between the files is the system's own time — `updateTime` in the
+/// brief file and `date` in the full one — which is an alias and not a
+/// second field: both mean when anything in the system was last heard
+/// about.
 ///
 /// Only what has a home downstream is read. The schema declares
 /// `additionalProperties: false`, so a field this does not want -- a
-/// system's `stations`, `factions`, `powers`, `thargoidWar` -- is passed
-/// over.
+/// system's `stations`, `factions`, `powers`, `thargoidWar`, the brief
+/// file's `needsPermit` -- is passed over.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct System {
@@ -84,8 +93,13 @@ pub struct System {
     pub name: String,
     pub coords: Coordinate,
     /// When anything in the system was last heard about, in UTC.
-    #[serde(rename = "date")]
+    #[serde(alias = "date")]
     pub update_time: DateTime<Utc>,
+    /// The class of the star at the middle, as the brief file's prose:
+    /// `"M (Red dwarf) Star"`. The full file says the same thing by
+    /// flagging the body instead, which is what [`System::arrival`]
+    /// reads, and [`System::class`] answers off whichever is there.
+    pub main_star: Option<String>,
     pub population: Option<u64>,
 
     // `Anarchy`, `None` and `""` all mean "no reading" here — see
@@ -104,7 +118,8 @@ pub struct System {
     /// [`System::bodies`] lists: the count comes off a discovery scan and
     /// the list off what has since been looked at.
     pub body_count: Option<i32>,
-    /// Every body anybody has reported, in the dump's order.
+    /// Every body anybody has reported, in the dump's order. Empty of a
+    /// brief file, which lists none.
     #[serde(default)]
     pub bodies: Vec<Body>,
 }
@@ -201,24 +216,30 @@ pub struct Body {
 }
 
 impl System {
-    /// The star a ship arrives at, as the dump flags it, or [`None`]
-    /// where nobody has looked or what is there is not a star.
+    /// The body a ship arrives at, where the file lists bodies and one
+    /// of them is flagged.
     ///
-    /// The flag is the dump's own: the brief form states the arrival
-    /// star's prose in `mainStar` and the full form hangs `mainStar:
-    /// true` on the body it belongs to, so this is that field and not a
-    /// rule of ours about which body is first or nearest.
-    pub fn main_star(&self) -> Option<&Body> {
+    /// The flag is the dump's own — `mainStar: true` on the body — and
+    /// not a rule of ours about which body is first or nearest. A brief
+    /// file lists no bodies, so this is [`None`] there and
+    /// [`System::main_star`] is what it said instead.
+    pub fn arrival(&self) -> Option<&Body> {
         self.bodies.iter().find(|body| body.main_star == Some(true))
     }
 
     /// What is at the middle of this system, in the game's vocabulary, or
     /// [`None`] where there is no star there or nobody has looked.
     ///
-    /// The same answer [`crate::System::class`] gives for the same system
-    /// in the brief dump, off the same prose. See [`crate::star`].
+    /// The same answer from either file: the brief one's prose where
+    /// there is prose, and the arrival body's `subType` — the same
+    /// vocabulary, a subset of the same published list — where there are
+    /// bodies. See [`crate::star`].
     pub fn class(&self) -> Option<StarClass> {
-        class_of(self.main_star()?.sub_type.as_deref()?)
+        let prose = match &self.main_star {
+            Some(prose) => prose.as_str(),
+            None => self.arrival()?.sub_type.as_deref()?,
+        };
+        class_of(prose)
     }
 
     /// One scan per body the dump gives a home to, in dump order.
