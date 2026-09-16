@@ -205,7 +205,7 @@ pub struct Needed {
 /// the figures a walk reads worked out once. Measured over `.index/full`, a
 /// 204,466-cell tree at 200,071,629 systems: the walk was **23 ms** a frame
 /// off the map and is **1.1–1.4 ms** off the nodes, for 18 MB beside the
-/// map's 44. See `galos_map::perf`.
+/// map's 44. See `tests/zooming.rs`, which is where the guard lives.
 ///
 /// The nodes are derived, so they are built where the map is and nowhere
 /// else: an index is only ever made from a whole set of cells

@@ -26,7 +26,7 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 /// A view of the galaxy from `distance` light years out, looking in, as
-/// `galos_map::perf::looking_in` frames it.
+/// `tests/zooming.rs`'s `looking_in` frames it.
 fn looking_in(distance: f64) -> View {
     View {
         eye: [distance, 0.0, 25_000.0],

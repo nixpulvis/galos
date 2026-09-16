@@ -1,59 +1,27 @@
-//! What the map must not get slower at, measured against a real directory.
+//! What a plotted route must not get slower at, measured against a real
+//! directory.
 //!
-//! Two things the index work of `TODO-scale.md` could wreck, neither of them
-//! a build:
+//! The router reads the galaxy's places out of the cell payloads and plans
+//! over the boost stars, so anything that changes how either is held lands
+//! on it first.
 //!
-//! - **Zooming out.** One `walk_screen` per frame decides what is drawn and
-//!   the cells it marks are read off the disk. Moving per-system data into
-//!   the cells makes that read bigger; sharding `cells/` makes it a
-//!   different path.
-//! - **Routing.** The router buckets every position in the names table, so
-//!   anything that changes how that table is held lands on the router first.
-//!   It is a mapping now rather than resident arrays, which means the graph
-//!   is built out of page faults.
+//! A unit-test module rather than a file in `tests/`: it measures
+//! [`Routing`], [`Tuning`], [`Weigh`] and [`Drive`], every one of them
+//! `pub(crate)`, which an integration test could reach only by widening the
+//! router's API for the sake of a test's file location. The zoom half of
+//! what used to be one guard is an integration test of `galos_index`
+//! (`galos_index/tests/zooming.rs`), everything it touches being that
+//! crate's public surface.
 //!
-//! A unit-test module rather than a file in `tests/`: the routing half
-//! measures `route::graph`'s `Routing` and `Drive`, both `pub(crate)`, which
-//! an integration test could reach only by widening the router's API.
-//!
-//! Both stand down without `GALOS_PERF_DIR` naming a built index directory:
+//! Stands down without `GALOS_PERF_DIR` naming a built index directory:
 //!
 //! ```sh
-//! GALOS_PERF_DIR=.galos_index cargo test -p galos_map --lib perf -- --nocapture
+//! GALOS_PERF_DIR=.index/full cargo test -p galos_map --lib perf -- --nocapture
 //! ```
 //!
-//! The ceilings are loose, this running on whatever machine is to hand, so
-//! what they catch is a change of *shape*.
-//!
-//! ## Measured 2026-09-11, before any of wall 4's work
-//!
-//! Against a 2,780,323-system directory, release, warm but for the first
-//! read:
-//!
-//! | | |
-//! |---|---|
-//! | `walk_screen`, every zoom | 0.28–0.34 ms |
-//! | cells the walk marks | 1,641 (whole galaxy) – 3,168 (close in) |
-//! | reading them | 22–51 ms warm, 362 ms cold; 55–98 MB |
-//! | building the jump graph | 227 ms over 2.78 M systems |
-//! | a 22-jump route, 50 ly range | 5.9 ms `Direct`, 6.8 ms `Quick` |
-//!
-//! The walk is nothing and the *read* is the cost of a zoom: per-cell names
-//! and sidecars add to that.
-//!
-//! ## Measured again, `cells/` sharded
-//!
-//! Over a freshly built 2,780,941-system directory, 3,430 payloads over
-//! 1,540 shard directories: walk 0.24–0.33 ms, read 22.4/46.1/51.4 ms warm
-//! and 377 ms cold, graph 208 ms, route 4.9–5.7 ms. Within the noise of the
-//! flat layout above.
-//!
-//! ## Measured again, the magnitude as `f32`
-//!
-//! The payload record went 39 B to 41 B, so a zoom reads 5.1 % more. Over a
-//! freshly built 2,885,249-system directory, 3,559 payloads: walk
-//! 0.28–0.57 ms, read 21.8/45.1/53.9 ms warm and 358 ms cold, graph 212 ms,
-//! route 5.4–6.5 ms. The extra bytes are inside the run-to-run spread.
+//! The clocks are loose, this running on whatever machine is to hand, so
+//! what they catch is a change of *shape*. The stop counts are not loose,
+//! and [`plotted`] says why.
 //!
 //! ## Measured 2026-09-13, the supercharged crossing
 //!
@@ -69,7 +37,7 @@
 //! The cold figure is the first charged route of a session, which pays for
 //! placing the 3,846,802 boost stars. Of the warm 6.5 s, the coarse plan
 //! is 4.4–4.8 s (116 waypoints, 178,910 expansions) and its 117 legs are
-//! 2.0–2.3 s. See [`crate::systems::route::highway`].
+//! 2.0–2.3 s. See [`super::highway`].
 //!
 //! ## Measured again, the place published beside the cone
 //!
@@ -90,9 +58,9 @@
 //! twentieth the setting already leans its flat one by: one jump in a
 //! hundred and forty, and 3.3× at 50 ly against 13× at 80. And the plan is
 //! drawn while it runs now
-//! ([`crate::systems::route::graph::Sampler::reached`]) — it used to be
+//! ([`super::graph::Sampler::reached`]) — it used to be
 //! seconds of empty sky before the legs began. See
-//! [`crate::systems::route::highway::Highway::plan`].
+//! [`super::highway::Highway::plan`].
 //!
 //! ## Measured again, what a ship that jumps half as far costs
 //!
@@ -103,7 +71,7 @@
 //! of range and **200 ly at 25**, and at 200 ly the boost stars are not a
 //! connected graph: the plan died in 0.3 ms and the caller fell back to the
 //! flat galaxy-wide search. So the hop's reach is a distance now
-//! ([`crate::systems::route::graph::Tuning::reach`], default 400 ly, the
+//! ([`super::graph::Tuning::reach`], default 400 ly, the
 //! measured threshold — 350 fails at *both* ranges), the leaning is a
 //! setting, and a leg is refined leaned rather than proven by default
 //! (measured: the same jumps, and faster).
@@ -146,7 +114,7 @@
 //! | Colonia → Sgr A\*, 45 ly, 25% | 81 in **0.97 s** | 80 in 19.84 s | +1 |
 //!
 //! One jump in a hundred and forty for eight to twenty times the speed, so
-//! it is the default ([`crate::systems::route::graph::Crossing::Stepped`]).
+//! it is the default ([`super::graph::Crossing::Stepped`]).
 //! The guard's own rows moved with it: the 50 ly crossing is **0.33 s warm
 //! and 0.58 s cold** against 2.0–2.2 s, and the 25 ly crossing **0.89 s**
 //! against 4.8 s — where before any of this it was 233 s.
@@ -175,7 +143,7 @@
 //! again: eight jumps between the two ends of it for nine times the wait.
 //! What the five percent plot now pays is the stall allowance itself — 8.5 s
 //! of coarse search before it gives up and flies what it has, which is
-//! [`crate::systems::route::graph::Tuning::stall`] and the next thing to
+//! [`super::graph::Tuning::stall`] and the next thing to
 //! measure.
 //!
 //! ## Measured once, what the drawing does through a plan's legs
@@ -198,8 +166,8 @@
 //! apart, inside a frame.
 //!
 //! The plan is drawn whole now and each leg is a strand beside it
-//! ([`crate::systems::route::graph::Sampler::planned`],
-//! [`crate::systems::route::graph::Sampler::flew`]). The same crossing,
+//! ([`super::graph::Sampler::planned`],
+//! [`super::graph::Sampler::flew`]). The same crossing,
 //! measured again:
 //!
 //! ```text
@@ -213,7 +181,7 @@
 //!
 //! Also why the two sampled layers stand still through all of it: the
 //! closed-set grid is sized once from the route's own length
-//! ([`crate::systems::route::frontier::CELLS`]), which over 22 kly is
+//! ([`super::frontier::CELLS`]), which over 22 kly is
 //! 1,100 ly a cell — and a refinement leg is 200–600 ly, so a whole leg
 //! search falls inside one cell. `cells 85` from 239 ms to the end is not a
 //! search standing still; it is a picture drawn at the wrong scale to see
@@ -233,8 +201,8 @@
 //! 3,893,601 for the charged one — so what the ledger took out is work
 //! that changed no answer. What is left is the expansion count itself: two
 //! hundred times the unaided search's for a shorter route, which is the
-//! estimate having to divide by the widest jump the drive could make. See
-//! `TODO-map-scale.md` 2f.
+//! estimate having to divide by the widest jump the drive could make. A
+//! goal field that knows where the cones are not is what attacks that.
 //!
 //! ## Measured over the columnar directory, and what the guard had missed
 //!
@@ -244,7 +212,7 @@
 //! recorded. It read as the coarse plan having stopped engaging under the
 //! new layout. It had not: the rows themselves asked for `Drive::Unaided`,
 //! a drive with no cone to charge off, so
-//! [`crate::systems::route::graph::JumpGraph::route`] never reached the
+//! [`super::graph::JumpGraph::route`] never reached the
 //! highway at all and the flat galaxy-wide search answered. 451 and 919 are
 //! that search's own counts. Asked with `Drive::Standard`, over the same
 //! columnar directory:
@@ -290,7 +258,7 @@
 //! **What the same probe did find is that the plan never read the ask.** A
 //! least-fuel plot and a fewest-jumps plot came back byte for byte the
 //! same route — 48 stops, the same 621 ly — because the coarse search
-//! did not look at [`crate::systems::route::graph::Weigh`] at all. For
+//! did not look at [`super::graph::Weigh`] at all. For
 //! least fuel that is the *right* answer and the cap is why: a boosted
 //! jump costs a whole tank however far the cone throws the ship, so on a
 //! chain of cones the fuel is the hop count. For the shortest of the
@@ -331,7 +299,7 @@
 //!
 //! What the cap keeps now is the cheapest candidates per light year of
 //! ground closed, taken off the metric's own price
-//! ([`crate::systems::route::graph::thinned`]) — which for a route counted
+//! ([`super::graph::thinned`]) — which for a route counted
 //! in jumps is the nearest the goal, the same set as before, and for one
 //! weighed by fuel is emphatically not:
 //!
@@ -374,7 +342,7 @@
 //! `Cost` that the weighting makes inconsistent, where a jump count
 //! weighted stays consistent by a jump. So a route that has not promised
 //! the fewest now expands each system once
-//! ([`crate::systems::route::graph::JumpGraph::walk`]), which keeps the
+//! ([`super::graph::JumpGraph::walk`]), which keeps the
 //! same `1 + over/100` bound — weighted A\* without re-expansion is
 //! `ARA*`'s own argument, and the claim that the bound *needed* reopening
 //! was wrong.
@@ -389,7 +357,7 @@
 //! Asked because a 45 ly least-fuel plot came back in 4.8 s and read as
 //! the exact setting having got faster. It has not: nothing above touches
 //! it, every approximation being gated on
-//! [`crate::systems::route::graph::Routing::approximates`], and the
+//! [`super::graph::Routing::approximates`], and the
 //! guard's own exact rows sat at 0.66–0.81 s and 81–88 s throughout, from
 //! before the first of these changes to after the last.
 //!
@@ -424,7 +392,7 @@
 //! route at 2.144 of a tank against the proven route's 2.148.
 //!
 //! Priced in hundred-thousandths, with any jump charged at least one unit
-//! ([`crate::systems::route::graph::burned`]), the ordering comes right and
+//! ([`super::graph::burned`]), the ordering comes right and
 //! the proven routes come out *cheaper* than they did:
 //!
 //! | corridor | proven, before | proven, after | 95% after, all in range |
@@ -454,10 +422,10 @@
 //! ## Measured 2026-09-16, the plan's weight taken off the route's
 //!
 //! The coarse plan multiplied its estimate by
-//! [`crate::systems::route::graph::Routing::over`], so a reader asking for
+//! [`super::graph::Routing::over`], so a reader asking for
 //! a route within five percent was also asking for a plan leaned by five
 //! and could not ask for the exact plan at all. It is
-//! [`crate::systems::route::graph::Tuning::planning`] now, with a rail of
+//! [`super::graph::Tuning::planning`] now, with a rail of
 //! its own in the planning fold and exact at the top of it.
 //!
 //! What exact is worth, end to end from Sol at 45 ly with a standard
@@ -481,7 +449,7 @@
 //! 4.27 ms exact against 4.02 ms leaned — 3 kly out at a 495 Ly gap, warm,
 //! the same 40 stops. Every corridor sampled is a factor of forty-eight
 //! either side of that, so exact is *tried* rather than promised:
-//! [`crate::systems::route::graph::Tuning::allowance`] drops an exact pass
+//! [`super::graph::Tuning::allowance`] drops an exact pass
 //! that has spent 2,048 expansions — 40 ms at some 20 µs apiece — and the
 //! plan is then worked leaned exactly as it was.
 //!
@@ -509,7 +477,7 @@
 //! One number three times over in the third column, which is the defect,
 //! against 6 to 11 percent of the tank once the step is priced by the
 //! metric the route is weighed by — the same rule
-//! [`crate::systems::route::graph::thinned`] follows one level down. It
+//! [`super::graph::thinned`] follows one level down. It
 //! costs a few percent of the clock (76–113 ms against 99, 325–335 against
 //! 304) and 11 to 118 percent more stops, which is the trade the rail is
 //! for.
@@ -518,7 +486,7 @@
 //! it came into reach is a jump at full range, which is the dearest jump
 //! there is, and closing in on it first is 142.21 tanks against 146.77 on
 //! the unpriced Colonia row. The walk is called
-//! [`crate::systems::route::graph::Crossing::Stepped`] now, "nearest"
+//! [`super::graph::Crossing::Stepped`] now, "nearest"
 //! having stopped being true of it.
 //!
 //! The longest walk any gap took, which is what
@@ -559,7 +527,7 @@
 //! So the floor is 500 Ly, where the curve flattens, and the plan climbs
 //! from there: a chain that does not close on the goal is planned again
 //! one ordinary jump wider, up to `RUNGS` = 8 rungs
-//! ([`crate::systems::route::highway::Highway::plan`]). A rung is only
+//! ([`super::highway::Highway::plan`]). A rung is only
 //! paid where the narrower reach had already failed. **And the rail is
 //! gone** — no reader can be expected to know which corridor wants which
 //! number, and every wrong answer was a cliff.
@@ -668,98 +636,13 @@
 //! nothing on screen to say so. The cap is the reader's where the rail is
 //! drawn and the fixed valve everywhere else now, so what the number means
 //! is what the form shows.
-//!
-//! ## Measured 2026-09-16, where the screen walk's milliseconds went
-//!
-//! The screen walk was 22–29 ms a frame at 200 M systems — a ~35 fps floor
-//! independent of everything routing — and the number everyone read as its
-//! cost was the 151,619 cells it marks. **It is not the marks.** Ablated
-//! over `.index/full`, 204,466 cells at 200,071,629 systems, release, from
-//! 10 ly out looking in, one thing taken away at a time from a replica that
-//! answers the same marks and the same field:
-//!
-//! | the walk | took |
-//! |---|---|
-//! | as it was, off the cell map | 23.1–28.0 ms |
-//! | without the mark test | 17.8 ms |
-//! | without the per-cell `Vec` of children | 26.0 ms |
-//! | over the same cells in a flat array, same arithmetic | 2.7–3.3 ms |
-//! | over a flat array of the figures it reads | **1.1–1.2 ms** |
-//!
-//! And the marks are not even what the clock tracks: **12,503 marks 100 kly
-//! out cost 18.0–19.2 ms against 23.1 ms for 151,619** from inside the
-//! bubble — twelve times the marks for a fifth more clock, and per cell
-//! *visited* 131 ns against 114. What the walk visits is the whole tree at
-//! every zoom inside 25 kly, because four fifths of it is 128–512 Ly cells
-//! whose contents subtend hundreds of times the two pixels the split turns
-//! on, so nothing stops short of a leaf:
-//!
-//! ```text
-//! level     6     7     8     9    10    11    12    13
-//! cells  2889 13002 54027 69689 48480 14112  1351    64
-//! edge   2048  1024   512   256   128    64    32    16   Ly
-//! ```
-//!
-//! **What it spent the milliseconds on was reaching the cells.** 408,932
-//! lookups a walk — every cell twice, once as a child for its count and once
-//! when it is popped — at 31–34 ns apiece, 13.3 ms of the 23 when replayed
-//! on their own with no arithmetic between them. The same 408,932 addresses,
-//! against three maps:
-//!
-//! | looked up in | each | in all |
-//! |---|---|---|
-//! | `HashMap<CellId, Cell>`, a 216-byte value, 44 MB | 32 ns | 13.3 ms |
-//! | `HashMap<CellId, u32>`, the same hasher | 15 ns | 6.2 ms |
-//! | `HashMap<CellId, u32>`, a multiply-shift hash | **3 ns** | **1.5 ms** |
-//!
-//! So three nanoseconds of a lookup is the arithmetic, twelve more are
-//! SipHash, and seventeen are the cache lines of a 216-byte value. The mark
-//! test's 9 ms is the same coin and not its cube roots: the identical
-//! arithmetic over a packed array is 1.5 ms, where off the map it is what
-//! pulls `Cell`'s second moments in for every leaf in the tree —
-//! `contents_center` and `count_extent` being most of the record, and the
-//! mark test being the only thing that reads them at a leaf.
-//!
-//! So the walks descend a tree of their own now
-//! ([`galos_index::Index`]): the cells breadth-first with a cell's children
-//! contiguous, carrying the figures each walk reads, none of which is a
-//! function of the view. 88 bytes a node, 18 MB beside the map's 44, and
-//! built where the map is — an index only ever being made from a whole set
-//! of cells and never mutated after, which is what makes one derivation
-//! enough. What that costs is the open: `Index::read` is **81 ms against
-//! 30** over the same 44 MB file, against the second's ceiling the routing
-//! guard holds it to.
-//!
-//! | zoom | before | after | marks |
-//! |---|---|---|---|
-//! | 10 ly out | 23.3 ms | **1.5 ms** | 151,619 |
-//! | 1 kly | 23.2 ms | **1.5 ms** | 150,841 |
-//! | 25 kly | 22.1 ms | **1.5 ms** | 97,891 |
-//! | 100 kly | 18.4 ms | **1.0 ms** | 12,503 |
-//!
-//! Answer for answer, not just count for count: every row above was checked
-//! cell for cell against the walk as it was written, the Shell splats still
-//! summing to 1.000000 of the field, and `Mode::Real`'s two walks — 39,444
-//! discrete stars and 171,650 glow cells from inside the bubble — coming
-//! back with the same sets in **0.9–1.9 ms against 11.9–32.2**. The ladder
-//! and the checks are `galos_index/examples/walk_cost.rs`.
-//!
-//! **And what a zoom costs is now the read, by four orders of magnitude.**
-//! [`zooming_out_stays_quick`] reads what the walk marks, and at 200 M
-//! systems that is 151,619 payloads: **18.5 s and 6.3 GB** at the wide zoom
-//! against 1.05 s and 429 MB at the whole galaxy. The walk it follows is
-//! 1.07–2.31 ms. Nothing above touches that half; it is the next thing in
-//! the way.
 
 #![cfg(test)]
 
+use super::graph::{Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh};
 use crate::Boosts;
-use crate::systems::route::graph::{
-    Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh,
-};
 use bevy::math::DVec3;
-use galos_index::walk::{Mode, View};
-use galos_index::{FixedCodec as _, FsSource, Index, Point, Source as _};
+use galos_index::{FsSource, Source as _};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -771,73 +654,6 @@ fn measured() -> Option<PathBuf> {
         return None;
     }
     Some(dir)
-}
-
-/// A view of the galaxy from `distance` light years out, looking in.
-///
-/// Along the x axis at the galactic centre, where the mass is, so the walk
-/// has the most work a view at that distance can give it.
-fn looking_in(distance: f64) -> View {
-    View {
-        eye: [distance, 0.0, 25_000.0],
-        forward: [-1.0, 0.0, 0.0],
-        up: [0.0, 1.0, 0.0],
-        fov_y: 0.8,
-        viewport_height: 1080.0,
-        aspect: 16.0 / 9.0,
-    }
-}
-
-/// Zooming out: the walk that decides what is drawn, and the read that
-/// follows it.
-///
-/// A zoom, not a sample: a system's-eye view, a neighbourhood, a region, and
-/// the whole galaxy in frame. The last is every cell in the tree considered,
-/// and is one scroll away.
-#[test]
-fn zooming_out_stays_quick() {
-    let Some(dir) = measured() else { return };
-    let index = Index::read(&dir).expect("the index should read");
-    let source = FsSource::new(&dir);
-
-    for distance in [10.0, 1_000.0, 25_000.0, 100_000.0] {
-        let view = looking_in(distance);
-
-        let at = Instant::now();
-        let needed = index.needed(&view, Mode::Shell);
-        let walked = at.elapsed();
-
-        // What the walk asks the disk for: the half of a zoom that moving
-        // per-system data into the cells would make heavier.
-        let at = Instant::now();
-        let mut points = 0;
-        let mut bytes = 0;
-        for &id in &needed.marks {
-            let payload = pollster::block_on(source.payload(id))
-                .expect("a marked cell should read");
-            points += payload.len();
-            bytes += payload.len() * Point::LEN;
-        }
-        let read = at.elapsed();
-        println!(
-            "zoom {distance:>7} ly: walk {walked:>10.2?} \
-             marks {:>5} splats {:>5} read {read:>10.2?} \
-             points {points:>8} ({} KB)",
-            needed.marks.len(),
-            needed.splats.len(),
-            bytes / 1024,
-        );
-
-        // A frame's budget at 60 fps is 16 ms and the walk is one of the
-        // things in it, so the ceiling is a shape and not a frame: the walk
-        // measured 18–25 ms off the cell map and 1.0–1.6 ms off the index's
-        // own flattened tree ([`galos_index::Index`]), and anything an order
-        // of magnitude over that is the map walk back.
-        assert!(
-            walked < Duration::from_millis(10),
-            "a walk at {distance} ly took {walked:?}, which is a frame gone",
-        );
-    }
 }
 
 /// What a plotted row must come back with: a route, no longer than the one

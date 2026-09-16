@@ -30,8 +30,6 @@ pub mod grid;
 pub mod keys;
 pub mod loading;
 pub mod names;
-#[cfg(test)]
-mod perf;
 pub mod refresh;
 pub(crate) mod ruled;
 pub mod schedule;

@@ -933,6 +933,11 @@ pub(crate) mod fetch;
 pub(crate) mod frontier;
 pub mod graph;
 pub(crate) mod highway;
+// The guard: what a plot must not get slower at, measured against a real
+// directory. Here rather than in `tests/` because it asks for a route in
+// `graph`'s own `pub(crate)` vocabulary.
+#[cfg(test)]
+mod perf;
 pub(crate) mod spawn;
 pub(crate) mod tour;
 
