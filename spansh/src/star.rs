@@ -124,7 +124,7 @@ mod tests {
 
     use crate::schema;
 
-    /// Every value the brief form's `mainStar` may take, off the
+    /// Every value the brief file's `mainStar` may take, off the
     /// vendored `systems.schema.json` rather than a hand copy of it.
     ///
     /// Sixty-one as published: the star classes and the eighteen planets
@@ -135,7 +135,7 @@ mod tests {
     }
 
     /// The listed values whose main body is not a star, which the full
-    /// form's schema names on its own: a body's `subType` has a `Planet`
+    /// file's schema names on its own: a body's `subType` has a `Planet`
     /// arm and a `Star` arm, and the planets are the ones `class_of`
     /// must answer nothing for.
     fn not_a_star() -> Vec<String> {
@@ -154,7 +154,7 @@ mod tests {
     fn every_value_the_schema_lists_is_mapped() {
         let listed = listed();
         let not_a_star = not_a_star();
-        assert_eq!(listed.len(), 61, "the brief form's list moved");
+        assert_eq!(listed.len(), 61, "the brief file's list moved");
 
         for value in &listed {
             let mapped = class_of(value);
@@ -169,12 +169,12 @@ mod tests {
         for body in &not_a_star {
             assert!(listed.contains(body), "{body} is not a listed value");
         }
-        // And the full form's own stars are the same prose, so one
+        // And the full file's own stars are the same prose, so one
         // translation answers both dumps. Forty-three there against
-        // sixty-one here: the brief form's list is the stars and the
+        // sixty-one here: the brief file's list is the stars and the
         // planets together.
         let stars = schema::sub_types("Star");
-        assert_eq!(stars.len(), 43, "the full form's star list moved");
+        assert_eq!(stars.len(), 43, "the full file's star list moved");
         for star in stars {
             assert!(class_of(&star).is_some(), "{star} is not mapped");
             assert!(listed.contains(&star), "{star} is not a listed value");

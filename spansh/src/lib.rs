@@ -201,12 +201,12 @@ impl Dump {
 pub(crate) mod schema {
     use serde_json::Value;
 
-    /// `systems.json`'s schema, the brief form's.
+    /// `systems.json`'s schema, the brief file's.
     pub fn systems() -> Value {
         read(include_str!("../schema/systems.schema.json"))
     }
 
-    /// `galaxy.json`'s schema, the full form's.
+    /// `galaxy.json`'s schema, the full file's.
     pub fn galaxy() -> Value {
         read(include_str!("../schema/galaxy.schema.json"))
     }
