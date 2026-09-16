@@ -13,8 +13,8 @@
 //! [`one_star_listed_twice_is_one_star`].
 
 use elite_journal::body::AtmosphereType;
-use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::entry::Event;
+use elite_journal::entry::incremental::exploration::ScanTarget;
 use elite_journal::system::Security;
 use elite_journal::{Allegiance, Government};
 use spansh::{Dump, System};
@@ -29,12 +29,10 @@ fn fixture() -> Vec<System> {
 fn read(fixture: &str) -> Vec<System> {
     let path =
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/")).join(fixture);
-    let mut dump = Dump::open(&path).expect("the fixture opens");
-    let mut systems = Vec::new();
-    while let Some(system) = dump.next().expect("the fixture reads") {
-        systems.push(system);
-    }
-    systems
+    Dump::open(&path)
+        .expect("the fixture opens")
+        .map(|system| system.expect("the fixture reads"))
+        .collect()
 }
 
 fn named(systems: &[System], name: &str) -> usize {

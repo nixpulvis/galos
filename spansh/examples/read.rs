@@ -26,7 +26,6 @@ fn main() {
         .map(|it| it.parse().expect("a number of systems"))
         .unwrap_or(u64::MAX);
 
-    let mut dump = Dump::open(&path).expect("the dump opens");
     let mut read = 0u64;
     let mut bodies = 0u64;
     let mut classes: BTreeMap<String, u64> = BTreeMap::new();
@@ -34,7 +33,8 @@ fn main() {
     let mut classless = 0u64;
     let at = Instant::now();
 
-    while let Some(system) = dump.next().expect("every line parses") {
+    for system in Dump::open(&path).expect("the dump opens") {
+        let system = system.expect("every line parses");
         read += 1;
         bodies += system.bodies.len() as u64;
         match system.class() {
@@ -54,7 +54,7 @@ fn main() {
         if read >= stop {
             break;
         }
-        if read % 10_000_000 == 0 {
+        if read.is_multiple_of(10_000_000) {
             let rate = read as f64 / at.elapsed().as_secs_f64();
             eprintln!("  {read} systems, {rate:.0}/s");
         }

@@ -2,7 +2,8 @@
 name = "spansh"
 version = "0.0.1"
 authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
-edition = "2021"
+edition = "2024"
+rust-version.workspace = true
 
 # One publisher's file format and nothing else, the way `edsm` and `eddb` are:
 # no database, no index, no path dependency on anything in the workspace, so
@@ -12,6 +13,6 @@ edition = "2021"
 # class is `body::StarClass`. By version, as `edsm` and `eddb` take it; the
 # workspace patches it to a path.
 elite_journal = "0.7"
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-chrono = { version = "*", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }

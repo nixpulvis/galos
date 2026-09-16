@@ -61,6 +61,16 @@ const BUFFER: usize = 1 << 20;
 /// parsed. The opening `[` and closing `]` are skipped, as is a blank
 /// line, so what comes out is only ever a candidate object. The buffer is
 /// reused across lines.
+///
+/// Public for one reader, `bin/sync`, and for one reason: it needs the
+/// text before anything parses it. Resuming part way through a 610 GB
+/// file wants [`open_at`](Self::open_at), a progress bar wants
+/// [`bytes`](Self::bytes), and `--shard i/8` wants to drop seven lines in
+/// eight without paying `serde` for them — measured over
+/// `galaxy_7days.json`, framing alone runs at **239,221 lines a second
+/// against 33,346 parsed**, so a sharded import that parsed what it
+/// discards would spend most of its time on other processes' systems.
+/// Everything else wants [`Dump`].
 pub struct Lines {
     reader: BufReader<File>,
     line: String,
@@ -112,7 +122,9 @@ impl Lines {
     /// The next object's text, or [`None`] at the end of the file.
     ///
     /// Borrowed from the reader's own buffer rather than returned by value,
-    /// the caller parsing it and dropping it.
+    /// the caller parsing it and dropping it. Not [`Iterator`]: the item
+    /// borrows the reader, which is the whole point of reusing the buffer.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> io::Result<Option<&str>> {
         loop {
             self.line.clear();
@@ -143,6 +155,12 @@ impl Lines {
 /// this, because they are one object with more or less of it filled in.
 /// What a brief file does not carry comes back as [`None`] and an empty
 /// [`System::bodies`].
+///
+/// [`Lines`] is underneath and is the one to reach for where a read is
+/// more than a loop: resuming part way through a 610 GB file, taking one
+/// line in eight as a shard of it, or counting bytes for a progress bar
+/// all want the text before anything parses it, and a line another
+/// process owns should cost no `serde` at all.
 pub struct Dump {
     lines: Lines,
 }
@@ -153,29 +171,31 @@ impl Dump {
         Ok(Dump { lines: Lines::open(path)? })
     }
 
-    /// The next system, or [`None`] at the end.
-    ///
-    /// A line that will not parse is an error naming the line it was on,
-    /// so the caller decides whether one bad row ends the read.
-    pub fn next(&mut self) -> io::Result<Option<System>> {
-        let at = self.lines.at() + 1;
-        let Some(text) = self.lines.next()? else {
-            return Ok(None);
-        };
-        serde_json::from_str(text)
-            .map(Some)
-            .map_err(|err| io::Error::other(format!("line {at}: {err}")))
-    }
-
     /// Which line the reader is on.
     pub fn at(&self) -> u64 {
         self.lines.at()
     }
+}
 
-    /// How much of the file has been read, in bytes, which is always a
-    /// line boundary. What [`Lines::open_at`] takes to carry on from.
-    pub fn bytes(&self) -> u64 {
-        self.lines.bytes()
+impl Iterator for Dump {
+    type Item = io::Result<System>;
+
+    /// The next system, or [`None`] at the end of the file.
+    ///
+    /// A line that will not parse is an error naming the line it was on
+    /// rather than the end of the read, so the caller decides whether one
+    /// bad row ends anything — `bin/sync` counts it and carries on.
+    fn next(&mut self) -> Option<io::Result<System>> {
+        let at = self.lines.at() + 1;
+        let text = match self.lines.next() {
+            Ok(Some(text)) => text,
+            Ok(None) => return None,
+            Err(err) => return Some(Err(err)),
+        };
+        Some(
+            serde_json::from_str(text)
+                .map_err(|err| io::Error::other(format!("line {at}: {err}"))),
+        )
     }
 }
 
