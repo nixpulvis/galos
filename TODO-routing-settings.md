@@ -215,20 +215,33 @@ A step has to land closer to the far cone than the last, and at 10 Ly a
 sphere that holds nothing nearer is the rule rather than the exception. The
 walk is a beam of width one, and that is what dead-ends.
 
-**Two candidate fixes, and the second is what the measurement argues for.**
-A wider beam is the textbook answer and was tried at eight strands; on this
-corridor it carried the same gaps in the same time, and on a *fuel*-weighed
-walk it is unsound — strands that have spent different amounts are not
-comparable by a per-step price, and one that took a long jump looks cheap
-afterwards (measured on a line of stepping stones: nine stops where width
-one takes all sixteen). The other is to keep the walk's own progress: the
-rows above give up with 68–402 Ly left after 3–50 steps of real ground
-closed, and all of that work is thrown away when the gap goes to the
-search. Handing the search the *remainder* — splice the walked prefix,
-search from its tip — turns six 500 Ly searches into six of 68–402 Ly.
-Unbuilt, and the cheaper of the two by construction.
+**Three fixes tried, none kept.** A wider beam is the textbook answer and
+was built at eight strands: on this corridor it carried the same gaps in
+the same time, and on a *fuel*-weighed walk it is unsound — strands that
+have spent different amounts are not comparable by a per-step price, and
+one that took a long jump looks cheap afterwards (measured on a line of
+stepping stones: nine stops where width one takes all sixteen). Scaling
+the step cap off the reach changed nothing, the give-ups never reaching
+it. And keeping the walk's own progress — splice the prefix, search only
+the remainder, which turns six 500 Ly searches into six of 68–402 — was
+built and measured: **313 stops in 7.98 s against 290 in 13.4 s**. That
+is 1.7× the speed for **8% more jumps**, where the trade stepping already
+makes is one jump in a hundred and forty for eight to twenty times, so
+it is the wrong side of the module's own bargain and was reverted too.
 
-Nothing was kept from the attempt: the cap is the constant it was.
+**What the floor actually is.** The cone fence is 380–500 Ly whatever the
+ship (measured: 350 strings nothing at 10, 25 *and* 50 Ly), so a 10 Ly
+ship's gaps are ~50 jumps wide by construction — the plan cannot ask for
+smaller hops, because smaller hops are a disconnected graph. Six or seven
+50-jump searches is 8–13 s, and that is the honest cost of a 10 Ly ship
+crossing 2 kly on jet cones, not a defect in the walk. Colonia at 10 Ly
+(1,781 stops, 2,049 s) is worse for a different reason, which is item 2:
+the plan handed over three hops for 22 kly.
+
+Nothing was kept from any of it: the cap, the walk and the splice are as
+they were. What would actually move the 10 Ly case is the *plan* — fewer,
+shorter legs to fly — and there is no measurement yet saying what that
+would look like.
 
 ### 2. The screen walk is 22–29 ms a frame
 
