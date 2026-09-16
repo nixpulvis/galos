@@ -191,20 +191,129 @@ pub struct Needed {
     pub splats: Vec<SplatRef>,
 }
 
-/// The resident tree of cell aggregates, keyed by address.
+/// The resident tree of cell aggregates, keyed by address, and the same tree
+/// flattened for the walks.
 ///
-/// Small enough to hold whole (a few megabytes over the galaxy), so every walk
-/// reads it without a fetch. The payloads it points at are loaded separately and
-/// cached elsewhere; this is the index the walks plan on.
+/// Small enough to hold whole (a few tens of megabytes over the galaxy), so
+/// every walk reads it without a fetch. The payloads it points at are loaded
+/// separately and cached elsewhere; this is the index the walks plan on.
+///
+/// **Two views of one tree, and the second is why a frame is quick.** The map
+/// is what an address is looked up in — the router asks it half a million
+/// times a route — and [`nodes`](Index::nodes) is what a walk descends: the
+/// cells breadth-first with a cell's children next to each other, carrying
+/// the figures a walk reads worked out once. Measured over `.index/full`, a
+/// 204,466-cell tree at 200,071,629 systems: the walk was **23 ms** a frame
+/// off the map and is **1.1–1.4 ms** off the nodes, for 18 MB beside the
+/// map's 44. See `galos_map::perf`.
+///
+/// The nodes are derived, so they are built where the map is and nowhere
+/// else: an index is only ever made from a whole set of cells
+/// ([`from_cells`](Index::from_cells)), never mutated after, which is what
+/// makes one derivation enough.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Index {
     cells: HashMap<CellId, Cell>,
+    nodes: Vec<Node>,
+}
+
+/// One node of the walk's own tree: where a cell's contents sit and how far
+/// they spread, and where its children are.
+///
+/// Everything here but the addresses is a figure the walks used to work out
+/// per cell per frame — and all of it is a pure function of the cell, none of
+/// it of the view, so it is worked out once when the index is built. What
+/// that took out of a frame is not the arithmetic (two cube roots and a
+/// square root a cell) but the cache: `contents_center` and `count_extent`
+/// read the second moments, which is most of a 216-byte [`Cell`], for every
+/// cell in the tree.
+#[derive(Copy, Clone, Debug, PartialEq)]
+struct Node {
+    /// Where a cell's contents sit: [`contents_center`].
+    center: [f64; 3],
+    /// How far they spread: [`contents_extent`].
+    extent: f64,
+    /// The mean spacing of the cell's own slice: [`slice_spacing`].
+    spacing: f64,
+    /// How many systems the subtree holds.
+    count: u64,
+    /// How many the cell owns itself.
+    slice: u64,
+    /// The brightest absolute magnitude in the subtree, for the sky's cut.
+    m_min: Option<f32>,
+    /// The cell's address, which is what a walk answers with.
+    id: CellId,
+    /// Where this node's children begin. They are contiguous, so a walk
+    /// reads them as a slice rather than looking eight addresses up.
+    first_child: u32,
+    /// How many children the tree actually holds for this cell, which is the
+    /// set bits of `child_mask` that are present in the map.
+    children: u8,
+    /// Whether the cell has no children at all, the flag
+    /// [`Cell::is_leaf`] answers. Not the same as `children == 0`: a mask can
+    /// name a child the map does not hold, and the glow's cut turns on the
+    /// mask.
+    leaf: bool,
+}
+
+impl Node {
+    fn of(cell: &Cell) -> Node {
+        Node {
+            center: contents_center(cell),
+            extent: contents_extent(cell),
+            spacing: slice_spacing(cell),
+            count: cell.aggregate.count(),
+            slice: cell.slice_len(),
+            m_min: cell.aggregate.m_min(),
+            id: cell.id,
+            first_child: 0,
+            children: 0,
+            leaf: cell.is_leaf(),
+        }
+    }
+}
+
+/// The tree flattened breadth-first from the root, a cell's children landing
+/// together.
+///
+/// Reachability is the walks' own: a cell the root cannot be descended to is
+/// a cell no walk ever visited, so it is in the map and not in the nodes.
+/// `u32` for the child link — a galaxy is a few hundred thousand cells, and
+/// four billion is a tree no machine holds resident.
+fn flatten(cells: &HashMap<CellId, Cell>) -> Vec<Node> {
+    let mut nodes: Vec<Node> = Vec::with_capacity(cells.len());
+    let Some(root) = cells.get(&CellId::ROOT) else { return nodes };
+    nodes.push(Node::of(root));
+    let mut at = 0;
+    while at < nodes.len() {
+        let id = nodes[at].id;
+        let cell = &cells[&id];
+        let kids = id.children();
+        let first = nodes.len() as u32;
+        let mut held = 0u8;
+        for octant in 0..8u8 {
+            if !cell.has_child(octant) {
+                continue;
+            }
+            if let Some(child) = cells.get(&kids[octant as usize]) {
+                nodes.push(Node::of(child));
+                held += 1;
+            }
+        }
+        nodes[at].first_child = first;
+        nodes[at].children = held;
+        at += 1;
+    }
+    nodes
 }
 
 impl Index {
     /// Build an index from a set of cells.
     pub fn from_cells(cells: impl IntoIterator<Item = Cell>) -> Index {
-        Index { cells: cells.into_iter().map(|c| (c.id, c)).collect() }
+        let cells: HashMap<CellId, Cell> =
+            cells.into_iter().map(|c| (c.id, c)).collect();
+        let nodes = flatten(&cells);
+        Index { cells, nodes }
     }
 
     /// The cell at an address, if the tree holds it.
@@ -304,20 +413,6 @@ impl Index {
         }
     }
 
-    /// The projected size, in pixels, of a cell's *contents* — their own spread
-    /// from the count-weighted second moments, not the box that holds them.
-    ///
-    /// This is the quantity the split test turns on. A coarse cell near the
-    /// galactic plane holds a thin slab: its box is a cube spanning the whole
-    /// thickness, but its contents are shallow, and it is the contents that
-    /// decide when the cell's systems separate on screen.
-    fn projected_extent(&self, view: &View, cell: &Cell) -> f64 {
-        view.projected_px(
-            contents_extent(cell),
-            distance(view.eye, contents_center(cell)),
-        )
-    }
-
     /// The cells the view needs for a presentation: the marks to draw and the
     /// cells to splat as a field.
     pub fn needed(&self, view: &View, mode: Mode) -> Needed {
@@ -351,39 +446,60 @@ impl Index {
     /// only limit, and for a framed view it holds the count near the screen's
     /// own capacity; a frame-cost ceiling is a drawing concern that belongs at
     /// draw time, not in a set that must stay a function of position.
+    ///
+    /// **What it costs is the tree, not the marks.** The descent reaches all
+    /// 204,466 cells at every zoom inside 25 kly: four fifths of the tree is
+    /// 128–512 Ly cells whose contents subtend far more than the two pixels
+    /// the split turns on, so nothing stops short of a leaf and the walk is
+    /// linear in the tree with the marked count riding along. Measured over
+    /// `.index/full` before this walked its own tree: 12,503 marks 100 kly
+    /// out cost 18 ms against 23 ms for 151,619 marks from inside the bubble
+    /// — 131 ns against 114 for each cell *visited*, twelve times the marks
+    /// for a fifth more clock. Which is why it descends [`Index::nodes`]
+    /// rather than the map, and reads each cell's figures rather than working
+    /// them out: **23 ms to 1.5 ms**, the same marks and the same field.
     pub fn walk_screen(&self, view: &View) -> Needed {
         let mut marks = Vec::new();
         let mut splats = Vec::new();
-        let Some(root) = self.root() else {
+        if self.nodes.is_empty() {
             return Needed { mode: Mode::Shell, marks, splats };
-        };
+        }
 
-        // Each entry is a cell and the glow weight its ancestors' cross-fades
+        // Each entry is a node and the glow weight its ancestors' cross-fades
         // have handed down, one at the root. Order does not matter — every cell
         // is judged on its own — so a plain stack stands in for a heap.
-        let mut stack = vec![(root.id, 1.0f64)];
-        while let Some((id, weight)) = stack.pop() {
-            let cell = self.get(id).expect("frontier cell is in the tree");
+        let mut stack = vec![(0u32, 1.0f64)];
+        while let Some((at, weight)) = stack.pop() {
+            let node = &self.nodes[at as usize];
 
             // Marks: the cell's payload is wanted once even one of its systems
             // separates on screen. How many actually draw is the resolvable
             // prefix (see resolvable_count), grown per system at draw time; the
             // walk only says which cells the draw will want.
-            if resolvable_count(cell, view, MARK_SEPARATION_PX) >= 1 {
-                marks.push(id);
+            if resolved(
+                node.slice,
+                node.spacing,
+                node.center,
+                view,
+                MARK_SEPARATION_PX,
+            ) >= 1
+            {
+                marks.push(node.id);
             }
 
             // Glow: only children carrying systems can take the handoff.
-            let children: Vec<&Cell> = self
-                .children(cell)
-                .filter(|c| c.aggregate.count() > 0)
-                .collect();
-            let total: u64 = children.iter().map(|c| c.aggregate.count()).sum();
+            let kids = node.first_child as usize
+                ..node.first_child as usize + node.children as usize;
+            let total: u64 = self.nodes[kids.clone()]
+                .iter()
+                .filter(|child| child.count > 0)
+                .map(|child| child.count)
+                .sum();
 
             // A leaf, or a cell whose children are all empty, is the glow
             // frontier: one splat carrying its subtree's whole density.
-            if children.is_empty() || total == 0 {
-                splats.push(SplatRef { id, blend: weight });
+            if total == 0 {
+                splats.push(SplatRef { id: node.id, blend: weight });
                 continue;
             }
 
@@ -392,16 +508,24 @@ impl Index {
             // alone), a cross-fade between. The parent keeps `1 - alpha` of its
             // weight and hands `alpha` to the children by their count, so the
             // two sum to the cell's own weight throughout the transition.
-            let size = self.projected_extent(view, cell);
+            let size =
+                view.projected_px(node.extent, distance(view.eye, node.center));
             let alpha = ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX))
                 .clamp(0.0, 1.0);
             if alpha < 1.0 {
-                splats.push(SplatRef { id, blend: weight * (1.0 - alpha) });
+                splats.push(SplatRef {
+                    id: node.id,
+                    blend: weight * (1.0 - alpha),
+                });
             }
             if alpha > 0.0 {
-                for child in children {
-                    let share = child.aggregate.count() as f64 / total as f64;
-                    stack.push((child.id, weight * alpha * share));
+                for child in kids {
+                    let count = self.nodes[child].count;
+                    if count == 0 {
+                        continue;
+                    }
+                    let share = count as f64 / total as f64;
+                    stack.push((child as u32, weight * alpha * share));
                 }
             }
         }
@@ -413,32 +537,23 @@ impl Index {
     /// clears the limit, prune where it cannot, and mark every cell reached.
     fn discrete_stars(&self, view: &View) -> Vec<CellId> {
         let mut marks = Vec::new();
-        let mut stack = vec![CellId::ROOT];
-        while let Some(id) = stack.pop() {
-            let Some(cell) = self.get(id) else { continue };
-            if !self.cell_visible(view, cell) {
+        if self.nodes.is_empty() {
+            return marks;
+        }
+        let mut stack = vec![0u32];
+        while let Some(at) = stack.pop() {
+            let node = &self.nodes[at as usize];
+            if !node_visible(view, node) {
                 continue;
             }
-            marks.push(id);
-            for child in self.children(cell) {
-                stack.push(child.id);
+            marks.push(node.id);
+            for child in
+                node.first_child..node.first_child + node.children as u32
+            {
+                stack.push(child);
             }
         }
         marks
-    }
-
-    /// Whether any star a cell holds could clear the visibility limit, measured
-    /// to the nearest point of the cell so the test never drops a visible star.
-    fn cell_visible(&self, view: &View, cell: &Cell) -> bool {
-        let Some(m_min) = cell.aggregate.m_min() else {
-            return false;
-        };
-        let d_min = cell.id.bounds().distance_to(view.eye);
-        if d_min <= 0.0 {
-            return true;
-        }
-        Magnitude(m_min as f64).apparent(Distance::light_years(d_min))
-            <= Magnitude::EYE_LIMIT
     }
 
     /// The glow under the Real sky: descend while a cell subtends more than the
@@ -447,22 +562,41 @@ impl Index {
     /// does not cross-fade levels yet — so a splat carries its whole cell.
     fn glow_field(&self, view: &View) -> Vec<SplatRef> {
         let mut splats = Vec::new();
-        let mut stack = vec![CellId::ROOT];
-        while let Some(id) = stack.pop() {
-            let Some(cell) = self.get(id) else { continue };
-            let d = distance(view.eye, cell.id.bounds().center());
+        if self.nodes.is_empty() {
+            return splats;
+        }
+        let mut stack = vec![0u32];
+        while let Some(at) = stack.pop() {
+            let node = &self.nodes[at as usize];
+            let d = distance(view.eye, node.id.bounds().center());
             let angle =
-                if d <= 0.0 { f64::INFINITY } else { cell.id.edge_ly() / d };
-            if cell.is_leaf() || angle <= GLOW_OPENING_ANGLE {
-                splats.push(SplatRef { id, blend: 1.0 });
+                if d <= 0.0 { f64::INFINITY } else { node.id.edge_ly() / d };
+            if node.leaf || angle <= GLOW_OPENING_ANGLE {
+                splats.push(SplatRef { id: node.id, blend: 1.0 });
             } else {
-                for child in self.children(cell) {
-                    stack.push(child.id);
+                for child in
+                    node.first_child..node.first_child + node.children as u32
+                {
+                    stack.push(child);
                 }
             }
         }
         splats
     }
+}
+
+/// Whether any star a cell holds could clear the visibility limit, measured
+/// to the nearest point of the cell so the test never drops a visible star.
+fn node_visible(view: &View, node: &Node) -> bool {
+    let Some(m_min) = node.m_min else {
+        return false;
+    };
+    let d_min = node.id.bounds().distance_to(view.eye);
+    if d_min <= 0.0 {
+        return true;
+    }
+    Magnitude(m_min as f64).apparent(Distance::light_years(d_min))
+        <= Magnitude::EYE_LIMIT
 }
 
 /// Straight-line distance between two points, light years.
@@ -509,26 +643,46 @@ fn slice_spacing(cell: &Cell) -> f64 {
     contents_extent(cell) / slice.cbrt()
 }
 
-/// How many of a cell's own systems separate on screen: the prefix of its
-/// magnitude-ordered payload worth drawing as discrete marks.
+/// How many of a slice separate on screen, given where its systems sit and
+/// how far apart they are: the kernel the screen walk and
+/// [`resolvable_count`] both read, one off a [`Node`]'s figures and the other
+/// off a [`Cell`]'s.
 ///
-/// The slice's systems sit `slice_spacing` apart across the subtree. Where
-/// that already subtends the mark separation every one draws; where it is
-/// finer the prefix is decimated to the separation — `slice · (projected /
+/// The slice's systems sit `spacing` apart across the subtree. Where that
+/// already subtends the mark separation every one draws; where it is finer
+/// the prefix is decimated to the separation — `slice · (projected /
 /// MARK_SEPARATION_PX)^3` — so the drawn systems land one mark apart whatever
 /// the distance. Continuous in distance, so a cell fills in and empties one
 /// system at a time rather than switching on whole and exposing its box.
-pub fn resolvable_count(cell: &Cell, view: &View, separation_px: f64) -> u64 {
-    let slice = cell.slice_len();
+fn resolved(
+    slice: u64,
+    spacing: f64,
+    center: [f64; 3],
+    view: &View,
+    separation_px: f64,
+) -> u64 {
     if slice == 0 {
         return 0;
     }
-    let projected = view.projected_px(
-        slice_spacing(cell),
-        distance(view.eye, contents_center(cell)),
-    );
+    let projected = view.projected_px(spacing, distance(view.eye, center));
     let fraction = (projected / separation_px).powi(3).min(1.0);
     ((slice as f64) * fraction).round() as u64
+}
+
+/// How many of a cell's own systems separate on screen: the prefix of its
+/// magnitude-ordered payload worth drawing as discrete marks.
+///
+/// What the draw asks per cell, off the cell itself. The walk asks
+/// [`resolved`] directly, the figures this works out being held in its own
+/// tree already.
+pub fn resolvable_count(cell: &Cell, view: &View, separation_px: f64) -> u64 {
+    resolved(
+        cell.slice_len(),
+        slice_spacing(cell),
+        contents_center(cell),
+        view,
+        separation_px,
+    )
 }
 
 #[cfg(test)]

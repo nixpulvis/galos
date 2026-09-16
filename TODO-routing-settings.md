@@ -48,6 +48,28 @@ reach itself and nobody is asked.
 
 ## Landed this pass
 
+- **The screen walk was not the marks, and it is 1.5 ms now.** 22–29 ms a
+  frame, and the 151,619 marked cells were assumed to be the cost. Measured:
+  **12,503 marks 100 kly out cost 18 ms against 23 for 151,619** — twelve
+  times the marks for a fifth more clock, 131 ns against 114 for each cell
+  *visited*. What the walk visits is the whole tree, all 204,466 cells, at
+  every zoom inside 25 kly: four fifths of it is 128–512 Ly cells whose
+  contents subtend hundreds of times the two pixels the split turns on, so
+  nothing stops short of a leaf. And what reaching them cost was **408,932
+  map lookups a walk** — every cell twice, once as a child for its count and
+  once when popped — at 31–34 ns each, 13.3 ms of the 23 replayed with no
+  arithmetic between them. Of one lookup: 3 ns of address arithmetic, 12 of
+  SipHash, 17 of a 216-byte value's cache lines. The mark test's own 9 ms is
+  the same coin rather than its two cube roots — the identical arithmetic
+  over a packed array is 1.5 ms; off the map it is what pulls a `Cell`'s
+  second moments in for every leaf. So the walks descend a tree of their own
+  now: the cells breadth-first, a cell's children contiguous, carrying the
+  per-cell figures that are functions of the cell and never of the view — 88
+  bytes a node, 18 MB beside the map's 44, and `Index::read` 81 ms against
+  30, an index never being mutated after it is built. **23.3 → 1.5 ms at the
+  wide zoom, 18.4 → 1.0 at the whole galaxy**, and `Mode::Real` 11.9–32.2 ms
+  → 0.9–1.9. Checked cell for cell against the walk as it was on every zoom,
+  splats still summing to 1.000000 of the field.
 - **The ladder stops where it stops getting closer.** Each rung pays its
   own stall allowance before the next is tried, so a corridor no reach can
   plan was paying for all nine. Measured at 45 Ly, the plan alone, rung by
@@ -273,12 +295,27 @@ they were. What would actually move the 10 Ly case is the *plan* — fewer,
 shorter legs to fly — and there is no measurement yet saying what that
 would look like.
 
-### 2. The screen walk is 22–29 ms a frame
+### 2. A zoom's cost is the read: 18.5 s and 6.3 GB
 
-`Index::needed` marks 151,619 cells at a wide zoom and costs 22–29 ms every
-frame at 200 M, which is a hard ~35 fps ceiling independent of everything
-above. Not a hitch — a floor. Untouched, and the biggest remaining cost in
-the map.
+With the walk down to 1.5 ms, what a wide zoom costs is reading the cells it
+marks. Measured by the guard at 200 M, warm:
+
+| zoom | marks | read | points |
+|---|---|---|---|
+| 10 ly out | 151,619 | **18.47 s** | 152.7 M (6.26 GB) |
+| 1 kly | 150,841 | 16.31 s | 152.0 M (6.23 GB) |
+| 25 kly | 97,891 | 10.59 s | 98.2 M (4.03 GB) |
+| 100 kly | 12,503 | 1.05 s | 10.5 M (429 MB) |
+
+Four orders of magnitude over the walk that names the set. The walk is a
+pure function of the eye by design and marks a cell the moment *one* of its
+systems separates on screen, so at a wide zoom it names three quarters of
+the tree — and the draw then asks for a decimated prefix of each payload
+([`resolvable_count`], measured at 3.9 ns a point in the filter work above).
+What is unmeasured is the gap between those two: how many of the 152 M
+points read are points the prefix ever draws. Nothing has confirmed that the
+read set and the drawn set are the same size, and the 22–29 ms above says
+what assuming costs.
 
 ### 3. The far rim's start bridge
 
@@ -353,3 +390,8 @@ it is only ever paid where the narrower reach had already failed.
   `Coarse`, `Highway::plan` and its two passes.
 - `galos_map/src/ui.rs` — `trading`, `approximating`, `planning` carry why
   each control is drawn where it is, and what it was before.
+- `galos_index/src/walk.rs` — `Index`, `Node` and `walk_screen` carry what
+  the screen walk costs and why it descends its own tree.
+- `galos_index/examples/walk_cost.rs` — the ablation ladder that attributed
+  those milliseconds, and the checks that the flattened walk answers cell
+  for cell what the map walk did.
