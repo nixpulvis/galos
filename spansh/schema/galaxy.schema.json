@@ -1,0 +1,2189 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "$id": "https://docs.spansh.co.uk/schema/galaxy.schema.json",
+  "title": "Spansh Galaxy",
+  "description": "Dump of multiple full systems with one entry per system.  Pretty printed to show one system per line.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "id64": {
+        "description": "ID64 of the system, a 64 bit unsigned integer.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "name": {
+        "description": "Name of the system.",
+        "type": "string"
+      },
+      "coords": {
+        "description": "Coordinates of the system.",
+        "type": "object",
+        "properties": {
+          "x": {
+            "description": "X coordinate of the system.",
+            "type": "number"
+          },
+          "y": {
+            "description": "Y coordinate of the system.",
+            "type": "number"
+          },
+          "z": {
+            "description": "Z coordinate of the system.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "z"
+        ],
+        "additionalProperties": false
+      },
+      "allegiance": {
+        "description": "Allegiance of the system.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          null,
+          "Alliance",
+          "Empire",
+          "Federation",
+          "Frontline Solutions",
+          "Guardian",
+          "Independent",
+          "Pilots Federation",
+          "Thargoid"
+        ]
+      },
+      "government": {
+        "description": "Government type of the system.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          null,
+          "Anarchy",
+          "Communism",
+          "Confederacy",
+          "Cooperative",
+          "Corporate",
+          "Democracy",
+          "Dictatorship",
+          "Engineer",
+          "Feudal",
+          "Megaconstruction",
+          "None",
+          "Patronage",
+          "Prison",
+          "Prison Colony",
+          "Private Ownership",
+          "Theocracy"
+        ]
+      },
+      "primaryEconomy": {
+        "description": "Primary economy for the system.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          null,
+          "Agriculture",
+          "Colony",
+          "Extraction",
+          "High Tech",
+          "Industrial",
+          "Military",
+          "None",
+          "Prison",
+          "Private Enterprise",
+          "Refinery",
+          "Repair",
+          "Rescue",
+          "Service",
+          "Terraforming",
+          "Tourism"
+        ]
+      },
+      "secondaryEconomy": {
+        "description": "Secondary economy for the system.",
+        "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/primaryEconomy"
+      },
+      "security": {
+        "description": "Security rating of the system.",
+        "type": "string",
+        "enum": [
+          "Anarchy",
+          "High",
+          "Low",
+          "Medium"
+        ]
+      },
+      "population": {
+        "description": "Population of the system.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "bodyCount": {
+        "description": "Total number of planets and stars in the system.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "date": {
+        "description": "Timestamp of the last update of the system, in UTC.",
+        "type": "string",
+        "format": "date-time"
+      },
+      "bodies": {
+        "description": "All bodies of the system.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id64": {
+              "description": "The ID64 of the body, a 64 bit unsigned integer.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "bodyId": {
+              "description": "The numeric ID of the body within the system, a 64 bit unsigned integer.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "name": {
+              "description": "The name of the body.",
+              "type": "string"
+            },
+            "orbitalPeriod": {
+              "description": "The orbital period of the body, measured in days.",
+              "type": "number"
+            },
+            "semiMajorAxis": {
+              "description": "The semi major axis of the body, measured in Kilometers.",
+              "type": "number"
+            },
+            "orbitalEccentricity": {
+              "description": "The orbital eccentricity of the body.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "orbitalInclination": {
+              "description": "The orbital inclinction of the body, measured in degrees.",
+              "type": "number"
+            },
+            "argOfPeriapsis": {
+              "description": "The argument of periapsis the body, measured in degrees.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 360
+            },
+            "meanAnomaly": {
+              "description": "The mean of anomaly the body, measured in degrees.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 360
+            },
+            "ascendingNode": {
+              "description": "The ascending node of the body, measured in degrees.",
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            "timestamps": {
+              "description": "Timestamps of the last update of some of the fields within the body.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/timestamps"
+            },
+            "stations": {
+              "description": "Stations which are located on the body, planet based stations.",
+              "type": "array",
+              "items": {
+                "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/stations/items"
+              }
+            },
+            "updateTime": {
+              "description": "Timestamp of the last update of the body, in UTC.",
+              "type": "string"
+            },
+            "type": {
+              "description": "The type of the body.",
+              "type": "string",
+              "enum": [
+                "Planet",
+                "Star",
+                "Barycentre"
+              ]
+            },
+            "subType": {
+              "description": "Subtype of the body.",
+              "anyOf": [
+                {
+                  "description": "Subtype of the bodyi of type Planet.",
+                  "type": "string",
+                  "enum": [
+                    "Ammonia world",
+                    "Class I gas giant",
+                    "Class II gas giant",
+                    "Class III gas giant",
+                    "Class IV gas giant",
+                    "Class V gas giant",
+                    "Earth-like world",
+                    "Gas giant with ammonia-based life",
+                    "Gas giant with water-based life",
+                    "Helium gas giant",
+                    "Helium-rich gas giant",
+                    "High metal content world",
+                    "Icy body",
+                    "Metal-rich body",
+                    "Rocky Ice world",
+                    "Rocky body",
+                    "Water giant",
+                    "Water world"
+                  ]
+                },
+                {
+                  "description": "Subtype of the body of type Star.",
+                  "type": "string",
+                  "enum": [
+                    "A (Blue-White super giant) Star",
+                    "A (Blue-White) Star",
+                    "B (Blue-White super giant) Star",
+                    "B (Blue-White) Star",
+                    "Black Hole",
+                    "C Star",
+                    "CJ Star",
+                    "CN Star",
+                    "F (White super giant) Star",
+                    "F (White) Star",
+                    "G (White-Yellow super giant) Star",
+                    "G (White-Yellow) Star",
+                    "Herbig Ae/Be Star",
+                    "K (Yellow-Orange giant) Star",
+                    "K (Yellow-Orange) Star",
+                    "L (Brown dwarf) Star",
+                    "M (Red dwarf) Star",
+                    "M (Red giant) Star",
+                    "M (Red super giant) Star",
+                    "MS-type Star",
+                    "Neutron Star",
+                    "O (Blue-White) Star",
+                    "S-type Star",
+                    "Supermassive Black Hole",
+                    "T (Brown dwarf) Star",
+                    "T Tauri Star",
+                    "White Dwarf (D) Star",
+                    "White Dwarf (DA) Star",
+                    "White Dwarf (DAB) Star",
+                    "White Dwarf (DAV) Star",
+                    "White Dwarf (DAZ) Star",
+                    "White Dwarf (DB) Star",
+                    "White Dwarf (DBV) Star",
+                    "White Dwarf (DBZ) Star",
+                    "White Dwarf (DC) Star",
+                    "White Dwarf (DCV) Star",
+                    "White Dwarf (DQ) Star",
+                    "Wolf-Rayet C Star",
+                    "Wolf-Rayet N Star",
+                    "Wolf-Rayet NC Star",
+                    "Wolf-Rayet O Star",
+                    "Wolf-Rayet Star",
+                    "Y (Brown dwarf) Star"
+                  ]
+                }
+              ]
+            },
+            "distanceToArrival": {
+              "description": "Distance to the system arrival point of the body, measured in Kilometres.",
+              "type": "number",
+              "minimum": 0
+            },
+            "mainStar": {
+              "description": "Stars only.  Whether this is the main star of the system or not.",
+              "type": "boolean"
+            },
+            "age": {
+              "description": "Stars only.  The age of the star, measured in solar years.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "spectralClass": {
+              "description": "Stars only.  Spectral class of the star.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                null,
+                "A",
+                "A0",
+                "A1",
+                "A2",
+                "A3",
+                "A4",
+                "A5",
+                "A6",
+                "A7",
+                "A8",
+                "A9",
+                "AeBe0",
+                "AeBe1",
+                "AeBe2",
+                "AeBe3",
+                "AeBe4",
+                "AeBe5",
+                "AeBe6",
+                "AeBe7",
+                "AeBe8",
+                "AeBe9",
+                "B",
+                "B0",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "B7",
+                "B8",
+                "B9",
+                "C0",
+                "C1",
+                "C2",
+                "C3",
+                "C4",
+                "C5",
+                "C6",
+                "C7",
+                "C8",
+                "C9",
+                "CJ4",
+                "CJ5",
+                "CJ6",
+                "CN4",
+                "CN5",
+                "CN6",
+                "D5",
+                "D6",
+                "D7",
+                "DA0",
+                "DA1",
+                "DA2",
+                "DA3",
+                "DA4",
+                "DA5",
+                "DA6",
+                "DA7",
+                "DA8",
+                "DA9",
+                "DAB0",
+                "DAV0",
+                "DAZ0",
+                "DAZ5",
+                "DAZ6",
+                "DAZ7",
+                "DAZ8",
+                "DAZ9",
+                "DB0",
+                "DBV0",
+                "DBZ0",
+                "DC0",
+                "DC1",
+                "DC5",
+                "DC7",
+                "DC8",
+                "DC9",
+                "DCV0",
+                "DQ1",
+                "DQ4",
+                "DQ5",
+                "DQ6",
+                "DQ7",
+                "DQ8",
+                "DQ9",
+                "F",
+                "F0",
+                "F1",
+                "F2",
+                "F3",
+                "F4",
+                "F5",
+                "F6",
+                "F7",
+                "F8",
+                "F9",
+                "G",
+                "G0",
+                "G1",
+                "G2",
+                "G3",
+                "G4",
+                "G5",
+                "G6",
+                "G7",
+                "G8",
+                "G9",
+                "H0",
+                "H5",
+                "K",
+                "K0",
+                "K1",
+                "K2",
+                "K3",
+                "K4",
+                "K5",
+                "K6",
+                "K7",
+                "K8",
+                "K9",
+                "L",
+                "L0",
+                "L1",
+                "L2",
+                "L3",
+                "L4",
+                "L5",
+                "L6",
+                "L7",
+                "L8",
+                "L9",
+                "M",
+                "M0",
+                "M1",
+                "M2",
+                "M3",
+                "M4",
+                "M5",
+                "M6",
+                "M7",
+                "M8",
+                "M9",
+                "MS0",
+                "MS1",
+                "MS2",
+                "MS3",
+                "MS4",
+                "MS5",
+                "MS6",
+                "N0",
+                "N3",
+                "N5",
+                "O",
+                "O0",
+                "O1",
+                "O2",
+                "O3",
+                "O4",
+                "O5",
+                "O6",
+                "O7",
+                "O8",
+                "O9",
+                "S0",
+                "S1",
+                "S2",
+                "S3",
+                "S4",
+                "S5",
+                "S6",
+                "S7",
+                "T",
+                "T0",
+                "T1",
+                "T2",
+                "T3",
+                "T4",
+                "T5",
+                "T6",
+                "T7",
+                "T8",
+                "T9",
+                "TTS0",
+                "TTS1",
+                "TTS2",
+                "TTS3",
+                "TTS4",
+                "TTS5",
+                "TTS6",
+                "TTS7",
+                "TTS8",
+                "TTS9",
+                "W1",
+                "W2",
+                "W3",
+                "W4",
+                "W5",
+                "W6",
+                "W7",
+                "W8",
+                "W9",
+                "WC0",
+                "WC2",
+                "WC5",
+                "WC6",
+                "WN0",
+                "WN3",
+                "WN5",
+                "WNC0",
+                "WO0",
+                "Y0",
+                "Y1",
+                "Y2",
+                "Y3",
+                "Y4",
+                "Y5",
+                "Y6",
+                "Y9"
+              ]
+            },
+            "luminosity": {
+              "description": "Stars only.  Luminosity of the star.",
+              "type": "string",
+              "enum": [
+                "I",
+                "II",
+                "III",
+                "IIIa",
+                "IIIab",
+                "IIIb",
+                "IIa",
+                "IIab",
+                "IIb",
+                "IV",
+                "IVa",
+                "IVab",
+                "IVb",
+                "Ia",
+                "Ia0",
+                "Iab",
+                "Ib",
+                "O",
+                "V",
+                "VI",
+                "VII",
+                "Va",
+                "Vab",
+                "Vb",
+                "Vz"
+              ]
+            },
+            "absoluteMagnitude": {
+              "description": "Stars only.  Absolute magnitude of the star.",
+              "type": "number"
+            },
+            "solarMasses": {
+              "description": "Stars only. Mass of the star, as a ratio of the mass of Sol.",
+              "type": "number",
+              "minimum": 0
+            },
+            "solarRadius": {
+              "description": "Stars only. Radius of the star, as a ratio of the radius of Sol.",
+              "type": "number",
+              "minimum": 0
+            },
+            "surfaceTemperature": {
+              "description": "Surface temperature of the body, measured in Kelvin.",
+              "type": "number",
+              "minimum": 0
+            },
+            "rotationalPeriod": {
+              "description": "Rotational period of the body, measured in Days.",
+              "type": "number"
+            },
+            "rotationalPeriodTidallyLocked": {
+              "description": "Whether the rotational period of the body is locked to the tides.",
+              "type": "boolean"
+            },
+            "axialTilt": {
+              "description": "Axial tilt of the body, measured in radians.",
+              "type": "number"
+            },
+            "parents": {
+              "description": "Parents of the body, mapping each parent body type to it's ID within the system.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "number"
+                }
+              }
+            },
+            "isLandable": {
+              "description": "Planets only.  Whether the planet is landable or not.",
+              "type": "boolean"
+            },
+            "gravity": {
+              "description": "Planets only.  Gravity of the planet, as a ratio of the gravity of Earth.",
+              "type": "number",
+              "minimum": 0
+            },
+            "earthMasses": {
+              "description": "Planets only.  Mass of the planet, as a ratio of the mass of Earth.",
+              "type": "number",
+              "minimum": 0
+            },
+            "radius": {
+              "description": "Planets only.  Radius of the planet, measured in Kilimetres.",
+              "type": "number",
+              "minimum": 0
+            },
+            "surfacePressure": {
+              "description": "Planets only.  Surface pressure of the planet, measured in atmospheres.",
+              "type": "number",
+              "minimum": 0
+            },
+            "volcanismType": {
+              "description": "Planets only.  Volcanism type of the planet.",
+              "type": "string",
+              "enum": [
+                "Carbon Dioxide Geysers",
+                "Major Carbon Dioxide Geysers",
+                "Major Metallic Magma",
+                "Major Rocky Magma",
+                "Major Silicate Vapour Geysers",
+                "Major Water Geysers",
+                "Major Water Magma",
+                "Metallic Magma",
+                "Minor Ammonia Magma",
+                "Minor Carbon Dioxide Geysers",
+                "Minor Metallic Magma",
+                "Minor Methane Magma",
+                "Minor Nitrogen Magma",
+                "Minor Rocky Magma",
+                "Minor Silicate Vapour Geysers",
+                "Minor Water Geysers",
+                "Minor Water Magma",
+                "No volcanism",
+                "Rocky Magma",
+                "Silicate Vapour Geysers",
+                "Water Geysers",
+                "Water Magma"
+              ]
+            },
+            "atmosphereType": {
+              "description": "Planets only.  Atmosphere type of the planet.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                null,
+                "Ammonia",
+                "Ammonia and Oxygen",
+                "Ammonia-rich",
+                "Argon",
+                "Argon-rich",
+                "Carbon dioxide",
+                "Carbon dioxide-rich",
+                "Helium",
+                "Hot Argon",
+                "Hot Argon-rich",
+                "Hot Carbon dioxide",
+                "Hot Carbon dioxide-rich",
+                "Hot Metallic vapour",
+                "Hot Silicate vapour",
+                "Hot Sulphur dioxide",
+                "Hot Water",
+                "Hot Water-rich",
+                "Hot thick Ammonia",
+                "Hot thick Ammonia-rich",
+                "Hot thick Argon",
+                "Hot thick Argon-rich",
+                "Hot thick Carbon dioxide",
+                "Hot thick Carbon dioxide-rich",
+                "Hot thick Metallic vapour",
+                "Hot thick Methane",
+                "Hot thick Methane-rich",
+                "Hot thick Nitrogen",
+                "Hot thick Silicate vapour",
+                "Hot thick Sulphur dioxide",
+                "Hot thick Water",
+                "Hot thick Water-rich",
+                "Hot thin Carbon dioxide",
+                "Hot thin Metallic vapour",
+                "Hot thin Silicate vapour",
+                "Hot thin Sulphur dioxide",
+                "Methane",
+                "Methane-rich",
+                "Neon-rich",
+                "Nitrogen",
+                "No atmosphere",
+                "Oxygen",
+                "Suitable for water-based life",
+                "Sulphur dioxide",
+                "Thick Ammonia",
+                "Thick Ammonia and Oxygen",
+                "Thick Ammonia-rich",
+                "Thick Argon",
+                "Thick Argon-rich",
+                "Thick Carbon dioxide",
+                "Thick Carbon dioxide-rich",
+                "Thick Helium",
+                "Thick Methane",
+                "Thick Methane-rich",
+                "Thick Nitrogen",
+                "Thick No atmosphere",
+                "Thick Suitable for water-based life",
+                "Thick Sulphur dioxide",
+                "Thick Water",
+                "Thick Water-rich",
+                "Thin Ammonia",
+                "Thin Ammonia and Oxygen",
+                "Thin Ammonia-rich",
+                "Thin Argon",
+                "Thin Argon-rich",
+                "Thin Carbon dioxide",
+                "Thin Carbon dioxide-rich",
+                "Thin Helium",
+                "Thin Methane",
+                "Thin Methane-rich",
+                "Thin Neon",
+                "Thin Neon-rich",
+                "Thin Nitrogen",
+                "Thin Oxygen",
+                "Thin Sulphur dioxide",
+                "Thin Water",
+                "Thin Water-rich",
+                "Water",
+                "Water-rich"
+              ]
+            },
+            "atmosphereComposition": {
+              "description": "Planets only.  Atmosphere composition of the planet, mapping each element to it's percentage.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+            },
+            "solidComposition": {
+              "description": "Planets only.  Solid composition of the planet, mapping each element to it's percentage.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+            },
+            "terraformingState": {
+              "description": "Planets only.  Terraforming state of the planet.",
+              "type": "string",
+              "enum": [
+                "Not terraformable",
+                "Terraformable",
+                "Terraformed",
+                "Terraforming"
+              ]
+            },
+            "materials": {
+              "description": "Planets only.  Materials which can be found on the planet, mapping each material to it's percentage.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+            },
+            "signals": {
+              "description": "Planets only.  The signals that can be found on the planet.",
+              "type": "object",
+              "properties": {
+                "signals": {
+                  "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+                },
+                "updateTime": {
+                  "description": "The timestamp that the signals were last updated, in UTC.",
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "genuses": {
+                  "description": "Genuses which can be found on this planet.",
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "$Codex_Ent_Aleoids_Genus_Name;",
+                      "$Codex_Ent_Bacterial_Genus_Name;",
+                      "$Codex_Ent_Brancae_Name;",
+                      "$Codex_Ent_Cactoid_Genus_Name;",
+                      "$Codex_Ent_Clypeus_Genus_Name;",
+                      "$Codex_Ent_Conchas_Genus_Name;",
+                      "$Codex_Ent_Cone_Name;",
+                      "$Codex_Ent_Electricae_Genus_Name;",
+                      "$Codex_Ent_Fonticulus_Genus_Name;",
+                      "$Codex_Ent_Fumerolas_Genus_Name;",
+                      "$Codex_Ent_Fungoids_Genus_Name;",
+                      "$Codex_Ent_Ground_Struct_Ice_Name;",
+                      "$Codex_Ent_Osseus_Genus_Name;",
+                      "$Codex_Ent_Recepta_Genus_Name;",
+                      "$Codex_Ent_Shrubs_Genus_Name;",
+                      "$Codex_Ent_Sphere_Name;",
+                      "$Codex_Ent_Stratum_Genus_Name;",
+                      "$Codex_Ent_Tubus_Genus_Name;",
+                      "$Codex_Ent_Tussocks_Genus_Name;",
+                      "$Codex_Ent_Tube_Name;",
+                      "$Codex_Ent_Vents_Name;"
+                    ]
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "reserveLevel": {
+              "description": "Planets only.  Reserve level of the planet.",
+              "type": "string",
+              "enum": [
+                "Common",
+                "Depleted",
+                "Low",
+                "Major",
+                "Pristine"
+              ]
+            },
+            "rings": {
+              "description": "Rings associated with the body.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Name of the belt or ring.",
+                    "type": "string"
+                  },
+                  "type": {
+                    "description": "Type of the ring or belt.",
+                    "type": "string",
+                    "enum": [
+                      "Icy",
+                      "Metal Rich",
+                      "Metallic",
+                      "Rocky"
+                    ]
+                  },
+                  "mass": {
+                    "description": "Mass of the belt or ring, measured in Megatonnes.",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "innerRadius": {
+                    "description": "Inner radius of the belt or ring, measured in Kilometres.",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "outerRadius": {
+                    "description": "Outer radius of the belt or ring, measured in Kilometres.",
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "id64": {
+                    "description": "ID64 of the belt or ring, a 64 bit unsigned integer.",
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "signals": {
+                    "description": "The signals that can be found within the belt or ring.",
+                    "type": "object",
+                    "properties": {
+                      "signals": {
+                        "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+                      },
+                      "updateTime": {
+                        "description": "The timestamp that the signals were last updated, in UTC.",
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "signals",
+                      "updateTime"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "name",
+                  "type",
+                  "mass",
+                  "innerRadius",
+                  "outerRadius"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "belts": {
+              "description": "Belts associated with the body.",
+              "type": "array",
+              "items": {
+                "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/rings/items"
+              }
+            }
+          },
+          "required": [
+            "id64",
+            "bodyId",
+            "name",
+            "updateTime"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "stations": {
+        "description": "All space based stations of the system.",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Name of the station",
+              "type": "string"
+            },
+            "id": {
+              "description": "Market ID of the station.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "updateTime": {
+              "description": "Timestamp of the last update of the station, in UTC.",
+              "type": "string",
+              "format": "date-time"
+            },
+            "realName": {
+              "description": "Real name of the station, for colonisation stations.",
+              "type": "string"
+            },
+            "carrierName": {
+              "description": "Player given name of the station, for fleet carriers.",
+              "type": "string"
+            },
+            "controllingFaction": {
+              "description": "Controlling faction of the station.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "controllingFactionState": {
+              "description": "State of the controlling faction of the station.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/controllingFaction/properties/state"
+            },
+            "distanceToArrival": {
+              "description": "Distance to the system arrival point of the station, measured in Kilometres.",
+              "type": "number",
+              "minimum": 0
+            },
+            "primaryEconomy": {
+              "description": "Primary economy for the station.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/primaryEconomy"
+            },
+            "secondaryEconomy": {
+              "description": "Secondary economy for the station.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/primaryEconomy"
+            },
+            "economies": {
+              "description": "All econommies for the station, mapping each economy as a proportion of the stations economies.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/bodies/items/properties/parents/items"
+            },
+            "allegiance": {
+              "description": "Allegiance of the station.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/allegiance"
+            },
+            "government": {
+              "description": "Government type of the station.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/government"
+            },
+            "services": {
+              "description": "Servies provided by the station.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "Flight Controller",
+                  "Station Operations",
+                  "Dock",
+                  "Autodock",
+                  "Station Menu",
+                  "Contacts",
+                  "Refuel",
+                  "Market",
+                  "Repair",
+                  "Workshop",
+                  "Missions",
+                  "Search and Rescue",
+                  "Missions Generated",
+                  "Restock",
+                  "Social Space",
+                  "Black Market",
+                  "Interstellar Factors Contact",
+                  "Powerplay",
+                  "System Colonisation",
+                  "Crew Lounge",
+                  "Universal Cartographics",
+                  "Outfitting",
+                  "Livery",
+                  "Construction Services",
+                  "Shop",
+                  "Bartender",
+                  "Vista Genomics",
+                  "Shipyard",
+                  "Pioneer Supplies",
+                  "Apex Interstellar",
+                  "Tuning",
+                  "Fleet Carrier Fuel",
+                  "Fleet Carrier Management",
+                  "Frontline Solutions",
+                  "Refinery Contact",
+                  "Redemption Office",
+                  "Technology Broker",
+                  "Material Trader",
+                  "Squadron Bank",
+                  "Fleet Carrier Administration",
+                  "On Dock Mission",
+                  "Fleet Carrier Vendor"
+                ]
+              }
+            },
+            "type": {
+              "description": "Type of the station.",
+              "type": "string",
+              "enum": [
+                "Asteroid base",
+                "Coriolis Starport",
+                "Dockable Planet Station",
+                "Dodec Starport",
+                "Drake-Class Carrier",
+                "Mega ship",
+                "Ocellus Starport",
+                "Orbis Starport",
+                "Outpost",
+                "Planetary Construction Depot",
+                "Planetary Outpost",
+                "Planetary Port",
+                "Settlement",
+                "Space Construction Depot",
+                "Surface Settlement"
+              ]
+            },
+            "state": {
+              "description": "State of the station.",
+              "type": "string",
+              "enum": [
+                "Construction",
+                "Damaged",
+                "DamagedHuman",
+                "UnderAttack",
+                "UnderRepairs"
+              ]
+            },
+            "latitude": {
+              "description": "Planetary stations only.  Latitude of the station.",
+              "type": "number"
+            },
+            "longitude": {
+              "description": "Planetary stations only.  Longitude of the station.",
+              "type": "number"
+            },
+            "landingPads": {
+              "description": "Breakdown of the number of landing pads of the station.",
+              "type": "object",
+              "properties": {
+                "large": {
+                  "description": "Numer of large landing pads of the station.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "medium": {
+                  "description": "Numer of medium landing pads of the station.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "small": {
+                  "description": "Numer of small landing pads of the station.",
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "large",
+                "medium",
+                "small"
+              ],
+              "additionalProperties": false
+            },
+            "carrierDockingAccess": {
+              "description": "Carrier only.  Access control of the station.",
+              "type": "string"
+            },
+            "market": {
+              "description": "Commodity market information about the station.",
+              "type": "object",
+              "properties": {
+                "commodities": {
+                  "description": "Commodities that can be bought and sold at about the station.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "description": "Name of the commidity..",
+                        "type": "string",
+                        "enum": [
+                          "AI Relics",
+                          "Advanced Catalysers",
+                          "Advanced Medicines",
+                          "Aepyornis Egg",
+                          "Aganippe Rush",
+                          "Agri-Medicines",
+                          "Agronomic Treatment",
+                          "Alacarakmo Skin Art",
+                          "Albino Quechua Mammoth Meat",
+                          "Alexandrite",
+                          "Algae",
+                          "Altairian Skin",
+                          "Aluminium",
+                          "Alya Body Soap",
+                          "Ancient Artefact",
+                          "Ancient Key",
+                          "Anduliga Fire Works",
+                          "Animal Meat",
+                          "Animal Monitors",
+                          "Anomaly Particles",
+                          "Antimatter Containment Unit",
+                          "Antique Jewellery",
+                          "Antiquities",
+                          "Any Na Coffee",
+                          "Apa Vietii",
+                          "Aquaponic Systems",
+                          "Arouca Conventual Sweets",
+                          "Articulation Motors",
+                          "Assault Plans",
+                          "Atmospheric Processors",
+                          "Auto-Fabricators",
+                          "Az Cancri Formula 42",
+                          "Azure Milk",
+                          "Baked Greebles",
+                          "Baltah'sine Vacuum Krill",
+                          "Banki Amphibious Leather",
+                          "Basic Medicines",
+                          "Bast Snake Gin",
+                          "Battle Weapons",
+                          "Bauxite",
+                          "Beer",
+                          "Belalans Ray Leather",
+                          "Benitoite",
+                          "Bertrandite",
+                          "Beryllium",
+                          "Bioreducing Lichen",
+                          "Biowaste",
+                          "Bismuth",
+                          "Black Box",
+                          "Bone Fragments",
+                          "Bootleg Liquor",
+                          "Borasetani Pathogenetics",
+                          "Bromellite",
+                          "Buckyball Beer Mats",
+                          "Building Fabricators",
+                          "Burnham Bile Distillate",
+                          "CD-75 Kitten Brand Coffee",
+                          "CMM Composite",
+                          "Caustic Tissue Sample",
+                          "Centauri Mega Gin",
+                          "Ceramic Composites",
+                          "Ceremonial Heike Tea",
+                          "Ceti Rabbits",
+                          "Chameleon Cloth",
+                          "Chateau De Aegaeon",
+                          "Chemical Waste",
+                          "Cherbones Blood Crystals",
+                          "Chi Eridani Marine Paste",
+                          "Classified Experimental Equipment",
+                          "Clothing",
+                          "Cobalt",
+                          "Coffee",
+                          "Coltan",
+                          "Combat Stabilisers",
+                          "Commercial Samples",
+                          "Computer Components",
+                          "Conductive Fabrics",
+                          "Consumer Technology",
+                          "Copper",
+                          "Coquim Spongiform Victuals",
+                          "Coral Sap",
+                          "Curated Commodity Package",
+                          "Crom Silver Fesh",
+                          "Crop Harvesters",
+                          "Cryolite",
+                          "Crystalline Spheres",
+                          "Cyst Specimen",
+                          "Damaged Escape Pod",
+                          "Damna Carapaces",
+                          "Data Core",
+                          "Delta Phoenicis Palms",
+                          "Deuringas Truffles",
+                          "Diplomatic Bag",
+                          "Diso Ma Corn",
+                          "Domestic Appliances",
+                          "Duradrives",
+                          "Earth Relics",
+                          "Eden Apples of Aerial",
+                          "Eleu Thermals",
+                          "Emergency Power Cells",
+                          "Encrypted Correspondence",
+                          "Encrypted Data Storage",
+                          "Energy Grid Assembly",
+                          "Eranin Pearl Whisky",
+                          "Eshu Umbrellas",
+                          "Esuseku Caviar",
+                          "Ethgreze Tea Buds",
+                          "Evacuation Shelter",
+                          "Exhaust Manifold",
+                          "Experimental Chemicals",
+                          "Explosives",
+                          "Fish",
+                          "Food Cartridges",
+                          "Fossil Remnants",
+                          "Fruit and Vegetables",
+                          "Fujin Tea",
+                          "Galactic Travel Guide",
+                          "Gallite",
+                          "Gallium",
+                          "Geawen Dance Dust",
+                          "Gene Bank",
+                          "Geological Equipment",
+                          "Geological Samples",
+                          "Gerasian Gueuze Beer",
+                          "Giant Irukama Snails",
+                          "Giant Verrix",
+                          "Gilya Signature Weapons",
+                          "Gold",
+                          "Goman Yaupon Coffee",
+                          "Goslarite",
+                          "Grain",
+                          "Grandidierite",
+                          "Guardian Casket",
+                          "Guardian Orb",
+                          "Guardian Relic",
+                          "Guardian Tablet",
+                          "Guardian Totem",
+                          "Guardian Urn",
+                          "H.E. Suits",
+                          "HIP 10175 Bush Meat",
+                          "HIP 118311 Swarm",
+                          "HIP Organophosphates",
+                          "HIP Proto-Squid",
+                          "HN Shock Mount",
+                          "HR 7221 Wheat",
+                          "Haematite",
+                          "Hafnium 178",
+                          "Haiden Black Brew",
+                          "Hardware Diagnostic Sensor",
+                          "Harma Silver Sea Rum",
+                          "Havasupai Dream Catcher",
+                          "Heatsink Interlink",
+                          "Helvetitj Pearls",
+                          "Holva Duelling Blades",
+                          "Honesty Pills",
+                          "Hostages",
+                          "Hydrogen Fuel",
+                          "Hydrogen Peroxide",
+                          "Imperial Slaves",
+                          "Impure Spire Mineral",
+                          "Indi Bourbon",
+                          "Indite",
+                          "Indium",
+                          "Insulating Membrane",
+                          "Ion Distributor",
+                          "Jadeite",
+                          "Jaques Quinentian Still",
+                          "Jaradharre Puzzle Box",
+                          "Jaroua Rice",
+                          "Jotun Mookah",
+                          "Kachirigin Filter Leeches",
+                          "Kamitra Cigars",
+                          "Kamorin Historic Weapons",
+                          "Karetii Couture",
+                          "Karsuki Locusts",
+                          "Kinago Violins",
+                          "Kongga Ale",
+                          "Koro Kung Pellets",
+                          "LTT Hyper Sweet",
+                          "Land Enrichment Systems",
+                          "Landmines",
+                          "Lanthanum",
+                          "Large Survey Data Cache",
+                          "Lavian Brandy",
+                          "Leather",
+                          "Leathery Eggs",
+                          "Leestian Evil Juice",
+                          "Lepidolite",
+                          "Liquid oxygen",
+                          "Liquor",
+                          "Lithium",
+                          "Lithium Hydroxide",
+                          "Live Hecate Sea Worms",
+                          "Low Temperature Diamonds",
+                          "Lucan Onionhead",
+                          "Lyrae Weed",
+                          "Magnetic Emitter Coil",
+                          "Marine Equipment",
+                          "Master Chefs",
+                          "Mechucos High Tea",
+                          "Medb Starlube",
+                          "Medical Diagnostic Equipment",
+                          "Meta-Alloys",
+                          "Methane Clathrate",
+                          "Methanol Monohydrate Crystals",
+                          "Micro Controllers",
+                          "Micro-weave Cooling Hoses",
+                          "Microbial Furnaces",
+                          "Military Grade Fabrics",
+                          "Military Intelligence",
+                          "Military Plans",
+                          "Mineral Extractors",
+                          "Mineral Oil",
+                          "Modular Terminals",
+                          "Moissanite",
+                          "Mokojing Beast Feast",
+                          "Mollusc Brain Tissue",
+                          "Mollusc Fluid",
+                          "Mollusc Membrane",
+                          "Mollusc Mycelium",
+                          "Mollusc Soft Tissue",
+                          "Mollusc Spores",
+                          "Momus Bog Spaniel",
+                          "Monazite",
+                          "Motrona Experience Jelly",
+                          "Mukusubii Chitin-os",
+                          "Mulachi Giant Fungus",
+                          "Muon Imager",
+                          "Musgravite",
+                          "Mysterious Idol",
+                          "Nanobreakers",
+                          "Nanomedicines",
+                          "Narcotics",
+                          "Natural Fabrics",
+                          "Neofabric Insulation",
+                          "Neritus Berries",
+                          "Nerve Agents",
+                          "Ngadandari Fire Opals",
+                          "Nguna Modern Antiques",
+                          "Njangari Saddles",
+                          "Non Euclidian Exotanks",
+                          "Non-Lethal Weapons",
+                          "Occupied Escape Pod",
+                          "Ochoeng Chillies",
+                          "Onionhead",
+                          "Onionhead Alpha Strain",
+                          "Onionhead Beta Strain",
+                          "Onionhead Gamma Strain",
+                          "Ophiuch Exino Artefacts",
+                          "Organ Sample",
+                          "Orrerian Vicious Brew",
+                          "Osmium",
+                          "Painite",
+                          "Palladium",
+                          "Pantaa Prayer Sticks",
+                          "Pavonis Ear Grubs",
+                          "Performance Enhancers",
+                          "Personal Effects",
+                          "Personal Gifts",
+                          "Personal Weapons",
+                          "Pesticides",
+                          "Platinum",
+                          "Platinum Alloy",
+                          "Pod Core Tissue",
+                          "Pod Dead Tissue",
+                          "Pod Mesoglea",
+                          "Pod Outer Tissue",
+                          "Pod Shell Tissue",
+                          "Pod Surface Tissue",
+                          "Pod Tissue",
+                          "Political Prisoners",
+                          "Polymers",
+                          "Power Converter",
+                          "Power Generators",
+                          "Power Transfer Bus",
+                          "Praseodymium",
+                          "Precious Gems",
+                          "Progenitor Cells",
+                          "Prohibited Research Materials",
+                          "Protective Membrane Scrap",
+                          "Prototype Tech",
+                          "Pyrophyllite",
+                          "Radiation Baffle",
+                          "Rajukru Multi-Stoves",
+                          "Rapa Bao Snake Skins",
+                          "Rare Artwork",
+                          "Reactive Armour",
+                          "Rebel Transmissions",
+                          "Reinforced Mounting Plate",
+                          "Resonating Separators",
+                          "Rhodplumsite",
+                          "Robotics",
+                          "Rockforth Fertiliser",
+                          "Rusani Old Smokey",
+                          "Rutile",
+                          "SAP 8 Core Container",
+                          "Samarium",
+                          "Sanuma Decorative Meat",
+                          "Saxon Wine",
+                          "Scientific Research",
+                          "Scientific Samples",
+                          "Scrap",
+                          "Semi-Refined Spire Mineral",
+                          "Semiconductors",
+                          "Serendibite",
+                          "Shan's Charis Orchid",
+                          "Silver",
+                          "Skimmer Components",
+                          "Slaves",
+                          "Small Survey Data Cache",
+                          "Soontill Relics",
+                          "Sothis Crystalline Gold",
+                          "Space Pioneer Relics",
+                          "Steel",
+                          "Structural Regulators",
+                          "Superconductors",
+                          "Surface Stabilisers",
+                          "Survival Equipment",
+                          "Synthetic Fabrics",
+                          "Synthetic Meat",
+                          "Synthetic Reagents",
+                          "Taaffeite",
+                          "Tactical Data",
+                          "Tanmark Tranquil Tea",
+                          "Tantalum",
+                          "Tarach Spice",
+                          "Tauri Chimes",
+                          "Tea",
+                          "Technical Blueprints",
+                          "Telemetry Suite",
+                          "Terra Mater Blood Bores",
+                          "Thallium",
+                          "Thargoid Basilisk Tissue Sample",
+                          "Thargoid Biological Matter",
+                          "Thargoid Cyclops Tissue Sample",
+                          "Thargoid Glaive Tissue Sample",
+                          "Thargoid Heart",
+                          "Thargoid Hydra Tissue Sample",
+                          "Thargoid Link",
+                          "Thargoid Medusa Tissue Sample",
+                          "Thargoid Orthrus Tissue Sample",
+                          "Thargoid Probe",
+                          "Thargoid Resin",
+                          "Thargoid Scout Tissue Sample",
+                          "Thargoid Scythe Tissue Sample",
+                          "Thargoid Sensor",
+                          "Thargoid Technology Samples",
+                          "The Hutton Mug",
+                          "The Waters of Shintara",
+                          "Thermal Cooling Units",
+                          "Thorium",
+                          "Thrutis Cream",
+                          "Tiegfries Synth Silk",
+                          "Time Capsule",
+                          "Tiolce Waste2Paste Units",
+                          "Titan Deep Tissue Sample",
+                          "Titan Drive Component",
+                          "Titan Maw Deep Tissue Sample",
+                          "Titan Maw Partial Tissue Sample",
+                          "Titan Maw Tissue Sample",
+                          "Titan Partial Tissue Sample",
+                          "Titan Tissue Sample",
+                          "Titanium",
+                          "Tobacco",
+                          "Toxandji Virocide",
+                          "Toxic Waste",
+                          "Trade Data",
+                          "Trinkets of Hidden Fortune",
+                          "Tritium",
+                          "Ultra-Compact Processor Prototypes",
+                          "Unclassified Relic",
+                          "Unoccupied Escape Pod",
+                          "Unstable Data Core",
+                          "Uraninite",
+                          "Uranium",
+                          "Uszaian Tree Grub",
+                          "Utgaroar Millennial Eggs",
+                          "Uzumoku Low-G Wings",
+                          "V Herculis Body Rub",
+                          "Vanayequi Ceratomorpha Fur",
+                          "Vega Slimweed",
+                          "Vidavantian Lace",
+                          "Void Extract Coffee",
+                          "Void Opal",
+                          "Volkhab Bee Drones",
+                          "Water",
+                          "Water Purifiers",
+                          "Wheemete Wheat Cakes",
+                          "Wine",
+                          "Witchhaul Kobe Beef",
+                          "Wolf Fesh",
+                          "Wreckage Components",
+                          "Wulpa Hyperbore Systems",
+                          "Wuthielo Ku Froth",
+                          "Xenobiological Prison Pod",
+                          "Xihe Biomorphic Companions",
+                          "Yaso Kondi Leaf",
+                          "Zeessze Ant Grub Glue"
+                        ]
+                      },
+                      "symbol": {
+                        "description": "Frontier symbol identifier of the commodity.",
+                        "type": "string"
+                      },
+                      "category": {
+                        "description": "Category of the commodity.",
+                        "type": "string",
+                        "enum": [
+                          "Chemicals",
+                          "Consumer Items",
+                          "Foods",
+                          "Industrial Materials",
+                          "Legal Drugs",
+                          "Machinery",
+                          "Medicines",
+                          "Metals",
+                          "Minerals",
+                          "Salvage",
+                          "Slavery",
+                          "Technology",
+                          "Textiles",
+                          "Waste",
+                          "Weapons"
+                        ]
+                      },
+                      "commodityId": {
+                        "description": "Frontier numeric identifier of the commodity.",
+                        "type": "integer"
+                      },
+                      "demand": {
+                        "description": "Demand for the commodity.",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "supply": {
+                        "description": "Supply for the commodity.",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "buyPrice": {
+                        "description": "Price the player can buy the commodity for.",
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "sellPrice": {
+                        "description": "Price the player can sell the commodity for.",
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "symbol",
+                      "category",
+                      "commodityId",
+                      "demand",
+                      "supply",
+                      "buyPrice",
+                      "sellPrice"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "prohibitedCommodities": {
+                  "description": "Commodities that are illegal on the station.",
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "updateTime": {
+                  "description": "Timestamp of the last update of the marketplace for the station, in UTC.",
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "commodities",
+                "prohibitedCommodities",
+                "updateTime"
+              ],
+              "additionalProperties": false
+            },
+            "shipyard": {
+              "description": "Shipyard information about the station.",
+              "type": "object",
+              "properties": {
+                "ships": {
+                  "description": "Ships that can be bought at the station.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "description": "Ship restrictions for the module.",
+                        "type": "string",
+                        "enum": [
+                          "Adder",
+                          "Alliance Challenger",
+                          "Alliance Chieftain",
+                          "Alliance Crusader",
+                          "Anaconda",
+                          "Asp Explorer",
+                          "Asp Scout",
+                          "Beluga Liner",
+                          "Caspian Explorer",
+                          "Cobra MkIII",
+                          "Cobra MkIV",
+                          "Cobra MkV",
+                          "Corsair",
+                          "Diamondback Explorer",
+                          "Diamondback Scout",
+                          "Dolphin",
+                          "Eagle",
+                          "Federal Assault Ship",
+                          "Federal Corvette",
+                          "Federal Dropship",
+                          "Federal Gunship",
+                          "Fer-de-Lance",
+                          "Hauler",
+                          "Imperial Clipper",
+                          "Imperial Courier",
+                          "Imperial Cutter",
+                          "Imperial Eagle",
+                          "Keelback",
+                          "Kestrel Mk II",
+                          "Krait MkII",
+                          "Krait Phantom",
+                          "Lynx Highliner",
+                          "Mamba",
+                          "Mandalay",
+                          "Orca",
+                          "Panther Clipper MkII",
+                          "Python",
+                          "Python MkII",
+                          "Sidewinder",
+                          "Type-10 Defender",
+                          "Type-11 Prospector",
+                          "Type-6 Transporter",
+                          "Type-7 Transporter",
+                          "Type-8 Transporter",
+                          "Type-9 Heavy",
+                          "Viper MkIII",
+                          "Viper MkIV",
+                          "Vulture"
+                        ]
+                      },
+                      "symbol": {
+                        "description": "Frontier symbol identifier of the ship.",
+                        "type": "string"
+                      },
+                      "shipId": {
+                        "description": "Frontier numeric identifier of the ship.",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "symbol",
+                      "shipId"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "updateTime": {
+                  "description": "Timestamp of the last update of the shipyard for the station, in UTC.",
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "ships",
+                "updateTime"
+              ],
+              "additionalProperties": false
+            },
+            "outfitting": {
+              "description": "Outfitting information about the station.",
+              "type": "object",
+              "properties": {
+                "modules": {
+                  "description": "Outfitting modules that can be bought at the station.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "description": "Name of the module.",
+                        "type": "string",
+                        "enum": [
+                          "Power Distributor",
+                          "Fuel Scoop",
+                          "Sensors",
+                          "Life Support",
+                          "Shield Cell Bank",
+                          "Auto Field-Maintenance Unit",
+                          "Power Plant",
+                          "Shield Generator",
+                          "Thrusters",
+                          "Frame Shift Drive",
+                          "Frame Shift Drive (SCO)",
+                          "Lightweight Alloy",
+                          "Reinforced Alloy",
+                          "Refinery",
+                          "Military Grade Composite",
+                          "Prospector Limpet Controller",
+                          "Frame Shift Drive Interdictor",
+                          "Hatch Breaker Limpet Controller",
+                          "Fuel Transfer Limpet Controller",
+                          "Collector Limpet Controller",
+                          "Repair Limpet Controller",
+                          "Reactive Surface Composite",
+                          "Mirrored Surface Composite",
+                          "Cargo Rack",
+                          "Beam Laser",
+                          "Hull Reinforcement Package",
+                          "Module Reinforcement Package",
+                          "Pulse Laser",
+                          "Cannon",
+                          "Multi-Cannon",
+                          "Planetary Vehicle Hangar",
+                          "Burst Laser",
+                          "Fuel Tank",
+                          "Fragment Cannon",
+                          "Bi-Weave Shield Generator",
+                          "Shield Booster",
+                          "Sub-Surface Displacement Missile",
+                          "Mining Laser",
+                          "Recon Limpet Controller",
+                          "Seeker Missile Rack",
+                          "Cargo Scanner",
+                          "Kill Warrant Scanner",
+                          "Economy Class Passenger Cabin",
+                          "Frame Shift Wake Scanner",
+                          "Missile Rack",
+                          "Pulse Wave Analyser",
+                          "Torpedo Pylon",
+                          "Fighter Hangar",
+                          "Rail Gun",
+                          "Business Class Passenger Cabin",
+                          "Prismatic Shield Generator",
+                          "Plasma Accelerator",
+                          "Mine Launcher",
+                          "Abrasion Blaster",
+                          "Xeno Multi Limpet Controller",
+                          "Mk II Economy Class Passenger Cabin",
+                          "Mk II Cargo Rack",
+                          "Seismic Charge Launcher",
+                          "Mining Multi Limpet Controller",
+                          "First Class Passenger Cabin",
+                          "Operations Multi Limpet Controller",
+                          "Rescue Multi Limpet Controller",
+                          "Decontamination Limpet Controller",
+                          "Mk II Business Class Passenger Cabin",
+                          "Detailed Surface Scanner",
+                          "Chaff Launcher",
+                          "Heat Sink Launcher",
+                          "Standard Docking Computer",
+                          "Supercruise Assist",
+                          "Research Limpet Controller",
+                          "Electronic Countermeasure",
+                          "Advanced Docking Computer",
+                          "Shock Mine Launcher",
+                          "Advanced Planetary Approach Suite",
+                          "AX Multi-Cannon",
+                          "AX Missile Rack",
+                          "Meta Alloy Hull Reinforcement",
+                          "Planetary Approach Suite",
+                          "Mk II Mining Multi-Limpet Controller",
+                          "Luxury Class Passenger Cabin",
+                          "Mk II Plasma Shock Accelerator",
+                          "Point Defence",
+                          "Mining Volley Repeater",
+                          "Enhanced AX Multi-Cannon",
+                          "Mk II Supercharge Optimised Frame Shift Drive (SCO)",
+                          "Remote Release Flak Launcher",
+                          "Mk II Agile Boost Thrusters",
+                          "Mk II Gravity Optimised Thrusters",
+                          "Mk II Vessel Hangar",
+                          "Universal Multi Limpet Controller",
+                          "Xeno Scanner",
+                          "Mk II Ablative Lightweight Alloys",
+                          "Mk II Ablative Reinforced Alloys",
+                          "Mk II Ablative Military Grade Composite",
+                          "Mk II Ablative Reactive Surface Composite",
+                          "Mk II Ablative Mirrored Surface Composite",
+                          "Shutdown Field Neutraliser",
+                          "Pack-Hound Missile Rack",
+                          "Imperial Hammer Rail Gun",
+                          "Enforcer Cannon",
+                          "Advanced Plasma Accelerator",
+                          "Pulse Disruptor Laser",
+                          "Retributor Beam Laser",
+                          "Concord Cannon",
+                          "Rocket Propelled FSD Disruptor",
+                          "Pacifier Frag-Cannon",
+                          "Mining Lance",
+                          "Cytoscrambler Burst Laser",
+                          "Thargoid Pulse Neutraliser",
+                          "Enhanced Xeno Scanner",
+                          "Advanced Multi-Cannon",
+                          "Shock Cannon",
+                          "Enzyme Missile Rack",
+                          "Advanced Missile Rack",
+                          "Enhanced AX Missile Rack",
+                          "Corrosion Resistant Cargo Rack",
+                          "Remote Release Flechette Launcher",
+                          "Guardian Shield Reinforcement",
+                          "Experimental Weapon Stabiliser",
+                          "Guardian Hull Reinforcement",
+                          "Guardian Module Reinforcement",
+                          "Guardian Hybrid Power Distributor",
+                          "Guardian Hybrid Power Plant",
+                          "Guardian Shard Cannon",
+                          "Guardian Plasma Charger",
+                          "Guardian FSD Booster",
+                          "Caustic Sink Launcher",
+                          "Pulse Wave Xeno Scanner",
+                          "Guardian Nanite Torpedo Pylon",
+                          "Sub-Surface Extraction Missile",
+                          "Guardian Gauss Cannon",
+                          "Enhanced Performance Thrusters",
+                          "Advanced Discovery Scanner",
+                          "Intermediate Discovery Scanner",
+                          "Basic Discovery Scanner"
+                        ]
+                      },
+                      "symbol": {
+                        "description": "Frontier symbol identifier of the module.",
+                        "type": "string"
+                      },
+                      "moduleId": {
+                        "description": "Frontier numeric identifier of the module.",
+                        "type": "number"
+                      },
+                      "class": {
+                        "description": "Class of the module.",
+                        "type": "integer",
+                        "enum": [
+                          1,
+                          3,
+                          2,
+                          5,
+                          4,
+                          7,
+                          6,
+                          8,
+                          0
+                        ]
+                      },
+                      "rating": {
+                        "description": "Rating of the module.",
+                        "type": "string",
+                        "enum": [
+                          "E",
+                          "D",
+                          "C",
+                          "I",
+                          "B",
+                          "A",
+                          "F",
+                          "G",
+                          "H"
+                        ]
+                      },
+                      "category": {
+                        "description": "Category of the module.",
+                        "type": "string",
+                        "enum": [
+                          "hardpoint",
+                          "internal",
+                          "utility",
+                          "standard"
+                        ]
+                      },
+                      "ship": {
+                        "description": "Ship restrictions for the module.",
+                        "oneOf": [
+                          {
+                            "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/stations/items/properties/shipyard/properties/ships/items/properties/name"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "symbol",
+                      "moduleId",
+                      "class",
+                      "rating",
+                      "category"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "updateTime": {
+                  "description": "Timestamp of the last update of the outfitting for the station, in UTC.",
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "modules",
+                "updateTime"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "name",
+            "id",
+            "updateTime"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "controllingFaction": {
+        "description": "Controlling faction of the system.",
+        "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/factions/items"
+      },
+      "factions": {
+        "description": "All factions with influence in the system.",
+        "type": "array",
+        "items": {
+          "description": "Full faction state",
+          "type": "object",
+          "properties": {
+            "name": {
+              "description": "Name of the faction of the system.",
+              "type": "string"
+            },
+            "state": {
+              "description": "State of the faction of the system.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                null,
+                "Blight",
+                "Boom",
+                "Bust",
+                "Civil Liberty",
+                "Civil Unrest",
+                "Civil War",
+                "Drought",
+                "Election",
+                "Expansion",
+                "Famine",
+                "Infrastructure Failure",
+                "Investment",
+                "Lockdown",
+                "Natural Disaster",
+                "None",
+                "Outbreak",
+                "Pirate Attack",
+                "Public Holiday",
+                "Retreat",
+                "Terrorist Attack",
+                "War"
+              ]
+            },
+            "allegiance": {
+              "description": "Allegiance of the faction of the system.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/allegiance"
+            },
+            "government": {
+              "description": "Government type of the faction of the system.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/government"
+            },
+            "influence": {
+              "description": "Influence of the faction.",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "activeStates": {
+              "description": "Currently active states for this faction.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "description": "Actual state of the state.",
+                    "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/controllingFaction/properties/state"
+                  },
+                  "trend": {
+                    "description": "Trend of the state of the faction.",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "pendingStates": {
+              "description": "Pending states for this faction.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/controllingFaction/properties/activeStates"
+            },
+            "recoveringStates": {
+              "description": "Recovering states for this faction.",
+              "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/controllingFaction/properties/activeStates"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "powerState": {
+        "description": "State of the controlling power of the system.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          null,
+          "Exploited",
+          "Fortified",
+          "Stronghold",
+          "Unoccupied"
+        ]
+      },
+      "powerConflictProgress": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "power": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                null,
+                "Aisling Duval",
+                "A. Lavigny-Duval",
+                "Archon Delaine",
+                "Denton Patreus",
+                "Edmund Mahon",
+                "Felicia Winters",
+                "Jerome Archer",
+                "Li Yong-Rui",
+                "Nakato Kaine",
+                "Pranav Antal",
+                "Yuri Grom",
+                "Zemina Torval"
+              ]
+            },
+            "progress": {
+              "description": "Progress of the power in the conflict.",
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "power",
+            "progress"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "powers": {
+        "description": "Powers with influence in the system.",
+        "type": "array",
+        "items": {
+          "description": "Name of the powers.",
+          "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/powerConflictProgress/items/properties/power"
+        }
+      },
+      "timestamps": {
+        "description": "Update timestamps for individual attributes, mapping attribute to last updated timestamp.",
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "controllingPower": {
+        "description": "Name of the controlling power of the system.",
+        "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/powerConflictProgress/items/properties/power"
+      },
+      "powerStateControlProgress": {
+        "description": "Progress of the controlling power in controlling the system.",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "powerStateReinforcement": {
+        "description": "Progress of the controlling power in reinforcing the system.",
+        "type": [
+          "number",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "powerStateUndermining": {
+        "description": "Progress of the controlling power in losing the system.",
+        "type": [
+          "number",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "thargoidWar": {
+        "description": "State of the Thargoid war in this system.",
+        "type": "object",
+        "properties": {
+          "currentState": {
+            "description": "Current Thargoid state in this system.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "None",
+              "Thargoid Controlled",
+              "Thargoid Harvest",
+              "Thargoid Probing",
+              "Thargoid Recovery",
+              "Thargoid Stronghold"
+            ]
+          },
+          "successState": {
+            "description": "Thargoid state in this system if the war is won by the players.",
+            "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/thargoidWar/properties/currentState"
+          },
+          "failureState": {
+            "description": "Thargoid state in this system if the war is lost by the players.",
+            "$ref": "#/paths/~1%7Bfilename%7D/get/responses/200/content/application~1json/schema/items/properties/thargoidWar/properties/currentState"
+          },
+          "progress": {
+            "description": "Progress of the Thargoid war in this system.",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "daysRemaining": {
+            "description": "Days remaining of the Thargoid war in this system.",
+            "type": "number",
+            "minimum": 0
+          },
+          "portsRemaining": {
+            "description": "Posts remaining in the Thargoid war in this system.",
+            "type": "number",
+            "minimum": 0
+          },
+          "successReached": {
+            "description": "Have the players won the Thargoid war in this system.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "required": [
+      "id64",
+      "name",
+      "coords",
+      "date",
+      "bodies"
+    ],
+    "additionalProperties": false
+  }
+}

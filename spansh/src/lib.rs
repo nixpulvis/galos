@@ -251,3 +251,127 @@ impl Galaxy {
         self.lines.at()
     }
 }
+
+/// The published schemas, vendored, and what the tests ask of them.
+///
+/// `schema/{systems,galaxy}.schema.json` are Spansh's own, copied from
+/// <https://docs.spansh.co.uk/schema/> unedited. They are here because
+/// three of this crate's lists — the star classes, the planet classes and
+/// the fields each form is told apart by — *are* the schema, and a list
+/// transcribed by hand goes stale the day the format moves and says
+/// nothing: a class missed drops a whole family of star to the fallback,
+/// silently, over the whole galaxy.
+///
+/// So the tests read the file. Refreshing it from the site is how this
+/// crate finds out the format moved, and a refresh that adds a value
+/// fails a test rather than passing one.
+///
+/// Not used at run time. Validating 610 GB against a schema would cost
+/// more than the parse it duplicates, and serde already refuses what it
+/// cannot read.
+#[cfg(test)]
+pub(crate) mod schema {
+    use serde_json::Value;
+
+    /// `systems.json`'s schema, the brief form's.
+    pub fn systems() -> Value {
+        read(include_str!("../schema/systems.schema.json"))
+    }
+
+    /// `galaxy.json`'s schema, the full form's.
+    pub fn galaxy() -> Value {
+        read(include_str!("../schema/galaxy.schema.json"))
+    }
+
+    /// The one object the array holds, which is where every schema here
+    /// says anything at all.
+    fn read(text: &str) -> Value {
+        let schema: Value = serde_json::from_str(text).expect("the schema");
+        schema["items"].clone()
+    }
+
+    /// What a form's schema says an object cannot be without.
+    pub fn required(form: &Value) -> Vec<String> {
+        strings(&form["required"])
+    }
+
+    /// Every value `mainStar` may take in the brief form: the prose for a
+    /// star, and for the planet or barycentre a ship can arrive at
+    /// instead.
+    pub fn main_stars() -> Vec<String> {
+        strings(&systems()["properties"]["mainStar"]["enum"])
+    }
+
+    /// Every value a body's `subType` may take in the full form, by the
+    /// arm of the `anyOf` it belongs to — `"Planet"` or `"Star"`, as the
+    /// schema's own descriptions spell them.
+    ///
+    /// The two arms are shorter than [`main_stars`]: the full form lists
+    /// 43 stars where the brief form's `mainStar` lists the same classes
+    /// and the eighteen planets together.
+    pub fn sub_types(kind: &str) -> Vec<String> {
+        let body = galaxy()["properties"]["bodies"]["items"].clone();
+        let arms = body["properties"]["subType"]["anyOf"]
+            .as_array()
+            .expect("subType is an anyOf")
+            .clone();
+        let arm = arms
+            .iter()
+            .find(|arm| {
+                arm["description"]
+                    .as_str()
+                    .is_some_and(|it| it.ends_with(&format!("of type {kind}.")))
+            })
+            .unwrap_or_else(|| panic!("no {kind} arm in the schema"));
+        strings(&arm["enum"])
+    }
+
+    /// A schema array of strings, as strings.
+    fn strings(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|it| it.as_str().expect("a string").to_owned())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fields a dump is told apart by are the fields its schema says
+    /// it cannot be without.
+    ///
+    /// [`Form::of`] rests on exactly this: were `bodies` to become
+    /// optional, or the brief form to grow a `date`, the sniff would start
+    /// answering the wrong form for a whole file and nothing else here
+    /// would notice.
+    #[test]
+    fn each_form_requires_what_it_is_told_apart_by() {
+        let brief = schema::required(&schema::systems());
+        let full = schema::required(&schema::galaxy());
+
+        assert!(brief.contains(&"updateTime".to_string()), "{brief:?}");
+        assert!(!brief.contains(&"date".to_string()), "{brief:?}");
+        assert!(!brief.contains(&"bodies".to_string()), "{brief:?}");
+
+        assert!(full.contains(&"date".to_string()), "{full:?}");
+        assert!(full.contains(&"bodies".to_string()), "{full:?}");
+    }
+
+    /// And an object of either form reads as the form it is.
+    #[test]
+    fn an_object_says_which_form_it_is() {
+        let brief = r#"{"id64":1,"name":"N","coords":{"x":0,"y":0,"z":0},"updateTime":"2020-01-01T00:00:00Z"}"#;
+        let full = r#"{"id64":1,"name":"N","coords":{"x":0,"y":0,"z":0},"date":"2020-01-01T00:00:00Z","bodies":[{"bodyId":1,"name":"N A","updateTime":"2020-01-01T00:00:00Z"}]}"#;
+
+        assert_eq!(Form::of(brief), Some(Form::Brief));
+        assert_eq!(Form::of(full), Some(Form::Full));
+        // A body of the full form carries an `updateTime` of its own, so
+        // that field alone cannot be the brief form's tell.
+        assert!(full.contains("\"updateTime\""));
+        assert_eq!(Form::of(r#"{"id64":1}"#), None);
+    }
+}

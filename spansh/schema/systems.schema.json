@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "$id": "https://docs.spansh.co.uk/schema/systems.schema.json",
+  "title": "Spansh Systems",
+  "description": "Dump of multiple brief systems with one entry per system.  Pretty printed to show one system per line.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "id64": {
+        "description": "ID64 of the system, a 64 bit unsigned integer.",
+        "type": "integer",
+        "minimum": 0
+      },
+      "name": {
+        "description": "Name of the system.",
+        "type": "string"
+      },
+      "mainStar": {
+        "description": "Class of the main star of the system.",
+        "type": "string",
+        "enum": [
+          "A (Blue-White super giant) Star",
+          "A (Blue-White) Star",
+          "Ammonia world",
+          "B (Blue-White super giant) Star",
+          "B (Blue-White) Star",
+          "Black Hole",
+          "C Star",
+          "CJ Star",
+          "CN Star",
+          "Class I gas giant",
+          "Class II gas giant",
+          "Class III gas giant",
+          "Class IV gas giant",
+          "Class V gas giant",
+          "Earth-like world",
+          "F (White super giant) Star",
+          "F (White) Star",
+          "G (White-Yellow super giant) Star",
+          "G (White-Yellow) Star",
+          "Gas giant with ammonia-based life",
+          "Gas giant with water-based life",
+          "Helium gas giant",
+          "Helium-rich gas giant",
+          "Herbig Ae/Be Star",
+          "High metal content world",
+          "Icy body",
+          "K (Yellow-Orange giant) Star",
+          "K (Yellow-Orange) Star",
+          "L (Brown dwarf) Star",
+          "M (Red dwarf) Star",
+          "M (Red giant) Star",
+          "M (Red super giant) Star",
+          "MS-type Star",
+          "Metal-rich body",
+          "Neutron Star",
+          "O (Blue-White) Star",
+          "Rocky Ice world",
+          "Rocky body",
+          "S-type Star",
+          "Supermassive Black Hole",
+          "T (Brown dwarf) Star",
+          "T Tauri Star",
+          "Water giant",
+          "Water world",
+          "White Dwarf (D) Star",
+          "White Dwarf (DA) Star",
+          "White Dwarf (DAB) Star",
+          "White Dwarf (DAV) Star",
+          "White Dwarf (DAZ) Star",
+          "White Dwarf (DB) Star",
+          "White Dwarf (DBV) Star",
+          "White Dwarf (DBZ) Star",
+          "White Dwarf (DC) Star",
+          "White Dwarf (DCV) Star",
+          "White Dwarf (DQ) Star",
+          "Wolf-Rayet C Star",
+          "Wolf-Rayet N Star",
+          "Wolf-Rayet NC Star",
+          "Wolf-Rayet O Star",
+          "Wolf-Rayet Star",
+          "Y (Brown dwarf) Star"
+        ]
+      },
+      "coords": {
+        "description": "Coordinates of the system.",
+        "type": "object",
+        "properties": {
+          "x": {
+            "description": "X coordinate of the system.",
+            "type": "number"
+          },
+          "y": {
+            "description": "Y coordinate of the system.",
+            "type": "number"
+          },
+          "z": {
+            "description": "Z coordinate of the system.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "z"
+        ],
+        "additionalProperties": false
+      },
+      "needsPermit": {
+        "description": "Does the system need a permit to enter?",
+        "type": "boolean"
+      },
+      "updateTime": {
+        "description": "Timestamp of the last update of the system, in UTC.",
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "required": [
+      "id64",
+      "name",
+      "coords",
+      "updateTime"
+    ],
+    "additionalProperties": false
+  }
+}

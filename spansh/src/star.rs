@@ -122,116 +122,62 @@ pub fn class_of(main_star: &str) -> Option<StarClass> {
 mod tests {
     use super::*;
 
-    /// Every value `systems.schema.json` lists, all sixty-one.
-    ///
-    /// Copied from the published schema, which is what the format
-    /// promises, rather than from the file.
-    const LISTED: [&str; 61] = [
-        "A (Blue-White super giant) Star",
-        "A (Blue-White) Star",
-        "Ammonia world",
-        "B (Blue-White super giant) Star",
-        "B (Blue-White) Star",
-        "Black Hole",
-        "C Star",
-        "CJ Star",
-        "CN Star",
-        "Class I gas giant",
-        "Class II gas giant",
-        "Class III gas giant",
-        "Class IV gas giant",
-        "Class V gas giant",
-        "Earth-like world",
-        "F (White super giant) Star",
-        "F (White) Star",
-        "G (White-Yellow super giant) Star",
-        "G (White-Yellow) Star",
-        "Gas giant with ammonia-based life",
-        "Gas giant with water-based life",
-        "Helium gas giant",
-        "Helium-rich gas giant",
-        "Herbig Ae/Be Star",
-        "High metal content world",
-        "Icy body",
-        "K (Yellow-Orange giant) Star",
-        "K (Yellow-Orange) Star",
-        "L (Brown dwarf) Star",
-        "M (Red dwarf) Star",
-        "M (Red giant) Star",
-        "M (Red super giant) Star",
-        "MS-type Star",
-        "Metal-rich body",
-        "Neutron Star",
-        "O (Blue-White) Star",
-        "Rocky Ice world",
-        "Rocky body",
-        "S-type Star",
-        "Supermassive Black Hole",
-        "T (Brown dwarf) Star",
-        "T Tauri Star",
-        "Water giant",
-        "Water world",
-        "White Dwarf (D) Star",
-        "White Dwarf (DA) Star",
-        "White Dwarf (DAB) Star",
-        "White Dwarf (DAV) Star",
-        "White Dwarf (DAZ) Star",
-        "White Dwarf (DB) Star",
-        "White Dwarf (DBV) Star",
-        "White Dwarf (DBZ) Star",
-        "White Dwarf (DC) Star",
-        "White Dwarf (DCV) Star",
-        "White Dwarf (DQ) Star",
-        "Wolf-Rayet C Star",
-        "Wolf-Rayet N Star",
-        "Wolf-Rayet NC Star",
-        "Wolf-Rayet O Star",
-        "Wolf-Rayet Star",
-        "Y (Brown dwarf) Star",
-    ];
+    use crate::schema;
 
-    /// The eighteen listed values whose main body is not a star.
-    const NOT_A_STAR: [&str; 18] = [
-        "Ammonia world",
-        "Class I gas giant",
-        "Class II gas giant",
-        "Class III gas giant",
-        "Class IV gas giant",
-        "Class V gas giant",
-        "Earth-like world",
-        "Gas giant with ammonia-based life",
-        "Gas giant with water-based life",
-        "Helium gas giant",
-        "Helium-rich gas giant",
-        "High metal content world",
-        "Icy body",
-        "Metal-rich body",
-        "Rocky Ice world",
-        "Rocky body",
-        "Water giant",
-        "Water world",
-    ];
+    /// Every value the brief form's `mainStar` may take, off the
+    /// vendored `systems.schema.json` rather than a hand copy of it.
+    ///
+    /// Sixty-one as published: the star classes and the eighteen planets
+    /// a ship can arrive at instead. See [`crate::schema`] for why the
+    /// file is in the tree.
+    fn listed() -> Vec<String> {
+        schema::main_stars()
+    }
+
+    /// The listed values whose main body is not a star, which the full
+    /// form's schema names on its own: a body's `subType` has a `Planet`
+    /// arm and a `Star` arm, and the planets are the ones `class_of`
+    /// must answer nothing for.
+    fn not_a_star() -> Vec<String> {
+        schema::sub_types("Planet")
+    }
 
     /// Every value the schema lists is accounted for: a star gets a class
     /// and a planet gets nothing, and neither falls through to the arm that
     /// means "the format moved".
     ///
     /// A value missed here would light a whole family of system as the
-    /// fallback red dwarf, silently.
+    /// fallback red dwarf, silently — which is the whole reason the
+    /// schema is read rather than transcribed: a class Spansh adds
+    /// arrives in this test the next time the file is refreshed.
     #[test]
     fn every_value_the_schema_lists_is_mapped() {
-        for listed in LISTED {
-            let mapped = class_of(listed);
+        let listed = listed();
+        let not_a_star = not_a_star();
+        assert_eq!(listed.len(), 61, "the brief form's list moved");
+
+        for value in &listed {
+            let mapped = class_of(value);
             assert_eq!(
                 mapped.is_some(),
-                !NOT_A_STAR.contains(&listed),
-                "{listed} mapped to {mapped:?}",
+                !not_a_star.contains(value),
+                "{value} mapped to {mapped:?}",
             );
         }
-        // And the second list really is part of the first, so a typo in it
-        // cannot quietly excuse a star from the check above.
-        for body in NOT_A_STAR {
-            assert!(LISTED.contains(&body), "{body} is not a listed value");
+        // The planets really are part of the one list, so the two
+        // schemas cannot drift into excusing a star from the check above.
+        for body in &not_a_star {
+            assert!(listed.contains(body), "{body} is not a listed value");
+        }
+        // And the full form's own stars are the same prose, so one
+        // translation answers both dumps. Forty-three there against
+        // sixty-one here: the brief form's list is the stars and the
+        // planets together.
+        let stars = schema::sub_types("Star");
+        assert_eq!(stars.len(), 43, "the full form's star list moved");
+        for star in stars {
+            assert!(class_of(&star).is_some(), "{star} is not mapped");
+            assert!(listed.contains(&star), "{star} is not a listed value");
         }
     }
 
@@ -239,11 +185,11 @@ mod tests {
     /// for: an `Unknown` here would mean this crate invented a spelling.
     #[test]
     fn nothing_maps_to_an_unknown_class() {
-        for listed in LISTED {
-            if let Some(class) = class_of(listed) {
+        for value in listed() {
+            if let Some(class) = class_of(&value) {
                 assert!(
                     !matches!(class, StarClass::Unknown(_)),
-                    "{listed} mapped to an unknown class",
+                    "{value} mapped to an unknown class",
                 );
             }
         }

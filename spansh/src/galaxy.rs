@@ -588,37 +588,22 @@ pub fn volcanism_of(volcanism_type: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Every planet `galaxy.schema.json` lists, all eighteen.
-    ///
-    /// Copied from the published schema, which is what the format
-    /// promises, rather than from the file. A value missed here would
-    /// drop a whole family of world from every import, silently.
-    const PLANETS: [&str; 18] = [
-        "Ammonia world",
-        "Class I gas giant",
-        "Class II gas giant",
-        "Class III gas giant",
-        "Class IV gas giant",
-        "Class V gas giant",
-        "Earth-like world",
-        "Gas giant with ammonia-based life",
-        "Gas giant with water-based life",
-        "Helium gas giant",
-        "Helium-rich gas giant",
-        "High metal content world",
-        "Icy body",
-        "Metal-rich body",
-        "Rocky Ice world",
-        "Rocky body",
-        "Water giant",
-        "Water world",
-    ];
+    /// Every planet `galaxy.schema.json` lists, off the vendored copy of
+    /// it rather than a transcription — a value missed here would drop a
+    /// whole family of world from every import, silently. See
+    /// [`crate::schema`].
+    fn planets() -> Vec<String> {
+        crate::schema::sub_types("Planet")
+    }
 
     /// Every planet the schema lists has a class the game writes, and no
     /// two share one.
     #[test]
     fn every_planet_the_schema_lists_is_mapped() {
-        let mut classes: Vec<_> = PLANETS
+        let planets = planets();
+        assert_eq!(planets.len(), 18, "the schema's planet list moved");
+
+        let mut classes: Vec<_> = planets
             .iter()
             .map(|planet| {
                 planet_class(planet)
@@ -627,7 +612,7 @@ mod tests {
             .collect();
         classes.sort_unstable();
         classes.dedup();
-        assert_eq!(classes.len(), PLANETS.len());
+        assert_eq!(classes.len(), planets.len());
     }
 
     /// A star's prose is not a planet's, and neither answers the other.
