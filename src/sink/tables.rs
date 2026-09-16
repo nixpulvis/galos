@@ -27,9 +27,9 @@
 //! write — so what is published stands untouched for the life of the run.
 //! See `galos_index::galaxy`.
 
-use galos_index::Galaxy;
 use galos_index::meta::PopulatedSystem;
 use galos_index::sidecars::{Counts, Moved, Sidecars};
+use galos_index::Galaxy;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;

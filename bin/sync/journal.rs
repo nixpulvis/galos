@@ -27,11 +27,11 @@
 // and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
 // each message, and the gateway's rules about how much and how often.
 
+use elite_journal::entry::{Entry, Event, NavRoute};
+use elite_journal::journal::{Journal as Reader, Read};
+use elite_journal::system::Coordinate;
 use galos::sink::{Reporter, Sink, SystemName, SystemReport};
 use galos::{bar, Shard, Shutdown};
-use elite_journal::entry::{Entry, Event, NavRoute};
-use elite_journal::system::Coordinate;
-use elite_journal::journal::{Journal as Reader, Read};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -186,8 +186,7 @@ impl Journal {
         // Who is flying, carried between readings: a session names its
         // commander once, at the top of the file it opened, which may have
         // been read by the import hours ago.
-        let mut known =
-            self.user.clone().or_else(|| remembered(reader.dir()));
+        let mut known = self.user.clone().or_else(|| remembered(reader.dir()));
 
         while !shutdown.asked() {
             match async_std::future::timeout(TICK, readings.recv()).await {
@@ -1096,8 +1095,7 @@ mod tests {
             _: &Outfitting,
         ) {
         }
-        async fn shipyard(&mut self, _: DateTime<Utc>, _: &str, _: &Shipyard) {
-        }
+        async fn shipyard(&mut self, _: DateTime<Utc>, _: &str, _: &Shipyard) {}
         async fn black_market(
             &mut self,
             _: DateTime<Utc>,
@@ -1169,7 +1167,9 @@ mod tests {
                 fs::OpenOptions::new()
                     .append(true)
                     .open(&log)
-                    .and_then(|mut file| file.write_all(&[JUMP, b"\n"].concat()))
+                    .and_then(|mut file| {
+                        file.write_all(&[JUMP, b"\n"].concat())
+                    })
                     .expect("the journal should take another line");
 
                 let arrived = until(&seen, 2, Duration::from_secs(10))
@@ -1181,12 +1181,8 @@ mod tests {
 
         // Long enough that nothing here can be the timer coming round.
         let beat = Duration::from_secs(60);
-        let source = Journal {
-            path: dir,
-            user: None,
-            watch: Some(beat),
-            shard: None,
-        };
+        let source =
+            Journal { path: dir, user: None, watch: Some(beat), shard: None };
         async_std::task::block_on(source.read(&mut sink, &shutdown));
 
         let (imported, arrived) =

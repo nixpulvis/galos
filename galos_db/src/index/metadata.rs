@@ -18,10 +18,10 @@
 //! row.
 
 use crate::barycenters::Barycenter;
-use crate::bodies::{Body, Surface, ancestry, composition};
+use crate::bodies::{ancestry, composition, Body, Surface};
 use crate::index::Parts;
 use crate::stars::Star;
-use crate::{Database, Result, orbit};
+use crate::{orbit, Database, Result};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
@@ -29,8 +29,8 @@ pub(super) use galos_index::sidecars::Moved;
 use galos_index::sidecars::Sidecars;
 use galos_index::source::write_meta;
 use galos_index::{derive, meta, source};
-use sqlx::Row;
 use sqlx::postgres::PgRow;
+use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;

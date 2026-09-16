@@ -45,12 +45,12 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
-use galos_db::Database;
 use galos_db::index::Stop;
+use galos_db::Database;
+use galos_index::galaxy::UNKNOWN;
 use galos_index::{
     BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
 };
-use galos_index::galaxy::UNKNOWN;
 use galos_index::{Galaxy, Published};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -454,19 +454,18 @@ impl Index {
     /// tree short of what the directory serves and publishes the shortfall
     /// over it. Not fatal: the directory is published regardless.
     fn record(&mut self, cursor: Option<NaiveDateTime>, moved: &[System]) {
-        let folding =
-            match Pending::append(&self.checkpoint, cursor, moved) {
-                Ok(folding) => folding,
-                Err(err) => {
-                    warn!(
-                        file = %Pending::path(&self.checkpoint).display(),
-                        error = %err,
-                        "what this publish wrote could not be logged; a \
-                         restart would not see it",
-                    );
-                    return;
-                }
-            };
+        let folding = match Pending::append(&self.checkpoint, cursor, moved) {
+            Ok(folding) => folding,
+            Err(err) => {
+                warn!(
+                    file = %Pending::path(&self.checkpoint).display(),
+                    error = %err,
+                    "what this publish wrote could not be logged; a \
+                     restart would not see it",
+                );
+                return;
+            }
+        };
         if !folding {
             return;
         }
@@ -517,16 +516,12 @@ impl Sink for Index {
         by: Reporter<'_>,
     ) -> Option<Landed> {
         let named = by.named();
-        self.galaxy
-            .reported_by(if named.is_empty() { UNKNOWN } else { named });
+        self.galaxy.reported_by(if named.is_empty() { UNKNOWN } else { named });
         self.galaxy.read(&entry);
         // Asked before `took`, which moves these onto this pass's set:
         // after it, every address would look like one the store had.
-        let landed = self
-            .galaxy
-            .touched()
-            .iter()
-            .fold(None, |so_far, &address| {
+        let landed =
+            self.galaxy.touched().iter().fold(None, |so_far, &address| {
                 Landed::widest(so_far, Some(self.landing(address)))
             });
         self.took();
@@ -1094,8 +1089,7 @@ mod tests {
     #[test]
     fn a_flush_publishes_the_tables_the_directory_lacks() {
         let (dir, checkpoint) = scratch("sidecars");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         // A jump and nothing else: nothing populated, nothing scanned,
         // nothing supercharging.
         pollster::block_on(sink.entry(
@@ -1125,8 +1119,7 @@ mod tests {
     #[test]
     fn events_become_a_readable_directory() {
         let (dir, checkpoint) = scratch("published");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1158,8 +1151,7 @@ mod tests {
     fn a_second_run_resumes_the_first() {
         let (dir, checkpoint) = scratch("resumed");
 
-        let mut first =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut first = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(first.entry(
             jump("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -1167,8 +1159,7 @@ mod tests {
         first.publish_whole(None).expect("the first run should write");
         assert_eq!(published(&dir), 1);
 
-        let mut second =
-            opened(&dir, &checkpoint).expect("it reopens");
+        let mut second = opened(&dir, &checkpoint).expect("it reopens");
         pollster::block_on(second.entry(
             jump("Alpha Centauri", 22, [3.0, 0.0, 3.0]),
             Reporter::Commander("cmdr"),
@@ -1190,8 +1181,7 @@ mod tests {
     #[test]
     fn a_flush_publishes_only_what_arrived() {
         let (dir, checkpoint) = scratch("flushed");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             sink.entry(
@@ -1230,8 +1220,7 @@ mod tests {
     #[test]
     fn a_run_killed_after_one_flush_reopens() {
         let (dir, checkpoint) = scratch("killed");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1270,8 +1259,7 @@ mod tests {
     #[test]
     fn a_system_nothing_named_is_not_published() {
         let (dir, checkpoint) = scratch("nameless");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1305,8 +1293,7 @@ mod tests {
     #[test]
     fn a_reported_system_is_placed_where_it_has_a_place() {
         let (dir, checkpoint) = scratch("dumped");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         let report =
             |address: i64, name: &str, at: Option<Coordinate>| SystemReport {
@@ -1372,8 +1359,7 @@ mod tests {
     #[test]
     fn a_scan_after_a_flush_joins_what_is_on_the_disk() {
         let (dir, checkpoint) = scratch("merged");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             sink.entry(
@@ -1421,8 +1407,7 @@ mod tests {
     #[test]
     fn a_flush_leaves_no_bodies_held() {
         let (dir, checkpoint) = scratch("unheld");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 jump("Sol", 10477373803, [0.0; 3]),
@@ -1458,8 +1443,7 @@ mod tests {
     #[test]
     fn a_directory_without_its_resume_point_is_refused() {
         let (dir, checkpoint) = scratch("orphaned");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(sink.entry(
             jump("Sol", 10477373803, [0.0; 3]),
             Reporter::Commander("cmdr"),
@@ -1549,8 +1533,7 @@ mod tests {
     #[test]
     fn a_publish_after_the_last_checkpoint_is_not_lost() {
         let (dir, checkpoint) = scratch("lagging");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         // The first flush of a run writes a resume point and clears the log.
         pollster::block_on(sink.entry(
@@ -1571,8 +1554,7 @@ mod tests {
         assert!(Pending::path(&checkpoint).exists(), "the log has the second");
         drop(sink);
 
-        let reopened =
-            opened(&dir, &checkpoint).expect("it reopens");
+        let reopened = opened(&dir, &checkpoint).expect("it reopens");
         assert_eq!(
             reopened.tree.len(),
             2,
@@ -1599,8 +1581,7 @@ mod tests {
     #[test]
     fn a_scan_is_filed_under_whoever_the_source_named() {
         let (dir, checkpoint) = scratch("attributed");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         pollster::block_on(async {
             // The journal's own `Commander` event, which is what the galaxy
@@ -1711,8 +1692,7 @@ mod tests {
     #[test]
     fn a_finish_rewrites_only_the_cells_that_moved() {
         let (dir, checkpoint) = scratch("unmoved");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
 
         // More systems than one leaf holds, spread over a cube so the tree
         // splits: a directory of a single cell has nothing to leave alone.
@@ -1800,8 +1780,7 @@ mod tests {
     #[test]
     fn a_finish_without_a_publish_leaves_the_whole_directory() {
         let (dir, checkpoint) = scratch("unflushed");
-        let mut sink =
-            opened(&dir, &checkpoint).expect("a sink opens");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
         pollster::block_on(async {
             sink.entry(
                 settled("Sol", 10477373803, [0.0; 3]),

@@ -899,8 +899,7 @@ mod tests {
             ("M_RedGiant", "M"),
             ("M_RedSuperGiant", "M"),
         ] {
-            let (a, b) =
-                (ClassLight::of(giant), ClassLight::of(dwarf));
+            let (a, b) = (ClassLight::of(giant), ClassLight::of(dwarf));
             assert!(
                 a.absolute_magnitude.0 < b.absolute_magnitude.0,
                 "{giant} is not brighter than {dwarf}",

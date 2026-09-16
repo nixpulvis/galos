@@ -1,6 +1,6 @@
 use super::BlackMarket;
-use crate::Error;
 use crate::markets::Market;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::BlackMarket as JournalBlackMarket;
 use galos_index::SystemName;

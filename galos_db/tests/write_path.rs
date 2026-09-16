@@ -46,10 +46,18 @@ use elite_journal::station::{
 use elite_journal::system::{Coordinate, Security, System as JournalSystem};
 use elite_journal::Allegiance;
 use galos_db::{
-    black_market::BlackMarket, bodies::Body, body_signals::BodySignal,
-    clusters::Cluster, codex_entries::CodexEntry, markets::Market,
-    outfitting::Outfitting, rings::Ring, shipyard::Shipyard, stars::Star,
-    stations::Station, system_signals::SystemSignal,
+    black_market::BlackMarket,
+    bodies::Body,
+    body_signals::BodySignal,
+    clusters::Cluster,
+    codex_entries::CodexEntry,
+    markets::Market,
+    outfitting::Outfitting,
+    rings::Ring,
+    shipyard::Shipyard,
+    stars::Star,
+    stations::Station,
+    system_signals::SystemSignal,
     systems::{Landed, System},
     testing::Scratch,
     Database, Error,
@@ -3214,7 +3222,8 @@ async fn one_star_written_twice_leaves_the_nearer_record() {
 
     assert_eq!(kept.id, 2, "the write answered with the record it dropped");
 
-    let mut stars = Star::fetch_all(&db, TWIN).await.expect("stars should read");
+    let mut stars =
+        Star::fetch_all(&db, TWIN).await.expect("stars should read");
     stars.sort_by_key(|star| star.id);
     assert_eq!(
         stars.iter().map(|star| star.id).collect::<Vec<_>>(),
@@ -3318,10 +3327,16 @@ async fn two_writers_of_one_name_do_not_refuse_each_other() {
     let near = star(2, 0.0);
     let racing = async_std::task::spawn(async move {
         let mut tx = second.begin().await.expect("a transaction");
-        let kept =
-            Star::from_journal(&mut *tx, at(60), "test", &near, TWIN_RACE, None)
-                .await
-                .expect("the second writer was turned away");
+        let kept = Star::from_journal(
+            &mut *tx,
+            at(60),
+            "test",
+            &near,
+            TWIN_RACE,
+            None,
+        )
+        .await
+        .expect("the second writer was turned away");
         tx.commit().await.expect("the second entry should commit");
         kept
     });
@@ -3336,10 +3351,7 @@ async fn two_writers_of_one_name_do_not_refuse_each_other() {
 
     assert_eq!(kept.id, 2, "the second writer read a galaxy without the first");
     assert_eq!(
-        Star::fetch_all(&db, TWIN_RACE)
-            .await
-            .expect("stars should read")
-            .len(),
+        Star::fetch_all(&db, TWIN_RACE).await.expect("stars should read").len(),
         1,
         "two writers of one star left two rows",
     );

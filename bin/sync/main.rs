@@ -90,7 +90,7 @@ use galos::{bar, Shard, Shutdown};
 use galos_db::index::Parts;
 use galos_db::Database;
 use galos_index::{
-    Build, BuildParams, Built, By, Ending, Rows, Start, region_budget,
+    region_budget, Build, BuildParams, Built, By, Ending, Rows, Start,
 };
 use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
@@ -461,8 +461,7 @@ fn refused(cli: &Cli) -> Result<(), String> {
     // run that took them silently would do the opposite of what it was
     // asked and say so nowhere.
     let follows = following(cli);
-    let journal =
-        cli.from.iter().any(|it| matches!(it, Source::Journal(_)));
+    let journal = cli.from.iter().any(|it| matches!(it, Source::Journal(_)));
     let api = cli.from.iter().any(|it| matches!(it, Source::EdsmApi(_)));
 
     if cli.publish.is_some() {
@@ -1080,12 +1079,8 @@ mod tests {
     /// check is here, where a refusal costs nothing, and not in the source.
     #[test]
     fn a_source_that_is_not_there_is_refused() {
-        let missing = cli(&[
-            "--from",
-            "spansh=/tmp/no/such/galaxy.json",
-            "--index",
-            "d",
-        ]);
+        let missing =
+            cli(&["--from", "spansh=/tmp/no/such/galaxy.json", "--index", "d"]);
         let Err(said) = refused(&missing) else {
             panic!("a dump that does not exist was accepted")
         };
@@ -1218,7 +1213,12 @@ mod tests {
         assert!(refused(&api).is_err(), "a sharded API answer was accepted");
 
         let followed = cli(&[
-            "--from", "journal=logs", "--db", "--shard", "0/8", "--watch",
+            "--from",
+            "journal=logs",
+            "--db",
+            "--shard",
+            "0/8",
+            "--watch",
         ]);
         assert!(refused(&followed).is_err(), "a sharded watch was accepted");
     }
@@ -1227,10 +1227,8 @@ mod tests {
     #[test]
     fn bulk_belongs_to_a_run_that_writes_a_database() {
         assert!(refused(&cli(&["--from", "eddn", "--db", "--bulk"])).is_ok());
-        assert!(refused(&cli(&[
-            "--from", "eddn", "--index", "d", "--bulk",
-        ]))
-        .is_err());
+        assert!(refused(&cli(&["--from", "eddn", "--index", "d", "--bulk",]))
+            .is_err());
     }
 
     /// The beat belongs to a run something is reading while it writes
@@ -1243,7 +1241,12 @@ mod tests {
     #[test]
     fn a_beat_belongs_to_a_run_that_follows_something() {
         let import = cli(&[
-            "--from", "spansh=Cargo.toml", "--index", "d", "--publish", "2",
+            "--from",
+            "spansh=Cargo.toml",
+            "--index",
+            "d",
+            "--publish",
+            "2",
         ]);
         let Err(said) = refused(&import) else {
             panic!("an import on a beat was accepted")
@@ -1252,11 +1255,21 @@ mod tests {
 
         // The feed and a followed journal are what the beat is for.
         assert!(refused(&cli(&[
-            "--from", "eddn", "--index", "d", "--publish", "2",
+            "--from",
+            "eddn",
+            "--index",
+            "d",
+            "--publish",
+            "2",
         ]))
         .is_ok());
         assert!(refused(&cli(&[
-            "--from", "journal=bin", "--index", "d", "--watch", "--publish",
+            "--from",
+            "journal=bin",
+            "--index",
+            "d",
+            "--watch",
+            "--publish",
             "2",
         ]))
         .is_ok());
@@ -1264,7 +1277,12 @@ mod tests {
         // The same journal read once is an import like any other.
         assert!(
             refused(&cli(&[
-                "--from", "journal=bin", "--index", "d", "--publish", "2",
+                "--from",
+                "journal=bin",
+                "--index",
+                "d",
+                "--publish",
+                "2",
             ]))
             .is_err(),
             "a journal read once has an end",
@@ -1305,22 +1323,30 @@ mod tests {
     #[test]
     fn the_feeds_flags_need_the_feed() {
         let remote = cli(&[
-            "--from", "spansh=Cargo.toml", "--db", "--remote", "tcp://x:1",
+            "--from",
+            "spansh=Cargo.toml",
+            "--db",
+            "--remote",
+            "tcp://x:1",
         ]);
         let Err(said) = refused(&remote) else {
             panic!("an address for a feed nothing reads was accepted")
         };
         assert!(said.contains("--remote"), "should say why: {}", said);
 
-        let stall =
-            cli(&["--from", "journal=bin", "--db", "--stall", "30"]);
+        let stall = cli(&["--from", "journal=bin", "--db", "--stall", "30"]);
         let Err(said) = refused(&stall) else {
             panic!("a stall window for a feed nothing reads was accepted")
         };
         assert!(said.contains("--stall"), "should say why: {}", said);
 
         assert!(refused(&cli(&[
-            "--from", "eddn", "--db", "--remote", "tcp://x:1", "--stall",
+            "--from",
+            "eddn",
+            "--db",
+            "--remote",
+            "tcp://x:1",
+            "--stall",
             "30",
         ]))
         .is_ok());
@@ -1339,7 +1365,11 @@ mod tests {
         assert!(refused(&sphere).is_err(), "a sphere of the feed");
 
         assert!(refused(&cli(&[
-            "--from", "edsm-api=Sol", "--db", "--cube", "50",
+            "--from",
+            "edsm-api=Sol",
+            "--db",
+            "--cube",
+            "50",
         ]))
         .is_ok());
     }
@@ -1347,15 +1377,18 @@ mod tests {
     /// A commander is whose journal is read, so a run must read one
     #[test]
     fn a_commander_needs_a_journal_to_be_read() {
-        let named =
-            cli(&["--from", "eddn", "--db", "--user", "HRC-2"]);
+        let named = cli(&["--from", "eddn", "--db", "--user", "HRC-2"]);
         let Err(said) = refused(&named) else {
             panic!("a commander named over the feed was accepted")
         };
         assert!(said.contains("--user"), "should say why: {}", said);
 
         assert!(refused(&cli(&[
-            "--from", "journal=bin", "--db", "--user", "HRC-2",
+            "--from",
+            "journal=bin",
+            "--db",
+            "--user",
+            "HRC-2",
         ]))
         .is_ok());
     }
@@ -1383,8 +1416,12 @@ mod tests {
             &["--from", "spansh=Cargo.toml", "--from", "eddn", "--index", "d"]
                 [..],
             &[
-                "--from", "spansh=Cargo.toml", "--from", "eddb=README.md",
-                "--index", "d",
+                "--from",
+                "spansh=Cargo.toml",
+                "--from",
+                "eddb=README.md",
+                "--index",
+                "d",
             ][..],
             &["--from", "eddb=README.md", "--index", "d"][..],
             &["--from", "eddn", "--index", "d"][..],
@@ -1406,16 +1443,26 @@ mod tests {
     /// Postgres and the flag means what it always did.
     #[test]
     fn a_share_of_a_dump_cannot_build_an_index_alone() {
-        let shared =
-            cli(&["--from", "spansh=Cargo.toml", "--index", "d", "--shard",
-                  "0/8"]);
+        let shared = cli(&[
+            "--from",
+            "spansh=Cargo.toml",
+            "--index",
+            "d",
+            "--shard",
+            "0/8",
+        ]);
         let Err(said) = refused(&shared) else {
             panic!("a sharded cold build was accepted")
         };
         assert!(said.contains("--shard"), "should say why: {}", said);
 
         assert!(refused(&cli(&[
-            "--from", "spansh=Cargo.toml", "--index", "d", "--db", "--shard",
+            "--from",
+            "spansh=Cargo.toml",
+            "--index",
+            "d",
+            "--db",
+            "--shard",
             "0/8",
         ]))
         .is_ok());

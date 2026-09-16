@@ -358,10 +358,9 @@ pub async fn from_database(
             .await
             .map_err(|err| format!("{err}")),
         None => {
-            let levelled =
-                index::catch_up(db, dir, checkpoint, parts, &stop)
-                    .await
-                    .map_err(|err| format!("{err}"))?;
+            let levelled = index::catch_up(db, dir, checkpoint, parts, &stop)
+                .await
+                .map_err(|err| format!("{err}"))?;
             match levelled {
                 Reached::End(cursor) => {
                     info!(

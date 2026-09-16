@@ -12,16 +12,25 @@
 //! None of that is here. This starts once something holds an entry and knows
 //! whose it is.
 
-use chrono::{DateTime, Utc};
 use crate::{
-    barycenters::Barycenter, black_market::BlackMarket, bodies::Body,
-    body_signals::BodySignal, clusters::Cluster, codex_entries::CodexEntry,
-    markets::Market, outfitting::Outfitting, rings::Ring, shipyard::Shipyard,
+    barycenters::Barycenter,
+    black_market::BlackMarket,
+    bodies::Body,
+    body_signals::BodySignal,
+    clusters::Cluster,
+    codex_entries::CodexEntry,
+    markets::Market,
+    outfitting::Outfitting,
+    rings::Ring,
+    shipyard::Shipyard,
     sqlx::{PgConnection, Postgres, Transaction},
-    stars::Star, stations::Station, system_signals::SystemSignal,
+    stars::Star,
+    stations::Station,
+    system_signals::SystemSignal,
     systems::{Landed, System},
     Database, Error,
 };
+use chrono::{DateTime, Utc};
 use elite_journal::body::{Body as JournalBody, Signal};
 use elite_journal::entry::incremental::exploration::{ScanTarget, ScanType};
 use elite_journal::entry::market::{
@@ -411,8 +420,7 @@ async fn write(
         // A settlement is a station on a planet's surface, and this is the
         // only thing that says where on the planet it is.
         Event::ApproachSettlement(e) => {
-            match Station::from_settlement(conn, entry.timestamp, user, e)
-                .await
+            match Station::from_settlement(conn, entry.timestamp, user, e).await
             {
                 Ok(_) => info!(
                     settlement = %e.name,
@@ -492,8 +500,7 @@ async fn write(
         }
 
         Event::CodexEntry(e) => {
-            match CodexEntry::from_journal(conn, entry.timestamp, user, e)
-                .await
+            match CodexEntry::from_journal(conn, entry.timestamp, user, e).await
             {
                 Ok(_) => info!(
                     system = %e.system_name,
@@ -612,28 +619,27 @@ pub async fn outfitting(
     outfitting: &JournalOutfitting,
 ) {
     let Some(mut tx) = begin(db, "outfitting").await else { return };
-    let wrote = match Outfitting::from_journal(
-        &mut tx, timestamp, user, outfitting,
-    )
-    .await
-    {
-        Ok(_) => {
-            info!(
-                station = %outfitting.station_name,
-                modules = outfitting.modules.len(),
-                "outfitting",
-            );
-            Ok(())
-        }
-        Err(err) => {
-            warn!(
-                station = %outfitting.station_name,
-                error = %err,
-                "outfitting",
-            );
-            Err(Refused)
-        }
-    };
+    let wrote =
+        match Outfitting::from_journal(&mut tx, timestamp, user, outfitting)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    station = %outfitting.station_name,
+                    modules = outfitting.modules.len(),
+                    "outfitting",
+                );
+                Ok(())
+            }
+            Err(err) => {
+                warn!(
+                    station = %outfitting.station_name,
+                    error = %err,
+                    "outfitting",
+                );
+                Err(Refused)
+            }
+        };
     end(tx, wrote, "outfitting").await;
 }
 
@@ -647,26 +653,26 @@ pub async fn shipyard(
     shipyard: &JournalShipyard,
 ) {
     let Some(mut tx) = begin(db, "shipyard").await else { return };
-    let wrote =
-        match Shipyard::from_journal(&mut tx, timestamp, user, shipyard).await
-        {
-            Ok(_) => {
-                info!(
-                    station = %shipyard.station_name,
-                    ships = shipyard.ships.len(),
-                    "shipyard",
-                );
-                Ok(())
-            }
-            Err(err) => {
-                warn!(
-                    station = %shipyard.station_name,
-                    error = %err,
-                    "shipyard",
-                );
-                Err(Refused)
-            }
-        };
+    let wrote = match Shipyard::from_journal(&mut tx, timestamp, user, shipyard)
+        .await
+    {
+        Ok(_) => {
+            info!(
+                station = %shipyard.station_name,
+                ships = shipyard.ships.len(),
+                "shipyard",
+            );
+            Ok(())
+        }
+        Err(err) => {
+            warn!(
+                station = %shipyard.station_name,
+                error = %err,
+                "shipyard",
+            );
+            Err(Refused)
+        }
+    };
     end(tx, wrote, "shipyard").await;
 }
 
@@ -865,13 +871,7 @@ async fn record_body_signals(
             Ok(())
         }
         Err(err) => {
-            Err(refused(
-                what,
-                named(name),
-                address,
-                &body_id.to_string(),
-                &err,
-            ))
+            Err(refused(what, named(name), address, &body_id.to_string(), &err))
         }
     }
 }

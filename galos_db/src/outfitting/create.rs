@@ -1,6 +1,6 @@
 use super::Outfitting;
-use crate::Error;
 use crate::markets::Market;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Outfitting as JournalOutfitting;
 use galos_index::SystemName;

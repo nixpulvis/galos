@@ -337,9 +337,7 @@ impl Body {
             id: self.body_id,
             name: self.name.clone(),
             ty: Some(BodyType::Planet),
-            distance_from_arrival: self
-                .distance_to_arrival
-                .map(|ls| ls as f32),
+            distance_from_arrival: self.distance_to_arrival.map(|ls| ls as f32),
             parents: self.parents.clone(),
             planet_class: class.to_owned(),
             tidal_lock: self.rotational_period_tidally_locked,
@@ -643,10 +641,7 @@ mod tests {
     #[test]
     fn nothing_to_breathe_is_none() {
         assert_eq!(atmosphere_of(None), AtmosphereType::None);
-        assert_eq!(
-            atmosphere_of(Some("No atmosphere")),
-            AtmosphereType::None
-        );
+        assert_eq!(atmosphere_of(Some("No atmosphere")), AtmosphereType::None);
     }
 
     /// No volcanism is nothing rather than a kind of volcanism.

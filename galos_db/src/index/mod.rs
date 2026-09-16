@@ -13,8 +13,8 @@ use crate::{Database, Result};
 use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
 use galos_index::{
-    Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport, Ending,
-    Index, Pending, Start, System, Taking, Tree, derive,
+    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport,
+    Ending, Index, Pending, Start, System, Taking, Tree,
 };
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};

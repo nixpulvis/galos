@@ -1,6 +1,6 @@
 use super::{Economies, Landed, System};
-use crate::Error;
 use crate::factions::{Conflict, Faction, SystemFaction};
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
 use galos_index::{SystemName, SystemReport};

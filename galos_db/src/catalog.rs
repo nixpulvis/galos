@@ -40,8 +40,8 @@
 //! so the narrow key is the right one until something needs more.
 
 use crate::{Database, Result};
+use galos_catalog::compare::{compare, Comparison, Reference};
 use galos_catalog::Star;
-use galos_catalog::compare::{Comparison, Reference, compare};
 use galos_index::SystemName;
 use sqlx::Row;
 

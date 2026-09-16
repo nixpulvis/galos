@@ -25,8 +25,8 @@ fn fixture() -> Vec<System> {
 
 /// Every system of one fixture beside this test, in the file's order.
 fn read(fixture: &str) -> Vec<System> {
-    let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/"))
-        .join(fixture);
+    let path =
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/")).join(fixture);
     let mut lines = Lines::open(&path).expect("the fixture opens");
     let mut systems = Vec::new();
     loop {
@@ -64,10 +64,7 @@ fn the_dump_reads_as_systems() {
     assert!(matches!(populated.government, Some(Government::Democracy)));
     assert_eq!(populated.bodies.len(), 15);
     // The dump's `date`, which is the system's own and not any body's.
-    assert_eq!(
-        populated.update_time.to_rfc3339(),
-        "2026-09-06T13:19:55+00:00",
-    );
+    assert_eq!(populated.update_time.to_rfc3339(), "2026-09-06T13:19:55+00:00",);
 
     // A system nobody has looked into is a system with no bodies, not a
     // line that will not read.

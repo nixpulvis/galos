@@ -47,9 +47,9 @@
 
 use elite_journal::entry::{Entry, Event};
 use galos::sink::{Db, Index, Reporter, Sink};
-use galos_db::Database;
-use galos_db::index::{Parts, never};
+use galos_db::index::{never, Parts};
 use galos_db::testing::Scratch;
+use galos_db::Database;
 use galos_index::meta::{Boost, PopulatedSystem, SystemBodies};
 use galos_index::{FsSource, Source as _};
 use spansh::galaxy::System;

@@ -1,6 +1,6 @@
 use super::Shipyard;
-use crate::Error;
 use crate::markets::Market;
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Shipyard as JournalShipyard;
 use galos_index::SystemName;

@@ -39,7 +39,9 @@ pub fn class_of(main_star: &str) -> Option<StarClass> {
         "F (White) Star" => StarClass::F(StarSize::Dwarf),
         "F (White super giant) Star" => StarClass::F(StarSize::SuperGiant),
         "G (White-Yellow) Star" => StarClass::G(StarSize::Dwarf),
-        "G (White-Yellow super giant) Star" => StarClass::G(StarSize::SuperGiant),
+        "G (White-Yellow super giant) Star" => {
+            StarClass::G(StarSize::SuperGiant)
+        }
         "K (Yellow-Orange) Star" => StarClass::K(StarSize::Dwarf),
         "K (Yellow-Orange giant) Star" => StarClass::K(StarSize::Giant),
         "M (Red dwarf) Star" => StarClass::M(StarSize::Dwarf),
@@ -277,7 +279,10 @@ mod tests {
             "M (Red giant) Star",
             "M (Red super giant) Star",
         ] {
-            assert!(matches!(class_of(prose), Some(StarClass::M(_))), "{prose}");
+            assert!(
+                matches!(class_of(prose), Some(StarClass::M(_))),
+                "{prose}"
+            );
         }
     }
 
