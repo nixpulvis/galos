@@ -194,8 +194,15 @@ impl Dump {
 /// crate finds out the format moved, and a refresh that adds a value
 /// fails a test rather than passing one.
 ///
-/// Not used at run time. Validating 610 GB against a schema would cost
-/// more than the parse it duplicates, and serde already refuses what it
+/// Not used at run time, and it could not be: thirteen of the galaxy
+/// schema's nodes are `$ref`s into an OpenAPI document — `#/paths/~1
+/// %7Bfilename%7D/get/responses/...` — that is not in the file, so
+/// `secondaryEconomy`, `timestamps`, a station, `materials`,
+/// `solidComposition`, `atmosphereComposition` and `belts` resolve to
+/// nothing here. What the tests read is the inline part, and a node that
+/// turned into a `$ref` would fail them rather than quietly answer an
+/// empty list. Validating 610 GB against a schema would cost more than
+/// the parse it duplicates anyway, and serde already refuses what it
 /// cannot read.
 #[cfg(test)]
 pub(crate) mod schema {

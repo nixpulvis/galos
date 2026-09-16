@@ -202,6 +202,12 @@ pub struct Body {
     pub mean_anomaly: Option<f64>,
     pub ascending_node: Option<f64>,
 
+    /// How old the star is, in **millions of years**, which is what the
+    /// game's `Age_MY` counts and what the file holds: the schema calls
+    /// it "solar years" and is wrong, a 2,648 that reads as a few
+    /// thousand years being a red dwarf older than the galaxy's disc.
+    /// The third of the schema's three units that the file disagrees
+    /// with, beside `distanceToArrival` and `semiMajorAxis`.
     pub age: Option<i32>,
     /// The spectral letter and subclass together: `"M1"`, `"WNC0"`. The
     /// letter alone does not say a giant from a dwarf, which is why the
