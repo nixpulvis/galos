@@ -151,7 +151,7 @@ impl Lines {
 /// two hundred million, where a file that stops being readable — which a
 /// half-written dump does — is the end of the read.
 #[derive(Debug)]
-pub enum Fault {
+pub enum Error {
     /// The file could not be read. Nothing further will come.
     Unreadable(io::Error),
     /// One line's text was not a system. The read carries on.
@@ -162,20 +162,20 @@ pub enum Fault {
     },
 }
 
-impl fmt::Display for Fault {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Fault::Unreadable(err) => write!(f, "{err}"),
-            Fault::Unparsed { at, error } => write!(f, "line {at}: {error}"),
+            Error::Unreadable(err) => write!(f, "{err}"),
+            Error::Unparsed { at, error } => write!(f, "line {at}: {error}"),
         }
     }
 }
 
-impl std::error::Error for Fault {
+impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Fault::Unreadable(err) => Some(err),
-            Fault::Unparsed { error, .. } => Some(error),
+            Error::Unreadable(err) => Some(err),
+            Error::Unparsed { error, .. } => Some(error),
         }
     }
 }
@@ -236,32 +236,32 @@ impl Dump {
     /// For a reader taking a share of the file: whose a line is depends
     /// on its position and nothing in it, so the seven lines in eight
     /// another process owns cost a `read_line` and no `serde` at all.
-    pub fn pass(&mut self) -> Result<bool, Fault> {
+    pub fn pass(&mut self) -> Result<bool, Error> {
         match self.lines.next() {
             Ok(text) => Ok(text.is_some()),
-            Err(err) => Err(Fault::Unreadable(err)),
+            Err(err) => Err(Error::Unreadable(err)),
         }
     }
 }
 
 impl Iterator for Dump {
-    type Item = Result<System, Fault>;
+    type Item = Result<System, Error>;
 
     /// The next system, or [`None`] at the end of the file.
     ///
-    /// A line that will not parse is a [`Fault::Unparsed`] rather than
+    /// A line that will not parse is a [`Error::Unparsed`] rather than
     /// the end of the read, so the caller decides whether one bad row
     /// ends anything — `bin/sync` counts it and carries on.
-    fn next(&mut self) -> Option<Result<System, Fault>> {
+    fn next(&mut self) -> Option<Result<System, Error>> {
         let at = self.lines.at() + 1;
         let text = match self.lines.next() {
             Ok(Some(text)) => text,
             Ok(None) => return None,
-            Err(err) => return Some(Err(Fault::Unreadable(err))),
+            Err(err) => return Some(Err(Error::Unreadable(err))),
         };
         Some(
             serde_json::from_str(text)
-                .map_err(|error| Fault::Unparsed { at, error }),
+                .map_err(|error| Error::Unparsed { at, error }),
         )
     }
 }

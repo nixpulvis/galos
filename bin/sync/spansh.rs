@@ -125,15 +125,15 @@ enum Next {
     Failed { at: u64, error: io::Error },
 }
 
-/// The error a fault that ends the read is reported as.
+/// What a read that cannot go on is reported as.
 ///
-/// Only [`spansh::Fault::Unreadable`] ever reaches here — a line nothing
-/// could parse is counted and passed over — and it is the reader's own
-/// `io::Error`, handed back whole so what ended the run is what the file
-/// said rather than a sentence about it.
-fn failed(fault: spansh::Fault) -> io::Error {
-    match fault {
-        spansh::Fault::Unreadable(error) => error,
+/// Only [`spansh::Error::Unreadable`] ever reaches here — a line nothing
+/// could parse is counted and passed over — and it carries the reader's
+/// own `io::Error`, handed back whole so what ended the run is what the
+/// file said rather than a sentence about it.
+fn failed(error: spansh::Error) -> io::Error {
+    match error {
+        spansh::Error::Unreadable(error) => error,
         unparsed => io::Error::other(unparsed.to_string()),
     }
 }
@@ -364,7 +364,7 @@ impl Reading {
                 None => continue,
                 // The file stopped being readable part way through, which
                 // a half-written dump does.
-                Some(Err(fault @ spansh::Fault::Unreadable(_))) => {
+                Some(Err(fault @ spansh::Error::Unreadable(_))) => {
                     self.bar.abandoned("unreadable");
                     return Next::Failed { at, error: failed(fault) };
                 }

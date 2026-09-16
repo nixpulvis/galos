@@ -194,7 +194,7 @@ fn a_line_passed_over_is_never_parsed() {
     )
     .expect("the scratch file writes");
 
-    // Passed over, the broken line is not a fault at all.
+    // Passed over, the broken line is not an error at all.
     let mut dump = Dump::open(&path).expect("it opens");
     assert_eq!(dump.next().expect("a first").expect("it reads").name, "First");
     assert!(dump.pass().expect("passing over reads"), "a line was there");
@@ -203,11 +203,11 @@ fn a_line_passed_over_is_never_parsed() {
     assert!(!dump.pass().expect("passing over reads"), "nothing left");
 
     // Parsed, it is one system missed and the read goes on past it. The
-    // fault names line 3: the array's `[` is line 1 and the first system
+    // error names line 3: the array's `[` is line 1 and the first system
     // line 2, so it is the line a reader would count to.
     let read: Vec<_> = Dump::open(&path).expect("it opens").collect();
     assert_eq!(read.len(), 3);
-    assert!(matches!(read[1], Err(spansh::Fault::Unparsed { at: 3, .. })));
+    assert!(matches!(read[1], Err(spansh::Error::Unparsed { at: 3, .. })));
     assert!(read[0].is_ok() && read[2].is_ok());
 
     std::fs::remove_file(&path).expect("the scratch file goes");
