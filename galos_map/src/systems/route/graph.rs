@@ -1600,11 +1600,24 @@ impl Sampler {
     ) {
         self.expanded += 1;
 
-        // A quiet sibling counts and nothing else: no chain walked back, no
-        // cell kept, and the tally handed over on the same beat. See
-        // [`Self::beside`].
+        // A quiet sibling keeps cells and nothing else: the closed set is a
+        // *union* and every leg's expansions belong in it, where the chain
+        // and the working edge each replace what the frontier holds and two
+        // writers would rub each other out. See [`Self::beside`].
+        //
+        // **It has to keep them.** A picture drawn from one leg of a plan
+        // refined side by side stops dead at that leg's corridor, which
+        // reads as a search that will not expand past a line — a plot
+        // avoiding a void that is not there. The marks are the one thing on
+        // screen that says where the search has been.
         if self.quiet {
             if self.expanded % super::frontier::STRIDE == 0 {
+                self.cells.insert(cell_of(at, self.across));
+            }
+            if self.expanded
+                % (super::frontier::STRIDE * super::frontier::BATCH as u64)
+                == 0
+            {
                 self.flush();
             }
             return;
@@ -1716,10 +1729,19 @@ impl Sampler {
         reached.expanded += self.expanded - self.flushed;
         self.flushed = self.expanded;
 
-        // A quiet sibling draws nothing, so there is nothing else to hand
-        // over and no revision to move.
-        if self.quiet {
-            return;
+        // Onto the grid the frontier is on before anything is merged: a
+        // sibling refining its own leg counts against the width it was
+        // handed, and the owner may have doubled it since. Exact, and it
+        // needs none of the places back — the cell of a grid twice as wide
+        // is [`coarser`] of this one. Without it a sibling's marks land at
+        // the old width and the picture is drawn at two scales at once.
+        while self.across < reached.across {
+            self.cells = self.cells.iter().copied().map(coarser).collect();
+            for cell in self.edge.iter_mut() {
+                *cell = coarser(*cell);
+            }
+            self.worked = self.worked.map(coarser);
+            self.across *= 2.;
         }
 
         let grew = !self.cells.is_empty();
@@ -1728,7 +1750,17 @@ impl Sampler {
             reached.cells_at += 1;
         }
 
-        let stepped = std::mem::take(&mut self.stepped);
+        // The edge and the chain are the owner's: each replaces what the
+        // frontier holds, so a sibling handing one over would rub the
+        // owner's out. Its cells are already in, the closed set being a
+        // union.
+        let (stepped, settled) = match self.quiet {
+            true => (false, false),
+            false => (
+                std::mem::take(&mut self.stepped),
+                std::mem::take(&mut self.settled),
+            ),
+        };
         if stepped {
             reached.edge.clear();
             reached.edge.extend(self.edge.iter().copied());
@@ -1737,7 +1769,6 @@ impl Sampler {
 
         // Taken rather than read, so the chain is handed over on the flush
         // after it moved and not on every flush thereafter.
-        let settled = std::mem::take(&mut self.settled);
         if settled {
             reached.closest = self.closest;
             reached.plan.clone_from(&self.plan);

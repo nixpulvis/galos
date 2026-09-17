@@ -742,6 +742,54 @@ mod tests {
         assert_eq!(drawn.across, 320.);
     }
 
+    /// Every leg of a plan shows in the closed set, not just the one drawn
+    ///
+    /// A plan's legs are refined side by side, each carrying a quiet sampler
+    /// ([`super::graph::Sampler::beside`]). The chain and the working edge
+    /// each *replace* what the frontier holds, so only the owner hands
+    /// those over — but the closed set is a union, and a picture drawn from
+    /// one leg stops dead at that leg's corridor. Which reads as a search
+    /// that will not expand past a line, over a plot that went somewhere
+    /// else entirely.
+    #[test]
+    fn a_leg_refined_beside_its_neighbours_is_in_the_closed_set() {
+        let frontier = Frontier::between(DVec3::ZERO, at(6400.));
+        let mut owner = frontier.sampler();
+        let mut sibling = owner.beside();
+        let came = chain(10);
+        let expand = |sampler: &mut super::super::graph::Sampler,
+                      along: f64| {
+            for step in 0..(STRIDE * BATCH as u64 * 4) {
+                sampler.expanded(
+                    node((step % 10) as u32),
+                    DVec3::new(along, 0., step as f64),
+                    &came,
+                    |it| at(it.at as f64 * 100.),
+                );
+            }
+        };
+
+        // The owner works one corridor and the sibling another, a thousand
+        // light years off it — two legs of the one plan.
+        expand(&mut owner, 0.);
+        expand(&mut sibling, 1000.);
+        sibling.done();
+        owner.done();
+
+        let drawn = frontier.drawn().expect("something reached");
+        let across = drawn.across;
+        assert!(
+            drawn.cells.iter().any(|cell| cell.x > across),
+            "the sibling's corridor is missing from the {} cells drawn",
+            drawn.cells.len(),
+        );
+        assert!(
+            drawn.cells.iter().any(|cell| cell.x <= across),
+            "the owner's corridor is missing from the {} cells drawn",
+            drawn.cells.len(),
+        );
+    }
+
     /// The chain is a real run of jumps to the closest system reached
     ///
     /// Every link a neighbour of the last and the first the system the search
