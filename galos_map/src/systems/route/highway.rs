@@ -289,6 +289,40 @@ impl Highway {
         }
     }
 
+    /// Which systems within `radius` light years of `at` can supercharge,
+    /// by address and in ascending order
+    ///
+    /// **What keeps the fanout cap affordable in a dense sky.** The cap
+    /// keeps cones before ordinary systems, so it has to know which
+    /// candidates are cones — and asking that of the supercharge table is a
+    /// binary search of 3.8 M rows a candidate. Measured over
+    /// `.index/full`, one charged expansion at Sagittarius A\*: the sphere
+    /// holds 538,898 systems and the per-candidate lookups took **32.78 ms
+    /// to find that none of them is a cone**, against 4.10 ms to sweep
+    /// their places.
+    ///
+    /// This answers the same question of the cell buckets these stars are
+    /// already sorted into: tens of cells rather than millions of rows, and
+    /// where it comes back empty — which is most of the galaxy, the core
+    /// included — the caller has no candidate to look up at all.
+    ///
+    /// Ascending by address, so a caller tests membership by binary search
+    /// over the handful this hands back — and their places come with them,
+    /// because a cell that holds a cone is a cell no nearness rule may
+    /// skip.
+    pub(crate) fn cones_near(
+        &self,
+        at: [f64; 3],
+        radius: f64,
+    ) -> Vec<(i64, [f64; 3])> {
+        let mut found = Vec::new();
+        self.each_near(at, radius, |node, place, _| {
+            found.push((self.address[node as usize], place))
+        });
+        found.sort_unstable_by_key(|&(address, _)| address);
+        found
+    }
+
     /// The boost star nearest `to` within `within` light years, if any.
     #[cfg(test)]
     pub(crate) fn nearest(&self, to: [f64; 3], within: f64) -> Option<i64> {

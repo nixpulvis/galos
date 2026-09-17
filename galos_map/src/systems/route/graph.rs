@@ -1036,6 +1036,22 @@ trait Metric: Ord + Copy + std::ops::Add<Output = Self> {
     /// ordering and the fuel for the other.
     fn spent(&self) -> u32;
 
+    /// Whether what a step spends is the same whatever the jump's length
+    ///
+    /// True of the orderings that count jumps: a jump is a jump, so what a
+    /// candidate costs is fixed and the cap's ranking is the geometry alone
+    /// — nearest the goal first. False of fuel, where a short hop burns
+    /// less than a long one and where a candidate lands says nothing about
+    /// what reaching it costs.
+    ///
+    /// **What it buys is a cap that need not read the whole sphere.** The
+    /// cells a sphere touches can be swept nearest the goal first and the
+    /// sweep stopped once the cap holds candidates no cell left can better,
+    /// which in a dense sky is the difference between measuring hundreds of
+    /// thousands of systems and measuring a few thousand. See
+    /// [`JumpGraph::neighbors`].
+    const FLAT: bool;
+
     /// This cost scaled by `num / den`
     ///
     /// Two uses, both of them arithmetic the search cannot do generically
@@ -1058,6 +1074,8 @@ fn share(of: u32, num: u32, den: u32) -> u32 {
 impl Metric for u32 {
     const ZERO: u32 = 0;
     const UNREACHED: u32 = u32::MAX;
+    /// A jump is a jump.
+    const FLAT: bool = true;
 
     fn spent(&self) -> u32 {
         *self
@@ -1071,6 +1089,9 @@ impl Metric for u32 {
 impl Metric for Cost {
     const ZERO: Cost = Cost { jumps: 0, light_years: 0 };
     const UNREACHED: Cost = Cost { jumps: u32::MAX, light_years: u32::MAX };
+    /// Jumps first, and the jumps are what this spends: the light years are
+    /// the tie-break rather than what a step is charged.
+    const FLAT: bool = true;
 
     fn spent(&self) -> u32 {
         self.jumps
@@ -1087,6 +1108,9 @@ impl Metric for Cost {
 impl Metric for Burn {
     const ZERO: Burn = Burn { fuel: 0, jumps: 0 };
     const UNREACHED: Burn = Burn { fuel: u32::MAX, jumps: u32::MAX };
+    /// Fuel rises with the jump, so where a candidate lands says nothing
+    /// about what reaching it costs.
+    const FLAT: bool = false;
 
     /// The fuel, which is what this ordering weighs first and what a step
     /// always adds at least [`FLOOR`] of.
@@ -2293,7 +2317,68 @@ impl JumpGraph {
         // and then each one's systems measured out of its mapping — which
         // is [`Sky::each_near`] with the skip in the middle of it.
         self.sky.index().each_near(at, range, |cell| cells.push(cell));
+
+        // **Which candidates are cones comes off the highway's cell
+        // buckets, not off the supercharge table a row at a time.** That
+        // table is address-sorted, so asking it per candidate is a binary
+        // search of 3.8 M rows, and a sphere in a dense sky holds hundreds
+        // of thousands of candidates. Measured over `.index/full`, one
+        // charged expansion at Sagittarius A*: the sphere holds 538,898
+        // systems, sweeping their places took 4.10 ms, and the lookups took
+        // **32.78 ms to establish that not one of them is a cone**. The
+        // buckets answer it over tens of cells, and an empty answer — which
+        // the core is — means no candidate is looked up and no address
+        // read.
+        let cones = (drive.widest() > 1.)
+            .then(|| self.highway())
+            .flatten()
+            .map_or_else(Vec::new, |highway| highway.cones_near(at, range));
+
+        // **Nearest the goal first, and stop where the cap cannot be
+        // bettered.** Where a step costs the same whatever the jump
+        // ([`Metric::FLAT`]) the cap keeps the candidates nearest the goal,
+        // so a cell whose nearest corner is further off than the cap's
+        // worst kept cannot hold one — and the rest of the sphere goes
+        // unread.
+        //
+        // **A cell holding a cone is never skipped**, wherever it lies: a
+        // cone is kept for the reach of the jump *out* of it and beats a
+        // nearer ordinary system whatever its own place says, so nearness
+        // cannot rule it out. There are few enough for that to cost a box
+        // test a cell.
+        let pruning = fanout.filter(|_| C::FLAT);
+        if pruning.is_some() {
+            cells.sort_unstable_by(|one, two| {
+                one.bounds()
+                    .distance_to(goal)
+                    .total_cmp(&two.bounds().distance_to(goal))
+            });
+        }
+        // How far off the goal the cap's worst kept candidate lands, once
+        // there are enough of them to fill it: the bar a cell has to beat
+        // to be worth reading at all.
+        let mut bar = f64::INFINITY;
         for &cell in cells.iter() {
+            if pruning.is_some() {
+                let bounds = cell.bounds();
+                if bounds.distance_to(goal) >= bar {
+                    // Sorted by that distance, so once one cell is past the
+                    // bar every cell after it is, and all that is left to
+                    // ask is whether it holds a cone.
+                    if cones.is_empty() {
+                        break;
+                    }
+                    let holds = cones.iter().any(|(_, place)| {
+                        (0..3).all(|axis| {
+                            place[axis] >= bounds.min[axis]
+                                && place[axis] <= bounds.max[axis]
+                        })
+                    });
+                    if !holds {
+                        continue;
+                    }
+                }
+            }
             let Some(payload) = self.sky.payload(cell) else { continue };
             if reached.settled(cell, payload.len(), spent) {
                 continue;
@@ -2320,6 +2405,19 @@ impl JumpGraph {
                 if found != node {
                     out.push((found, place, away.sqrt()));
                 }
+            }
+            // The bar moves once a cell has been read rather than once a
+            // candidate has been kept: it is the cap-th nearest the goal of
+            // what is in hand, which is the worst the cap would keep if the
+            // sweep stopped here.
+            if let Some(cap) = pruning
+                && out.len() > cap
+            {
+                let mut off: Vec<f64> =
+                    out.iter().map(|cand| dist2(cand.1, goal)).collect();
+                let (_, kth, _) =
+                    off.select_nth_unstable_by(cap - 1, f64::total_cmp);
+                bar = kth.sqrt();
             }
         }
         if let Some(cap) = fanout {
@@ -2348,11 +2446,18 @@ impl JumpGraph {
             // it, which is a thing no score of where it lands can see — and
             // worth nothing at all to a drive that cannot charge off one,
             // which then pays no lookup for the answer.
-            match drive.widest() > 1. {
-                true => {
-                    thinned(out, cap, score, |node| self.boost(node).is_some())
-                }
-                false => thinned(out, cap, score, |_| false),
+            // Which candidates are cones was settled above, off the
+            // highway's buckets.
+            match cones.is_empty() {
+                true => thinned(out, cap, score, |_| false),
+                false => thinned(out, cap, score, |node| {
+                    cones
+                        .binary_search_by_key(
+                            &self.address(node),
+                            |&(at, _)| at,
+                        )
+                        .is_ok()
+                }),
             }
         }
     }
