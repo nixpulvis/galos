@@ -1,6 +1,8 @@
 //! Systems represent star systems in the Milky Way galaxy
+use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
+use galos_index::{procedural, SystemName};
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,32 @@ pub struct System {
     // pub controlling_faction: &Faction,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
+}
+
+impl System {
+    /// The name a row holds, or the one its address spells.
+    ///
+    /// A null `name` is the whole of what that column saves: 97.3 % of a
+    /// galaxy's names are what [`procedural::name_of`] spells out of the
+    /// address, so what is written down is the exceptions -- the names
+    /// people gave, and Frontier's hand-authored regions. Every read of the
+    /// column comes through here, there being one rule about what a null
+    /// means and no reason to spell it out at each of the reads.
+    ///
+    /// A null the arithmetic cannot answer is [`Error::Nameless`]: not a
+    /// system without a name, but a row written against the rule, and said
+    /// so rather than handed back as an empty name.
+    pub fn name_of(
+        address: i64,
+        stored: Option<String>,
+    ) -> Result<SystemName, Error> {
+        match stored {
+            Some(name) => Ok(SystemName::new(name)),
+            None => {
+                procedural::name_of(address).ok_or(Error::Nameless(address))
+            }
+        }
+    }
 }
 
 /// What a system trades in: the most of it, and the next most

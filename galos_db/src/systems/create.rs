@@ -3,7 +3,7 @@ use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
-use galos_index::{SystemName, SystemReport};
+use galos_index::{procedural, SystemName, SystemReport};
 use geozero::wkb;
 
 impl System {
@@ -37,6 +37,21 @@ impl System {
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<Landed, Error> {
+        // The name is written down only where the address does not spell
+        // it. `procedural::spells` asks exactly what the index asks before
+        // writing a name into its own table, and for 97.3 % of a galaxy
+        // the answer is that the primary key already says it -- so what
+        // the column holds is the exceptions and a null means "read it off
+        // the address", which `System::name_of` is the one place that does.
+        //
+        // Weighed by the stamps like every other column: a null wins where
+        // this reading wins, and a name that disagrees with the arithmetic
+        // fills the column back in. Which is the overlay the index keeps
+        // too -- a name somebody gave a system arrives after the name the
+        // galaxy spelled it, and is the one to keep.
+        let stored =
+            (!procedural::spells(address, name)).then(|| name.as_str());
+
         let did = sqlx::query!(
             r#"
             INSERT INTO systems
@@ -106,7 +121,7 @@ impl System {
                 (updated_at = $11) AS "took!"
             "#,
             address as i64,
-            name.as_str(),
+            stored,
             primary_star_class,
             position.map(|p| wkb::Encode(p)) as _,
             population.map(|n| n as i64),
@@ -223,12 +238,13 @@ impl System {
     /// so a system cannot land with its counts and without its politics.
     ///
     /// A report that names no system writes nothing and is not an error. The
-    /// `systems.name` column cannot take a null, and the arrival that had to
-    /// come first is what writes that row; where it has not, the foreign key
-    /// onto `systems` is what says so. The index's half of the program keeps
-    /// such a report — it has no `NOT NULL` to answer to, and a position now
-    /// is a position for whatever names the place later — and the two agree
-    /// on everything either of them publishes.
+    /// `name` column does take a null, but a null there says the address
+    /// spells the name rather than that nothing has named the system; the
+    /// arrival that had to come first is what writes that row, and where it
+    /// has not, the foreign key onto `systems` is what says so. The index's
+    /// half of the program keeps such a report — a position now is a
+    /// position for whatever names the place later — and the two agree on
+    /// everything either of them publishes.
     ///
     /// Returns the wider of what the two did, a run counting systems and
     /// not statements: [`Landed::New`] where either made the row, else
@@ -431,6 +447,12 @@ impl System {
             return Ok(Some(Landed::Updated));
         };
 
+        // The same rule as [`Self::create`], and it has to be: the two
+        // write one row, and a name the address spells is not written down
+        // by either of them.
+        let stored =
+            (!procedural::spells(address, name)).then(|| name.as_str());
+
         let did = sqlx::query!(
             r#"
             INSERT INTO systems
@@ -462,7 +484,7 @@ impl System {
             RETURNING (xmax = 0) AS "inserted!"
             "#,
             address,
-            name.as_str(),
+            stored,
             position.map(|p| wkb::Encode(p)) as _,
             body_count,
             non_body_count,

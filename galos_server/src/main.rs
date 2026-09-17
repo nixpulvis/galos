@@ -162,32 +162,48 @@ struct SystemsParams {
     // TODO: Advanced search not SQL
 }
 
-#[derive(Deserialize)]
-struct RouteParams {
-    to: Option<String>,
-    from: Option<String>,
-    range: Option<f64>,
-}
-
+/// Search a system by name, exactly.
+///
+/// **It was a fragment search and it cannot be one from here.** A name its
+/// address spells is not stored in Postgres
+/// (`galos_db`'s `20260917120000` migration), so `ILIKE` answered for the
+/// exceptions and called it the galaxy — 97.4 % of systems invisible to
+/// it. So `System::fetch_like_name` is gone and this asks the one question
+/// SQL can still answer honestly: the name in full, which
+/// [`System::fetch_by_name`] resolves off the address where the name is
+/// procedural and off `systems_name` where it is not.
+///
+/// Fragment and fuzzy search live in the published names table, which holds
+/// every name whether stored or spelled
+/// (`galos_index::names::Table::matching`). Reaching it from here means
+/// giving this crate the index and a directory to open, and this crate is
+/// due a rewrite; `galos` the CLI does it that way already if you want to
+/// see the shape.
 async fn systems(
     extract::Query(params): extract::Query<SystemsParams>,
 ) -> impl IntoResponse {
     let query = params.query.unwrap_or_default();
     if let Ok(db) = Database::new().await {
-        if let Ok(systems) = System::fetch_like_name(&db, &query).await {
-            let template = SystemsTemplate { query, systems };
-            HtmlTemplate(template).into_response()
-        } else {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to fetch systems."),
-            )
-                .into_response()
-        }
+        // Nothing found is an empty list rather than an error: a search box
+        // that answers "internal server error" for a name nobody has is
+        // worse than one that answers nothing.
+        let systems = System::fetch_by_name(&db, &query)
+            .await
+            .map(|system| vec![system])
+            .unwrap_or_default();
+        let template = SystemsTemplate { query, systems };
+        HtmlTemplate(template).into_response()
     } else {
         (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to load DB."))
             .into_response()
     }
+}
+
+#[derive(Deserialize)]
+struct RouteParams {
+    to: Option<String>,
+    from: Option<String>,
+    range: Option<f64>,
 }
 
 async fn system(

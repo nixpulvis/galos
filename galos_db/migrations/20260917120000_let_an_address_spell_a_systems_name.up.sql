@@ -1,0 +1,28 @@
+-- A name its address spells need not be written down.
+--
+-- `galos_index::procedural` spells a system's name out of its
+-- `SystemAddress` and the sector dictionary beside it: the sector, the
+-- boxel's code and the system's own index, `PRAEA EUQ YE-Q D5-0`. Measured
+-- over 200,071,629 names, 194,667,563 of them come out exactly -- 97.3 % --
+-- so the column is 3.9 GB of text the primary key already says, indexed
+-- twice over.
+--
+-- A null `name` means the address spells it, and is read back through
+-- `procedural::name_of`. It does not mean the system is nameless: a report
+-- naming no system writes no row at all, and `System::report` says why. So
+-- a null whose address spells nothing is a row written wrongly rather than
+-- a system without a name, and the read path surfaces it as one.
+--
+-- Every write asks `procedural::spells` and stores the name only where the
+-- two disagree, which is the overlay the index's names table already keeps.
+-- A name arriving later that disagrees is stored, filling the column back
+-- in; a later one that agrees empties it again. The newest reading wins
+-- either way, exactly as it does for every other column of the row.
+--
+-- Catalog-only, and nothing is rewritten: the rows on record keep the names
+-- they hold and shed them as the feed reports them again. Nor could they be
+-- emptied from here -- the dictionary is the index's, and this migration
+-- carries it only on the way back down, where a name has to be derived
+-- rather than merely left out. `systems_name_uppercase` is unaffected, a
+-- check over a null passing.
+ALTER TABLE systems ALTER COLUMN name DROP NOT NULL;

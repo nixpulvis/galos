@@ -21,6 +21,7 @@ use crate::barycenters::Barycenter;
 use crate::bodies::{ancestry, composition, Body, Surface};
 use crate::index::Parts;
 use crate::stars::Star;
+use crate::systems::System;
 use crate::{orbit, Database, Result};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
@@ -368,10 +369,17 @@ async fn names_for(
 
 /// One `systems` row as the names table's record of it. The row carries
 /// `address`, `name` and the three `ST_?` coordinates.
+///
+/// The name comes through [`System::name_of`], so a row that stored none
+/// is published under the name its address spells. Which the names table
+/// then declines to store for the same reason -- it asks
+/// `galos_index::procedural` the same question on the way in -- and what
+/// travels between the two is the name either way, not the absence of one.
 pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
+    let address: i64 = row.try_get("address")?;
     Ok(meta::NameEntry {
-        address: row.try_get("address")?,
-        name: galos_index::SystemName::new(row.try_get::<String, _>("name")?),
+        address,
+        name: System::name_of(address, row.try_get("name")?)?,
         position: place_from_row(row)?,
     })
 }
@@ -424,9 +432,7 @@ async fn populated_of(
             let population: i64 = row.try_get("population")?;
             Ok(meta::PopulatedSystem {
                 address,
-                name: galos_index::SystemName::new(
-                    row.try_get::<String, _>("name")?,
-                ),
+                name: System::name_of(address, row.try_get("name")?)?,
                 position: place_from_row(row)?,
                 population: population as u64,
                 security: row.try_get("security")?,

@@ -2,7 +2,7 @@ use super::Market;
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
-use galos_index::SystemName;
+use galos_index::{procedural, SystemName};
 
 impl Market {
     /// Write the market row that a station's trade data hangs off
@@ -57,12 +57,30 @@ impl Market {
         system_name: &SystemName,
         station_name: &str,
     ) -> Result<Market, Error> {
-        let address = sqlx::query_scalar!(
-            "SELECT address FROM systems WHERE name = $1",
-            system_name.as_str(),
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
+        // A carrier jumps wherever it likes, and most of the galaxy's
+        // names are not written down: the address spells them. So the name
+        // is resolved here and the row asked for by key, which is a hit on
+        // the primary key rather than a probe of `systems_name`. A name
+        // nothing spells is one of the exceptions the column still holds,
+        // and is looked up there.
+        let address = match procedural::address_of(system_name) {
+            Some(address) => {
+                sqlx::query_scalar!(
+                    "SELECT address FROM systems WHERE address = $1",
+                    address,
+                )
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+            None => {
+                sqlx::query_scalar!(
+                    "SELECT address FROM systems WHERE name = $1",
+                    system_name.as_str(),
+                )
+                .fetch_optional(&mut *conn)
+                .await?
+            }
+        };
 
         if let Some(address) = address {
             sqlx::query!(

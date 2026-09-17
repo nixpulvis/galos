@@ -1,7 +1,7 @@
 use super::{Economies, System};
 use crate::{Database, Error};
 use elite_journal::prelude::*;
-use galos_index::SystemName;
+use galos_index::{procedural, SystemName};
 use geozero::wkb;
 
 impl System {
@@ -37,7 +37,7 @@ impl System {
 
         Ok(System {
             address: row.address,
-            name: row.name,
+            name: System::name_of(row.address, row.name)?.into_string(),
             position: row
                 .position
                 .map(|p| p.geometry.expect("not null or invalid")),
@@ -64,8 +64,19 @@ impl System {
     ) -> Result<Self, Error> {
         // Folded once, through the one type that folds a system's name, so
         // the query compares against `systems_name` rather than asking
-        // Postgres to fold the column.
+        // Postgres to fold the column -- and so the arithmetic below is
+        // asked in the case it spells, whatever case the caller typed.
         let name = SystemName::new(name);
+
+        // A procedural name carries its own address, so resolving it here
+        // turns a probe of `systems_name` into a hit on the primary key --
+        // and is the only way to reach a system whose name is not written
+        // down at all, which is 97.3 % of them. A name nothing spells
+        // falls through to the column, where the exceptions live.
+        if let Some(address) = procedural::address_of(&name) {
+            return Self::fetch(db, address).await;
+        }
+
         let row = sqlx::query!(
             r#"
             SELECT
@@ -97,7 +108,7 @@ impl System {
 
         Ok(System {
             address: row.address,
-            name: row.name,
+            name: System::name_of(row.address, row.name)?.into_string(),
             position: row
                 .position
                 .map(|p| p.geometry.expect("not null or invalid")),
@@ -115,127 +126,6 @@ impl System {
             updated_at: row.updated_at.and_utc(),
             updated_by: row.updated_by,
         })
-    }
-
-    pub async fn fetch_like_name(
-        db: &Database,
-        name: &str,
-    ) -> Result<Vec<Self>, Error> {
-        let rows = sqlx::query!(
-            r#"
-            SELECT
-                address,
-                name,
-                position AS "position!: Option<wkb::Decode<Coordinate>>",
-                population,
-                security as "security: Security",
-                government as "government: Government",
-                allegiance as "allegiance: Allegiance",
-                primary_economy as "primary_economy: Economy",
-                secondary_economy as "secondary_economy: Economy",
-                body_count,
-                non_body_count,
-                updated_at,
-                updated_by,
-                COALESCE((
-                    SELECT array_agg(faction_id)
-                    FROM system_factions
-                    WHERE system_address = systems.address
-                ), ARRAY[]::integer[]) AS "factions!"
-            FROM systems
-            WHERE name ILIKE $1
-            ORDER BY name
-            "#,
-            name
-        )
-        .fetch_all(&db.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| System {
-                address: row.address,
-                name: row.name,
-                position: row
-                    .position
-                    .map(|p| p.geometry.expect("not null or invalid")),
-                population: row.population.map(|n| n as u64).unwrap_or(0),
-                security: row.security,
-                government: row.government,
-                allegiance: row.allegiance,
-                economies: Economies::new(
-                    row.primary_economy,
-                    row.secondary_economy,
-                ),
-                factions: row.factions,
-                body_count: row.body_count,
-                non_body_count: row.non_body_count,
-                updated_at: row.updated_at.and_utc(),
-                updated_by: row.updated_by,
-            })
-            .collect())
-    }
-
-    pub async fn fetch_in_range_like_name(
-        db: &Database,
-        range: f64,
-        name: &str,
-    ) -> Result<Vec<Self>, Error> {
-        let rows = sqlx::query!(
-            r#"
-            SELECT
-                s1.address,
-                s1.name,
-                s1.position AS "position!: Option<wkb::Decode<Coordinate>>",
-                s1.population,
-                s1.security as "security: Security",
-                s1.government as "government: Government",
-                s1.allegiance as "allegiance: Allegiance",
-                s1.primary_economy as "primary_economy: Economy",
-                s1.secondary_economy as "secondary_economy: Economy",
-                s1.body_count,
-                s1.non_body_count,
-                s1.updated_at,
-                s1.updated_by,
-                COALESCE((
-                    SELECT array_agg(faction_id)
-                    FROM system_factions
-                    WHERE system_address = s1.address
-                ), ARRAY[]::integer[]) AS "factions!"
-            FROM systems s1
-            FULL JOIN systems s2 ON ST_3DDWithin(s1.position, s2.position, $2)
-            WHERE s2.name ILIKE $1
-            ORDER BY ST_3DDistance(s1.position, s2.position)
-            "#,
-            name,
-            range
-        )
-        .fetch_all(&db.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| System {
-                address: row.address,
-                name: row.name,
-                position: row
-                    .position
-                    .map(|p| p.geometry.expect("not null or invalid")),
-                population: row.population.map(|n| n as u64).unwrap_or(0),
-                security: row.security,
-                government: row.government,
-                allegiance: row.allegiance,
-                economies: Economies::new(
-                    row.primary_economy,
-                    row.secondary_economy,
-                ),
-                factions: row.factions,
-                body_count: row.body_count,
-                non_body_count: row.non_body_count,
-                updated_at: row.updated_at.and_utc(),
-                updated_by: row.updated_by,
-            })
-            .collect())
     }
 
     pub async fn fetch_faction(
@@ -273,28 +163,29 @@ impl System {
         .fetch_all(&db.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| System {
-                address: row.address,
-                name: row.name,
-                position: row
-                    .position
-                    .map(|p| p.geometry.expect("not null or invalid")),
-                population: row.population.map(|n| n as u64).unwrap_or(0),
-                security: row.security,
-                government: row.government,
-                allegiance: row.allegiance,
-                economies: Economies::new(
-                    row.primary_economy,
-                    row.secondary_economy,
-                ),
-                factions: row.factions,
-                body_count: row.body_count,
-                non_body_count: row.non_body_count,
-                updated_at: row.updated_at.and_utc(),
-                updated_by: row.updated_by,
+        rows.into_iter()
+            .map(|row| {
+                Ok(System {
+                    address: row.address,
+                    name: System::name_of(row.address, row.name)?.into_string(),
+                    position: row
+                        .position
+                        .map(|p| p.geometry.expect("not null or invalid")),
+                    population: row.population.map(|n| n as u64).unwrap_or(0),
+                    security: row.security,
+                    government: row.government,
+                    allegiance: row.allegiance,
+                    economies: Economies::new(
+                        row.primary_economy,
+                        row.secondary_economy,
+                    ),
+                    factions: row.factions,
+                    body_count: row.body_count,
+                    non_body_count: row.non_body_count,
+                    updated_at: row.updated_at.and_utc(),
+                    updated_by: row.updated_by,
+                })
             })
-            .collect())
+            .collect()
     }
 }

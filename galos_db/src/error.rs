@@ -13,6 +13,14 @@ pub enum Error {
 
     /// A build wrote to disk and the write failed.
     Io(std::io::Error),
+
+    /// A system with no name on record whose address spells none either
+    ///
+    /// A null `systems.name` means the address spells it, which is 97.3 %
+    /// of a galaxy. One the arithmetic cannot answer is a row written
+    /// wrongly rather than a system without a name, so it is said rather
+    /// than answered with an empty string.
+    Nameless(i64),
 }
 
 impl fmt::Display for Error {
@@ -31,6 +39,11 @@ impl fmt::Display for Error {
             Error::Dotenv(e) => write!(f, ".env could not be read: {}", e),
             Error::Sqlx(e) => write!(f, "{}", e),
             Error::Io(e) => write!(f, "{}", e),
+            Error::Nameless(address) => write!(
+                f,
+                "system {} has no name on record and its address spells none",
+                address
+            ),
         }
     }
 }
@@ -51,6 +64,7 @@ impl error::Error for Error {
             Error::DatabaseUrl(e) => Some(e),
             Error::Dotenv(e) => Some(e),
             Error::Io(e) => Some(e),
+            Error::Nameless(_) => None,
             Error::Sqlx(e) => Some(e),
         }
     }

@@ -32,6 +32,16 @@ pub struct Cli {
 
     #[structopt(short = "c", long = "count")]
     pub count: bool,
+
+    /// The index directory the names are searched in.
+    ///
+    /// The database cannot answer a fragment any more, and it is not a
+    /// shortcoming of the SQL: a name its address spells is not stored
+    /// there at all, so `ILIKE` would answer for the exceptions and call
+    /// it the galaxy. The published names table holds every name, stored
+    /// or spelled, and searches it in microseconds.
+    #[structopt(short = "i", long = "index", default_value = ".galos_index")]
+    pub index: String,
     // #[structopt(short = "f", long = "filter", parse(from_filter_string))]
     // pub filters: Vec<String>,
 
@@ -56,13 +66,36 @@ impl Run for Cli {
         task::block_on(async {
             match (self.system_like.as_ref(), self.faction_like.as_ref()) {
                 (Some(query), None) => {
-                    let systems = if let Some(radius) = self.radius {
-                        System::fetch_in_range_like_name(db, radius, &query)
-                            .await
-                            .unwrap()
-                    } else {
-                        System::fetch_like_name(db, &query).await.unwrap()
+                    let found = match matched(&self.index, query) {
+                        Ok(found) => found,
+                        Err(said) => {
+                            spinner.finish_and_clear();
+                            eprintln!("{said}");
+                            return;
+                        }
                     };
+                    // The index says which systems are meant and the
+                    // database says everything else about them: one read a
+                    // hit, by address, which is a primary-key lookup.
+                    let mut systems = Vec::with_capacity(found.len());
+                    for address in found {
+                        match System::fetch(db, address).await {
+                            Ok(system) => systems.push(system),
+                            // A system the index names and the database has
+                            // never held is not an error here: the two are
+                            // built from different reads and either may be
+                            // ahead.
+                            Err(_) => continue,
+                        }
+                    }
+                    // A radius asks for the sky around what matched, which
+                    // is the database's question rather than the index's.
+                    if let Some(radius) = self.radius {
+                        systems = systems
+                            .iter()
+                            .flat_map(|system| system.neighbors(db, radius))
+                            .collect();
+                    }
 
                     spinner.finish_and_clear();
 
@@ -108,6 +141,40 @@ impl Run for Cli {
         });
     }
 }
+
+/// Which systems the query names, off the published names table.
+///
+/// The whole search, and it is not the database's: the table holds every
+/// name whether it was stored or is spelled from the address, answers a
+/// prefix in microseconds and a word held anywhere in a name — `A*` for
+/// `SAGITTARIUS A*` — in a few milliseconds. See
+/// `galos_index::names::Table::matching`.
+///
+/// A percent sign is what the old SQL pattern wanted and this does not, so
+/// it is trimmed rather than searched for: nobody typing `LHS%` means a
+/// system with a percent in its name.
+fn matched(dir: &str, query: &str) -> Result<Vec<i64>, String> {
+    let names = galos_index::Names::open(std::path::Path::new(dir))
+        .map_err(|err| format!("reading the names table at {dir}: {err}"))?;
+    if names.is_empty() {
+        return Err(format!(
+            "{dir} publishes no names; build one with `galos-sync --db \
+             --index {dir}`"
+        ));
+    }
+    let query = galos_index::SystemName::new(query.trim_matches('%'));
+    Ok(names
+        .matching(&query, RESULTS)
+        .into_iter()
+        .map(|entry| entry.address)
+        .collect())
+}
+
+/// How many systems a search answers with.
+///
+/// The old SQL answered with however many matched, which for `%sol%` over a
+/// galaxy is a screenful nobody reads and a scan nobody wants.
+const RESULTS: usize = 50;
 
 fn print_system(system: &System) {
     print!("{}: ", system.name);

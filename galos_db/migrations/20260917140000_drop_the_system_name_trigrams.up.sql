@@ -1,0 +1,30 @@
+-- The trigram index answered a search this database can no longer answer.
+--
+-- `systems_name_trgm` existed for one query shape, `name ILIKE '%…%'`, and
+-- that query is gone: `System::fetch_like_name` and
+-- `fetch_in_range_like_name` are deleted. What made them indefensible is
+-- not the 255 MB the index costs -- it is that **a fragment search over
+-- this table cannot see most of the galaxy**. A name its address spells is
+-- not stored (`20260917120000_let_an_address_spell_a_systems_name`), and
+-- `ILIKE` never matches a null, so the answer narrows to the exceptions as
+-- rows shed their names: 97.4 % of a galaxy's systems are invisible to it.
+-- An index that makes a wrong answer fast is worse than no index.
+--
+-- Fragment search belongs to the published names table, which holds every
+-- name whether stored or spelled: prefix in 134 µs and a word start in
+-- ~4 ms over 200,071,629 names, measured, and `A*` answers `SAGITTARIUS
+-- A*` where SQL cannot. See `galos_index::names::Table::matching`.
+--
+-- **`systems_name` stays.** It is a b-tree over the whole value and it
+-- answers `WHERE name = $1`, which three callers still ask -- the by-name
+-- fetch's fallback, `Market::touch`'s fallback and the catalog's
+-- `name = ANY($1)` -- for exactly the names nothing can spell. It wants
+-- making partial (`WHERE name IS NOT NULL`) one day, since a b-tree
+-- indexes nulls and most of its entries are about to become them, but that
+-- is a `CREATE INDEX CONCURRENTLY` over a galaxy and not a catalog-only
+-- change like this one.
+--
+-- `pg_trgm` is left installed: `articles` created it four years earlier and
+-- indexes its bodies through it, and `factions` and `bodies` still search
+-- with `ILIKE` over names that are nobody's arithmetic.
+DROP INDEX IF EXISTS systems_name_trgm;

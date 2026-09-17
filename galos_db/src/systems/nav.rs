@@ -45,7 +45,9 @@ impl System {
         rows.into_iter()
             .map(|row| System {
                 address: row.address,
-                name: row.name,
+                name: System::name_of(row.address, row.name)
+                    .expect("a name on record or an address that spells one")
+                    .into_string(),
                 position: row
                     .position
                     .map(|p| p.geometry.expect("not null or invalid")),
