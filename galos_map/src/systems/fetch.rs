@@ -758,21 +758,31 @@ pub(crate) mod tests {
     /// route the app plots over it.
     fn plotting() -> (App, crate::testing::Scratch) {
         use galos_index::NameEntry;
+        // Addresses minted from the places, so the names table and the
+        // built sky agree about where these three systems are: the table
+        // answers with the middle of the boxel an address names, and the
+        // router resolves a leg's ends through it. See
+        // [`crate::testing::boxel_at`].
+        //
+        // A stop every ten light years, because that is a class `A`
+        // boxel's side: two places closer than that can fall in the one
+        // boxel and so be minted the one address, and the second would
+        // then overwrite the first in the log.
         let entries = vec![
             NameEntry {
-                address: 1,
+                address: crate::testing::boxel_at([0., 0., 0.]),
                 name: "Start".into(),
                 position: [0., 0., 0.],
             },
             NameEntry {
-                address: 2,
+                address: crate::testing::boxel_at([10., 0., 0.]),
                 name: "End".into(),
-                position: [5., 0., 0.],
+                position: [10., 0., 0.],
             },
             NameEntry {
-                address: 3,
+                address: crate::testing::boxel_at([20., 0., 0.]),
                 name: "Onward".into(),
-                position: [10., 0., 0.],
+                position: [20., 0., 0.],
             },
         ];
 
@@ -822,7 +832,7 @@ pub(crate) mod tests {
     fn plot(app: &mut App) {
         app.world_mut().write_message(Search::Route {
             stops: vec!["Start".into(), "End".into()],
-            range: "10".into(),
+            range: "15".into(),
             drive: Drive::Unaided,
             how: Routing::default(),
         });
@@ -1058,7 +1068,11 @@ pub(crate) mod tests {
         // legs, the middle stop being both legs' own.
         assert_eq!(
             app.world().resource::<crate::systems::filter::Filters>().routed(),
-            std::collections::HashSet::from([1, 2, 3]),
+            std::collections::HashSet::from([
+                crate::testing::boxel_at([0., 0., 0.]),
+                crate::testing::boxel_at([10., 0., 0.]),
+                crate::testing::boxel_at([20., 0., 0.]),
+            ]),
             "a stopped leg let go of where it was going",
         );
     }
@@ -1246,7 +1260,10 @@ pub(crate) mod tests {
 
             assert_eq!(
                 walked(&mut app),
-                Some(vec![1, 2]),
+                Some(vec![
+                    crate::testing::boxel_at([0., 0., 0.]),
+                    crate::testing::boxel_at([10., 0., 0.]),
+                ]),
                 "no way across with the walk {}",
                 if walk { "on" } else { "off" }
             );

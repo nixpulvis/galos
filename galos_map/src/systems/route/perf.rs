@@ -728,11 +728,11 @@ fn routing_stays_quick() {
     // an exhausted search rather than a real one.
     //
     // Opened first and picked through the mapping, because picking them any
-    // other way is what this test is *for*: walking `Names::points` to find
-    // two systems faults every byte of `addr.bin` and `pos.bin` — 4 GB at
-    // 200 M — and the peak resident set then measures the harness rather
-    // than the router. A sphere query touches the two neighbourhoods and
-    // nothing else.
+    // other way is what this test is *for*: finding two systems through the
+    // names table faults every byte of `addr.bin` — 1.6 GB at 200 M — and
+    // the peak resident set then measures the harness rather than the
+    // router. A sphere query touches the two neighbourhoods and nothing
+    // else.
     let at = Instant::now();
     let sky = std::sync::Arc::new(
         galos_index::Sky::open(&dir).expect("the galaxy maps"),

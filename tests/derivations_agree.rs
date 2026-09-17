@@ -416,9 +416,15 @@ async fn both_derivations_publish_the_same_galaxy() {
     // two barycentres nothing draws but everything inside the system is
     // placed about.
     assert_eq!(from_events.boosts.len(), 1, "the neutron star was not read");
+    // Against the place the *reading* carried, not against the names
+    // table's: that table stopped holding positions when a name became a
+    // function of its address, and what it answers with now is the middle
+    // of the boxel the address names. The supercharge table is one of the
+    // tables that still carries an exact place, because the router reads
+    // it to find where four million jet cones sit.
     assert_eq!(
         from_events.boosts[&mine(1)],
-        (Boost::Neutron, from_events.names[&mine(1)].1),
+        (Boost::Neutron, [1.0, 2.0, 3.0]),
         "the supercharge is published somewhere the system is not",
     );
     let inside = &from_events.bodies[&mine(1)];

@@ -253,19 +253,6 @@ impl Names {
         self.table.entry_of(address)
     }
 
-    /// Where the system at `address` sits, if the table names it.
-    ///
-    /// The half of [`Self::get`] that costs nothing: a position is three
-    /// floats off the mapping, where a name is a copy.
-    pub fn position(&self, address: i64) -> Option<[f32; 3]> {
-        self.table.position_of(address)
-    }
-
-    /// Every system's address and place, for the router to bucket.
-    pub fn points(&self) -> impl Iterator<Item = (i64, [f64; 3])> + '_ {
-        self.table.points()
-    }
-
     /// The systems whose name *begins* with `query`, at most `limit`.
     ///
     /// One fold, of the query: every name in the table is upper case by

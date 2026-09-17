@@ -24,6 +24,7 @@
 use crate::geometry::CellId;
 use crate::store::Payload;
 use crate::walk::Index;
+use elite_journal::Boxel;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -199,6 +200,44 @@ impl Sky {
             radius *= 8.0;
         }
         None
+    }
+
+    /// Which node holds `address`, from the address and nothing else.
+    ///
+    /// **The address says where to look.** It packs the boxel the system
+    /// sits in ([`elite_journal::Boxel`]), and every system of a
+    /// 200,071,629-name galaxy was measured to lie inside the box its own
+    /// address names — so one sphere the size of that boxel finds the
+    /// record, with no index from addresses to places in between.
+    ///
+    /// Measured over `.index/full`, 300 real addresses and all 300 found:
+    /// 0.83 ms at class `A` (5 systems visited), 1.4 ms at `C` (76), 2.2 ms
+    /// at `D` (448), 5.0 ms at class `H`. That is dearer than a binary
+    /// search of a sorted address column — 87 µs — and it is what let that
+    /// column's 1.6 GB and the 2.4 GB of positions beside it stop being
+    /// stored: a route asks this twice, at its ends.
+    ///
+    /// [`None`] where nothing of that address is on record there, which is
+    /// a system this index has never held.
+    pub fn node_at(&self, address: i64) -> Option<Node> {
+        let (at, radius) = Boxel::of(address).place();
+        let mut found = None;
+        self.each_near(at, radius, |node, _, _| {
+            if found.is_none() && self.address(node) == Some(address) {
+                found = Some(node);
+            }
+        });
+        found
+    }
+
+    /// Where the system at `address` sits, from the address alone.
+    ///
+    /// [`Self::node_at`] and then the payload's own position, so the place
+    /// is the exact one the index publishes rather than the middle of the
+    /// boxel the address names. A router's endpoints want the exact one:
+    /// the box is 10 ly across at class `A` and 1,280 at class `H`.
+    pub fn placed(&self, address: i64) -> Option<[f64; 3]> {
+        self.place(self.node_at(address)?)
     }
 }
 

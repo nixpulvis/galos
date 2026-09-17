@@ -244,15 +244,37 @@ pub fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
     // that says otherwise would answer places for the wrong systems.
     old.sort_unstable_by_key(|row| row.address);
     let addresses: Vec<i64> = old.iter().map(|row| row.address).collect();
-    let names = crate::names::Names::open(dir)?;
+
+    // **The places come from the payloads, one pass over the galaxy.**
+    // They used to come from the names table's own position column, and
+    // that column no longer exists: a system's place is in the cell that
+    // owns it and nowhere else. Asking the tree per address would be a
+    // sphere query apiece — milliseconds by four million rows — where the
+    // cells hold every place already, in an order this does not care
+    // about.
+    let index = crate::Index::read(dir)?;
     let mut placed: Vec<SystemBoost> = Vec::with_capacity(old.len());
-    names.places(&addresses, |which, position| {
-        placed.push(SystemBoost {
-            address: old[which].address,
-            boost: old[which].boost,
-            position,
-        });
-    });
+    for cell in index.cells() {
+        for point in crate::Index::read_payload(dir, cell.id)? {
+            let Ok(which) = addresses.binary_search(&(point.id64 as i64))
+            else {
+                continue;
+            };
+            placed.push(SystemBoost {
+                address: old[which].address,
+                boost: old[which].boost,
+                position: [
+                    point.pos[0] as f32,
+                    point.pos[1] as f32,
+                    point.pos[2] as f32,
+                ],
+            });
+        }
+    }
+    // Address order, as every published table is, so the row a reader
+    // binary-searches for is where it expects: the walk above is in cell
+    // order, which is no order at all to a caller.
+    placed.sort_unstable_by_key(|row| row.address);
     write_meta(&path, &placed)?;
     Ok(Some(placed.len()))
 }

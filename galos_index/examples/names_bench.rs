@@ -57,7 +57,7 @@ fn main() {
     let at = Instant::now();
     let mut found = 0usize;
     for &address in &sample {
-        found += names.position_of(address).is_some() as usize;
+        found += names.name_of(address).is_some() as usize;
     }
     let each = at.elapsed() / sample.len() as u32;
     println!("address   {found} of {} found, {each:.1?} each", sample.len());

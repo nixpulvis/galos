@@ -11,9 +11,10 @@
 //!
 //! **The packing is now the published file.** [`galos_index::names`] writes
 //! those same arrays as the sections of a generation — `addr.bin`,
-//! `pos.bin`, `span.bin`, `text.bin`, and a `byname.bin` the resident
-//! packing never had — so the map maps them rather than building them.
-//! Opening the table is five `mmap` calls and nothing is resident: a lookup
+//! `span.bin`, `text.bin`, and a `byname.bin` the resident packing never
+//! had, and no positions at all since a name became a function of an
+//! address — so the map maps them rather than building them. Opening the
+//! table is five `mmap` calls and nothing is resident: a lookup
 //! by address faults the eight bytes a step it binary-searches and no name
 //! it is not going to answer with, and resolving a route's endpoint by name
 //! is a search of `byname.bin` rather than the 11.3 s scan of the galaxy

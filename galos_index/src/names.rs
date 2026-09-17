@@ -22,7 +22,6 @@
 //!   head.bin      64 B      magic, version, generation, count, name bytes
 //!   <gen>/
 //!     addr.bin    N x 8     i64 addresses, strictly ascending
-//!     pos.bin     N x 12    [f32; 3] positions
 //!     byname.bin  N x 4     u32 rows, sorted by name bytes
 //!     span.bin   (N+1) x 5  u40 offsets into text.bin; equal = derived
 //!     text.bin    B         the name bytes nothing can derive
@@ -120,11 +119,21 @@ const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 /// which rows those are — so a row absent from that list is the derived
 /// marker, and the 1.00 GB of spans becomes 47 MB. See [`Text::name_at`].
 ///
-/// All three are read by this build: a v1 or v2 generation has a dense
+/// **4 stops storing where a system is.** `pos.bin` was `[f32; 3]` a row,
+/// 2.40 GB at a galaxy, and it duplicated the cell payload that owns the
+/// system: the payloads are the router's own source and the only place a
+/// place is exact. An address locates its system to within a boxel
+/// ([`elite_journal::Boxel::place`], measured against every name of a
+/// 200 M dump), so whoever wants an exact place asks the tree —
+/// [`crate::Sky::placed`], 0.8–5 ms — and whoever wants a rough one does
+/// arithmetic on the address for nothing.
+///
+/// Every version is read by this build: a v1 or v2 generation has a dense
 /// `span.bin` and no `exception.bin`, which [`Text`] answers off the other
-/// branch, so a directory migrates whenever something rewrites its base
-/// (`galos-index fold-names`) rather than on a deadline.
-const VERSION: u16 = 3;
+/// branch, and one before v4 has a `pos.bin` this simply does not map. So a
+/// directory migrates whenever something rewrites its base (`galos-index
+/// fold-names`) rather than on a deadline.
+const VERSION: u16 = 4;
 
 /// The versions this build reads.
 ///
@@ -132,7 +141,7 @@ const VERSION: u16 = 3;
 /// an older build refuses a newer table, which is right — it would read a
 /// derived row as nameless, or a sparse span array as a dense one — and
 /// this one reads every table it ever wrote.
-const READS: [u16; 3] = [1, 2, VERSION];
+const READS: [u16; 4] = [1, 2, 3, VERSION];
 
 /// `head.bin`'s width. Everything past the fields is reserved and zero, so
 /// a later revision has room that an older reader already skips.
@@ -140,9 +149,6 @@ const HEAD: usize = 64;
 
 /// One address, as `addr.bin` holds it.
 const ADDR: usize = 8;
-
-/// One position, as `pos.bin` holds it.
-const POS: usize = 12;
 
 /// One row number, as `byname.bin` holds it.
 const ROW: usize = 4;
@@ -174,7 +180,7 @@ const SPAN: usize = 5;
 /// 8 + 12 + 4 + 5 = 29 bytes, and a name averages ~25 more: 5.8 GB at
 /// 200,071,629 systems, against 8.7 GB of MessagePack chunks for the same
 /// table and 7.9 GB resident to read them.
-pub const ROW_BYTES: usize = ADDR + POS + ROW + SPAN;
+pub const ROW_BYTES: usize = ADDR + ROW + SPAN;
 
 /// How many rows one bucket of the by-name sort holds in memory.
 ///
@@ -292,17 +298,6 @@ impl Names {
         }
     }
 
-    /// Where `address` sits, in light years.
-    pub fn position_of(&self, address: i64) -> Option<[f32; 3]> {
-        match self.delta.said(address) {
-            Some(Held::Named(entry)) => Some(entry.position),
-            Some(Held::Gone) => None,
-            None => {
-                self.base.index_of(address).map(|at| self.base.position_at(at))
-            }
-        }
-    }
-
     /// `address`'s whole row, which costs the name a copy.
     ///
     /// For a caller that holds what it is given — a selection, a search
@@ -310,7 +305,11 @@ impl Names {
     /// [`name_of`](Self::name_of).
     pub fn entry_of(&self, address: i64) -> Option<NameEntry> {
         match self.delta.said(address) {
-            Some(Held::Named(entry)) => Some(entry.clone()),
+            // Through `placed`, so a row the log answers for carries the
+            // same place a row the base answers for does: the log holds
+            // the position a report arrived with, and handing that out
+            // here would make this field mean two things.
+            Some(Held::Named(entry)) => Some(placed(entry.clone())),
             Some(Held::Gone) => None,
             None => {
                 self.base.index_of(address).map(|at| self.base.entry_at(at))
@@ -377,6 +376,7 @@ impl Names {
             .filter(|entry| entry.name.contains(needle))
             .take(limit)
             .cloned()
+            .map(placed)
             .collect();
         let take = |at: usize, found: &mut Vec<NameEntry>| {
             let address = self.base.address_at(at);
@@ -401,67 +401,6 @@ impl Names {
             }
         }
         found
-    }
-
-    /// Every system's address and place, for the router to bucket.
-    ///
-    /// Widened to `f64` here rather than stored so: the table's precision is
-    /// what the index publishes, and the map's arithmetic is what wants the
-    /// width.
-    pub fn points(&self) -> impl Iterator<Item = (i64, [f64; 3])> + '_ {
-        self.base
-            .points()
-            .filter(|(address, _)| self.delta.said(*address).is_none())
-            .chain(self.delta.entries().map(|entry| {
-                let [x, y, z] = entry.position;
-                (entry.address, [x as f64, y as f64, z as f64])
-            }))
-    }
-
-    /// Where each of `sorted` sits, as one pass rather than a search apiece
-    ///
-    /// For a table keyed by address that needs the places beside it: the
-    /// supercharge table is four million of two hundred million rows, and
-    /// the router has to know where those four million *are*. A binary
-    /// search apiece touches nearly every page of the address column
-    /// anyway — the rows it wants are scattered one in fifty — so this
-    /// walks the column once, in order, beside the addresses asked for.
-    ///
-    /// `sorted` is expected ascending, which is how every published table
-    /// is written. `found` is handed the index into `sorted` and the
-    /// place, and is not called at all for an address the table does not
-    /// name.
-    ///
-    /// The delta is the later word, as it is everywhere else: a row the
-    /// feed has moved answers with where it moved to, and one it withdrew
-    /// answers with nothing.
-    pub fn places(
-        &self,
-        sorted: &[i64],
-        mut found: impl FnMut(usize, [f32; 3]),
-    ) {
-        debug_assert!(
-            sorted.windows(2).all(|pair| pair[0] <= pair[1]),
-            "the addresses are walked in order against the column",
-        );
-        let column = self.base.addresses();
-        let mut cursor = 0;
-        for (which, &address) in sorted.iter().enumerate() {
-            match self.delta.said(address) {
-                Some(Held::Named(entry)) => {
-                    found(which, entry.position);
-                    continue;
-                }
-                Some(Held::Gone) => continue,
-                None => {}
-            }
-            while cursor < column.len() && column[cursor] < address {
-                cursor += 1;
-            }
-            if column.get(cursor) == Some(&address) {
-                found(which, self.base.position_at(cursor));
-            }
-        }
     }
 
     /// Every address the table names, in no order a caller may rely on.
@@ -859,7 +798,6 @@ pub struct Table {
 #[derive(Debug)]
 struct Mapped {
     byname: Mmap,
-    pos: Mmap,
     text: Text,
 }
 
@@ -935,9 +873,11 @@ impl Table {
         // `exception.bin`. Version 1 and 2 wrote a span a row and the field
         // is reserved zero in their heads, so the count stands in for it
         // and the sections read dense.
-        let stored = match version {
-            3 => u64::from_le_bytes(head[40..48].try_into().unwrap()) as usize,
-            _ => count,
+        let stored = match version >= 3 {
+            true => {
+                u64::from_le_bytes(head[40..48].try_into().unwrap()) as usize
+            }
+            false => count,
         };
         if count == 0 {
             return Ok(Table::default());
@@ -946,7 +886,6 @@ impl Table {
         let at = generation_dir(dir, generation);
         let held = Mapped {
             byname: map(&at.join(BYNAME_FILE), count * ROW)?,
-            pos: map(&at.join(POS_FILE), count * POS)?,
             text: Text::open(
                 &at,
                 count,
@@ -973,22 +912,6 @@ impl Table {
         self.held.as_ref().map_or(&[], |held| held.text.addresses())
     }
 
-    /// Every position, in the same order: what the router buckets.
-    pub fn positions(&self) -> &[[f32; 3]] {
-        match &self.held {
-            // SAFETY: `pos.bin` is `count * 12` bytes, checked at open; a
-            // mapping begins on a page boundary so the slice is aligned to
-            // `f32`; and any four bytes are a valid `f32`, NaN included.
-            Some(held) => unsafe {
-                std::slice::from_raw_parts(
-                    held.pos.as_ptr().cast::<[f32; 3]>(),
-                    held.count(),
-                )
-            },
-            None => &[],
-        }
-    }
-
     /// Where `address` sits in the table, if it is in it. A binary search
     /// over [`addresses`](Self::addresses).
     pub fn index_of(&self, address: i64) -> Option<usize> {
@@ -998,11 +921,6 @@ impl Table {
     /// The address of the `at`th system.
     pub fn address_at(&self, at: usize) -> i64 {
         self.addresses()[at]
-    }
-
-    /// Where the `at`th system sits.
-    pub fn position_at(&self, at: usize) -> [f32; 3] {
-        self.positions()[at]
     }
 
     /// The name of the `at`th system: the mapping's bytes, or the name its
@@ -1022,7 +940,7 @@ impl Table {
         NameEntry {
             address: self.address_at(at),
             name: SystemName::new(self.name_at(at)),
-            position: self.position_at(at),
+            position: boxel_middle(self.address_at(at)),
         }
     }
 
@@ -1030,10 +948,12 @@ impl Table {
     /// that keeps an unchanged report from being appended to the log.
     pub fn holds(&self, entry: &NameEntry) -> bool {
         match self.index_of(entry.address) {
-            Some(at) => {
-                entry.name == *self.name_at(at)
-                    && self.position_at(at) == entry.position
-            }
+            // The name alone: the base holds no position to compare
+            // against since version 4, and a report that agrees about the
+            // name is one the log has nothing to add about. A system that
+            // really moved is a system the galaxy renamed or re-placed,
+            // and the payload is what says so.
+            Some(at) => entry.name == *self.name_at(at),
             None => false,
         }
     }
@@ -1057,11 +977,11 @@ impl Table {
     /// than thousands of waits.
     ///
     /// **Only the text.** `byname.bin` is 800 MB and a prefix search
-    /// touches ~28 pages of it; `addr.bin` is 1.6 GB and a lookup touches
-    /// ~28; `pos.bin` is read a row at a time. Those are the sections the
-    /// format exists to *not* read, and pulling them in would trade a slow
-    /// first search for a slow open and 4.8 GB of page cache the drawing
-    /// wants. The text is the one section a single query reads end to end.
+    /// touches ~28 pages of it, and `addr.bin` is 1.6 GB and a lookup
+    /// touches ~28. Those are the sections the format exists to *not*
+    /// read, and pulling them in would trade a slow first search for a
+    /// slow open and 2.4 GB of page cache the drawing wants. The text is
+    /// the one section a single query reads end to end.
     pub fn warm(&self) -> io::Result<()> {
         let Some(held) = self.held.as_ref() else {
             return Ok(());
@@ -1259,13 +1179,6 @@ impl Table {
             }
         }
         found
-    }
-
-    /// Every system's address and place, for the router to bucket.
-    pub fn points(&self) -> impl Iterator<Item = (i64, [f64; 3])> + '_ {
-        self.addresses().iter().zip(self.positions()).map(|(address, at)| {
-            (*address, [at[0] as f64, at[1] as f64, at[2] as f64])
-        })
     }
 
     /// The rows in name order.
@@ -1536,8 +1449,6 @@ impl Text {
 pub const HEAD_FILE: &str = "head.bin";
 /// The addresses, within a generation directory.
 pub const ADDR_FILE: &str = "addr.bin";
-/// The positions, within a generation directory.
-pub const POS_FILE: &str = "pos.bin";
 /// The rows in name order, within a generation directory.
 pub const BYNAME_FILE: &str = "byname.bin";
 /// The offsets into the text, one a stored name, within a generation
@@ -1574,6 +1485,37 @@ fn map(path: &Path, want: usize) -> io::Result<Mmap> {
         return Err(refused("a mapping that is not eight-byte aligned"));
     }
     Ok(map)
+}
+
+/// The middle of the boxel `address` names, as a published row carries a
+/// place.
+///
+/// **This table stopped holding positions at version 4** — `pos.bin` was
+/// 2.40 GB of a place a row, duplicating the cell payload that owns the
+/// system — so what a row answers with is what the *address* implies: the
+/// middle of its boxel, within half a boxel of the truth, which is ten
+/// light years across at the class most systems are. That is what a search
+/// result ranked by distance from the camera wants, and it is free, being
+/// arithmetic on the address.
+///
+/// Every read path goes through this, the log's rows included, and that is
+/// the point rather than a detail: the log carries the place a report
+/// arrived with, so answering it there and a boxel here would make one
+/// field mean two things depending on which half of the table replied. The
+/// oracle caught exactly that (`tests/derivations_agree.rs`) within an hour
+/// of it existing.
+///
+/// Whoever needs the exact place asks the galaxy, where it is exact:
+/// [`crate::Sky::placed`], which the address locates to within this same
+/// boxel and which a router's endpoints use.
+fn placed(entry: NameEntry) -> NameEntry {
+    NameEntry { position: boxel_middle(entry.address), ..entry }
+}
+
+/// The middle of the boxel `address` names, in light years.
+fn boxel_middle(address: i64) -> [f32; 3] {
+    let (at, _) = elite_journal::Boxel::of(address).place();
+    [at[0] as f32, at[1] as f32, at[2] as f32]
 }
 
 /// Where `needle` first sits in `hay`, or [`None`].
@@ -1825,11 +1767,13 @@ fn write_base(
     Ok(count)
 }
 
-/// Write `addr.bin`, `pos.bin`, `exception.bin`, `span.bin` and `text.bin`
-/// from the sorted rows, answering how many bytes of names they came to and
+/// Write `addr.bin`, `exception.bin`, `span.bin` and `text.bin` from the
+/// sorted rows, answering how many bytes of names they came to and
 /// how many rows stored one.
 ///
-/// One pass, five sequential streams. The sections are separate files
+/// One pass, four sequential streams. A position is not among them: the
+/// cell payload that owns a system is where its place is exact, and the
+/// address says which boxel to look in ([`crate::Sky::placed`]). The sections are separate files
 /// exactly so that this is possible: one file with the sections laid end to
 /// end would need the counts before the first byte of it could be placed,
 /// or a second pass to concatenate gigabytes.
@@ -1838,7 +1782,7 @@ fn write_sections(
     sorted: &rows::Sorted,
 ) -> io::Result<(usize, usize)> {
     let mut addr = BufWriter::new(File::create(at.join(ADDR_FILE))?);
-    let mut pos = BufWriter::new(File::create(at.join(POS_FILE))?);
+
     let mut exception = BufWriter::new(File::create(at.join(EXCEPTION_FILE))?);
     let mut span = BufWriter::new(File::create(at.join(SPAN_FILE))?);
     let mut text = BufWriter::new(File::create(at.join(TEXT_FILE))?);
@@ -1850,9 +1794,6 @@ fn write_sections(
     if let Some(mut rows) = sorted.rows()? {
         while let Some((entry, _)) = rows.next::<NameEntry>()? {
             addr.write_all(&entry.address.to_le_bytes())?;
-            for axis in entry.position {
-                pos.write_all(&axis.to_le_bytes())?;
-            }
             // **The name is written only where the address does not spell
             // it**, and only such a row costs a span and a place in the
             // exception list. Over a real galaxy that is 2.6 % of them:
@@ -1871,7 +1812,6 @@ fn write_sections(
         }
     }
     addr.flush()?;
-    pos.flush()?;
     exception.flush()?;
     span.flush()?;
     text.flush()?;
@@ -2267,48 +2207,8 @@ mod tests {
         assert_eq!(table.name_at(0), "SOL");
         assert_eq!(table.name_at(1), "ALPHA CENTAURI");
         assert_eq!(table.name_at(2), "COL 285 SECTOR AB-C D1");
-        assert_eq!(table.position_at(1), [2.0, 0.0, 0.0]);
         assert_eq!(table.index_of(20), Some(1));
         assert_eq!(table.index_of(11), None);
-    }
-
-    /// The places join walks the column once and the log wins on it
-    ///
-    /// What the router asks of this table: a published table keyed by
-    /// address — which systems can supercharge a drive — needs the places
-    /// of its rows, and there are four million of them against two hundred
-    /// million names. The answers have to be the base's where the feed has
-    /// said nothing, the log's where it has moved a system, and absent
-    /// where it has withdrawn one or where the row is about a system this
-    /// table has never named.
-    #[test]
-    fn the_places_join_answers_off_the_base_and_the_log() {
-        let dir = Scratch::new("places");
-        published(
-            &dir.0,
-            &[
-                entry(10, "SOL", 1.0),
-                entry(20, "ALPHA CENTAURI", 2.0),
-                entry(30, "MAIA", 3.0),
-                entry(40, "COLONIA", 4.0),
-            ],
-        );
-        let mut names = Names::open(&dir.0).expect("the table opens");
-        // The feed moves one system and withdraws another.
-        assert!(names.name(entry(20, "ALPHA CENTAURI", 9.0)));
-        assert!(names.unname(30));
-
-        let mut found = Vec::new();
-        // Ascending, as every published table is, and with a row about a
-        // system nothing has named among them.
-        names.places(&[10, 20, 30, 40, 50], |which, at| {
-            found.push((which, at[0]));
-        });
-        assert_eq!(
-            found,
-            vec![(0, 1.0), (1, 9.0), (3, 4.0)],
-            "the base, the log's correction, and nothing for the rest",
-        );
     }
 
     /// The by-name index answers an exact name without a scan, and the
@@ -2485,7 +2385,6 @@ mod tests {
         let table = Table::open(&dir.0).expect("the table opens");
         table.audit().expect("a table a build just wrote");
         assert_eq!(table.name_at(0), "NEW NAME");
-        assert_eq!(table.position_at(0), [9.0, 0.0, 0.0]);
         assert_eq!(table.row_named("OLD NAME"), None);
     }
 
@@ -2613,7 +2512,7 @@ mod tests {
         assert!(names.unname(2));
         assert_eq!(names.len(), 0);
         assert!(names.is_empty(), "a table whose every row was withdrawn");
-        assert_eq!(names.points().count(), 0);
+        assert_eq!(names.len(), 0);
         assert!(names.addresses().next().is_none());
     }
 
@@ -2658,7 +2557,7 @@ mod tests {
         assert_eq!(names.name_of(1), None);
         assert_eq!(names.address_of("SOL"), None);
         assert!(names.matching("SOL", 25).is_empty());
-        assert_eq!(names.points().count(), 0);
+        assert_eq!(names.len(), 0);
 
         // And a build that names nothing publishes that, readably.
         assert_eq!(published(&dir.0, &[]), 0);

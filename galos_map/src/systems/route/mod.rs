@@ -12,6 +12,7 @@ use bevy::math::DVec3;
 use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
+use elite_journal::Boxel;
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
@@ -590,11 +591,16 @@ fn frame_trip(
         // Whatever is on record. A stop the names table does not know is a
         // leg that will come back with nothing, and the form is already
         // saying so; the trip is still framed over the stops that are real.
+        //
+        // The middle of the boxel each address names rather than the
+        // system's own place: this frames a camera over a trip thousands
+        // of light years long, and a boxel is ten of them at the class
+        // most systems are. Free, too — arithmetic on the address, where
+        // the exact place would be a sphere query a stop.
         let places: Vec<DVec3> = stops
             .iter()
             .filter_map(|stop| names.address(stop))
-            .filter_map(|address| names.position(address))
-            .map(super::place_to_vec)
+            .map(|address| DVec3::from(Boxel::of(address).place().0))
             .collect();
         let Some((middle, extent)) = super::route::spawn::framing(&places)
         else {
@@ -1581,11 +1587,18 @@ mod tests {
     fn framed(places: &[DVec3]) -> (Spyglass, Vec<Option<f32>>) {
         use galos_index::NameEntry;
 
+        // **The stops are minted as addresses, not as places.** The names
+        // table holds no position since it stopped holding the names an
+        // address spells, and what it answers with is the middle of the
+        // boxel the address names — so a fixture that wants a system ten
+        // light years along asks for the boxel ten light years along. A
+        // class `A` boxel is exactly 10 ly, so the geometry these tests
+        // assert is the geometry they get.
         let entries: Vec<NameEntry> = places
             .iter()
             .enumerate()
             .map(|(at, place)| NameEntry {
-                address: at as i64 + 1,
+                address: crate::testing::boxel_at([place.x, place.y, place.z]),
                 name: format!("S{at}").into(),
                 position: [place.x as f32, place.y as f32, place.z as f32],
             })

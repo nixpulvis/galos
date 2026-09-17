@@ -931,11 +931,7 @@ mod tests {
         );
         let names = app.world().resource::<Names>();
         assert_eq!(names.address("S1"), None, "the search still reaches it");
-        assert_eq!(
-            names.points().count(),
-            0,
-            "and the table still hands out a place for it"
-        );
+        assert_eq!(names.table.len(), 0, "and the table still counts it");
     }
 
     /// A base recompacted whole is re-opened rather than merged

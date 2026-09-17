@@ -7,6 +7,7 @@ use crate::systems::spawn::build_system;
 use crate::{Names, Populated};
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use elite_journal::Boxel;
 
 use std::sync::Arc;
 
@@ -280,10 +281,27 @@ fn ask_leg(
     // The place comes with the address: the router reads the galaxy out
     // of the cell payloads, which are keyed by *where*, so the two ends
     // are the one thing it needs told — see [`JumpGraph::route`].
+    //
+    // **And the place comes from the galaxy rather than from the names
+    // table**, which no longer holds one: the address names the boxel the
+    // system sits in, so [`Sky::placed`] reads the exact position off the
+    // payload after a sphere query the size of that boxel. Measured at
+    // 0.8–5 ms by mass class, and a route asks it twice — against the
+    // 2.4 GB of positions a row apiece that it replaces.
+    let sky = jumps.sky.clone();
     let placed = |name: &str| {
         let address = names.address(name)?;
-        let at = names.position(address)?;
-        Some((address, [at[0] as f64, at[1] as f64, at[2] as f64]))
+        // The galaxy's own place where there is a galaxy to ask, and the
+        // middle of the boxel the address names where there is not — a
+        // transport that cannot be mapped, or a test app. The fallback is
+        // sound rather than a guess: the system is inside that boxel, and
+        // `Sky::node_of` widens its search from whatever place it is
+        // handed, so the exact record is still what the walk starts on.
+        let at = sky
+            .as_ref()
+            .and_then(|sky| sky.placed(address))
+            .unwrap_or_else(|| Boxel::of(address).place().0);
+        Some((address, at))
     };
     let ends = placed(leg.0).zip(placed(leg.1));
 

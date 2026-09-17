@@ -82,6 +82,39 @@ fn built(
 }
 
 /// The same over places given as the names table carries them, `f32`.
+/// The address of the class `A` boxel `place` falls in
+///
+/// **A fixture places a system by giving it the right address.** The names
+/// table holds no position since a name became a function of one, and what
+/// it answers with is the middle of the boxel the address names — so a test
+/// whose sky puts a system at a place and whose table gives it an unrelated
+/// address is a test where the two disagree about where it is, and the
+/// router resolves its ends against the wrong neighbourhood.
+///
+/// The real mapping, so any place has an address. The middle of the boxel
+/// is within five light years of the place asked for, and the grid's period
+/// is ten, so a fixture asking for multiples of ten gets its distances
+/// exactly.
+pub fn boxel_at(place: [f64; 3]) -> i64 {
+    let axis = |at: f64, which: usize| {
+        let from = at - elite_journal::boxel::ORIGIN[which];
+        let sector = (from / elite_journal::boxel::SECTOR_LY).floor();
+        let within = from - sector * elite_journal::boxel::SECTOR_LY;
+        (sector as u8, (within / 10.0).floor() as u32)
+    };
+    let (sx, x) = axis(place[0], 0);
+    let (sy, y) = axis(place[1], 1);
+    let (sz, z) = axis(place[2], 2);
+    elite_journal::Boxel {
+        mass: 0,
+        sector: [sx, sy, sz],
+        ordinal: x + 128 * y + 128 * 128 * z,
+        index: 0,
+    }
+    .address()
+    .expect("a boxel inside the grid")
+}
+
 pub fn sky_of(dir: &Path, entries: &[galos_index::NameEntry]) -> Arc<Sky> {
     let places: Vec<(i64, [f64; 3])> = entries
         .iter()
