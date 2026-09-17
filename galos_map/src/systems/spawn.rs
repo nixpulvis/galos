@@ -1142,22 +1142,37 @@ pub(crate) fn build_system(
 
 /// The drawable system at an address, if the resident tables can place it
 ///
-/// A search or a filter names a system by address; its place comes from the
-/// [`Names`] table and everything political from [`Populated`]. [`None`] where
-/// the names table cannot place it, which is a system the map cannot draw.
+/// A search or a filter names a system by address; its name comes from the
+/// [`Names`] table, its place from the galaxy behind it, and everything
+/// political from [`Populated`]. [`None`] where the table does not name it,
+/// which is a system the map cannot draw.
 pub(crate) fn system_at(
     address: i64,
     populated: &Populated,
     names: &Names,
 ) -> Option<System> {
-    let entry = names.get(address)?;
+    // Named or nothing: one the table cannot name is one the map cannot
+    // draw, and `build_system` reads the name itself.
+    names.get(address)?;
+    // **The place comes from the galaxy, or from the populated table where
+    // that already holds it.** The names table stopped holding positions
+    // when a name became a function of an address, and what its row would
+    // answer with is the middle of a boxel — ten light years across at the
+    // class most systems are and 1,280 at the largest, which is a star
+    // drawn in the wrong place. A populated system's exact place is
+    // resident already, so that is asked first and costs nothing; anything
+    // else is one sphere query ([`Names::placed`]).
+    let at = match populated.get(address) {
+        Some(known) => DVec3::new(
+            known.position[0] as f64,
+            known.position[1] as f64,
+            known.position[2] as f64,
+        ),
+        None => names.placed(address),
+    };
     let raw = RawSystem {
         address,
-        position: [
-            entry.position[0] as f64,
-            entry.position[1] as f64,
-            entry.position[2] as f64,
-        ],
+        position: [at.x, at.y, at.z],
         magnitude: None,
         temp_bucket: None,
         // The names table says where a system is and what it is called, and
@@ -1407,6 +1422,39 @@ fn security_hue(system: &System) -> Hue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A system named by address is drawn where the galaxy puts it
+    ///
+    /// **Not where its address puts it.** The names table stopped holding
+    /// positions, and what a row would answer with is the middle of the
+    /// boxel the address names — up to five light years off at the class
+    /// most systems are, and half a sector at the largest. A route's stops
+    /// and a searched system are drawn through here, so a row's answer
+    /// standing in for the galaxy's is every one of them drawn beside where
+    /// it is.
+    #[test]
+    fn a_system_named_by_address_is_placed_by_the_galaxy() {
+        let dir = crate::testing::Scratch::new("placed");
+        // Five light years off the middle of its own boxel, boxel edges
+        // falling where they fall: enough that reading the row instead of
+        // the payload is a different answer.
+        let at = [5., 0., 0.];
+        let entries = vec![galos_index::NameEntry {
+            address: crate::testing::boxel_at(at),
+            name: "SOMEWHERE".into(),
+            position: [at[0] as f32, at[1] as f32, at[2] as f32],
+        }];
+        let sky = crate::testing::sky_of(dir.path(), &entries);
+        let middle = elite_journal::Boxel::of(entries[0].address).place().0;
+        assert_ne!(middle, at, "the fixture's place is its boxel middle");
+
+        let names = Names::over(sky, entries.clone(), Vec::new());
+        let system =
+            system_at(entries[0].address, &Populated::default(), &names)
+                .expect("a named system is drawable");
+
+        assert_eq!(system.position, at);
+    }
 
     /// A system at `address`, with nothing else on record
     fn system(address: i64) -> System {

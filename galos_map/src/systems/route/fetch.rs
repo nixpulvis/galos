@@ -291,16 +291,19 @@ fn ask_leg(
     let sky = jumps.sky.clone();
     let placed = |name: &str| {
         let address = names.address(name)?;
-        // The galaxy's own place where there is a galaxy to ask, and the
-        // middle of the boxel the address names where there is not — a
-        // transport that cannot be mapped, or a test app. The fallback is
-        // sound rather than a guess: the system is inside that boxel, and
-        // `Sky::node_of` widens its search from whatever place it is
-        // handed, so the exact record is still what the walk starts on.
-        let at = sky
-            .as_ref()
-            .and_then(|sky| sky.placed(address))
-            .unwrap_or_else(|| Boxel::of(address).place().0);
+        // **The galaxy's answer, or nothing.** Where there is a tree to
+        // ask, a system it cannot place is a system this cannot walk from:
+        // the boxel middle is within half a boxel of the truth — 1,108
+        // light years at the largest class — and a walk begun from it
+        // would start at whatever system happens to lie near that point
+        // and draw a line from there, which is worse than a leg that says
+        // it found nothing. The middle stands in only where no galaxy is
+        // open at all: a transport that cannot be mapped, or a test app,
+        // where there is no exact place to be had from anywhere.
+        let at = match sky.as_ref() {
+            Some(sky) => sky.placed(address)?,
+            None => Boxel::of(address).place().0,
+        };
         Some((address, at))
     };
     let ends = placed(leg.0).zip(placed(leg.1));

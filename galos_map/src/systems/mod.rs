@@ -772,11 +772,20 @@ pub(crate) fn reach_with_camera(
     }
 }
 
-/// Where a system named in the resident table sits, in light years
+/// Roughly where a listed system sits, in light years
 ///
-/// The three columns of a [`NameEntry`] widened to the `f64` the map is laid
-/// out in. The names table holds only placed systems, so every entry has an
-/// answer.
+/// **The middle of the boxel its address names**, which is what a published
+/// row answers with since a name became a function of an address: within
+/// five light years of the truth at the class most systems are, and half a
+/// sector at the largest. Good enough for the two things that ask it — the
+/// order a search's results are listed in and the distance each line reads
+/// out, both over a galaxy tens of thousands of light years across — and
+/// free, being arithmetic.
+///
+/// Anything that *acts* on a system asks the galaxy instead
+/// ([`crate::Names::placed`]): a camera sent to a place, a star drawn there,
+/// a route plotted from there. A list that is redrawn every frame cannot
+/// afford a sphere query a line.
 pub(crate) fn system_to_vec(entry: &NameEntry) -> DVec3 {
     DVec3::new(
         entry.position[0] as f64,
@@ -785,21 +794,22 @@ pub(crate) fn system_to_vec(entry: &NameEntry) -> DVec3 {
     )
 }
 
-/// The same, for a place read out of the packed table without its name.
-///
-impl From<&NameEntry> for System {
-    /// A system as the names table alone gives it: named and placed, with no
-    /// political columns. Those come from the populated table once a fetch
-    /// draws it, so a system picked out of a search is this until then.
-    fn from(entry: &NameEntry) -> System {
+impl System {
+    /// A system as a name and a place, with no political columns
+    ///
+    /// What a search's result is until a fetch draws it: those columns come
+    /// from the populated table, and a system picked out of a list has not
+    /// been read from the galaxy yet.
+    ///
+    /// The place is handed in rather than taken off the entry, because a
+    /// published row no longer carries one — see [`crate::Names::placed`]
+    /// for where it comes from and [`system_to_vec`] for the approximation
+    /// that is allowed to stand in for it.
+    pub(crate) fn named_at(entry: &NameEntry, at: DVec3) -> System {
         System {
             address: entry.address,
             name: entry.name.clone(),
-            position: [
-                entry.position[0] as f64,
-                entry.position[1] as f64,
-                entry.position[2] as f64,
-            ],
+            position: [at.x, at.y, at.z],
             population: 0,
             allegiance: None,
             government: None,

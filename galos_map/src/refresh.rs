@@ -547,10 +547,15 @@ mod tests {
             .ok()
             .flatten()
             .map_or_else(Boosts::absent, Boosts::of);
-        let names = Names::packed(table, crate::names::Reaches::of(reaches));
-        app.insert_resource(Jumps::over(Arc::new(
+        let sky = Arc::new(
             galos_index::Sky::open(dir).expect("the galaxy should map"),
-        )));
+        );
+        let names = Names::packed(
+            table,
+            crate::names::Reaches::of(reaches),
+            Some(Arc::clone(&sky)),
+        );
+        app.insert_resource(Jumps::over(sky));
         app.insert_resource(boosts);
         app.insert_resource(names);
         app.insert_resource(ResidentIndex(

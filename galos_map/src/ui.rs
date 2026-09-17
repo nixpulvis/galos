@@ -2159,6 +2159,7 @@ fn ask_bar(
                     note,
                     results,
                     center,
+                    &filter.names,
                     Picking::Asked,
                     selection,
                     panels,
@@ -2177,6 +2178,7 @@ fn ask_bar(
                         note,
                         results,
                         center,
+                        &filter.names,
                         Picking::Gathers,
                         selection,
                         panels,
@@ -2777,20 +2779,24 @@ pub(crate) fn gathering(ui: &Ui) -> bool {
 fn act_on(
     action: SystemAction,
     system: &NameEntry,
+    at: DVec3,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
     described: &mut Option<crate::systems::System>,
 ) {
-    // The names table holds only placed systems, so a listed one always has
-    // somewhere to be. Its political columns fill in when a fetch draws it.
-    let placed = crate::systems::System::from(system);
+    // `at` is where the galaxy says it is, asked once here rather than per
+    // frame: a line is drawn every frame and acted on when it is clicked,
+    // and a published row carries no place to read off. The list's own
+    // ordering and distance readout stand on the boxel middle — see
+    // [`crate::systems::system_to_vec`].
+    //
+    // Its political columns fill in when a fetch draws it.
+    let placed = crate::systems::System::named_at(system, at);
     match action {
         SystemAction::Select { gathering } => {
             selection.pick(Picked::System(placed), gathering);
         }
-        SystemAction::Travel => {
-            *travelled = Some(crate::systems::system_to_vec(system))
-        }
+        SystemAction::Travel => *travelled = Some(at),
         SystemAction::Describe => *described = Some(placed),
     }
 }
@@ -2844,10 +2850,12 @@ fn act_on(
 /// Unlike the rows in the state bar, which stand whether or not the form is
 /// out. A selection and a filter outlive the asking and go on saying what the
 /// map is doing; a list of candidates is the asking itself.
+#[allow(clippy::too_many_arguments)]
 fn found(
     ui: &mut Ui,
     results: &SearchResults,
     center: Option<DVec3>,
+    names: &crate::Names,
     picking: Picking,
     selection: &mut Selection,
     travelled: &mut Option<DVec3>,
@@ -2862,7 +2870,14 @@ fn found(
     else {
         return;
     };
-    act_on(picking.of(action), system, selection, travelled, described);
+    act_on(
+        picking.of(action),
+        system,
+        names.placed(system.address),
+        selection,
+        travelled,
+        described,
+    );
 }
 
 /// What a plain click on a line the search found means
@@ -2915,6 +2930,7 @@ fn answer(
     note: &SearchNote,
     results: &SearchResults,
     center: Option<DVec3>,
+    names: &crate::Names,
     picking: Picking,
     selection: &mut Selection,
     panels: &mut Panels,
@@ -2930,6 +2946,7 @@ fn answer(
         ui,
         results,
         center,
+        names,
         picking,
         selection,
         &mut travelled,
@@ -9356,6 +9373,7 @@ mod tests {
                         ui,
                         &offers,
                         None,
+                        &crate::Names::default(),
                         Picking::Asked,
                         &mut selection,
                         &mut None,
@@ -9390,6 +9408,7 @@ mod tests {
                 ui,
                 results,
                 center,
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut selection,
                 &mut travelled,
@@ -9474,6 +9493,7 @@ mod tests {
                     ui,
                     &systems,
                     None,
+                    &crate::Names::default(),
                     Picking::Asked,
                     &mut selection,
                     &mut travelled,
@@ -9522,6 +9542,7 @@ mod tests {
         act_on(
             SystemAction::Select { gathering },
             system,
+            crate::systems::system_to_vec(system),
             selection,
             &mut travelled,
             &mut described,
@@ -10084,6 +10105,7 @@ mod tests {
                 ui,
                 &results(names, true),
                 None,
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut selection,
                 &mut travelled,
@@ -10145,6 +10167,7 @@ mod tests {
                 ui,
                 &offers,
                 None,
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut selection,
                 &mut travelled,
@@ -10272,6 +10295,7 @@ mod tests {
                 ui,
                 &offers,
                 None,
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut held,
                 &mut travelled,
@@ -11987,6 +12011,7 @@ mod tests {
                     ui,
                     &offers,
                     None,
+                    &crate::Names::default(),
                     picking,
                     &mut selection,
                     &mut travelled,
@@ -12130,6 +12155,7 @@ mod tests {
                 ui,
                 &results(&["SOL", "NOWHERE"], false),
                 Some(DVec3::ZERO),
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut selection,
                 &mut travelled,
@@ -12149,6 +12175,7 @@ mod tests {
                 ui,
                 &results(&["SOL", "SOLATI", "SOLLARO"], true),
                 None,
+                &crate::Names::default(),
                 Picking::Asked,
                 &mut selection,
                 &mut travelled,

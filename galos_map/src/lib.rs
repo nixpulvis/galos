@@ -4,6 +4,7 @@
 //!
 //! Requires a built `galos_index` directory: the cell tree and the metadata
 //! sidecars beside it, read through one [`galos_index::Source`].
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use galos_index::meta::{
     Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
@@ -102,6 +103,20 @@ pub struct Names {
     /// the system it is about grows, which is the one thing in here that
     /// really changes with the feed.
     pub reaches: Arc<names::Reaches>,
+    /// The galaxy the places come out of, where there is one open.
+    ///
+    /// **The table names systems; it no longer places them.** A published
+    /// row is an address and a name, and where a system sits is in the cell
+    /// payload that owns it — so the one structure that can answer "where
+    /// is this address" is the tree, and asking it is a sphere query the
+    /// size of the boxel the address names ([`Names::placed`]).
+    ///
+    /// Held here rather than passed, because every caller that draws a
+    /// system by address already holds this table: a searched system, a
+    /// route's stops, the systems a filter's panel lists. Opened from the
+    /// same directory the table is mapped from, so a table that can name a
+    /// system is a table that can place it.
+    pub sky: Option<Arc<galos_index::Sky>>,
 }
 
 /// Which systems can supercharge a drive, where they are, and on what — in
@@ -208,7 +223,22 @@ impl Names {
         Names {
             table: galos_index::Names::of(Table::default(), Delta::of(entries)),
             reaches: Arc::new(names::Reaches::of(reaches)),
+            sky: None,
         }
+    }
+
+    /// The same, over a galaxy the places come out of.
+    ///
+    /// What a test that draws a system by address builds: the rows say what
+    /// is named, the tree says where it is, and the two agree because the
+    /// fixture mints each address from the place it wants
+    /// ([`crate::testing::boxel_at`]).
+    pub fn over(
+        sky: Arc<galos_index::Sky>,
+        entries: Vec<NameEntry>,
+        reaches: Vec<galos_index::SystemReach>,
+    ) -> Names {
+        Names { sky: Some(sky), ..Names::reaching(entries, reaches) }
     }
 
     /// The table as the index published it, with the reaches beside it.
@@ -216,8 +246,38 @@ impl Names {
     /// What the map opens with: [`galos_index::Names::open`] has mapped the
     /// base and read the log, so there is nothing here to build. See
     /// `loading::read`.
-    pub fn packed(table: galos_index::Names, reaches: names::Reaches) -> Names {
-        Names { table, reaches: Arc::new(reaches) }
+    pub fn packed(
+        table: galos_index::Names,
+        reaches: names::Reaches,
+        sky: Option<Arc<galos_index::Sky>>,
+    ) -> Names {
+        Names { table, reaches: Arc::new(reaches), sky }
+    }
+
+    /// Where the system at `address` sits, in light years.
+    ///
+    /// **The galaxy's answer, not the table's.** The published row holds an
+    /// address and a name; the place is in the cell payload that owns the
+    /// system, and the address says which boxel to look in — so this is one
+    /// sphere query the size of that boxel, 0.8 ms at the class most
+    /// systems are and 5 ms at the largest. That is a lookup a click or a
+    /// plot can afford and a per-frame sweep cannot, which is why the
+    /// drawn galaxy comes from the LOD walk and this answers for the
+    /// handful of systems named outright.
+    ///
+    /// The middle of the boxel where the galaxy cannot answer — none open,
+    /// or a system the feed has named that no cell holds yet. Within half a
+    /// boxel of the truth, which is what a table with no tree behind it can
+    /// honestly say, and never nothing: an address always names a box.
+    /// Production has a tree: the sky is opened from the directory the
+    /// table is mapped from.
+    pub fn placed(&self, address: i64) -> DVec3 {
+        if let Some(sky) = self.sky.as_ref()
+            && let Some(at) = sky.placed(address)
+        {
+            return DVec3::from(at);
+        }
+        DVec3::from(elite_journal::Boxel::of(address).place().0)
     }
 
     /// Fold a tail of the delta log in, the feed having appended to it.

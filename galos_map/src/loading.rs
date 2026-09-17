@@ -350,12 +350,12 @@ fn stood_up(
 
     Loaded {
         held,
-        jumps: sky.map_or_else(Jumps::default, Jumps::over),
+        jumps: sky.clone().map_or_else(Jumps::default, Jumps::over),
         index: ResidentIndex(index),
         populated: Populated(Arc::new(
             populated.into_iter().map(|s| (s.address, s)).collect(),
         )),
-        names: Names::packed(table, reaches),
+        names: Names::packed(table, reaches, sky),
         boosts,
         factions: Factions(
             factions.into_iter().map(|f| (f.id, f.name)).collect(),
