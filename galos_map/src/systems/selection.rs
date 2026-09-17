@@ -713,7 +713,7 @@ pub(crate) fn ring(
     // Whatever inside a system is picked out, read off the grid holding it the
     // way its name is, so it carries neither a filter nor a galactic position
     // of its own.
-    inside: Query<(Entity, &Indicator), (With<Body>, With<Selected>)>,
+    inside: Query<(Entity, &Body, &Indicator), With<Selected>>,
     places: Places,
     dim: Res<DimTo>,
 ) -> Result {
@@ -732,17 +732,18 @@ pub(crate) fn ring(
 
     // Whatever inside a system is picked out, read off the grid holding it, as
     // its name is, so it is placed against the view it is drawn into.
-    for (entity, indicator) in &inside {
-        let Some(place) = places.of(entity) else { continue };
-        let Some(at) = screen_position(orbit, cot_half_fov, viewport, place)
-        else {
+    for (entity, body, _) in &inside {
+        let Some(mark) = crate::systems::pointing::body_mark(
+            orbit,
+            cot_half_fov,
+            viewport,
+            &places,
+            entity,
+            body,
+        ) else {
             continue;
         };
-        painter.circle_stroke(
-            egui::pos2(at.x, at.y),
-            indicator.0,
-            stroke(SELECTION),
-        );
+        painter.add(mark.painted(stroke(SELECTION)));
     }
 
     for (system, mark, indicator, visibility, filtered, hop) in &selected {

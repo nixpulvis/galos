@@ -11,8 +11,8 @@ use crate::systems::System;
 use crate::systems::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{
-    Label, PlateText, color32, depth, name_rect, screen_offset,
-    screen_position, world_per_pixel,
+    Label, PlateText, Silhouette, color32, depth, depth_of, name_rect, outline,
+    screen_offset, screen_position, world_per_pixel,
 };
 use crate::systems::scale::{Drawn, ScalePopulation, View};
 use crate::systems::selection::Selected;
@@ -613,30 +613,57 @@ pub fn size_bodies(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (entity, body, mut indicator) in &mut bodies {
-        let Some(place) = places.of(entity) else { continue };
-        // A metre, which is as near as the camera may be pulled to anything.
-        let into_view = depth(orbit, place).max(1.);
-        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, into_view);
+        let Some(mark) =
+            body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
+        else {
+            continue;
+        };
 
-        // Only where it moved, as a system's mark is.
-        let wanted = body_mark(body.radius, per_pixel);
+        // Only where it moved, as a system's mark is. The whole of the mark
+        // is an ellipse and this is one number about it, which is what a name
+        // is laid clear of; the ring and the pointer are given the shape
+        // itself, through the same [`body_mark`].
+        let wanted = mark.widest();
         if indicator.0 != wanted {
             indicator.0 = wanted;
         }
     }
 }
 
-/// How large a body of `radius` is marked, where a pixel covers `per_pixel`
+/// The mark around a body, as the ellipse it is
 ///
-/// Its own size, which for a sphere is also its outline, and air around it:
-/// [`BODY_MARGIN`] of the body or [`BODY_AIR`], whichever is the more. Until
-/// both are too small to aim at and the floor takes over, which is where the
-/// air is already the whole of the mark.
-fn body_mark(radius: f32, per_pixel: f32) -> f32 {
-    let drawn = radius / per_pixel;
-    let air = (drawn * BODY_MARGIN).max(BODY_AIR);
+/// The body's own outline — which for a ball is not a disc of its radius; see
+/// [`outline`] — and air around it: [`BODY_MARGIN`] of the body or
+/// [`BODY_AIR`], whichever is the more. Until both are too small to aim at
+/// and the floor takes over, which is where the air is already the whole of
+/// the mark.
+///
+/// Asked by everything that draws a mark around a body or tests the pointer
+/// against one, so that what can be clicked is exactly the shape that was
+/// drawn and [`Indicator`] is one reading of the same answer rather than a
+/// second one.
+pub(crate) fn body_mark(
+    camera: &OrbitCamera,
+    cot_half_fov: f32,
+    viewport: Vec2,
+    places: &Places,
+    entity: Entity,
+    body: &Body,
+) -> Option<Silhouette> {
+    let seen = places.seen(entity, camera)?;
 
-    (drawn + air).max(BODY_MIN_RADIUS)
+    Some(marking(outline(camera, cot_half_fov, viewport, seen, body.radius)?))
+}
+
+/// The room a mark leaves around an outline `drawn`
+///
+/// [`BODY_MARGIN`] of the body or [`BODY_AIR`], whichever is the more, until
+/// both are too small to aim at and [`BODY_MIN_RADIUS`] takes over — which is
+/// where the air is already the whole of the mark.
+fn marking(drawn: Silhouette) -> Silhouette {
+    let air = (drawn.widest() * BODY_MARGIN).max(BODY_AIR);
+
+    drawn.grown(air).at_least(BODY_MIN_RADIUS)
 }
 
 /// The most systems the picker reports under one pointer at once
@@ -680,7 +707,7 @@ fn hits(
     window: Query<Entity, With<PrimaryWindow>>,
     cameras: Query<(Entity, &Camera, &RenderTarget, &OrbitCamera)>,
     systems: Query<(Entity, &System, &Indicator, &Visibility)>,
-    bodies: Query<(Entity, &Indicator), With<Body>>,
+    bodies: Query<(Entity, &Body, &Indicator)>,
     places: Places,
     labels: Query<(Entity, &ChildOf, &PlateText), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
@@ -691,9 +718,13 @@ fn hits(
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
-    let caught = |camera: Entity, position: DVec3| HitData {
+    // Deep into the view rather than out in the galaxy: a system says where
+    // it stands absolutely and a body says how far off the eye it is seen to
+    // be, which out at the rim is the finer of the two by some tens of
+    // kilometres. See [`Places::seen`].
+    let caught = |camera: Entity, depth: f32| HitData {
         camera,
-        depth: depth(orbit, position),
+        depth,
         position: None,
         normal: None,
         extra: None,
@@ -737,7 +768,7 @@ fn hits(
             else {
                 continue;
             };
-            let hit = caught(eye, position);
+            let hit = caught(eye, depth(orbit, position));
             if on_screen.distance(at) <= indicator.0 {
                 picks.push((entity, hit.clone()));
             }
@@ -771,22 +802,24 @@ fn hits(
         // which is the same thing its name is granted on; being off the frame
         // is answered below, by the projection giving nothing for anything the
         // camera cannot see.
-        for (entity, indicator) in &bodies {
-            let Some(place) = places.of(entity) else { continue };
-            let Some(on_screen) =
-                screen_position(orbit, cot_half_fov, viewport, place)
+        for (entity, body, indicator) in &bodies {
+            let Some(seen) = places.seen(entity, orbit) else { continue };
+            let Some(mark) =
+                body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
             else {
                 continue;
             };
-            let hit = caught(eye, place);
-            if on_screen.distance(at) <= indicator.0 {
+            let hit = caught(eye, depth_of(orbit, crate::space::metres(seen)));
+            // Inside the mark itself, so what can be clicked is exactly the
+            // shape that was drawn. See [`Silhouette::holds`].
+            if mark.holds(at) {
                 picks.push((entity, hit.clone()));
             }
             // A body's name as a system's, and over the same rectangle. What
             // differs between the two is only where the thing being named
             // ended up, which is answered before a name is asked about.
             if let Some((label, said)) = named.get(&entity)
-                && name_rect(on_screen, said, indicator.0).contains(at)
+                && name_rect(mark.at, said, indicator.0).contains(at)
             {
                 picks.push((*label, hit));
             }
@@ -864,8 +897,8 @@ pub fn ring(
     // way its name is, so it carries no filter and no galactic position of its
     // own.
     inside: Query<
-        (Entity, &Indicator),
-        (With<Body>, With<PointedAt>, Without<Selected>),
+        (Entity, &Body, &Indicator),
+        (With<PointedAt>, Without<Selected>),
     >,
     // The stops the routes reach from here. Ringed whether or not anything
     // is pointing at them, that being the whole of what the mark is for, and
@@ -990,17 +1023,13 @@ pub fn ring(
 
     // Whatever inside a system is pointed at, read off the grid holding it, as
     // its name is, so it is placed against the view it is drawn into.
-    for (entity, indicator) in &inside {
-        let Some(place) = places.of(entity) else { continue };
-        let Some(at) = screen_position(orbit, cot_half_fov, viewport, place)
+    for (entity, body, _) in &inside {
+        let Some(mark) =
+            body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
         else {
             continue;
         };
-        painter.circle_stroke(
-            egui::pos2(at.x, at.y),
-            indicator.0,
-            stroke(INDICATOR),
-        );
+        painter.add(mark.painted(stroke(INDICATOR)));
     }
 
     // The system the pointer is on, drawn where it lands on screen rather than
@@ -1338,23 +1367,46 @@ mod tests {
         );
     }
 
-    /// A body of `radius` metres at `depth` metres, marked
+    /// A body of `radius` metres, dead ahead at `depth` metres, marked
     fn marked(radius: f32, depth: f32) -> f32 {
-        let viewport = Vec2::new(1280., 720.);
-        body_mark(radius, world_per_pixel(cot_half_fov(), viewport.y, depth))
+        marking(seen(radius, depth)).widest()
     }
 
-    /// How wide a body of `radius` metres is drawn at `depth` metres
+    /// The outline such a body draws
+    fn seen(radius: f32, depth: f32) -> Silhouette {
+        let offset =
+            DVec3::new(0., 0., -(depth as f64)) / crate::space::LIGHT_YEAR;
+
+        outline(
+            &looking(),
+            cot_half_fov(),
+            Vec2::new(1280., 720.),
+            offset,
+            radius,
+        )
+        .expect("a body ahead of the camera has an outline")
+    }
+
+    /// How wide the outline of a body of `radius` metres is drawn at `depth`
+    ///
+    /// Through [`outline`], which is what the mark is taken off, so a test
+    /// about the air around a mark is weighed against the same outline the
+    /// mark was.
     fn drawn(radius: f32, depth: f32) -> f32 {
-        let viewport = Vec2::new(1280., 720.);
-        radius / world_per_pixel(cot_half_fov(), viewport.y, depth)
+        seen(radius, depth).widest()
     }
 
     /// A body is marked at the size it is drawn
     ///
     /// Which for a sphere is its own outline, so aiming at the mark and
-    /// aiming at the body are the same act. Twice as far off is half as
+    /// aiming at the body are the same act. Twice as far off is about half as
     /// large, as anything drawn in perspective is.
+    ///
+    /// About, and not exactly: what the mark follows is the grazing cone, and
+    /// the nearer of these two fills enough of the view for that to be a
+    /// percent wider than the flat angle. Which of the two it follows is
+    /// `a_filling_body_is_marked_past_its_flat_size`; that it follows the
+    /// distance at all is this.
     #[test]
     fn a_body_is_marked_at_the_size_it_is_drawn() {
         // An Earth, near enough to fill a good part of the view.
@@ -1363,18 +1415,48 @@ mod tests {
 
         assert!(near > BODY_MIN_RADIUS, "the floor answered instead: {near}");
         assert!(
-            (near / far - 2.).abs() < 1e-3,
+            (near / far - 2.).abs() < 2e-2,
             "half the distance marked {near} against {far}"
         );
     }
 
-    /// A body twice the size is marked twice as large
+    /// A body twice the size is marked about twice as large
+    ///
+    /// About, for the same reason: the wider of the two leans further into
+    /// the view, so its grazing cone opens by more than its radius did.
     #[test]
     fn a_larger_body_is_marked_larger() {
         let small = marked(6.371e6, 5e7);
         let large = marked(1.2742e7, 5e7);
 
-        assert!((large / small - 2.).abs() < 1e-3);
+        assert!(
+            (large / small - 2.).abs() < 6e-2,
+            "twice the body marked {large} against {small}"
+        );
+    }
+
+    /// A body filling the view is marked past the size a flat one would be
+    ///
+    /// The reported trouble, the second half of it: a body is a ball, and the
+    /// outline of a ball is the cone of rays that graze it rather than a disc
+    /// of its own radius. Held to the flat figure, the mark around a star
+    /// filling the view was drawn inside the star. See [`outline`].
+    #[test]
+    fn a_filling_body_is_marked_past_its_flat_size() {
+        let radius = 6.957e8;
+        // Three of its own radii off, which is about where the zoom stops.
+        let depth = radius as f64 * 3.;
+        let flat = radius / world_per_pixel(cot_half_fov(), 720., depth as f32);
+        let outlined = drawn(radius, depth as f32);
+
+        // A third of the way out to it, the grazing cone is wider than the
+        // flat angle by one over the cosine of its own half angle.
+        let wanted = flat / (1. - (1. / 3f32).powi(2)).sqrt();
+        assert!(
+            (outlined - wanted).abs() < wanted * 1e-3,
+            "an outline {outlined} px across where a flat disc is {flat} and \
+             the grazing cone asks {wanted}",
+        );
     }
 
     /// A body's mark always stands clear of the body

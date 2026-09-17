@@ -1085,6 +1085,34 @@ impl Places<'_, '_> {
 
         Some(cell.as_dvec3(grid) + at.translation.as_dvec3())
     }
+
+    /// Where `body` stands as the camera sees it, in light years from the eye
+    ///
+    /// What everything painted over a body asks: the ring around it, its
+    /// name, the leader joining the two, the size of its mark and the area
+    /// the pointer catches it in. Worked out in the frame of the system
+    /// holding it and measured from the eye in that same frame, which is
+    /// exact while the camera is standing in that system — where the
+    /// galactic light years [`Self::of`] answers in are not.
+    ///
+    /// That was the reported trouble: a ring drawn a few pixels off the body
+    /// it is meant to be around. A body's place said absolutely is its
+    /// system's plus a fraction of a light year, and an `f64` carrying
+    /// twenty-two thousand of them rounds that fraction to some tens of
+    /// kilometres — nothing against the galaxy, and a handful of pixels once
+    /// the camera is close enough that a body fills the view. Subtracting
+    /// the eye afterwards does not recover it: both ends were rounded to the
+    /// same coarse grid, and the ring lands wherever that left them.
+    ///
+    /// Nothing for anything that is not a body drawn inside a system on the
+    /// map, as [`Self::of`].
+    pub fn seen(&self, body: Entity, camera: &OrbitCamera) -> Option<DVec3> {
+        let (child_of, cell, at) = self.inside.get(body).ok()?;
+        let (system, grid) = self.systems.get(child_of.parent()).ok()?;
+        let metres = cell.as_dvec3(grid) + at.translation.as_dvec3();
+
+        Some(space::light_years(metres) - camera.eye_from(system.position()))
+    }
 }
 
 /// A star, drawn at its own size and lighting what is around it
@@ -1766,6 +1794,175 @@ mod tests {
             Some(&Visibility::Inherited),
             "the line did not come back"
         );
+    }
+
+    /// Where the ring around the one body was painted, and where the renderer
+    /// actually drew that body, both in pixels from the middle of the view
+    #[derive(Resource, Default)]
+    struct Ringed(Option<(Vec2, Vec2)>);
+
+    /// What the view is taken to be, for the one projection this measures
+    const RINGED_VIEWPORT: Vec2 = Vec2::new(800., 600.);
+    const RINGED_COT: f32 = 2.4142137;
+
+    /// Read the two, so a test can ask whether they agree
+    ///
+    /// The ring goes where [`Places::seen`] puts the body. What the renderer
+    /// is given is the body's cell and remainder against the camera's own,
+    /// and nothing else: that difference is the whole of where the pixels
+    /// land, so it is the thing a ring has to agree with.
+    fn read_ring(
+        places: Places,
+        cameras: Query<(&OrbitCamera, &CellCoord, &Transform), Without<Body>>,
+        bodies: Query<(Entity, &Body, &CellCoord, &Transform)>,
+        grids: Query<&Grid, Without<BigSpace>>,
+        mut ringed: ResMut<Ringed>,
+    ) {
+        let Ok((orbit, eye_cell, eye_at)) = cameras.single() else { return };
+        let Ok((body, drawn, cell, at)) = bodies.single() else { return };
+        let Ok(grid) = grids.single() else { return };
+        let Some(seen) = places.seen(body, orbit) else { return };
+
+        let ringed_at = |offset| {
+            crate::systems::labels::outline(
+                orbit,
+                RINGED_COT,
+                RINGED_VIEWPORT,
+                offset,
+                drawn.radius,
+            )
+            .map(|drawn| drawn.at - RINGED_VIEWPORT * 0.5)
+        };
+        let rendered = (cell.as_dvec3(grid) + at.translation.as_dvec3())
+            - (eye_cell.as_dvec3(grid) + eye_at.translation.as_dvec3());
+
+        ringed.0 = ringed_at(seen).zip(ringed_at(space::light_years(rendered)));
+    }
+
+    /// A camera standing inside the system at `position`, looking a body's
+    /// width to one side of the body `out` metres from that system's middle
+    ///
+    /// Off to one side rather than straight at it, which is what the reported
+    /// screenshot shows and what tells the two answers apart: a body exactly
+    /// under the camera has both of them rounding the same way, and the
+    /// rounding cancels.
+    ///
+    /// Answers where the ring around the body was painted and where the
+    /// renderer drew the body, in pixels from the middle of the view.
+    fn ringed(
+        position: DVec3,
+        out: DVec3,
+        radius: f32,
+        aside: f64,
+    ) -> (Vec2, Vec2) {
+        use crate::systems::Spyglass;
+        use crate::ui::{PointerOverUi, PressOwner};
+        use bevy::input::mouse::{
+            AccumulatedMouseMotion, AccumulatedMouseScroll,
+        };
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Ringed>();
+        app.insert_resource(Spyglass {
+            radius: Spyglass::OPENING,
+            clear: true,
+            lock_camera: false,
+            follow_camera: false,
+        });
+        app.insert_resource(PointerOverUi(false));
+        app.init_resource::<PressOwner>();
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.init_resource::<AccumulatedMouseMotion>();
+        app.init_resource::<AccumulatedMouseScroll>();
+        app.world_mut().spawn((BigSpace::default(), space::galaxy_grid()));
+
+        let grid = space::system_grid();
+        let system = app
+            .world_mut()
+            .spawn((crate::systems::tests::placed(1, position), grid.clone()))
+            .id();
+        let (cell, offset) = placed(out, &grid);
+        app.world_mut().spawn((
+            Body {
+                address: 1,
+                name: String::new(),
+                id: 1,
+                radius,
+                ancestors: 1,
+                primary: false,
+                star: false,
+            },
+            Inside,
+            cell,
+            Transform::from_translation(offset),
+            ChildOf(system),
+        ));
+
+        let looking = out + DVec3::new(aside, aside * 0.5, -aside * 0.25);
+        let back = crate::camera::stand_back(
+            (radius as f64 / space::LIGHT_YEAR) as f32,
+            None,
+        );
+        app.world_mut().spawn((
+            crate::camera::OrbitCamera::inside(
+                position,
+                space::light_years(looking),
+                back,
+            ),
+            CellCoord::default(),
+            Transform::default(),
+            ChildOf(system),
+        ));
+        // The camera places itself in the system's own grid, which is what
+        // the renderer measures the body against.
+        app.add_systems(
+            Update,
+            (crate::camera::orbit_camera, read_ring).chain(),
+        );
+
+        app.update();
+        app.world().resource::<Ringed>().0.expect("a reading")
+    }
+
+    /// The ring around a body lands on the body, wherever the system is
+    ///
+    /// The reported trouble: a ring drawn a few pixels off the body it is
+    /// around, on a small body in a system twenty-two thousand light years
+    /// out. The ring was placed from the body's galactic position, which is
+    /// its system's plus a fraction of a light year — and an `f64` carrying
+    /// that many of them rounds the fraction to some tens of kilometres.
+    /// Subtracting the eye afterwards recovers nothing: both ends were
+    /// rounded to the same coarse grid. Measured, that put the ring six
+    /// pixels off at Magellan and fourteen at the rim, against nothing at
+    /// all for a system near Sol — and nothing for an ordinary star either,
+    /// whose own size holds the camera five orders of magnitude further out.
+    ///
+    /// Held to half a pixel, which is the finest a ring can be said to be on
+    /// anything. What it is weighed against is the body's own cell and
+    /// remainder against the camera's, that difference being the whole of
+    /// what the renderer is given.
+    #[test]
+    fn a_ring_lands_on_the_body_it_is_drawn_around() {
+        let magellan = DVec3::new(-9509.313, -914.625, 19819.969);
+        let rim = DVec3::new(-30000., 400., 56000.);
+        let out = DVec3::new(1.5e9, -4.2e8, 9.1e8);
+
+        for position in [DVec3::ZERO, magellan, rim] {
+            for radius in [1.1e6f32, 7e8] {
+                for aside in 0..8 {
+                    let aside = radius as f64 * (1. + aside as f64 * 0.37);
+                    let (ring, drawn) = ringed(position, out, radius, aside);
+
+                    assert!(
+                        (ring - drawn).length() < 0.5,
+                        "a ring painted at {ring} for a body drawn at \
+                         {drawn}, {} px off, {radius}m across at {position}",
+                        (ring - drawn).length(),
+                    );
+                }
+            }
+        }
     }
 
     /// Where the one body in `app` says it stands

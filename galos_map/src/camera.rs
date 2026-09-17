@@ -911,16 +911,21 @@ impl OrbitCamera {
     /// whole of what a descended camera is: said absolutely and subtracted
     /// back, `off` would arrive already rounded to whatever a galactic light
     /// year rounds to out where the system stands. See [`Self::rebase`].
+    ///
+    /// The eye stands where the orbit puts it, as [`orbit_camera`] would
+    /// leave it, so what is being looked at is `off` and it is `back` away.
     pub(crate) fn inside(system: DVec3, off: DVec3, back: f32) -> Self {
-        OrbitCamera {
+        let camera = OrbitCamera {
             origin: system,
             center: off,
             target_center: off,
-            eye: off,
             radius: back,
             target_radius: back,
             ..OrbitCamera::default()
-        }
+        };
+        let eye = off + (camera.rotation * Vec3::Z * back).as_dvec3();
+
+        OrbitCamera { eye, ..camera }
     }
 }
 
