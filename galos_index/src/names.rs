@@ -3,7 +3,7 @@
 //! Every positioned system's name and place is one table, and every client
 //! reaches all of it: a search matches any name, a route steps between any
 //! two places, a label names whatever is on screen. At 200,071,629 systems
-//! that table is 5.8 GB. It cannot be a `Vec`.
+//! that is 5.6 GB of sections. It cannot be a `Vec`.
 //!
 //! It was one. The table was published as MessagePack chunks and read whole
 //! into `Vec<NameEntry>` plus a `HashMap<i64, usize>` beside it, which
@@ -24,10 +24,24 @@
 //!     addr.bin    N x 8     i64 addresses, strictly ascending
 //!     pos.bin     N x 12    [f32; 3] positions
 //!     byname.bin  N x 4     u32 rows, sorted by name bytes
-//!     span.bin   (N+1) x 5  u40 offsets into text.bin
-//!     text.bin    B         the name bytes, in address order
+//!     span.bin   (N+1) x 5  u40 offsets into text.bin; equal = derived
+//!     text.bin    B         the name bytes nothing can derive
 //!   delta.bin               what the feed has said since (append-only)
 //! ```
+//!
+//! **`text.bin` holds the names nothing can work out.** A procedural name
+//! is a function of the system's address ([`crate::procedural`]), so a row
+//! whose name the arithmetic spells stores no bytes at all and is marked by
+//! a span of no length — a stored name is never empty, so the marker costs
+//! nothing either. Measured over the 200 M table, migrating it in place:
+//! **`text.bin` 3.94 GB → 128 MB**, the whole directory 9.1 GB → 5.6 GB,
+//! and reads got *faster* rather than slower, a name being arithmetic where
+//! it was a page fault into four gigabytes: an address lookup 489 µs → 87
+//! µs, resolving a name 2.4 ms → 109 µs, both warm.
+//!
+//! What is left in it is what the arithmetic will not claim: the 151,463
+//! names people gave, and the 5.1 M systems under Frontier's hand-authored
+//! regions, whose boxels are numbered from the region's own origin.
 //!
 //! Five decisions carry it, and each one is answering a measurement.
 //!
@@ -71,6 +85,7 @@ use crate::rows::{self, Sheet};
 use crate::source::{names_delta_path, names_dir, names_head_path};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -92,7 +107,32 @@ const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 
 /// The layout `head.bin` describes. A reader that does not know a version
 /// refuses the table rather than reading it as this one.
-const VERSION: u16 = 1;
+///
+/// **2 is a name a row may leave unwritten.** A procedural name is a
+/// function of the system's address ([`crate::procedural`]), so a row whose
+/// name the arithmetic spells stores no text at all — 97.4 % of a galaxy's
+/// rows, and 3.94 GB of `text.bin` down to 128 MB. Version 2 marked such a
+/// row by giving it a span of no length, which still cost the row its five
+/// bytes of `span.bin`.
+///
+/// **3 stops paying for the rows that say nothing.** `span.bin` holds one
+/// offset per *stored* name rather than per row, and `exception.bin` says
+/// which rows those are — so a row absent from that list is the derived
+/// marker, and the 1.00 GB of spans becomes 47 MB. See [`Text::name_at`].
+///
+/// All three are read by this build: a v1 or v2 generation has a dense
+/// `span.bin` and no `exception.bin`, which [`Text`] answers off the other
+/// branch, so a directory migrates whenever something rewrites its base
+/// (`galos-index fold-names`) rather than on a deadline.
+const VERSION: u16 = 3;
+
+/// The versions this build reads.
+///
+/// Writing the newest and reading the lot is what makes each change free:
+/// an older build refuses a newer table, which is right — it would read a
+/// derived row as nameless, or a sparse span array as a dense one — and
+/// this one reads every table it ever wrote.
+const READS: [u16; 3] = [1, 2, VERSION];
 
 /// `head.bin`'s width. Everything past the fields is reserved and zero, so
 /// a later revision has room that an older reader already skips.
@@ -106,6 +146,21 @@ const POS: usize = 12;
 
 /// One row number, as `byname.bin` holds it.
 const ROW: usize = 4;
+
+/// What one page of a mapping is taken to be, for the warming read.
+///
+/// Sixteen kibibytes rather than four: it is what this platform faults in,
+/// and a stride smaller than a page only costs touches that change nothing.
+/// A stride *larger* than the real page would leave holes, so this is the
+/// one constant here worth being conservative about.
+const PAGE: usize = 16 * 1024;
+
+/// The least text worth handing a thread of its own.
+///
+/// A small table is swept by one hand: spawning is microseconds and the
+/// scan of a scratch directory's names is nanoseconds, so the threshold is
+/// there to keep a test from paying for eight threads to read sixty bytes.
+const SWEEP: usize = 4 * 1024 * 1024;
 
 /// One offset into `text.bin`, as `span.bin` holds it.
 ///
@@ -129,6 +184,19 @@ pub const ROW_BYTES: usize = ADDR + POS + ROW + SPAN;
 /// bytes — buckets by first byte, then by second, until a bucket fits this
 /// — and every pass is sequential. See [`emit_by_name`].
 const BUCKET_BYTES: usize = 256 * 1024 * 1024;
+
+/// The shortest prefix a search is answered for.
+///
+/// One character of a galaxy-wide index is every system starting with that
+/// letter, of which there are millions, and the 25 that come back are the
+/// first 25 in name order — noise dressed as an answer, since name order
+/// near `S` says nothing about where the commander is or what they meant.
+/// Two characters is EDDA's floor for the same reason.
+///
+/// It is a floor on *searching*, not on naming: [`Names::address_of`] and
+/// [`Table::rows_starting`] answer whatever they are asked, so a system
+/// really named `S` is still resolvable as a route endpoint.
+pub const MIN_PREFIX: usize = 2;
 
 /// The names table, base and delta, as a reader or a writer holds it.
 ///
@@ -161,6 +229,17 @@ impl Names {
     /// The table these two halves make, for a caller that read them itself.
     pub fn of(base: Table, delta: Delta) -> Names {
         Names { base: Arc::new(base), delta: Arc::new(delta) }
+    }
+
+    /// Read the text a search sweeps, so the first search does not.
+    ///
+    /// [`Table::warm`] says why, and what it deliberately leaves cold. A
+    /// client calls this once, on whatever thread opened the table: it is
+    /// a streaming read of the one section a query reads end to end, and
+    /// paying it at the open is the difference between a first search of
+    /// seconds and one of milliseconds.
+    pub fn warm(&self) -> io::Result<()> {
+        self.base.warm()
     }
 
     /// Fold a tail of the log in, which is what a client does when the feed
@@ -198,11 +277,16 @@ impl Names {
 
     /// What `address` is named, borrowed wherever it is held.
     ///
-    /// Upper case, every name in the table being a
-    /// [`SystemName`](crate::SystemName).
-    pub fn name_of(&self, address: i64) -> Option<&str> {
+    /// Owned only where the name was never stored: a procedural name is
+    /// spelled from the address itself ([`crate::procedural`]), which is
+    /// 97.4 % of a galaxy and the whole reason `text.bin` is small.
+    ///
+    /// Upper case either way, every name in the table being a
+    /// [`SystemName`](crate::SystemName) and the arithmetic spelling upper
+    /// case by construction.
+    pub fn name_of(&self, address: i64) -> Option<Cow<'_, str>> {
         match self.delta.said(address) {
-            Some(Held::Named(entry)) => Some(&entry.name),
+            Some(Held::Named(entry)) => Some(Cow::Borrowed(&entry.name)),
             Some(Held::Gone) => None,
             None => self.base.index_of(address).map(|at| self.base.name_at(at)),
         }
@@ -260,27 +344,60 @@ impl Names {
         self.address_of(name).is_some()
     }
 
-    /// Which systems' names begin with `needle`, at most `limit` of them.
+    /// Which systems' names hold `needle`, at most `limit` of them.
     ///
-    /// `needle` is expected upper case. The delta is walked first — it is
-    /// small and it is the later word — and the base answers the rest
-    /// through [`Table::matching`], which says why this is a prefix and
-    /// not a substring.
+    /// `needle` is expected upper case, and shorter than [`MIN_PREFIX`] is
+    /// answered with nothing — see that constant for why an answer to one
+    /// character would be worse than none.
+    ///
+    /// Three roads, in the order a reader wants them, and the first that
+    /// fills the limit ends it:
+    ///
+    /// 1. **The delta**, which is small and is the later word.
+    /// 2. **The base by name** — the prefix, and then the stored names
+    ///    holding the query at a word start ([`Table::matching`]). That
+    ///    second half is a scan and is affordable only because the names
+    ///    are derived: it reads the 128 MB of exceptions rather than 3.94
+    ///    GB of every name.
+    /// 3. **The sector dictionary**, for the 97.4 % of names nothing
+    ///    stored. A derived name's words are a sector and a boxel code, so
+    ///    a query matching a sector *mid-name* — `EUQ` for `PRAEA EUQ
+    ///    YE-Q D5-0` — is answered by asking
+    ///    [`procedural::sectors_holding`] which sectors hold that word and
+    ///    walking each one's run of the by-name order. 11,662 sectors and
+    ///    192 KB, compiled in, so finding the sector costs microseconds
+    ///    and the rows come back through the same prefix search as ever.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<NameEntry> {
+        if needle.chars().count() < MIN_PREFIX {
+            return Vec::new();
+        }
         let mut found: Vec<NameEntry> = self
             .delta
             .entries()
-            .filter(|entry| entry.name.starts_with(needle))
+            .filter(|entry| entry.name.contains(needle))
             .take(limit)
             .cloned()
             .collect();
+        let take = |at: usize, found: &mut Vec<NameEntry>| {
+            let address = self.base.address_at(at);
+            if self.delta.said(address).is_none()
+                && !found.iter().any(|held| held.address == address)
+            {
+                found.push(self.base.entry_at(at));
+            }
+        };
         for at in self.base.matching(needle, limit) {
             if found.len() >= limit {
-                break;
+                return found;
             }
-            let address = self.base.address_at(at);
-            if self.delta.said(address).is_none() {
-                found.push(self.base.entry_at(at));
+            take(at, &mut found);
+        }
+        for sector in crate::procedural::sectors_holding(needle, limit) {
+            for at in self.base.rows_starting(sector, limit - found.len()) {
+                if found.len() >= limit {
+                    return found;
+                }
+                take(at, &mut found);
             }
         }
         found
@@ -741,21 +858,40 @@ pub struct Table {
 /// thing the platform offers.
 #[derive(Debug)]
 struct Mapped {
-    addr: Mmap,
     byname: Mmap,
     pos: Mmap,
     text: Text,
 }
 
-/// The names themselves: the bytes, and where each one starts in them.
+/// The names themselves: the bytes where a row stored any, and the address
+/// they are spelled from where it stored none.
 ///
 /// Its own type because the by-name sort needs exactly this and nothing
-/// else — it runs over a generation whose `byname.bin` does not exist yet.
+/// else — it runs over a generation whose `byname.bin` does not exist yet —
+/// and because the addresses are no longer beside the names but *part of
+/// how a name is read*: a row nothing wrote text for is one whose name
+/// [`crate::procedural`] spells from `addr.bin`.
 #[derive(Debug)]
 struct Text {
+    addr: Mmap,
+    /// Which rows stored a name, ascending, as `exception.bin` holds them.
+    ///
+    /// [`None`] for a version 1 or 2 generation, whose `span.bin` carries
+    /// an offset for every row and marks a derived one by giving it no
+    /// length. Reading both is what lets a directory come forward when
+    /// something rewrites its base rather than when this build lands.
+    exception: Option<Mmap>,
+    /// One offset a stored name, and a terminator — or one a *row* where
+    /// `exception` is [`None`].
     span: Mmap,
     bytes: Mmap,
+    /// How many rows the generation holds.
     count: usize,
+    /// How many of them stored a name.
+    ///
+    /// Equal to `count` on a version 1 or 2 generation, where the spans are
+    /// dense whether or not a row's name was written.
+    stored: usize,
 }
 
 impl Table {
@@ -785,9 +921,9 @@ impl Table {
             return Err(refused("not a names table"));
         }
         let version = u16::from_le_bytes(head[8..10].try_into().unwrap());
-        if version != VERSION {
+        if !READS.contains(&version) {
             return Err(refused(&format!(
-                "a names table of version {version}, not {VERSION}"
+                "a names table of version {version}, not one of {READS:?}"
             )));
         }
         let generation = u64::from_le_bytes(head[16..24].try_into().unwrap());
@@ -795,16 +931,28 @@ impl Table {
             u64::from_le_bytes(head[24..32].try_into().unwrap()) as usize;
         let bytes =
             u64::from_le_bytes(head[32..40].try_into().unwrap()) as usize;
+        // How many rows stored a name, which is what sizes `span.bin` and
+        // `exception.bin`. Version 1 and 2 wrote a span a row and the field
+        // is reserved zero in their heads, so the count stands in for it
+        // and the sections read dense.
+        let stored = match version {
+            3 => u64::from_le_bytes(head[40..48].try_into().unwrap()) as usize,
+            _ => count,
+        };
         if count == 0 {
             return Ok(Table::default());
         }
 
         let at = generation_dir(dir, generation);
         let held = Mapped {
-            addr: map(&at.join(ADDR_FILE), count * ADDR)?,
             byname: map(&at.join(BYNAME_FILE), count * ROW)?,
             pos: map(&at.join(POS_FILE), count * POS)?,
-            text: Text::open(&at, count, bytes)?,
+            text: Text::open(
+                &at,
+                count,
+                bytes,
+                (version >= 3).then_some(stored),
+            )?,
         };
         Ok(Table { held: Some(held) })
     }
@@ -822,18 +970,7 @@ impl Table {
     /// Every address, ascending: the base's own index, straight off the
     /// mapping.
     pub fn addresses(&self) -> &[i64] {
-        match &self.held {
-            // SAFETY: `addr.bin` is `count * 8` bytes, checked at open; a
-            // mapping begins on a page boundary so the slice is aligned;
-            // and any eight bytes are a valid `i64`.
-            Some(held) => unsafe {
-                std::slice::from_raw_parts(
-                    held.addr.as_ptr().cast::<i64>(),
-                    held.count(),
-                )
-            },
-            None => &[],
-        }
+        self.held.as_ref().map_or(&[], |held| held.text.addresses())
     }
 
     /// Every position, in the same order: what the router buckets.
@@ -868,12 +1005,16 @@ impl Table {
         self.positions()[at]
     }
 
-    /// The name of the `at`th system, borrowed out of the mapping.
+    /// The name of the `at`th system: the mapping's bytes, or the name its
+    /// address spells where the row stored none.
     ///
-    /// Upper case, the table being written from
-    /// [`SystemName`](crate::SystemName)s.
-    pub fn name_at(&self, at: usize) -> &str {
-        self.held.as_ref().map_or("", |held| held.name_at(at))
+    /// Upper case either way — the table is written from
+    /// [`SystemName`](crate::SystemName)s and
+    /// [`crate::procedural`] spells upper case by construction — and
+    /// borrowed wherever there is something to borrow, which is every row
+    /// of a version 1 table and every stored exception of a version 2 one.
+    pub fn name_at(&self, at: usize) -> Cow<'_, str> {
+        self.held.as_ref().map_or(Cow::Borrowed(""), |held| held.name_at(at))
     }
 
     /// The `at`th system as a row, which costs the name a copy.
@@ -890,11 +1031,64 @@ impl Table {
     pub fn holds(&self, entry: &NameEntry) -> bool {
         match self.index_of(entry.address) {
             Some(at) => {
-                entry.name == self.name_at(at)
+                entry.name == *self.name_at(at)
                     && self.position_at(at) == entry.position
             }
             None => false,
         }
+    }
+
+    /// Read the text the search sweeps, so the first search does not.
+    ///
+    /// **Reported: the first search of a session took about four seconds.**
+    /// A search that underfills its limit sweeps `text.bin`
+    /// ([`rows_holding`](Self::rows_holding)), and on a cold page cache
+    /// that is not a 128 MB read — it is 128 MB *faulted in a page at a
+    /// time*, thousands of round trips to the disk with no read-ahead,
+    /// because a mapping the kernel has not been told about is read
+    /// wherever the code happens to touch it. Warm, the same sweep is
+    /// milliseconds; every measurement of it was taken over a file that
+    /// had just been written and was therefore already resident, which is
+    /// exactly the measurement that hides this.
+    ///
+    /// So the pages are asked for **once, in order, off the load** — an
+    /// advice the kernel may read ahead on, and then a byte a page, which
+    /// it may not ignore. Sequential, so it is one streaming read rather
+    /// than thousands of waits.
+    ///
+    /// **Only the text.** `byname.bin` is 800 MB and a prefix search
+    /// touches ~28 pages of it; `addr.bin` is 1.6 GB and a lookup touches
+    /// ~28; `pos.bin` is read a row at a time. Those are the sections the
+    /// format exists to *not* read, and pulling them in would trade a slow
+    /// first search for a slow open and 4.8 GB of page cache the drawing
+    /// wants. The text is the one section a single query reads end to end.
+    pub fn warm(&self) -> io::Result<()> {
+        let Some(held) = self.held.as_ref() else {
+            return Ok(());
+        };
+        // The list a stored name is found through as well as the text
+        // itself: 21 MB at a galaxy, searched ~23 probes deep by every
+        // name read, so faulting it a page at a time is the same mistake
+        // one level down.
+        if let Some(exception) = held.text.exception.as_ref() {
+            exception.advise(memmap2::Advice::WillNeed)?;
+            let mut seen = 0u64;
+            for page in exception.chunks(PAGE) {
+                seen += u64::from(page[0]);
+            }
+            std::hint::black_box(seen);
+        }
+        let bytes = &held.text.bytes;
+        bytes.advise(memmap2::Advice::WillNeed)?;
+        // A byte a page, which is what makes the read happen rather than
+        // merely be suggested. Summed and handed to `black_box` so the
+        // loop is not taken for dead code and deleted.
+        let mut seen = 0u64;
+        for page in bytes.chunks(PAGE) {
+            seen += u64::from(page[0]);
+        }
+        std::hint::black_box(seen);
+        Ok(())
     }
 
     /// Which system is named exactly `name`, as a row number.
@@ -910,7 +1104,7 @@ impl Table {
         while lo < hi {
             let mid = (lo + hi) / 2;
             let row = rows[mid] as usize;
-            match held.name_at(row).cmp(name) {
+            match held.name_at(row).as_ref().cmp(name) {
                 std::cmp::Ordering::Equal => return Some(row),
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => hi = mid,
@@ -938,7 +1132,7 @@ impl Table {
         let mut hi = rows.len();
         while lo < hi {
             let mid = (lo + hi) / 2;
-            if held.name_at(rows[mid] as usize) < prefix {
+            if held.name_at(rows[mid] as usize).as_ref() < prefix {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -956,27 +1150,115 @@ impl Table {
         found
     }
 
-    /// Which systems' names begin with `needle` — the search a client
-    /// makes, and deliberately a prefix and not a substring.
+    /// Which systems' names hold `needle` at the start of a word, at most
+    /// `limit` of them.
     ///
-    /// There was a substring scan here, and it had to go. A substring has
-    /// no order to search, so answering one means reading every name: 3.94
-    /// GB of `text.bin` at 200 M, measured at 564 ms warm and 5.7 s cold,
-    /// on the main thread, for *every* search that did not fill its limit
-    /// of 25 — which is most of them. Worse than the wait, it faulted the
-    /// whole names blob in and so evicted the cell payloads the map was
-    /// drawing from, which is why searching `SOL` stalled the galaxy's
-    /// reads as well as the frame.
+    /// **This is a scan, and it is affordable because the names are
+    /// derived.** It used to read every name in the table — 3.94 GB at
+    /// 200 M, measured at 564 ms warm and 5.7 s cold, and worse than the
+    /// wait it faulted the whole blob in and evicted the cell payloads the
+    /// map draws from. What it reads now is `text.bin`, which holds only
+    /// the names no address spells: **128 MB of a 200 M galaxy**, thirty
+    /// times less, and none of it is a page the drawing wants.
     ///
-    /// A prefix is `O(log N)` off `byname.bin` and touches ~28 pages. The
-    /// names it no longer finds are the ones with the query in the middle
-    /// — `SOL` no longer answers with `NEW SOL` — and the way to have
-    /// those back is a word index keyed by every word start, not a scan:
-    /// Elite's names run to some four words, so that is ~800 M entries and
-    /// ~6.4 GB mapped at a full galaxy, which wants measuring against how
-    /// much anybody searches mid-name.
+    /// **Swept in parallel**, because a query with one answer still reads
+    /// all of it: 128 MB single-threaded measured 40–66 ms, which is ten
+    /// times the whole budget a prefix search costs. The text is cut into
+    /// one run a thread, each overlapping the next by `needle - 1` bytes
+    /// so a match lying across a cut is found exactly once, and the runs'
+    /// answers are concatenated in order, which keeps the result the same
+    /// on every machine.
+    ///
+    /// A word start rather than any offset: `A*` answers `SAGITTARIUS A*`
+    /// and `SOL` answers `NEW SOL`, where matching mid-word would answer
+    /// `SOL` with every `SOLATI` *and* every `RESOLUTE`, which is noise
+    /// dressed as an answer. The start of a name counts as a word start,
+    /// so this is a superset of the prefix search rather than a different
+    /// question.
+    ///
+    /// The names a *derived* row bears are not in here to be scanned —
+    /// they are the sector dictionary and a boxel code — so a query
+    /// matching a sector's word is [`Names::matching`]'s business, which
+    /// asks [`crate::procedural`] and expands through
+    /// [`rows_starting`](Self::rows_starting).
+    pub fn rows_holding(&self, needle: &str, limit: usize) -> Vec<usize> {
+        let Some(held) = self.held.as_ref() else {
+            return Vec::new();
+        };
+        if needle.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let text = &held.text;
+        let bytes = &text.bytes[..];
+        let needle = needle.as_bytes();
+        let hands = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(bytes.len().div_ceil(SWEEP).max(1));
+        let run = bytes.len().div_ceil(hands);
+
+        let mut found = Vec::new();
+        std::thread::scope(|scope| {
+            let mut hands = Vec::with_capacity(hands);
+            let mut from = 0usize;
+            while from < bytes.len() {
+                // Overlapped by the needle less one, so a match straddling
+                // the cut is whole in the run before it — and only there,
+                // since a run reports a match by its start.
+                let upto = (from + run + needle.len() - 1).min(bytes.len());
+                let (at, slice) = (from, &bytes[from..upto]);
+                hands.push(scope.spawn(move || {
+                    let mut hits = Vec::new();
+                    let mut off = 0usize;
+                    while let Some(found) = find(&slice[off..], needle) {
+                        let start = at + off + found;
+                        // A hit that begins in the overlap belongs to the
+                        // next run, which will begin inside it.
+                        if start >= at + run {
+                            break;
+                        }
+                        hits.push(start);
+                        off += found + 1;
+                    }
+                    hits
+                }));
+                from += run;
+            }
+            for hand in hands {
+                for off in hand.join().expect("a sweep") {
+                    let row = text.row_at(off);
+                    // The start of a name or the byte after a space.
+                    // Without the row's own start a needle straddling two
+                    // names would match: the text has no separators, so
+                    // `SOL` and `ACRUX` end to end hold `LACR` between
+                    // them.
+                    let word = off == text.start(row) || bytes[off - 1] == b' ';
+                    if word && !found.contains(&row) {
+                        found.push(row);
+                        if found.len() >= limit {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        found
+    }
+
+    /// Which systems' names the client's search should answer with: the
+    /// prefix first, then the names holding the query at a word start.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<usize> {
-        self.rows_starting(needle, limit)
+        let mut found = self.rows_starting(needle, limit);
+        if found.len() < limit {
+            for row in self.rows_holding(needle, limit) {
+                if !found.contains(&row) {
+                    found.push(row);
+                }
+                if found.len() >= limit {
+                    break;
+                }
+            }
+        }
+        found
     }
 
     /// Every system's address and place, for the router to bucket.
@@ -1021,14 +1303,39 @@ impl Table {
                 ));
             }
         }
+        // The exception list: ascending, inside the table, and one entry a
+        // span. Ascending is what the binary search that finds a stored
+        // name depends on, and nothing at open can afford to check it.
+        let exceptions = held.text.exceptions();
+        for pair in exceptions.windows(2) {
+            if pair[0] >= pair[1] {
+                return Err(format!(
+                    "exceptions {} and {} are out of order",
+                    pair[0], pair[1]
+                ));
+            }
+        }
+        if let Some(last) = exceptions.last() {
+            if *last as usize >= held.count() {
+                return Err(format!(
+                    "exception row {last} of {} rows",
+                    held.count()
+                ));
+            }
+        }
+        // A sparse span covers a name, so it has length; a dense one may
+        // be empty, that being how a version 1 or 2 generation says the
+        // row's name was derived.
+        let empty = held.text.exception.is_none();
         let mut ends = 0usize;
-        for at in 0..held.count() {
+        for at in 0..held.text.stored {
             let (from, to) = (held.start(at), held.start(at + 1));
-            if from > to || to > held.text.bytes.len() {
-                return Err(format!("row {at} spans {from}..{to}"));
+            if from > to || (from == to && !empty) || to > held.text.bytes.len()
+            {
+                return Err(format!("span {at} covers {from}..{to}"));
             }
             if std::str::from_utf8(&held.text.bytes[from..to]).is_err() {
-                return Err(format!("row {at} is not UTF-8"));
+                return Err(format!("span {at} is not UTF-8"));
             }
             ends = to;
         }
@@ -1051,7 +1358,7 @@ impl Table {
             if order > 0 {
                 let before = rows[order - 1] as usize;
                 let (a, b) = (held.name_at(before), held.name_at(row));
-                if (a, before) > (b, row) {
+                if (a.as_ref(), before) > (b.as_ref(), row) {
                     return Err(format!("byname has {a} before {b}"));
                 }
             }
@@ -1066,8 +1373,8 @@ impl Mapped {
         self.text.count
     }
 
-    /// The `at`th name, borrowed out of the mapping.
-    fn name_at(&self, at: usize) -> &str {
+    /// The `at`th name, off the mapping or off the address.
+    fn name_at(&self, at: usize) -> Cow<'_, str> {
         self.text.name_at(at)
     }
 
@@ -1078,38 +1385,150 @@ impl Mapped {
 }
 
 impl Text {
-    /// Map a generation's names and their offsets.
+    /// Map a generation's addresses, names and offsets.
+    ///
+    /// `stored` is how many rows wrote a name, which is what sizes the
+    /// spans and the exception list — or [`None`] for a version 1 or 2
+    /// generation, whose spans are one a *row* and whose exception list
+    /// does not exist.
     ///
     /// Refused where the offsets do not span the bytes exactly: the first
     /// must be zero and the last must be the length, which is what makes
-    /// every row's name a span of the file rather than of whatever is next
-    /// to it.
-    fn open(at: &Path, count: usize, bytes: usize) -> io::Result<Text> {
+    /// every name a span of the file rather than of whatever is next to
+    /// it. What is *not* checked here is that the exception list ascends
+    /// and stays inside the table — that is proportional to it, so it
+    /// belongs to [`Table::audit`] and to whatever wrote the file.
+    fn open(
+        at: &Path,
+        count: usize,
+        bytes: usize,
+        stored: Option<usize>,
+    ) -> io::Result<Text> {
+        let spans = stored.unwrap_or(count);
         let text = Text {
-            span: map(&at.join(SPAN_FILE), (count + 1) * SPAN)?,
+            addr: map(&at.join(ADDR_FILE), count * ADDR)?,
+            exception: match stored {
+                Some(stored) => {
+                    Some(map(&at.join(EXCEPTION_FILE), stored * ROW)?)
+                }
+                None => None,
+            },
+            span: map(&at.join(SPAN_FILE), (spans + 1) * SPAN)?,
             bytes: map(&at.join(TEXT_FILE), bytes)?,
             count,
+            stored: spans,
         };
-        if text.start(0) != 0 || text.start(count) != bytes {
+        if text.start(0) != 0 || text.start(spans) != bytes {
             return Err(refused("names whose spans do not span them"));
         }
         Ok(text)
     }
 
-    /// Where the `at`th name starts in the text. `at == count` is the end
+    /// Every address, ascending.
+    fn addresses(&self) -> &[i64] {
+        // SAFETY: `addr.bin` is `count * 8` bytes, checked at open; a
+        // mapping begins on a page boundary so the slice is aligned; and
+        // any eight bytes are a valid `i64`.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.addr.as_ptr().cast::<i64>(),
+                self.count,
+            )
+        }
+    }
+
+    /// Which rows stored a name, ascending — empty where the spans are
+    /// dense.
+    fn exceptions(&self) -> &[u32] {
+        match &self.exception {
+            // SAFETY: `exception.bin` is `stored * 4` bytes, checked at
+            // open; a mapping begins on a page boundary so the slice is
+            // aligned; and any four bytes are a valid `u32`.
+            Some(held) => unsafe {
+                std::slice::from_raw_parts(
+                    held.as_ptr().cast::<u32>(),
+                    self.stored,
+                )
+            },
+            None => &[],
+        }
+    }
+
+    /// Where the `at`th *stored* name sits in the spans, or [`None`] where
+    /// the row stored none.
+    ///
+    /// One binary search of `exception.bin`, ~23 probes over 21 MB at a
+    /// galaxy — and the position it answers with *is* the index into the
+    /// spans, which is why the list is both "which rows have text" and
+    /// "where each one's offset is". On a dense generation the row is its
+    /// own index and an empty span is the marker instead.
+    fn spanned(&self, at: usize) -> Option<usize> {
+        match self.exception.is_some() {
+            true => self.exceptions().binary_search(&(at as u32)).ok(),
+            false => (self.start(at) != self.start(at + 1)).then_some(at),
+        }
+    }
+
+    /// Which row the byte at `off` of the text belongs to.
+    ///
+    /// The first span that *ends* past `off`, which is the owner. Sparse,
+    /// that search is over the stored names alone — 5.26 M rather than 200
+    /// M at a galaxy — and the answer is read out of the exception list.
+    /// Dense, spans ascend with equal runs where rows are derived, so
+    /// asking for the last one starting at or before `off` would answer
+    /// with whichever empty span sits beside it.
+    fn row_at(&self, off: usize) -> usize {
+        let mut lo = 0usize;
+        let mut hi = self.stored;
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if self.start(mid + 1) <= off {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        match self.exception.is_some() {
+            true => self.exceptions().get(lo).map_or(0, |row| *row as usize),
+            false => lo,
+        }
+    }
+
+    /// Where the `at`th span starts in the text. `at == stored` is the end
     /// of the last, which is what makes a length array unnecessary.
     fn start(&self, at: usize) -> usize {
         let b = &self.span[at * SPAN..at * SPAN + SPAN];
         u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], 0, 0, 0]) as usize
     }
 
-    /// The `at`th name, borrowed out of the mapping.
-    fn name_at(&self, at: usize) -> &str {
-        let (from, to) = (self.start(at), self.start(at + 1));
+    /// The `at`th name: the bytes where the row stored any, and the name
+    /// its address spells where it stored none.
+    ///
+    /// **A row absent from the exception list is the derived marker.** It
+    /// costs nothing to say so — the list is needed anyway to find a
+    /// stored name's offset — where version 2 spent five bytes of
+    /// `span.bin` on every derived row to say the same thing, which over a
+    /// galaxy was 974 MB of "nothing here".
+    ///
+    /// A derived row whose sector the dictionary does not know reads as
+    /// empty rather than panicking a client, which is the same thing this
+    /// does with text that is not UTF-8. Nothing writes such a row: a name
+    /// is dropped only where the arithmetic has just spelled it.
+    fn name_at(&self, at: usize) -> Cow<'_, str> {
+        let Some(span) = self.spanned(at) else {
+            return self
+                .addresses()
+                .get(at)
+                .and_then(|address| crate::procedural::name_of(*address))
+                .map_or(Cow::Borrowed(""), |held| Cow::Owned(held.into()));
+        };
+        let (from, to) = (self.start(span), self.start(span + 1));
         // Written from `str`s and checked by `audit`, so the bytes between
         // two starts are one. A table that says otherwise reads as empty
         // rather than panicking a client.
-        std::str::from_utf8(&self.bytes[from..to]).unwrap_or_default()
+        Cow::Borrowed(
+            std::str::from_utf8(&self.bytes[from..to]).unwrap_or_default(),
+        )
     }
 }
 
@@ -1121,8 +1540,14 @@ pub const ADDR_FILE: &str = "addr.bin";
 pub const POS_FILE: &str = "pos.bin";
 /// The rows in name order, within a generation directory.
 pub const BYNAME_FILE: &str = "byname.bin";
-/// The offsets into the text, within a generation directory.
+/// The offsets into the text, one a stored name, within a generation
+/// directory.
 pub const SPAN_FILE: &str = "span.bin";
+/// Which rows stored a name, ascending, within a generation directory.
+///
+/// Version 3 and after: the rows the arithmetic could not spell. A row
+/// absent from it is one [`crate::procedural`] answers for.
+pub const EXCEPTION_FILE: &str = "exception.bin";
 /// The name bytes, within a generation directory.
 pub const TEXT_FILE: &str = "text.bin";
 
@@ -1149,6 +1574,33 @@ fn map(path: &Path, want: usize) -> io::Result<Mmap> {
         return Err(refused("a mapping that is not eight-byte aligned"));
     }
     Ok(map)
+}
+
+/// Where `needle` first sits in `hay`, or [`None`].
+///
+/// Hand-rolled rather than a dependency: the sweep it serves reads 128 MB
+/// of a real table, so what matters is that the inner loop is a byte
+/// compare over a mapping and that a miss on the first byte costs one.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    let first = needle[0];
+    let last = hay.len() - needle.len();
+    let mut at = 0usize;
+    while at <= last {
+        match hay[at..=last].iter().position(|byte| *byte == first) {
+            Some(off) => {
+                let from = at + off;
+                if &hay[from..from + needle.len()] == needle {
+                    return Some(from);
+                }
+                at = from + 1;
+            }
+            None => return None,
+        }
+    }
+    None
 }
 
 /// The one error kind this format refuses with.
@@ -1304,6 +1756,33 @@ pub fn compact(dir: &Path) -> io::Result<usize> {
     writer.finish()
 }
 
+/// The version this build writes, which is what a migration compares
+/// against.
+pub fn writes() -> u16 {
+    VERSION
+}
+
+/// What version the table `dir` publishes is, or [`None`] where it
+/// publishes none.
+///
+/// Read off `head.bin` alone — sixty-four bytes, no sections mapped — so a
+/// caller deciding whether a rewrite is owed pays nothing to ask. A head
+/// that is not this format's is an error rather than a version, which is
+/// the same refusal [`Table::open`] makes.
+pub fn version(dir: &Path) -> io::Result<Option<u16>> {
+    let head = match std::fs::read(names_head_path(dir)) {
+        Ok(head) => head,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if head.len() < HEAD
+        || u64::from_ne_bytes(head[0..8].try_into().unwrap()) != MAGIC
+    {
+        return Err(refused("not a names table"));
+    }
+    Ok(Some(u16::from_le_bytes(head[8..10].try_into().unwrap())))
+}
+
 /// Write the base from sorted rows and swap it in.
 ///
 /// `budget` is the sort's run size, which only a test sets.
@@ -1326,13 +1805,13 @@ fn write_base(
     let at = generation_dir(dir, next);
     std::fs::create_dir_all(&at)?;
 
-    let bytes = write_sections(&at, &sorted)?;
+    let (bytes, stored) = write_sections(&at, &sorted)?;
     if count > 0 {
-        write_by_name(&at, scratch, count, bytes)?;
+        write_by_name(&at, scratch, count, bytes, stored)?;
     }
     drop(sorted);
 
-    write_head(dir, next, count, bytes)?;
+    write_head(dir, next, count, bytes, stored)?;
     let _ = std::fs::remove_file(names_delta_path(dir));
     sweep_generations(dir, next)?;
     // A published base retires the chunks of the format before it, and
@@ -1346,20 +1825,27 @@ fn write_base(
     Ok(count)
 }
 
-/// Write `addr.bin`, `pos.bin`, `span.bin` and `text.bin` from the sorted
-/// rows, answering how many bytes of names they came to.
+/// Write `addr.bin`, `pos.bin`, `exception.bin`, `span.bin` and `text.bin`
+/// from the sorted rows, answering how many bytes of names they came to and
+/// how many rows stored one.
 ///
-/// One pass, four sequential streams. The sections are separate files
+/// One pass, five sequential streams. The sections are separate files
 /// exactly so that this is possible: one file with the sections laid end to
-/// end would need the count before the first byte of it could be placed, or
-/// a second pass to concatenate 5.8 GB.
-fn write_sections(at: &Path, sorted: &rows::Sorted) -> io::Result<usize> {
+/// end would need the counts before the first byte of it could be placed,
+/// or a second pass to concatenate gigabytes.
+fn write_sections(
+    at: &Path,
+    sorted: &rows::Sorted,
+) -> io::Result<(usize, usize)> {
     let mut addr = BufWriter::new(File::create(at.join(ADDR_FILE))?);
     let mut pos = BufWriter::new(File::create(at.join(POS_FILE))?);
+    let mut exception = BufWriter::new(File::create(at.join(EXCEPTION_FILE))?);
     let mut span = BufWriter::new(File::create(at.join(SPAN_FILE))?);
     let mut text = BufWriter::new(File::create(at.join(TEXT_FILE))?);
 
     let mut bytes = 0usize;
+    let mut stored = 0usize;
+    let mut row = 0u32;
     span.write_all(&span_bytes(0))?;
     if let Some(mut rows) = sorted.rows()? {
         while let Some((entry, _)) = rows.next::<NameEntry>()? {
@@ -1367,16 +1853,29 @@ fn write_sections(at: &Path, sorted: &rows::Sorted) -> io::Result<usize> {
             for axis in entry.position {
                 pos.write_all(&axis.to_le_bytes())?;
             }
-            text.write_all(entry.name.as_bytes())?;
-            bytes += entry.name.len();
-            span.write_all(&span_bytes(bytes))?;
+            // **The name is written only where the address does not spell
+            // it**, and only such a row costs a span and a place in the
+            // exception list. Over a real galaxy that is 2.6 % of them:
+            // 3.94 GB of text against 128 MB, and 1.00 GB of spans against
+            // 47 MB. The exceptions are the names people gave and
+            // Frontier's hand-authored regions, both of which the
+            // arithmetic deliberately does not claim.
+            if !crate::procedural::spells(entry.address, &entry.name) {
+                text.write_all(entry.name.as_bytes())?;
+                bytes += entry.name.len();
+                exception.write_all(&row.to_le_bytes())?;
+                span.write_all(&span_bytes(bytes))?;
+                stored += 1;
+            }
+            row += 1;
         }
     }
     addr.flush()?;
     pos.flush()?;
+    exception.flush()?;
     span.flush()?;
     text.flush()?;
-    Ok(bytes)
+    Ok((bytes, stored))
 }
 
 /// One `span.bin` offset: forty bits, little-endian.
@@ -1399,8 +1898,9 @@ fn write_by_name(
     scratch: &Path,
     count: usize,
     bytes: usize,
+    stored: usize,
 ) -> io::Result<()> {
-    let text = Text::open(at, count, bytes)?;
+    let text = Text::open(at, count, bytes, Some(stored))?;
 
     let buckets = scratch.join("byname");
     let _ = std::fs::remove_dir_all(&buckets);
@@ -1537,6 +2037,7 @@ fn write_head(
     generation: u64,
     count: usize,
     bytes: usize,
+    stored: usize,
 ) -> io::Result<()> {
     let mut head = vec![0u8; HEAD];
     head[0..8].copy_from_slice(&MAGIC.to_ne_bytes());
@@ -1544,6 +2045,10 @@ fn write_head(
     head[16..24].copy_from_slice(&generation.to_le_bytes());
     head[24..32].copy_from_slice(&(count as u64).to_le_bytes());
     head[32..40].copy_from_slice(&(bytes as u64).to_le_bytes());
+    // How many rows stored a name, which is what sizes `span.bin` and
+    // `exception.bin`. Reserved zero before version 3, where the spans
+    // were one a row and the count stood in for this.
+    head[40..48].copy_from_slice(&(stored as u64).to_le_bytes());
 
     std::fs::create_dir_all(names_dir(dir))?;
     let path = names_head_path(dir);
@@ -1676,6 +2181,73 @@ mod tests {
         writer.finish().expect("a finish")
     }
 
+    /// A name its address spells is not written down, and reads back anyway
+    ///
+    /// The whole of what version 2 is: `text.bin` holds the exceptions and
+    /// nothing else, and a row whose span has no length is answered by
+    /// [`crate::procedural`]. Measured over a real galaxy, that is 97.4 %
+    /// of rows and 3.94 GB of text against 133 MB — so the assertion here
+    /// is the *bytes*, since a table that stored them all would read back
+    /// identically and save nothing.
+    #[test]
+    fn a_name_its_address_spells_is_not_stored() {
+        let dir = Scratch::new("derived");
+        // Two procedural systems and one name somebody gave. The pairs are
+        // real, off `.index/full`.
+        let entries = vec![
+            entry(96_076_086, "SIDGIO AA-A G1", 1.0),
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 2.0),
+            entry(10, "SOL", 3.0),
+        ];
+        assert_eq!(published(&dir.0, &entries), 3);
+
+        // Only the given name is in the text, and the derived rows are what
+        // is left over: three rows, one name's worth of bytes.
+        let at =
+            generation_dir(&dir.0, live_generation(&dir.0).unwrap().unwrap());
+        let text = std::fs::metadata(at.join(TEXT_FILE)).unwrap().len();
+        assert_eq!(text, "SOL".len() as u64, "the derived names were stored");
+        assert_eq!(version(&dir.0).unwrap(), Some(VERSION));
+
+        // **And a derived row costs no span either**, which is version 3:
+        // one offset a *stored* name plus a terminator, and one row number
+        // beside it, against the five bytes a row version 2 spent saying
+        // "derived". Three rows, one stored name: ten bytes of span and
+        // four of exception, where a dense array would be twenty.
+        let span = std::fs::metadata(at.join(SPAN_FILE)).unwrap().len();
+        let exception =
+            std::fs::metadata(at.join(EXCEPTION_FILE)).unwrap().len();
+        assert_eq!(span, 2 * SPAN as u64, "a span a row was written");
+        assert_eq!(exception, ROW as u64, "the exception list is one row");
+
+        // And the table answers with all three, in address order, through
+        // the same reads a client makes.
+        let table = Table::open(&dir.0).expect("the table opens");
+        table.audit().expect("a table a build just wrote");
+        assert_eq!(table.name_at(0), "SOL");
+        assert_eq!(table.name_at(1), "SIDGIO AA-A G1");
+        assert_eq!(table.name_at(2), "PRUE EAEWSY NR-W E1-0");
+        assert_eq!(table.row_named("SIDGIO AA-A G1"), Some(1));
+        assert_eq!(
+            table.entry_at(2).name,
+            SystemName::new("PRUE EAEWSY NR-W E1-0"),
+        );
+        // The by-name order is over the names as read, derived ones
+        // included: a search has to find them.
+        let found = table.rows_starting("PRUE", 25);
+        assert_eq!(found, vec![2]);
+
+        // And the log still answers over a derived row, which is what a
+        // system being renamed later comes to.
+        let mut names = Names::open(&dir.0).expect("the table opens");
+        assert_eq!(
+            names.name_of(96_076_086).as_deref(),
+            Some("SIDGIO AA-A G1")
+        );
+        assert!(names.name(entry(96_076_086, "SIDGIO PRIME", 1.0)));
+        assert_eq!(names.name_of(96_076_086).as_deref(), Some("SIDGIO PRIME"));
+    }
+
     /// The table a build wrote is the table a client opens: every row, in
     /// address order, whatever order it was pushed in.
     #[test]
@@ -1770,24 +2342,30 @@ mod tests {
         assert_eq!(table.row_named("SOLATIX"), None);
 
         // A shorter name sorts before a longer one that begins with it.
-        let order: Vec<&str> = table
+        let order: Vec<String> = table
             .by_name()
             .iter()
-            .map(|&row| table.name_at(row as usize))
+            .map(|&row| table.name_at(row as usize).to_string())
             .collect();
         assert_eq!(order, ["ALPHA CENTAURI", "SOL", "SOLA", "SOLATI"]);
     }
 
-    /// A search is a prefix off the by-name index, and it reads nothing
-    /// but the names it answers with.
+    /// A search is the prefix, then a word start, and reads no further
     ///
-    /// It used to fall through to a substring scan of every name, which at
-    /// 200 M was 3.94 GB read on the main thread for most queries — and
+    /// It used to fall through to a substring scan of *every* name, which
+    /// at 200 M was 3.94 GB read on the main thread for most queries — and
     /// the pages it faulted in evicted the cell payloads the map draws
-    /// from, so searching stalled the galaxy's reads too. A name with the
-    /// query in the *middle* is the thing given up for that.
+    /// from, so searching stalled the galaxy's reads too. Then it was a
+    /// prefix and nothing else, and `SOL` stopped answering `NEW SOL`.
+    ///
+    /// It is both now, and what changed is the *corpus*: `text.bin` holds
+    /// only the names no address spells, 128 MB of a 200 M galaxy against
+    /// 3.94 GB, so the scan is thirty times smaller and touches nothing
+    /// the drawing wants. What stays refused is a match mid-*word*, which
+    /// would answer `OL` with every `SOL`, and a run of bytes straddling
+    /// two names, which is what a scan over concatenated text invites.
     #[test]
-    fn a_search_is_a_prefix_and_reads_no_further() {
+    fn a_search_is_a_prefix_then_a_word_start() {
         let dir = Scratch::new("matching");
         let entries = vec![
             entry(1, "SOL", 0.0),
@@ -1795,27 +2373,102 @@ mod tests {
             entry(3, "BOLA", 0.0),
             entry(4, "SOLATI", 0.0),
             entry(5, "NEW SOL", 0.0),
+            entry(6, "SAGITTARIUS A*", 0.0),
         ];
         published(&dir.0, &entries);
 
         let table = Table::open(&dir.0).expect("the table opens");
-        let named = |rows: Vec<usize>| -> Vec<&str> {
-            rows.into_iter().map(|at| table.name_at(at)).collect()
+        let named = |rows: Vec<usize>| -> Vec<String> {
+            rows.into_iter().map(|at| table.name_at(at).to_string()).collect()
         };
 
-        // In name order, and only the names that begin with it.
-        assert_eq!(named(table.matching("SOL", 25)), ["SOL", "SOLATI"]);
+        // The prefix in name order first, then the names holding it at a
+        // word start.
+        assert_eq!(
+            named(table.matching("SOL", 25)),
+            ["SOL", "SOLATI", "NEW SOL"],
+        );
         assert_eq!(named(table.matching("BOL", 25)), ["BOLA"]);
+        // The one this was for: a word nobody's name begins with.
+        assert_eq!(named(table.matching("A*", 25)), ["SAGITTARIUS A*"]);
 
-        // Mid-name is no longer a match, and neither is a run of bytes
-        // that straddles two names — "SOL" and "ACRUX" sit end to end in
-        // the text, so the bytes hold "LACR" between them.
-        assert_eq!(table.matching("EW SOL", 25), Vec::<usize>::new());
+        // Mid-word is not a match, and neither is a run of bytes that
+        // straddles two names — "SOL" and "ACRUX" sit end to end in the
+        // text, so the bytes hold "LACR" between them.
         assert_eq!(table.matching("OL", 25), Vec::<usize>::new());
         assert_eq!(table.matching("LACR", 25), Vec::<usize>::new());
+        // Nor a run that begins mid-word and runs into the next word.
+        assert_eq!(table.matching("EW SOL", 25), Vec::<usize>::new());
 
         // And the cap is the index's: it stops walking at the limit.
         assert_eq!(table.matching("SOL", 1).len(), 1);
+        assert_eq!(table.matching("SOL", 2).len(), 2);
+    }
+
+    /// A word of a *derived* name is searchable, and it is not in the text
+    ///
+    /// The road the dictionary opens: 97.4 % of names store no bytes at
+    /// all, so a scan of `text.bin` cannot find them — their words are a
+    /// sector and a boxel code. A query matching a sector mid-name is
+    /// answered by asking which sectors hold that word and walking each
+    /// one's run of the by-name order.
+    #[test]
+    fn a_word_of_a_derived_name_is_found() {
+        let dir = Scratch::new("derived-search");
+        // Real systems, and the second word of a two-word sector is the
+        // one nothing could scan for.
+        let entries = vec![
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 1.0),
+            entry(96_076_086, "SIDGIO AA-A G1", 2.0),
+            entry(10, "SOL", 3.0),
+        ];
+        published(&dir.0, &entries);
+        let names = Names::open(&dir.0).expect("the table opens");
+
+        let named = |query: &str| -> Vec<String> {
+            names
+                .matching(query, 25)
+                .into_iter()
+                .map(|entry| entry.name.into_string())
+                .collect()
+        };
+
+        // The prefix road, over a name the table did not store.
+        assert_eq!(named("PRUE"), ["PRUE EAEWSY NR-W E1-0"]);
+        // The dictionary road: a word no name begins with, and no byte of
+        // it is in `text.bin` to be scanned for.
+        assert_eq!(named("EAEWSY"), ["PRUE EAEWSY NR-W E1-0"]);
+        // The text road still answers for a name that *is* stored.
+        assert_eq!(named("SOL"), ["SOL"]);
+        // And a word nothing holds answers nothing.
+        assert!(named("NOWHERE").is_empty());
+    }
+
+    /// One character is not searched, and a name is still resolvable by it
+    ///
+    /// Both halves have to hold it: the delta is walked with the same
+    /// needle, so a guard on the base alone would answer a one-character
+    /// query with whatever the feed had lately named.
+    #[test]
+    fn a_query_shorter_than_the_floor_is_not_searched() {
+        let dir = Scratch::new("floor");
+        published(&dir.0, &[entry(1, "SOL", 1.0), entry(2, "S", 2.0)]);
+
+        let mut names = Names::open(&dir.0).expect("the table opens");
+        assert!(names.name(entry(3, "SIRIUS", 3.0)));
+
+        assert!(names.matching("S", 25).is_empty());
+        assert_eq!(
+            names
+                .matching("SI", 25)
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<_>>(),
+            ["SIRIUS"]
+        );
+
+        // A system really named `S` is still an endpoint a route can name.
+        assert_eq!(names.address_of("S"), Some(2));
     }
 
     /// A name said twice is one row, and the later word wins.
@@ -1856,9 +2509,9 @@ mod tests {
         assert!(!names.unname(99));
         assert_eq!(names.publish(&dir.0).expect("a publish"), 3);
 
-        assert_eq!(names.name_of(1), Some("SOL RENAMED"));
+        assert_eq!(names.name_of(1).as_deref(), Some("SOL RENAMED"));
         assert_eq!(names.name_of(2), None);
-        assert_eq!(names.name_of(3), Some("NEW"));
+        assert_eq!(names.name_of(3).as_deref(), Some("NEW"));
         assert_eq!(names.address_of("SOL"), None);
         assert_eq!(names.address_of("SOL RENAMED"), Some(1));
         assert_eq!(names.address_of("ACRUX"), None);
@@ -1867,9 +2520,9 @@ mod tests {
 
         // And the same table comes back off disk.
         let read = Names::open(&dir.0).expect("the table re-opens");
-        assert_eq!(read.name_of(1), Some("SOL RENAMED"));
+        assert_eq!(read.name_of(1).as_deref(), Some("SOL RENAMED"));
         assert_eq!(read.name_of(2), None);
-        assert_eq!(read.name_of(3), Some("NEW"));
+        assert_eq!(read.name_of(3).as_deref(), Some("NEW"));
         assert_eq!(read.len(), 2);
     }
 
@@ -1915,9 +2568,9 @@ mod tests {
         read.base().audit().expect("a base a fold just wrote");
         assert!(read.delta().is_empty());
         assert_eq!(read.len(), 2);
-        assert_eq!(read.name_of(1), Some("SOL RENAMED"));
+        assert_eq!(read.name_of(1).as_deref(), Some("SOL RENAMED"));
         assert_eq!(read.name_of(2), None);
-        assert_eq!(read.name_of(3), Some("NEW"));
+        assert_eq!(read.name_of(3).as_deref(), Some("NEW"));
         assert_eq!(read.address_of("SOL RENAMED"), Some(1));
     }
 
@@ -2063,8 +2716,71 @@ mod tests {
         names.name(entry(3, "SECOND", 3.0));
         names.publish(&dir.0).expect("an append");
         let read = Names::open(&dir.0).expect("the table re-opens again");
-        assert_eq!(read.name_of(2), Some("FIRST"));
-        assert_eq!(read.name_of(3), Some("SECOND"));
+        assert_eq!(read.name_of(2).as_deref(), Some("FIRST"));
+        assert_eq!(read.name_of(3).as_deref(), Some("SECOND"));
+    }
+
+    /// A version 2 generation still reads, dense spans and all
+    ///
+    /// The rule this format keeps: no change may need a 610 GB import to
+    /// be run again, so every version this build ever wrote it also reads
+    /// and a directory comes forward when something rewrites its base.
+    /// Version 2 wrote a span for every row and marked a derived one by
+    /// giving it no length; version 3 writes a span a *stored* name and
+    /// names the rows in `exception.bin`. Both are the same table.
+    ///
+    /// Built by hand, because nothing writes version 2 any more.
+    #[test]
+    fn a_version_two_generation_still_reads() {
+        let dir = Scratch::new("version-two");
+        let entries = vec![
+            entry(10, "SOL", 3.0),
+            entry(96_076_086, "SIDGIO AA-A G1", 1.0),
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 2.0),
+        ];
+        // Address order, which is what the base is written in.
+        published(&dir.0, &entries);
+        let at =
+            generation_dir(&dir.0, live_generation(&dir.0).unwrap().unwrap());
+
+        // A dense span array over the same text: nought for `SOL`'s row,
+        // then three, and the two derived rows repeat it.
+        let mut span = Vec::new();
+        for offset in [0usize, 3, 3, 3] {
+            span.extend_from_slice(&span_bytes(offset));
+        }
+        std::fs::write(at.join(SPAN_FILE), &span).expect("dense spans");
+        std::fs::remove_file(at.join(EXCEPTION_FILE)).expect("no list");
+
+        // And a version 2 head: the same fields, with the stored count
+        // reserved zero.
+        let path = names_head_path(&dir.0);
+        let mut head = std::fs::read(&path).expect("the head");
+        head[8..10].copy_from_slice(&2u16.to_le_bytes());
+        head[40..48].copy_from_slice(&0u64.to_le_bytes());
+        std::fs::write(&path, &head).expect("a version 2 head");
+
+        assert_eq!(version(&dir.0).unwrap(), Some(2));
+        let table = Table::open(&dir.0).expect("a version 2 table opens");
+        table.audit().expect("a version 2 table is sound");
+        assert_eq!(table.len(), 3);
+        assert_eq!(table.name_at(0), "SOL");
+        assert_eq!(table.name_at(1), "SIDGIO AA-A G1");
+        assert_eq!(table.name_at(2), "PRUE EAEWSY NR-W E1-0");
+        assert_eq!(table.matching("A*", 25), Vec::<usize>::new());
+        assert_eq!(table.rows_starting("SIDGIO", 25), vec![1]);
+        // The text sweep maps an offset back to a row through the dense
+        // spans, which is the other branch of the same question.
+        assert_eq!(table.rows_holding("SOL", 25), vec![0]);
+
+        // And a rewrite brings it forward without reading anything but the
+        // table itself.
+        assert_eq!(compact(&dir.0).expect("a fold"), 3);
+        assert_eq!(version(&dir.0).unwrap(), Some(VERSION));
+        let table = Table::open(&dir.0).expect("the table reopens");
+        table.audit().expect("a table the fold just wrote");
+        assert_eq!(table.name_at(0), "SOL");
+        assert_eq!(table.name_at(2), "PRUE EAEWSY NR-W E1-0");
     }
 
     /// The by-name radix splits a bucket that will not fit and still writes

@@ -64,7 +64,7 @@ fn main() {
 
     let names_of: Vec<String> = sample
         .iter()
-        .filter_map(|&address| names.name_of(address).map(str::to_owned))
+        .filter_map(|&address| names.name_of(address).map(|it| it.to_string()))
         .collect();
 
     let at = Instant::now();

@@ -218,6 +218,18 @@ async fn read(
         .names()
         .await
         .map_err(|e| format!("reading the names table at {dir}: {e}"))?;
+    // And the text a search sweeps read once, in order, here rather than
+    // on the first query: a cold sweep faults 128 MB a page at a time and
+    // was reported as a four-second search for `SOL`. See
+    // [`galos_index::Names::warm`] for what it leaves cold, which is every
+    // other section — the point of the format is not reading those.
+    //
+    // Best effort: a warming read that failed is a slow first search, not
+    // a directory that cannot be opened, and the table has already been
+    // mapped by the line above.
+    if let Err(err) = table.warm() {
+        warn!("the names text could not be read ahead: {err}");
+    }
 
     at(Step::Reaches);
     let reaches =
