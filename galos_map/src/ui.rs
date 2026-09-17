@@ -3416,6 +3416,140 @@ fn spanned(selection: &Selection) -> Option<(DVec3, f32)> {
 
 /// A count with its digits grouped in threes
 ///
+/// What a plot under way says about itself, and what to turn down
+///
+/// A route across the galaxy expands hundreds of thousands of systems over
+/// several seconds, and a spinner says the map is working without saying
+/// whether it is getting anywhere. The map draws the same progress out on
+/// the sky; this is the number beside the button. Four readings, each asked
+/// separately because each arrives at its own moment: the clock as the
+/// button is pressed, the count once the graph is open and the first systems
+/// are expanded, and how far there is to go once anything has been reached
+/// at all. The wait comes first, that being what a wait is actually about —
+/// and the one reading that says a search is alive while a gap between two
+/// boost stars expands nothing anybody can see.
+///
+/// **One line about the plot, not one per leg.** A trip's legs are searched
+/// at once, and each reading is an aggregate over them: the longest wait,
+/// the expansions added up, the distances left added up. How many legs are
+/// still being worked out is said where there is more than one, the other
+/// three reading differently about four searches than about one.
+///
+/// And under it, where the wait has run long, the setting that would buy it
+/// back — see [`quicker_by`].
+fn searching_says(
+    ui: &mut Ui,
+    searching: &Frontiers,
+    how: &Routing,
+    tune: &Tuning,
+    drive: Drive,
+) {
+    let expanded = searching.expanded();
+    let mut said = Vec::with_capacity(4);
+    if let Some(took) = searching.asked_for() {
+        said.push(crate::ui::waited(took));
+    }
+    let legs = searching.legs();
+    if legs > 1 {
+        said.push(format!("{legs} legs"));
+    }
+    if expanded > 0 {
+        said.push(format!(
+            "{} systems searched",
+            crate::ui::thousands(expanded)
+        ));
+    }
+    // What answers the question a wait asks: the map draws the chains
+    // out on the sky, and this is how far they still have to go, over
+    // every leg still looking.
+    if let Some(left) = searching.left() {
+        said.push(format!(
+            "{} Ly to go",
+            crate::ui::thousands(left.round() as u64)
+        ));
+    }
+    if !said.is_empty() {
+        ui.label(egui::RichText::new(said.join(", ")).weak());
+    }
+    // And, for a wait long enough to be worth doing something about,
+    // which setting to turn down. In yellow rather than red: nothing
+    // has gone wrong, and the route being looked for is the one that
+    // was asked for. See [`quicker_by`].
+    if let Some(quicker) = searching
+        .asked_for()
+        .and_then(|took| quicker_by(took, how, tune, drive))
+    {
+        ui.colored_label(egui::Color32::YELLOW, quicker);
+    }
+}
+
+/// How long a plot may run before the form offers a way to make it quicker
+///
+/// Long enough that an ordinary plot never says anything — the guard's rows
+/// are milliseconds to a second or two — and short enough that a reader who
+/// is about to give up is told first. See [`quicker_by`].
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Which setting to turn down, for a plot that is taking too long
+///
+/// **The settings are left erring toward the better route, and this is what
+/// pays for that.** Every one of them trades the wait for the answer, and
+/// which of them is costing the wait is not something a reader can see: the
+/// map knows, because it knows what was asked. So a plot that runs past
+/// [`PATIENCE`] says which slider buys the time back, in the words the
+/// control itself is labelled with.
+///
+/// Ranked by what each is measured to cost over `.index/full`, dearest
+/// first, and only one is offered — a form listing three things to try is
+/// a form that has not answered the question.
+///
+/// [`None`] before [`PATIENCE`], and for a plot whose settings are already
+/// the cheap ones: there is then nothing honest to suggest, and a wait
+/// with no advice attached is the truth about a galaxy this size.
+fn quicker_by(
+    took: std::time::Duration,
+    how: &Routing,
+    tune: &Tuning,
+    drive: Drive,
+) -> Option<&'static str> {
+    if took < PATIENCE {
+        return None;
+    }
+    // Gaps first: searching every one of them is the dearest setting here
+    // by an order of magnitude. Measured, Sagittarius A* to Colonia at 50
+    // ly and 80%: 73 stops in 16.92 s searched against 76 in 0.38 s
+    // stepped.
+    if tune.crossing == Crossing::Searched {
+        return Some(
+            "Crossing a gap: Stepped answers in a fraction of the time,              for a jump or two more",
+        );
+    }
+    // Then the plan, which is only asked for at all where a cone can be
+    // used: `optimal` is three to six percent of the jumps for nine to
+    // twenty-nine times the wait.
+    if drive != Drive::Unaided && tune.planning == 0 && tune.allowance.is_none()
+    {
+        return Some(
+            "Plan: optimal if cheap keeps the exact chain where it lands              quickly and leans where it does not",
+        );
+    }
+    // Then the route's own optimality, whose rail is the steepest thing in
+    // the form: 100% is minutes where 80% is milliseconds on the same
+    // corridor, and on the corridors measured every setting came back with
+    // the same route.
+    if !how.approximates() {
+        return Some(
+            "Within: a percent off proven is most of the wait, and often              the same route",
+        );
+    }
+    if how.optimality() > 80 {
+        return Some(
+            "Within: 80% was eleven times quicker than the proven ask on              the corridors measured, with the same answer",
+        );
+    }
+    None
+}
+
 /// A population runs to eleven digits and a count of the sky to six, and
 /// either is a length rather than a number until it is broken up.
 pub(crate) fn thousands(count: u64) -> String {
@@ -5162,52 +5296,10 @@ fn route_body(
                  stands, or press {STOP} to stop"
         ));
     }
-    // How far the search has got. A route across the galaxy expands hundreds
-    // of thousands of systems over several seconds, and a spinner says the map
-    // is working without saying whether it is getting anywhere. The map draws
-    // the same progress out on the sky; this is the number beside the button.
-    // Four readings, and each is asked separately because each arrives at
-    // its own moment: the clock the moment the button is pressed, the count
-    // once the graph is open and the first systems are expanded, and how
-    // far there is to go once anything has been reached at all. How long it
-    // has been at it first, that being the reading a wait is actually about
-    // — and the one that says a search is still alive when a gap between
-    // two boost stars is expanding nothing anybody can see.
-    //
-    // **One line about the plot, not one per leg.** A trip's legs are
-    // searched at once, and each of these is an aggregate over them: the
-    // longest wait, the expansions added up, and the distances left added
-    // up. How many legs are still being worked out is said where there is
-    // more than one, since the other three read differently when they are
-    // about four searches than when they are about one.
+    // How far the search has got, beside the button that asked for it. The
+    // readings and what they are for are [`searching_says`]'s.
     if *plot == Plot::Working {
-        let expanded = searching.expanded();
-        let mut said = Vec::with_capacity(4);
-        if let Some(took) = searching.asked_for() {
-            said.push(crate::ui::waited(took));
-        }
-        let legs = searching.legs();
-        if legs > 1 {
-            said.push(format!("{legs} legs"));
-        }
-        if expanded > 0 {
-            said.push(format!(
-                "{} systems searched",
-                crate::ui::thousands(expanded)
-            ));
-        }
-        // What answers the question a wait asks: the map draws the chains
-        // out on the sky, and this is how far they still have to go, over
-        // every leg still looking.
-        if let Some(left) = searching.left() {
-            said.push(format!(
-                "{} Ly to go",
-                crate::ui::thousands(left.round() as u64)
-            ));
-        }
-        if !said.is_empty() {
-            ui.label(egui::RichText::new(said.join(", ")).weak());
-        }
+        searching_says(ui, searching, how, tune, *drive);
     }
 
     if (button.response.clicked() || submitted)
@@ -7992,6 +8084,138 @@ mod tests {
     use crate::systems::selection::PickedBody;
     use crate::tests::{painted, words};
     use chrono::{DateTime, Utc};
+
+    /// A plot short enough that the form has nothing to suggest
+    ///
+    /// Which is every ordinary plot: the guard's own rows are milliseconds
+    /// to a second or two, and a form that offered a cheaper setting after
+    /// each of them would be a form nobody reads.
+    #[test]
+    fn a_quick_plot_is_offered_nothing() {
+        let dear = Tuning {
+            crossing: Crossing::Searched,
+            planning: 0,
+            allowance: None,
+            ..Tuning::default()
+        };
+        assert_eq!(
+            quicker_by(
+                PATIENCE - std::time::Duration::from_millis(1),
+                &Routing::FEWEST,
+                &dear,
+                Drive::Standard,
+            ),
+            None,
+        );
+    }
+
+    /// And a long one is told what is costing it, dearest setting first
+    ///
+    /// One suggestion and the dearest one: searching every gap is an order
+    /// of magnitude over the rest, so a plot doing that hears about that
+    /// and not about the two rails it also has set to proven. What is left
+    /// once the dear settings are the cheap ones is nothing — a wait with
+    /// no advice attached, which over a galaxy this size is the truth.
+    #[test]
+    fn a_long_plot_is_told_which_setting_to_turn_down() {
+        let long = PATIENCE;
+        let searched = Tuning {
+            crossing: Crossing::Searched,
+            planning: 0,
+            allowance: None,
+            ..Tuning::default()
+        };
+        let said = |tune: &Tuning, how: &Routing, drive| {
+            quicker_by(long, how, tune, drive).unwrap_or("nothing")
+        };
+
+        assert!(
+            said(&searched, &Routing::FEWEST, Drive::Standard)
+                .starts_with("Crossing a gap"),
+            "the dearest setting went unsaid: {}",
+            said(&searched, &Routing::FEWEST, Drive::Standard),
+        );
+        // Gaps stepped, so the plan is next — and only for a drive that can
+        // use a cone, there being no plan at all without one.
+        let exact = Tuning { planning: 0, allowance: None, ..searched };
+        let stepped = Tuning { crossing: Crossing::Stepped, ..exact };
+        assert!(
+            said(&stepped, &Routing::FEWEST, Drive::Standard)
+                .starts_with("Plan"),
+            "the plan went unsaid: {}",
+            said(&stepped, &Routing::FEWEST, Drive::Standard),
+        );
+        assert!(
+            said(&stepped, &Routing::FEWEST, Drive::Unaided)
+                .starts_with("Within"),
+            "an unaided plot was sent to the plan it does not use: {}",
+            said(&stepped, &Routing::FEWEST, Drive::Unaided),
+        );
+        // Everything cheap already: nothing to offer.
+        assert_eq!(
+            said(&Tuning::default(), &Routing::default(), Drive::Standard),
+            "nothing",
+        );
+    }
+
+    /// And the readout draws it, where a plot has been running that long
+    ///
+    /// The choice is [`quicker_by`]'s and the two tests above are about
+    /// that; this is the one thing they cannot say, which is that a reader
+    /// waiting on a plot has it in front of them.
+    #[test]
+    fn a_long_plot_draws_the_advice() {
+        let mut searching = Frontiers::default();
+        let asked = std::time::Instant::now()
+            .checked_sub(PATIENCE + std::time::Duration::from_secs(1))
+            .expect("a moment before now");
+        searching.watch(
+            crate::systems::fetch::FetchIndex::Route(
+                "START".into(),
+                "END".into(),
+                "50".into(),
+                None,
+                Drive::Standard,
+                Routing::default(),
+                Tuning::default(),
+            ),
+            graph::Frontier::between(DVec3::ZERO, DVec3::new(6400., 0., 0.)),
+            asked,
+        );
+        let searched =
+            Tuning { crossing: Crossing::Searched, ..Tuning::default() };
+
+        let said = words(|ui| {
+            searching_says(
+                ui,
+                &searching,
+                &Routing::default(),
+                &searched,
+                Drive::Standard,
+            )
+        });
+
+        assert!(
+            said.iter().any(|line| line.starts_with("Crossing a gap")),
+            "the form said nothing about the setting costing the wait: \
+             {said:?}",
+        );
+        // And nothing where the settings are already the cheap ones: the
+        // wait is then the galaxy's, not a setting's.
+        let quiet = words(|ui| {
+            searching_says(
+                ui,
+                &searching,
+                &Routing::default(),
+                &Tuning::default(),
+                Drive::Standard,
+            )
+        });
+        assert!(
+            !quiet.iter().any(|line| line.starts_with("Crossing a gap")),
+            "{quiet:?}",
+        );
+    }
 
     /// A moment out in the galaxy, ours
     fn ours(text: &str) -> DateTime<Utc> {
