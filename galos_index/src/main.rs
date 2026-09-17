@@ -75,6 +75,21 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
+    /// Write the sector dictionary `galos_index::procedural` derives names
+    /// through, learned from a built directory.
+    Sectors {
+        /// The index directory to learn from.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+        /// Where to write it. `galos_index/data/sectors.csv` is the one
+        /// the crate compiles in.
+        #[arg(long, short)]
+        out: Option<PathBuf>,
+        /// Write it even where a sector the dictionary already names comes
+        /// out differently, which re-spells every name dropped under it.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Leave with `code`, having dropped whatever was holding the directory
@@ -101,6 +116,9 @@ fn main() {
         Command::Pack { dir } => pack(&dir),
         Command::FoldNames { dir } => fold_names(&dir),
         Command::Upgrade { dir } => upgrade(&dir),
+        Command::Sectors { dir, out, force } => {
+            sectors(&dir, out.as_deref(), force)
+        }
     }
 }
 
@@ -115,11 +133,16 @@ fn main() {
 /// record the class comes from. So this joins the two and rewrites each
 /// cell, where the alternative is running the importer over the dump again.
 ///
-/// Idempotent and interruptible: a cell already columnar is left alone, and
-/// `index.bin` is rewritten last, so a directory stopped part way is one
-/// this finishes on the next run. Nothing else in the directory is touched —
-/// the names table, the bodies, the sidecars and the tree itself are all
-/// unchanged.
+/// The names table comes forward too, where its version is older than the
+/// one this build writes. That rewrite is what drops every name the
+/// address spells — 97.4 % of a galaxy, and 3.94 GB of `text.bin` down to
+/// 133 MB — and it is a whole rewrite of the base, so it is done here on
+/// purpose rather than at the front of somebody's import.
+///
+/// Idempotent and interruptible: a cell already columnar is left alone,
+/// `index.bin` is rewritten last, and a names table already at this
+/// version is not touched. The bodies, the sidecars and the tree itself
+/// are unchanged.
 fn upgrade(dir: &Path) {
     let lock = held(dir);
     let at = std::time::Instant::now();
@@ -164,12 +187,48 @@ fn upgrade(dir: &Path) {
             if wrote.placed > 0 {
                 println!("{} supercharge rows given their place", wrote.placed,);
             }
+            names_forward(dir, &lock);
         }
         Err(err) => {
             eprintln!();
             eprintln!("{}: {err}", dir.display());
             leave(Some(lock), 1);
         }
+    }
+}
+
+/// Bring a directory's names table to the version this build writes.
+///
+/// The rewrite is the whole base — an external sort over every row — so it
+/// runs only where the version says it is owed, which makes `upgrade`
+/// idempotent over a table already forward. What it buys is the text of
+/// every name the address spells: measured over a 200,071,629-name table,
+/// `text.bin` 3.94 GB to 133 MB.
+///
+/// A table that cannot be read is not a failure of the payload rewrite
+/// that has already landed, so this reports and leaves the exit code
+/// alone.
+fn names_forward(dir: &Path, lock: &galos_index::Lock) {
+    let _ = lock;
+    match galos_index::names::version(dir) {
+        Ok(None) => {}
+        Ok(Some(version)) if version >= galos_index::names::writes() => {
+            println!("the names table is already version {version}");
+        }
+        Ok(Some(version)) => {
+            let at = std::time::Instant::now();
+            println!(
+                "rewriting the names table, version {version} to {}",
+                galos_index::names::writes(),
+            );
+            match galos_index::names::compact(dir) {
+                Ok(count) => {
+                    println!("{count} names rewritten in {:.1?}", at.elapsed())
+                }
+                Err(err) => eprintln!("the names table: {err}"),
+            }
+        }
+        Err(err) => eprintln!("the names table: {err}"),
     }
 }
 
@@ -213,9 +272,14 @@ fn pack(dir: &Path) {
 /// gigabytes, and an operator would rather spend it on purpose than
 /// discover it at the front of a build.
 ///
-/// Idempotent: a directory with no chunks left has nothing to fold. Safe
-/// to run against a directory a map is *reading*, the table being swapped
-/// in by one rename and the chunks removed only after.
+/// It also brings the table's *version* forward, which is the other reason
+/// to run it on purpose: a version 1 base stored every name, and rewriting
+/// it drops the 97.4 % of them the address spells — see [`names_forward`].
+///
+/// Idempotent: a directory with no chunks and a table already at this
+/// version has nothing to do. Safe to run against a directory a map is
+/// *reading*, the table being swapped in by one rename and the chunks
+/// removed only after.
 fn fold_names(dir: &Path) {
     let lock = held(dir);
     let start = std::time::Instant::now();
@@ -233,6 +297,149 @@ fn fold_names(dir: &Path) {
             leave(Some(lock), 2);
         }
     }
+    names_forward(dir, &lock);
+}
+
+/// Learn the sector dictionary from a directory's names table.
+///
+/// What `galos_index::procedural` compiles in, and the only way to refresh
+/// it: a sector enters the dictionary when the first system in it is
+/// reported, so the file is as complete as the galaxy anybody has imported.
+///
+/// **A name that claims more than one sector coordinate is left out.**
+/// Those are Frontier's hand-authored regions — `COL 285 SECTOR`, `IC 2944
+/// SECTOR` — laid over the procedural grid as spheres, and their boxels are
+/// numbered from the region's own origin. Deriving one would spell the
+/// wrong name for every procedural system in the same cell, so the module
+/// answers nothing there and every system under a region is stored.
+///
+/// **An entry that already exists may be added to but never changed.**
+/// That is the one safety property the whole scheme rests on: a name is
+/// dropped from the table because the dictionary spelled it, so a
+/// regeneration that renamed a sector would silently re-spell every name
+/// already dropped under it. A key whose name disagrees with the one
+/// compiled in is therefore refused rather than written, and `--force`
+/// is the only way past — which is what somebody rebuilding the dictionary
+/// on purpose, against a table they are about to rewrite anyway, passes.
+///
+/// Read-only on the directory, and takes no lock: it reads the published
+/// table and writes somewhere else entirely.
+fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
+    let table = match galos_index::names::Table::open(dir) {
+        Ok(table) => table,
+        Err(e) => {
+            eprintln!("cannot read the names table at {}: {e}", dir.display());
+            std::process::exit(2);
+        }
+    };
+
+    // Which names each sector coordinate is claimed by, and which
+    // coordinates each name claims.
+    let mut votes: BTreeMap<u32, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut claims: BTreeMap<String, std::collections::BTreeSet<u32>> =
+        BTreeMap::new();
+    for row in 0..table.len() {
+        let name = table.name_at(row);
+        let Some(sector) = sector_words(&name) else { continue };
+        let key = galos_index::procedural::sector_key(
+            elite_journal::Boxel::of(table.address_at(row)).sector,
+        );
+        let sector = sector.to_owned();
+        *votes.entry(key).or_default().entry(sector.clone()).or_insert(0) += 1;
+        claims.entry(sector).or_default().insert(key);
+    }
+
+    let mut written = 0usize;
+    let mut regions = 0usize;
+    let mut added = 0usize;
+    let mut changed: Vec<(u32, &'static str, String)> = Vec::new();
+    let mut text = String::new();
+    for (key, names) in &votes {
+        let settled = names
+            .iter()
+            .filter(|(name, _)| claims[name.as_str()].len() == 1)
+            .max_by_key(|(_, rows)| **rows);
+        match settled {
+            Some((name, _)) => {
+                written += 1;
+                match galos_index::procedural::sector_at(*key) {
+                    Some(held) if held != name => {
+                        changed.push((*key, held, name.clone()));
+                    }
+                    Some(_) => {}
+                    None => added += 1,
+                }
+                text.push_str(&format!("{key},{name}\n"));
+            }
+            None => regions += 1,
+        }
+    }
+
+    // What the dictionary holds and this table does not: a directory
+    // smaller than the galaxy the file was learned from, which is the
+    // ordinary case for anything but a full import. Dropping those entries
+    // would put every name under them back into the text at the next fold,
+    // so it is refused alongside the renames.
+    let lost = galos_index::procedural::sectors()
+        .filter(|(key, _)| !votes.contains_key(key))
+        .count();
+
+    if (!changed.is_empty() || lost > 0) && !force {
+        if !changed.is_empty() {
+            eprintln!(
+                "{} sector(s) would be renamed, and a rename re-spells \
+                 every name already dropped under them:",
+                changed.len(),
+            );
+            for (key, held, found) in changed.iter().take(10) {
+                eprintln!("  {key}: {held} would become {found}");
+            }
+        }
+        if lost > 0 {
+            eprintln!(
+                "{lost} sector(s) the dictionary names are not in this \
+                 table, and dropping them puts every name under them back \
+                 into the text"
+            );
+        }
+        eprintln!("pass --force to write it anyway");
+        std::process::exit(1);
+    }
+
+    let out = out.unwrap_or(Path::new("galos_index/data/sectors.csv"));
+    if let Err(e) = std::fs::write(out, &text) {
+        eprintln!("cannot write {}: {e}", out.display());
+        std::process::exit(2);
+    }
+    eprintln!(
+        "{written} sectors, {} bytes to {}; {added} new, {} renamed, \
+         {lost} dropped, {regions} coordinates only a hand-authored region \
+         claims",
+        text.len(),
+        out.display(),
+        changed.len(),
+    );
+}
+
+/// The words a procedural name begins with, or [`None`] where it is not
+/// one.
+///
+/// The shape and nothing else: whether the address agrees is
+/// `galos_index::procedural`'s business, and this runs before there is a
+/// dictionary for it to agree through.
+fn sector_words(name: &str) -> Option<&str> {
+    let (head, last) = name.rsplit_once(' ')?;
+    let digit = last.find(|c: char| c.is_ascii_digit())?;
+    let (class, numbers) = last.split_at(digit);
+    if class.len() != 1 || !class.as_bytes()[0].is_ascii_uppercase() {
+        return None;
+    }
+    if !numbers.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return None;
+    }
+    let (sector, code) = head.rsplit_once(' ')?;
+    let (pair, one) = code.split_once('-')?;
+    (pair.len() == 2 && one.len() == 1).then_some(sector)
 }
 
 /// Take the directory for as long as this command holds it, or refuse.

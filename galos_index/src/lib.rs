@@ -40,6 +40,7 @@ pub mod name;
 pub mod names;
 pub mod orbit;
 pub mod pack;
+pub mod procedural;
 pub mod region;
 pub mod report;
 pub mod rows;
