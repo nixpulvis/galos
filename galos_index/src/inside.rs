@@ -42,12 +42,20 @@ impl SystemBodies {
     /// Nothing at all for one with no star on record, which is then drawn
     /// about the point its contents go round, there being nothing else to
     /// offer.
+    ///
+    /// Ties broken by body id, which is [`crate::derive::arrival_class`]'s
+    /// rule and for its reason: a close pair is recorded at one distance from
+    /// arrival to the resolution the journal prints, and without the
+    /// tie-break the answer is the vector's order — query order on the
+    /// database side, scan order on the event side — so the two derivations
+    /// write different `reaches.bin` for the same system.
     pub fn primary(&self) -> Option<i16> {
         self.stars
             .iter()
             .min_by(|one, other| {
                 one.distance_from_arrival_ls
                     .total_cmp(&other.distance_from_arrival_ls)
+                    .then(one.id.cmp(&other.id))
             })
             .map(|star| star.id)
     }
@@ -746,6 +754,29 @@ mod tests {
     fn the_arrival_star_is_the_one_arrived_at() {
         assert_eq!(binary(true).primary(), Some(1));
         assert_eq!(SystemBodies::default().primary(), None);
+    }
+
+    /// A tie at the arrival point is broken by body id, whatever order the
+    /// stars were read in
+    ///
+    /// Two stars at one distance from arrival is the ordinary case for a
+    /// close pair, the journal printing a distance to a resolution that
+    /// cannot separate them. The vector's order is the query's on the
+    /// database side and the scan's on the event side, so an answer that
+    /// depended on it would have the two derivations write different
+    /// `reaches.bin` for the same system.
+    #[test]
+    fn a_tie_at_arrival_is_broken_by_body_id() {
+        let pair = |first: i16, second: i16| SystemBodies {
+            stars: vec![
+                star(first, 12., 1e13, vec![parent("Null", 0)]),
+                star(second, 12., 2e13, vec![parent("Null", 0)]),
+            ],
+            ..SystemBodies::default()
+        };
+
+        assert_eq!(pair(3, 7).primary(), Some(3));
+        assert_eq!(pair(7, 3).primary(), Some(3));
     }
 
     /// A body under a barycenter is placed out where the barycenter is
