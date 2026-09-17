@@ -104,25 +104,32 @@ impl Tables {
         self.held.counts()
     }
 
-    /// Every address the names table holds.
-    pub fn named(&self) -> HashSet<i64> {
-        self.held.named().collect()
+    /// Whether the names table holds a row for `address`.
+    ///
+    /// One binary search into the mapping. It was a `HashSet<i64>` of every
+    /// address the table held — 5–8 GB transient at 200 M, on a path that
+    /// runs at the end of every run — to answer the same question.
+    pub fn names_hold(&self, address: i64) -> bool {
+        self.held.names_hold(address)
     }
 
-    /// Drop the names of systems the cell tree does not hold, answering how
-    /// many went.
+    /// Drop the names of systems `drawn` says the cell tree does not hold,
+    /// answering how many went.
     ///
     /// A repair and not an ordinary patch. The two halves of a directory
     /// stand for the same systems or it does not reopen, and a name whose
     /// system is not in the tree is a row the map can find and never draw.
     /// The feed publishes the system again soon enough; the row cannot be
     /// turned back into one.
-    pub fn forget_names(&mut self, drawn: &HashSet<i64>) -> usize {
-        let orphans: Vec<i64> = self
-            .held
-            .named()
-            .filter(|address| !drawn.contains(address))
-            .collect();
+    ///
+    /// `drawn` is asked rather than handed over: the tree can answer for one
+    /// address ([`galos_index::Tree::holds`]), and collecting every address
+    /// it holds in order to ask is the galaxy in a hash set. What is
+    /// collected here is the orphans, which is what the repair is about and
+    /// is nothing on a directory that does not need one.
+    pub fn forget_names(&mut self, drawn: impl Fn(i64) -> bool) -> usize {
+        let orphans: Vec<i64> =
+            self.held.named().filter(|address| !drawn(*address)).collect();
         for address in &orphans {
             self.held.unname(*address);
         }

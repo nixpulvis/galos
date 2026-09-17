@@ -292,19 +292,33 @@ impl Index {
         // system the names table has no row for cannot be asked about; a
         // name whose system is not in the tree is never drawn. Both are what
         // a run killed mid-publish leaves, and both come back from the feed.
-        let named = tables.named();
-        let nameless: Vec<u64> = tree
-            .inputs()
-            .filter(|system| !named.contains(&(system.id64 as i64)))
-            .map(|system| system.id64)
-            .collect();
+        //
+        // The orphans go first, and the order is what makes this cheap. It
+        // is a walk of the names table's own ascending order — mapped, so
+        // sequential — asking the tree about each, and it cannot make a
+        // system nameless: the names it drops are the ones with no tree row
+        // behind them. So the nameless set is the same either way round,
+        // and afterwards every name has a row, which means the *counts*
+        // settle whether anything is nameless at all.
+        let orphaned = tables.forget_names(|address| tree.holds(address));
+        let nameless: Vec<u64> = if tree.len() > tables.names() {
+            // A damaged directory, and the only case that pays for the
+            // answer: which of the tree's systems nothing names is one
+            // binary search into the mapping per system. Measured over
+            // `.index/full`, 1.2–4.8 µs each, so this is minutes at 200 M
+            // — and it runs where the alternative was 4.8 GB of set on
+            // every open, damaged or not (measured, same directory).
+            tree.inputs()
+                .filter(|system| !tables.names_hold(system.id64 as i64))
+                .map(|system| system.id64)
+                .collect()
+        } else {
+            Vec::new()
+        };
         let unnamed = nameless.len();
         for id64 in nameless {
             tree.forget(id64);
         }
-        let drawn: HashSet<i64> =
-            tree.inputs().map(|system| system.id64 as i64).collect();
-        let orphaned = tables.forget_names(&drawn);
 
         // A directory whose halves had to be trimmed, or which serves what
         // no resume point can edit, is written whole here: the run that
@@ -885,7 +899,7 @@ mod tests {
         let mut said: Vec<String> = table
             .addresses()
             .filter_map(|address| table.name_of(address))
-            .map(str::to_owned)
+            .map(|name| name.to_string())
             .collect();
         said.sort();
         said
@@ -1564,6 +1578,54 @@ mod tests {
             reopened.tables.names(),
             2,
             "and the names table was not trimmed to make the halves agree",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A tree standing over a system nothing names is trimmed on reopen
+    ///
+    /// The repair the two halves owe each other, and the branch the counts
+    /// gate in [`Index::open`] guards: the orphan pass runs first and
+    /// leaves every name with a tree row, so `tree.len() >
+    /// tables.names()` is exactly "something in the tree is nameless" and
+    /// the per-system lookup — minutes at 200 M — is paid only where that
+    /// is true.
+    #[test]
+    fn a_nameless_tree_row_is_trimmed_on_reopen() {
+        let (dir, checkpoint) = scratch("halves");
+        let mut sink = opened(&dir, &checkpoint).expect("a sink opens");
+        pollster::block_on(sink.entry(
+            jump("Sol", 10477373803, [0.0; 3]),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.entry(
+            jump("Alpha Centauri", 3161824266978, [3.0, 0.0, 3.0]),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.flush()).expect("the publish lands");
+        drop(sink);
+
+        // Take Sol's name away and leave the tree as it was, which is the
+        // half-published state a kill between the two writes leaves. The
+        // predicate is "the tree holds this", so saying no to Sol alone is
+        // what drops its row.
+        let mut tables = Tables::resume(&dir).expect("the tables resume");
+        assert_eq!(tables.forget_names(|address| address != 10477373803), 1);
+        tables
+            .write(&dir, Wrote::EVERYTHING)
+            .expect("the damaged tables are written");
+
+        let reopened = opened(&dir, &checkpoint).expect("it reopens");
+        assert_eq!(
+            reopened.tree.len(),
+            1,
+            "the system nothing names should have gone from the tree",
+        );
+        assert_eq!(reopened.tables.names(), 1, "and its name stays gone");
+        assert!(
+            !reopened.tree.holds(10477373803),
+            "the trimmed system should be the nameless one",
         );
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));

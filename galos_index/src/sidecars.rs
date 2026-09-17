@@ -254,6 +254,17 @@ impl Sidecars {
         self.names.addresses()
     }
 
+    /// Whether the names table holds a row for `address`.
+    ///
+    /// The question a reader checking the directory's two halves against
+    /// each other asks once per system, and the reason [`Self::named`] is
+    /// not the way to ask it: collecting a galaxy's addresses to look one
+    /// up is 5–8 GB at 200 M, where this is a binary search into a mapping
+    /// — ~28 page touches and no allocation at all.
+    pub fn names_hold(&self, address: i64) -> bool {
+        self.names.name_of(address).is_some()
+    }
+
     /// What the directory publishes for a system, where it publishes one.
     ///
     /// For a caller merging a thinner row over a richer one; see
