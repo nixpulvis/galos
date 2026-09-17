@@ -18,7 +18,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What a route was asked to be
@@ -1316,6 +1316,8 @@ impl Frontier {
             reaching: Vec::new(),
             closest: f64::INFINITY,
             settled: true,
+            flushed: 0,
+            quiet: false,
         }
     }
 
@@ -1497,9 +1499,55 @@ pub(crate) struct Sampler {
     closest: f64,
     /// Whether the chain in hand is the one for the closest system reached
     settled: bool,
+    /// How many expansions have already been handed over
+    ///
+    /// The frontier's tally is added to rather than assigned, so several
+    /// samplers can feed one search's picture — which is what a plan's legs
+    /// refined side by side are. See [`Self::beside`].
+    flushed: u64,
+    /// Whether this one counts and never draws
+    ///
+    /// A [`Self::beside`] sibling, carried by a leg being refined in
+    /// parallel with its neighbours. The picture is one thing and the legs
+    /// are many: the chain, the closed set and the working edge all
+    /// *replace* what the frontier holds, so two samplers drawing at once
+    /// would each rub out the other. A quiet one keeps the expansion tally
+    /// honest and the cancellation flag readable, and its leg is drawn by
+    /// the sampler that owns the picture once the leg has landed
+    /// ([`Self::flew`]).
+    quiet: bool,
 }
 
 impl Sampler {
+    /// A sibling that counts into the same frontier and draws nothing
+    ///
+    /// What a leg refined beside its neighbours carries. It shares the
+    /// frontier, so an expansion of any leg shows in the readout and a
+    /// route taken back stops every leg at once ([`Self::stopped`]); it
+    /// draws nothing, because the chain, the closed set and the edge each
+    /// replace what the frontier holds and two of these drawing at once
+    /// would rub each other out. The leg's own way is drawn by the owner
+    /// when it lands.
+    pub(crate) fn beside(&self) -> Sampler {
+        Sampler {
+            into: Arc::clone(&self.into),
+            goal: self.goal,
+            across: self.across,
+            expanded: 0,
+            cells: HashSet::new(),
+            edge: VecDeque::new(),
+            worked: None,
+            stepped: false,
+            plan: Vec::new(),
+            flown: Vec::new(),
+            reaching: Vec::new(),
+            closest: f64::INFINITY,
+            settled: false,
+            flushed: 0,
+            quiet: true,
+        }
+    }
+
     /// Note the expansion of `node`, which sits at `at`
     ///
     /// `came` is the search's own record of where each system was reached
@@ -1551,6 +1599,16 @@ impl Sampler {
         chain: impl FnOnce() -> Vec<DVec3>,
     ) {
         self.expanded += 1;
+
+        // A quiet sibling counts and nothing else: no chain walked back, no
+        // cell kept, and the tally handed over on the same beat. See
+        // [`Self::beside`].
+        if self.quiet {
+            if self.expanded % super::frontier::STRIDE == 0 {
+                self.flush();
+            }
+            return;
+        }
 
         // How close the search has got, which is what the chain is drawn to.
         // Against the route's own goal and not the leg's, so the legs of one
@@ -1651,7 +1709,18 @@ impl Sampler {
     /// what the map reads first: unchanged, it never asks for the copy.
     fn flush(&mut self) {
         let mut reached = self.into.reached.lock().expect("the frontier lock");
-        reached.expanded = self.expanded;
+        // What this one has counted since it last said so, added rather than
+        // assigned: a plan's legs are refined side by side and each carries
+        // its own sampler ([`Self::beside`]), so the frontier's tally is the
+        // sum of theirs and the owner's.
+        reached.expanded += self.expanded - self.flushed;
+        self.flushed = self.expanded;
+
+        // A quiet sibling draws nothing, so there is nothing else to hand
+        // over and no revision to move.
+        if self.quiet {
+            return;
+        }
 
         let grew = !self.cells.is_empty();
         reached.cells.extend(self.cells.drain());
@@ -2429,12 +2498,27 @@ impl JumpGraph {
 
     /// Fly a chain of waypoints: one search a leg, stitched.
     ///
+    /// **The legs are independent searches and are run side by side.** A
+    /// leg is `hops[i]` to `hops[i + 1]` and it ends *at* `hops[i + 1]`, so
+    /// the leg after it starts where the plan said and not where the last
+    /// one happened to land — which is what makes them independent, and
+    /// holds through a merge too: a merged leg lands on `hops[i + 2]`,
+    /// which is where the precomputed leg from there begins. Measured over
+    /// `.index/full`, Sol → Colonia with every gap searched
+    /// ([`Crossing::Searched`]): the legs are **5.93 s of the 6.32 s**
+    /// crossing at 50 ly and 8.10 s of 9.20 s at 25 ly, the coarse plan
+    /// being the rest. Under the default [`Crossing::Stepped`] a leg is
+    /// arithmetic rather than a search and the same phase is 8.9 ms, so
+    /// what this is for is the setting that asks for the gaps to be proven.
+    ///
     /// A leg with no chain of systems to fly it is merged into the next
     /// one and the pair tried again, which is what EDDA's refinement does
     /// with the same failure (`long_range.rs:3421-3441`): a coarse hop is
     /// a promise about a gap, and where the promise is wrong the way
     /// across is usually to skip the cone it was made about. A second
-    /// failure abandons the plan.
+    /// failure abandons the plan. That retry is searched here, in the
+    /// stitch, because a merge is the one leg whose ends the plan did not
+    /// name.
     fn flown(
         &self,
         hops: &[Node],
@@ -2444,20 +2528,21 @@ impl JumpGraph {
         tune: Tuning,
         sampled: &mut Option<Sampler>,
     ) -> Option<Vec<Node>> {
+        let refined = self.refined(hops, range, drive, how, tune, sampled);
+
         let mut path = vec![*hops.first()?];
         let mut leg = 0;
         while leg + 1 < hops.len() {
             let from = *path.last().expect("the leg it flew to");
-            let (flown, next) = match self.leg(
-                from,
-                hops[leg + 1],
-                range,
-                drive,
-                how,
-                tune,
-                sampled,
-            ) {
+            let (flown, next) = match refined
+                .get(leg)
+                .and_then(|held| held.clone())
+                .filter(|_| from == hops[leg])
+            {
                 Some(flown) => (flown, leg + 1),
+                // The leg the plan promised has no chain of systems to fly
+                // it. Merged with the next and searched here: its ends are
+                // the only pair nothing precomputed.
                 None => (
                     self.leg(
                         from,
@@ -2473,7 +2558,8 @@ impl JumpGraph {
             };
             // The way this leg went, drawn as its own branch off the plan:
             // a coarse hop is a promise about a gap, and this is how the
-            // ship can really fly it.
+            // ship can really fly it. Drawn in the order flown, whatever
+            // order the legs were searched in.
             if let Some(sampled) = sampled.as_mut() {
                 sampled.flew(self.places(&flown));
             }
@@ -2482,6 +2568,88 @@ impl JumpGraph {
             leg = next;
         }
         Some(path)
+    }
+
+    /// Every leg of `hops` flown, searched side by side
+    ///
+    /// One entry per leg, in the plan's order; [`None`] where that leg has
+    /// no chain of systems to fly it, which the stitch answers by merging
+    /// it into the next. Each worker carries a quiet sampler
+    /// ([`Sampler::beside`]) so the expansion readout keeps counting and a
+    /// route taken back stops every leg at once, and the index is taken off
+    /// one atomic rather than handed out in blocks: a plan's legs are
+    /// nothing alike in cost — one measured 17.93 s of an 18.97 s route —
+    /// so a static split would leave most threads idle behind the worst leg.
+    #[allow(clippy::too_many_arguments)]
+    fn refined(
+        &self,
+        hops: &[Node],
+        range: f64,
+        drive: Drive,
+        how: Routing,
+        tune: Tuning,
+        sampled: &Option<Sampler>,
+    ) -> Vec<Option<Vec<Node>>> {
+        let legs = hops.len().saturating_sub(1);
+        let mut refined: Vec<Option<Vec<Node>>> = vec![None; legs];
+        // One leg is the search itself, and a thread to hand it to costs
+        // more than the hand-off saves.
+        if legs <= 1 {
+            if legs == 1 {
+                refined[0] =
+                    self.leg(hops[0], hops[1], range, drive, how, tune, &mut {
+                        sampled.as_ref().map(Sampler::beside)
+                    });
+            }
+            return refined;
+        }
+
+        let next = AtomicUsize::new(0);
+        let done: Mutex<Vec<(usize, Vec<Node>)>> = Mutex::new(Vec::new());
+        let hands = std::thread::available_parallelism()
+            .map_or(4, std::num::NonZeroUsize::get)
+            .min(legs);
+        std::thread::scope(|scope| {
+            for _ in 0..hands {
+                let (next, done) = (&next, &done);
+                let mut beside = sampled.as_ref().map(Sampler::beside);
+                scope.spawn(move || {
+                    loop {
+                        let leg = next.fetch_add(1, Ordering::Relaxed);
+                        if leg >= legs {
+                            break;
+                        }
+                        // A route taken back mid-refinement: the legs left
+                        // are not started, and the one running reads the
+                        // same flag itself.
+                        if beside.as_ref().is_some_and(Sampler::stopped) {
+                            break;
+                        }
+                        if let Some(flown) = self.leg(
+                            hops[leg],
+                            hops[leg + 1],
+                            range,
+                            drive,
+                            how,
+                            tune,
+                            &mut beside,
+                        ) {
+                            done.lock().expect("the legs").push((leg, flown));
+                        }
+                    }
+                    // What this hand counted, handed over once rather than
+                    // per expansion.
+                    if let Some(beside) = beside.as_mut() {
+                        beside.flush();
+                    }
+                });
+            }
+        });
+
+        for (leg, flown) in done.into_inner().expect("the legs") {
+            refined[leg] = Some(flown);
+        }
+        refined
     }
 
     /// One leg of a plan: the fewest jumps between two of its waypoints.
