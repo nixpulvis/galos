@@ -16,14 +16,14 @@ name = "galos-sync"
 path = "bin/sync/main.rs"
 
 [dependencies]
-async-std = "*"
-structopt = "*"
+async-std = "1"
+structopt = "0.3"
 # `galos-sync` is clap 4 derive, as every command line written since is.
 # `structopt` stays for `galos`, the query CLI, which has not been moved.
 clap = { version = "4", features = ["derive"] }
-itertools = "*"
-indicatif = "*"
-chrono = "*"
+itertools = "0.14"
+indicatif = "0.17"
+chrono = "0.4"
 eddb = { path = "./eddb" }
 eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
@@ -38,8 +38,8 @@ galos_db = { path = "./galos_db" }
 galos_index = { path = "./galos_index", default-features = false }
 # The journal's events, and the reader that tails a directory of them.
 elite_journal = { path = "./elite_journal", features = ["watch"] }
-prettytable-rs = "*"
-serde_json = "*"
+prettytable-rs = "0.10"
+serde_json = "1"
 serde = "1"
 # Where a stopped cold build's place in the dump is written: `Build::mark`
 # carries a caller's bytes and `galos_index` writes its own metadata as
@@ -56,8 +56,8 @@ async-channel = "2"
 # supervisor now: Ctrl-C has to end in a last publish, a whole-directory
 # `finish()` and a resume point rather than in a killed process.
 ctrlc = "3"
-tracing = "*"
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 # Driving the async `Sink` methods from a `#[test]`, which has no runtime.
