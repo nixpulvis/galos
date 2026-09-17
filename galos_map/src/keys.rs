@@ -176,11 +176,8 @@ fn pan(
 
     // A key cancels a move in progress and takes the target from wherever it
     // had reached, the same as a drag does. The user is steering now.
-    if orbit.travel.take().is_some() {
-        orbit.target_center = orbit.center;
-    }
     let rate = PAN_PER_SECOND * orbit.radius;
-    orbit.target_center += (*way * rate * time.delta_secs()).as_dvec3();
+    orbit.pan((*way * rate * time.delta_secs()).as_dvec3());
 }
 
 /// Swing the camera round what it is looking at
@@ -338,7 +335,7 @@ fn fly(
     }
     let Ok(orbit) = cameras.single() else { return };
     let Some(position) =
-        head_for(&selection, orbit.target_center, orbit.target_radius)
+        head_for(&selection, orbit.target_center(), orbit.target_radius)
     else {
         return;
     };
@@ -632,11 +629,7 @@ mod tests {
     /// that ignored where the camera is pointed.
     fn looking(radius: f32) -> App {
         let mut app = world();
-        app.world_mut().spawn(OrbitCamera {
-            radius,
-            target_radius: radius,
-            ..default()
-        });
+        app.world_mut().spawn(OrbitCamera::stood_back(radius));
         // `orbit_camera` is what settles the rotation, and it is not running
         // here, so it is set to match the angles the camera opens at.
         let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
@@ -659,7 +652,7 @@ mod tests {
             .query::<&OrbitCamera>()
             .single(app.world())
             .unwrap()
-            .target_center
+            .target_center()
     }
 
     /// Panning with `WASD` stays on the plane the map is ruled with
@@ -1592,7 +1585,7 @@ mod tests {
             .query::<&mut OrbitCamera>()
             .single_mut(app.world_mut())
             .unwrap()
-            .target_center = at;
+            .heads_for(at);
     }
 
     /// Everywhere the camera has been sent

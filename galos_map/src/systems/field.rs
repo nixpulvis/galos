@@ -359,7 +359,8 @@ pub(crate) fn build_field(
         else {
             continue;
         };
-        let away = crate::space::metres(orbit.eye - position).length() as f32;
+        let away =
+            crate::space::metres(orbit.eye_from(position)).length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // The pixel radius the view's sizing system settled, read back off the
         // world size it left on the shell, then floored or dropped by the
@@ -397,7 +398,7 @@ pub(crate) fn build_field(
             View::Realistic => {
                 let apparent = Magnitude(system.absolute_magnitude())
                     .apparent(Distance::light_years(
-                        orbit.eye.distance(position),
+                        orbit.eye().distance(position),
                     ))
                     .0;
                 let e = photometric_emissive(

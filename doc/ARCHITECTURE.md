@@ -560,6 +560,18 @@ Read it in this order. Each step is a prerequisite for the next.
    entity holds `FloatingOrigin` (the camera). The map counts in **metres**,
    not light years, and `space::metres` is the one conversion. Galaxy cell edge
    is 2^53 m — a power of two, so cell × edge is exact.
+   An `f64` is no way out of it either: 10⁵ ly leaves ~10⁻¹¹ of one, some tens
+   of kilometres, so an absolute galactic position cannot name a metre out at
+   the rim. Which is why the camera holds its orbit in the frame of whatever
+   it has descended into (`camera.rs`, `OrbitCamera::origin` and `rebase`) —
+   the galactic centre out among the stars, the held system's own position
+   once inside one. Zoomed onto a neutron star the camera stands tens of
+   kilometres off it, so added to a galactic center that offset was smaller
+   than one rounding of the number it was added to and simply vanished: the
+   view jumped about as it was zoomed in, and only ever about a body small
+   enough to be looked at from that close. `center()`/`eye()` publish the
+   galactic position for the galaxy-scale readers; `center_from`/`eye_from`
+   answer in a system's frame and are exact while the camera stands in it.
 2. **The frame's order** — `schedule.rs`. `MapSet` is
    `Search → Fetch → Populate → Camera → Present`, chained in `Update`. Most of
    the map is a pipeline and running it out of order "still works, it just does

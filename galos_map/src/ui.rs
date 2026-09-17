@@ -1362,7 +1362,7 @@ pub(crate) fn chrome(
 
     // Where distances in either column are measured from, and nothing where
     // the camera has yet to say.
-    let center = orbit.single().map(|camera| camera.center).ok();
+    let center = orbit.single().map(|camera| camera.center()).ok();
     // The bar next, in the room the gear is not standing in. Then the rows
     // under where it reached, and the gear last of the three: it stands level
     // with the field, which is not known until the bar has drawn it.

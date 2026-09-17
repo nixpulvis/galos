@@ -412,7 +412,7 @@ pub(crate) fn draw(
     // spawned — and the marks are then sized by the geometry alone.
     let seen = camera.single().ok().and_then(|(orbit, camera)| {
         let viewport = camera.logical_viewport_size()?;
-        Some((orbit.eye, camera.clip_from_view().y_axis.y, viewport.y))
+        Some((orbit.eye(), camera.clip_from_view().y_axis.y, viewport.y))
     });
 
     for watched in &mut frontiers.0 {

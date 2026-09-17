@@ -277,7 +277,7 @@ pub(crate) fn fetch(
         // zoom out never loads the far sky the walk still marks — only its
         // nearer, brighter tail is drawn.
         if let Some((radius, camera)) = bubble
-            && !cell_in_reach(id, camera.center, radius)
+            && !cell_in_reach(id, camera.center(), radius)
         {
             continue;
         }
@@ -754,7 +754,7 @@ fn reconcile(
     for (id, cell) in resident.0.iter() {
         let Some(indexed) = index.0.get(id) else { continue };
         if let Some(radius) = bubble
-            && !cell_in_reach(id, orbit.center, radius)
+            && !cell_in_reach(id, orbit.center(), radius)
         {
             continue;
         }
@@ -788,7 +788,7 @@ fn reconcile(
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
-                && orbit.center.distance(DVec3::from(point.pos)) > radius
+                && orbit.center().distance(DVec3::from(point.pos)) > radius
             {
                 continue;
             }
@@ -887,7 +887,7 @@ fn evict_payloads(
                 .0
                 .iter()
                 .map(|(id, _)| id)
-                .filter(|&id| !cell_in_reach(id, orbit.center, radius)),
+                .filter(|&id| !cell_in_reach(id, orbit.center(), radius)),
         );
     }
     for id in stale {

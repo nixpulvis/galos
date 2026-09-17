@@ -379,7 +379,7 @@ pub(crate) fn size_by_distance(
         let Ok((orbit, camera)) = camera.single() else { return };
         let Some(viewport) = camera.logical_viewport_size() else { return };
         let cot_half_fov = camera.clip_from_view().y_axis.y;
-        let eye = orbit.eye;
+        let eye = orbit.eye();
 
         // TODO(#46): We should still change rgba color/emmisivity as needed.
         for (mut drawn, system, visible, hop) in shells.iter_mut() {
@@ -719,12 +719,12 @@ pub(crate) fn size_photometrically(
             continue;
         }
         let apparent = Magnitude(system.absolute_magnitude()).apparent(
-            Distance::light_years(orbit.eye.distance(system.position())),
+            Distance::light_years(orbit.eye().distance(system.position())),
         );
         let energy = apparent.exposure(Magnitude(zero_point)).0;
         let radius = psf_radius(energy);
-        let away =
-            crate::space::metres(orbit.eye - system.position()).length() as f32;
+        let away = crate::space::metres(orbit.eye_from(system.position()))
+            .length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // The quad is a unit square, so twice the radius sets its half-width to
         // the cleared radius. The Moffat profile fades to nothing well inside
@@ -1109,7 +1109,7 @@ mod tests {
         let (orbit, camera) = cameras.single(app.world()).expect("a camera");
         let height = camera.logical_viewport_size().expect("a viewport").y;
         let cot_half_fov = camera.clip_from_view().y_axis.y;
-        let eye = orbit.eye;
+        let eye = orbit.eye();
 
         let mut shells =
             app.world_mut().query_filtered::<(&Drawn, &System), With<Shell>>();
@@ -1342,8 +1342,10 @@ mod tests {
         let settled = writes(&app);
 
         let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
-        cameras.single_mut(app.world_mut()).unwrap().eye =
-            DVec3::new(2., 0., 0.);
+        cameras
+            .single_mut(app.world_mut())
+            .unwrap()
+            .stands_at(DVec3::new(2., 0., 0.));
         app.update();
 
         assert!(writes(&app) > settled, "left a shell at the size it was");

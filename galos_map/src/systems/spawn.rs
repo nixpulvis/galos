@@ -1037,7 +1037,7 @@ fn drain_spawns(
     let bounded = bounded.as_deref().is_some_and(|b| b.0);
     if !bounded && let Ok(camera) = camera.single() {
         let keep = spyglass.radius as f64 * super::EVICT_MARGIN;
-        pending.prune(camera.center, keep, spyglass.clear);
+        pending.prune(camera.center(), keep, spyglass.clear);
     }
     if pending.is_empty() {
         return;

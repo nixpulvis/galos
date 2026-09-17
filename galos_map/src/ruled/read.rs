@@ -68,6 +68,17 @@ pub fn drawn_at(strength: f32, bright: f32) -> f32 {
 /// number standing over a ruling that has gone is a number about nothing.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Reading {
+    /// Where the space this rules is measured from, in absolute galactic
+    /// light years
+    ///
+    /// The galactic centre for the galaxy and the star for a system. What
+    /// [`Reading::at`] and everything located over the plane are counted out
+    /// from, and it is carried here rather than worked back out of the two
+    /// because a place inside a system cannot be said absolutely: an `f64`
+    /// holding a galactic position rounds to some tens of kilometres at the
+    /// rim, which is most of the way across the view once the camera is down
+    /// among the bodies. See [`crate::camera::OrbitCamera`].
+    pub from: DVec3,
     /// Where the camera is looking, in [`Reading::unit`] along the plane's own
     /// axes from its origin
     ///
@@ -91,6 +102,7 @@ impl Default for Reading {
     fn default() -> Self {
         Reading {
             at: DVec3::ZERO,
+            from: DVec3::ZERO,
             step: 0.,
             unit: DistanceUnit { metres: 1., mark: "m" },
             strength: 0.,

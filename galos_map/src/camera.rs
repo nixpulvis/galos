@@ -302,9 +302,11 @@ const TRAVEL_BRAKING: f32 = 10392.;
 
 /// A move in progress
 ///
-/// Set by [`move_camera`] and cleared on arrival. `from` and `to` are
-/// absolute galactic positions in light years. `elapsed` counts up to
-/// `duration`, and the ratio of the two drives [`travelled`].
+/// Set by [`move_camera`] and cleared on arrival. `from` and `to` are light
+/// years in the camera's own frame ([`OrbitCamera::origin`]), as the center
+/// is, so a flight inside a system is flown in that system's frame and
+/// [`OrbitCamera::rebase`] carries it across a descent. `elapsed` counts up
+/// to `duration`, and the ratio of the two drives [`travelled`].
 pub(crate) struct Travel {
     from: DVec3,
     to: DVec3,
@@ -451,7 +453,16 @@ pub(crate) struct Carried {
     /// whenever its rows are republished, and the body that comes back is the
     /// same body.
     of: Option<(i64, i16)>,
-    /// Where it stood, in light years
+    /// Where it stood, in metres from the system holding it
+    ///
+    /// Not the light years from the galactic centre the rest of the map
+    /// talks in. What is wanted here is the difference between two readings,
+    /// and inside a system that difference is metres: a body's galactic
+    /// position is its system's plus a fraction of a light year, and an `f64`
+    /// carrying twenty thousand light years rounds the whole of that fraction
+    /// to some tens of kilometres, so two readings a second apart differ by a
+    /// whole rounding or by nothing at all. Measured from the system, every
+    /// step it takes is exact.
     at: DVec3,
 }
 
@@ -483,7 +494,7 @@ fn carry_centre(
             .iter()
             .find(|(_, body)| body.address == address && body.id == id)?;
 
-        Some((named, places.of(drawn)?))
+        Some((named, places.metres(drawn)?))
     });
     // Nothing picked out, or nothing of it drawn: there is no body to keep
     // under the camera, and the place held is about a body that is gone.
@@ -504,7 +515,10 @@ fn carry_centre(
     let Some(was) = was.filter(|was| *was != place) else {
         return;
     };
-    let by = place - was;
+    // Into light years, which is what the orbit is measured in. A
+    // displacement rather than a place, so it goes on meaning the same thing
+    // in whichever frame the camera is holding its center in.
+    let by = crate::space::light_years(place - was);
 
     for mut orbit in &mut cameras {
         orbit.center += by;
@@ -643,23 +657,53 @@ fn zoom_floor(
 /// The orbit is instead kept as a center, a radius and two angles, which is
 /// what the controls actually manipulate. The cell and transform are
 /// computed from those once per frame, so nothing is ever fought over.
+///
+/// # What the orbit is measured from
+///
+/// Not the galactic centre, once the camera has gone down into a system. An
+/// `f64` holding a galactic position has about a light week to spare at the
+/// rim, which is coarser than the whole of what a system's insides are drawn
+/// in: the orbit offset a camera standing thirty kilometres off a neutron
+/// star is built from is smaller than one rounding of its own center, so
+/// adding the two destroyed the offset outright and every turn of the view
+/// landed the eye on whichever rounding it fell nearest. Which is what was
+/// reported — a system that jumped about as it was zoomed into, and only
+/// ever a system whose nearest body is small enough to be looked at from
+/// that close: a star of the ordinary sort floors the zoom five orders of
+/// magnitude further out than that, where the rounding is nothing.
+///
+/// So the pose is held in [`Self::origin`]'s frame and the fields carrying
+/// it are this module's alone. Everything outside reads [`Self::center`] and
+/// [`Self::eye`], which say where the camera is in the galaxy, or
+/// [`Self::center_from`] and [`Self::eye_from`], which say where it is in a
+/// system's own frame and are exact while it is standing in that system.
 #[derive(Component)]
 pub(crate) struct OrbitCamera {
-    /// Absolute galactic position the camera looks at, in light years
-    pub(crate) center: DVec3,
+    /// What the orbit below is measured from, in absolute galactic light
+    /// years
+    ///
+    /// The galactic centre out in the galaxy, where a light year is as fine
+    /// as anything is placed and an absolute position is the natural thing
+    /// to hold. The held system's own position once the camera has descended
+    /// into it, where what is drawn is metres across.
+    ///
+    /// Written by [`Self::rebase`] alone.
+    origin: DVec3,
+    /// Where the camera looks, in light years from [`Self::origin`]
+    center: DVec3,
     /// Where the center is heading, which it approaches smoothly
-    pub(crate) target_center: DVec3,
+    target_center: DVec3,
     /// The move under way, if there is one
     ///
     /// While set, the center follows [`travelled`] between the move's two
     /// ends. Panning clears it.
     pub(crate) travel: Option<Travel>,
-    /// Absolute galactic position of the camera itself, in light years
+    /// Where the camera itself stands, in light years from [`Self::origin`]
     ///
-    /// Derived from the center and the orbit, and published here because
+    /// Derived from the center and the orbit, and kept here because
     /// distances to stars are wanted by half the map. Reading it avoids
     /// having to undo the cell split to ask where the camera is.
-    pub(crate) eye: DVec3,
+    eye: DVec3,
     /// Which way the camera faces, for anything that wants to line up with it
     pub(crate) rotation: Quat,
     pub(crate) radius: f32,
@@ -689,6 +733,7 @@ pub(crate) struct OrbitCamera {
 impl Default for OrbitCamera {
     fn default() -> Self {
         OrbitCamera {
+            origin: DVec3::ZERO,
             center: DVec3::ZERO,
             target_center: DVec3::ZERO,
             travel: None,
@@ -729,6 +774,153 @@ impl OrbitCamera {
     /// map stood still.
     pub(crate) fn is_settled(&self) -> bool {
         self.settled
+    }
+
+    /// Where the camera looks, in absolute galactic light years
+    ///
+    /// What the map outside this module asks: the star fetch, the evictor,
+    /// the spyglass and the ruled plane all measure against the galaxy. The
+    /// sum is no finer than an `f64` holding a galactic position, which is
+    /// some tens of kilometres at the rim and far finer than anything any of
+    /// them place.
+    pub(crate) fn center(&self) -> DVec3 {
+        self.origin + self.center
+    }
+
+    /// And where it is heading
+    pub(crate) fn target_center(&self) -> DVec3 {
+        self.origin + self.target_center
+    }
+
+    /// Where the camera stands, in absolute galactic light years
+    pub(crate) fn eye(&self) -> DVec3 {
+        self.origin + self.eye
+    }
+
+    /// Where the camera looks, in light years from `from`
+    ///
+    /// Exact to well under a metre while the camera is standing inside the
+    /// system at `from`, the orbit being held in that system's own frame. A
+    /// subtraction of two galactic positions otherwise, which is as fine as
+    /// [`Self::center`] is.
+    pub(crate) fn center_from(&self, from: DVec3) -> DVec3 {
+        if self.origin == from { self.center } else { self.center() - from }
+    }
+
+    /// Where the camera stands, in light years from `from`
+    ///
+    /// As [`Self::center_from`]. What everything drawn inside a system
+    /// measures the camera by: the dashes along an orbit line, and the
+    /// distance a body is read at.
+    pub(crate) fn eye_from(&self, from: DVec3) -> DVec3 {
+        if self.origin == from { self.eye } else { self.eye() - from }
+    }
+
+    /// Shift the target the camera is heading for by `by` light years
+    ///
+    /// A displacement, so it means the same thing in whichever frame the
+    /// center is held. Panning cancels a move in progress and takes the
+    /// target from wherever it had reached, so the pointer has the center
+    /// alone.
+    pub(crate) fn pan(&mut self, by: DVec3) {
+        if self.travel.take().is_some() {
+            self.target_center = self.center;
+        }
+        self.target_center += by;
+    }
+
+    /// Hold the orbit in `origin`'s frame from here on
+    ///
+    /// Called with the held system's position while the camera is standing
+    /// inside one and with the galactic centre otherwise, so a descent moves
+    /// the whole pose onto the system's frame and an ascent moves it back.
+    /// Nothing about the view changes: the center, its target and any flight
+    /// under way are all shifted by the same amount the frame moved.
+    ///
+    /// The shift is worked out in absolute light years and so is no finer
+    /// than one of their roundings, some tens of kilometres at the rim. It is
+    /// paid once, on the frame the camera changes hands, and at that moment
+    /// the camera is a thousand astronomical units out ([`STOOD_IN`]) — the
+    /// descent being what `crate::systems::bodies::spawn`'s `draw` does when
+    /// it puts a system's insides on the map. A hundredth of a millionth of
+    /// the distance being looked across is not a thing anybody sees, and from
+    /// there down to a body's surface every step is taken in the system's own
+    /// frame and is exact.
+    fn rebase(&mut self, origin: DVec3) {
+        if self.origin == origin {
+            return;
+        }
+        let by = self.origin - origin;
+        self.origin = origin;
+        self.center += by;
+        self.target_center += by;
+        self.eye += by;
+        if let Some(travel) = &mut self.travel {
+            travel.from += by;
+            travel.to += by;
+        }
+    }
+}
+
+/// Standing the camera somewhere outright, which only a test does
+///
+/// The map's own camera is placed by [`orbit_camera`] and nowhere else, off
+/// the orbit the controls write. A test asking what something looks like from
+/// a given spot has no orbit to get there by and no reason to work one out,
+/// so it says where the camera stands and reads what was drawn.
+#[cfg(test)]
+impl OrbitCamera {
+    /// Stand the camera at `eye`, in absolute galactic light years
+    pub(crate) fn stands_at(&mut self, eye: DVec3) {
+        self.eye = eye - self.origin;
+    }
+
+    /// Send the camera to `at`, in absolute galactic light years
+    pub(crate) fn heads_for(&mut self, at: DVec3) {
+        self.target_center = at - self.origin;
+    }
+
+    /// A camera standing at `eye`, in absolute galactic light years
+    pub(crate) fn standing_at(eye: DVec3) -> Self {
+        let mut camera = OrbitCamera::default();
+        camera.stands_at(eye);
+        camera
+    }
+
+    /// A camera stood `back` light years off what it looks at, and already
+    /// there rather than easing towards it
+    pub(crate) fn stood_back(back: f32) -> Self {
+        OrbitCamera {
+            radius: back,
+            target_radius: back,
+            ..OrbitCamera::default()
+        }
+    }
+
+    /// Look at `center`, in absolute galactic light years, and be there
+    pub(crate) fn looks_at(&mut self, center: DVec3) {
+        self.center = center - self.origin;
+        self.target_center = self.center;
+    }
+
+    /// A camera stood `back` light years off a point `off` light years from
+    /// the star of the system at `system`, as one that has descended into
+    /// that system is held
+    ///
+    /// The frame is the system's and `off` is given in it, which is the
+    /// whole of what a descended camera is: said absolutely and subtracted
+    /// back, `off` would arrive already rounded to whatever a galactic light
+    /// year rounds to out where the system stands. See [`Self::rebase`].
+    pub(crate) fn inside(system: DVec3, off: DVec3, back: f32) -> Self {
+        OrbitCamera {
+            origin: system,
+            center: off,
+            target_center: off,
+            eye: off,
+            radius: back,
+            target_radius: back,
+            ..OrbitCamera::default()
+        }
     }
 }
 
@@ -879,12 +1071,15 @@ pub(crate) fn move_camera(
         let Ok(mut camera) = query.single_mut() else { continue };
 
         if let Some(position) = event.position {
+            // Asked for in absolute galactic light years, which is what a
+            // search, a route and a system's own row all talk in, and flown
+            // in the frame the camera is holding its center in.
+            let to = position - camera.origin;
             let from = camera.center;
-            let distance = (position - from).length();
+            let distance = (to - from).length();
             let duration = travel_duration(distance);
-            camera.target_center = position;
-            camera.travel =
-                Some(Travel { from, to: position, elapsed: 0., duration });
+            camera.target_center = to;
+            camera.travel = Some(Travel { from, to, elapsed: 0., duration });
         }
 
         // The target rather than the radius itself, so pulling back happens
@@ -901,9 +1096,11 @@ pub(crate) fn move_camera(
 
 /// Drive the orbit from the pointer, and place the camera where it lands
 ///
-/// The orbit is worked out in absolute light years and only split into a
-/// cell and a remainder at the very end, so the arithmetic never has to know
-/// about grids and the camera never lands between two cells.
+/// The orbit is worked out in the camera's own frame — light years from
+/// whatever it has descended into, or from the galactic centre where it has
+/// descended into nothing — and only split into a cell and a remainder at
+/// the very end, so the arithmetic never has to know about grids and the
+/// camera never lands between two cells.
 pub(crate) fn orbit_camera(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -951,19 +1148,29 @@ pub(crate) fn orbit_camera(
         .map(ChildOf::parent)
         .and_then(|parent| inside.get(parent).ok());
 
+    // And the frame the whole orbit below is worked out in. Inside a system
+    // that is the system itself, so the center and the orbit offset built off
+    // it are both small numbers and adding the two is exact; out in the
+    // galaxy it is the galactic centre, which is where the systems
+    // themselves are placed. See [`OrbitCamera`].
+    orbit
+        .rebase(descended.map_or(DVec3::ZERO, |(_, system)| system.position()));
+
     // Down among a system's bodies the near end of the zoom is the nearest
     // body framed — stood back far enough to keep its whole disc in view, the
     // same framing the camera uses over everything else (see [`stand_back`]).
     // Nearer than that fills the screen with the body's surface and reads as
     // flying into it. Taken from where the camera stands now, a frame stale
     // and none the worse for it through a zoom that eases.
-    let nearest_body_view = descended.and_then(|(grid, system)| {
+    let nearest_body_view = descended.and_then(|(grid, _)| {
         bodies
             .iter()
             .map(|(body, cell, at)| {
                 let metres = cell.as_dvec3(grid) + at.translation.as_dvec3();
-                let place =
-                    system.position() + crate::space::light_years(metres);
+                // In the frame the camera was just rebased onto, which is
+                // this system's, so a body's place is what its own grid says
+                // and nothing here is measured from the galaxy at all.
+                let place = crate::space::light_years(metres);
                 (place.distance(orbit.center), body.radius)
             })
             .min_by(|(one, _), (other, _)| one.total_cmp(other))
@@ -995,12 +1202,7 @@ pub(crate) fn orbit_camera(
             let rate = PAN_RATE * orbit.radius;
             let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
             let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
-            // Dragging cancels a move in progress and takes the target from
-            // wherever it had reached, so the pointer has the center alone.
-            if orbit.travel.take().is_some() {
-                orbit.target_center = orbit.center;
-            }
-            orbit.target_center += (across + up).as_dvec3();
+            orbit.pan((across + up).as_dvec3());
         }
     }
 
@@ -1086,6 +1288,11 @@ pub(crate) fn orbit_camera(
     let pitch = eased(orbit.pitch, orbit.target_pitch, turn);
 
     let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
+    // The center and the offset are both measured in the camera's own frame,
+    // so inside a system both are fractions of a light year and the sum is
+    // exact to well under a metre. Added onto a galactic position instead,
+    // an offset this small is a fraction of one rounding of the number it is
+    // added to and simply disappears. See [`OrbitCamera`].
     let eye = center + (rotation * Vec3::Z * radius).as_dvec3();
 
     // Whether any of it moved, taken before the new pose is written over the
@@ -1115,16 +1322,21 @@ pub(crate) fn orbit_camera(
     // expects. Only here does it become the metres the grid is laid out in.
     //
     // Which grid depends on where the camera is standing. Inside a system it
-    // is measured from that system, whose cells are a metre, so what a float
-    // has left over is nanometres and everything drawn near it is drawn
-    // exactly. Out in the galaxy it is measured from the middle of it, where
-    // the cells are a light year and the remainder is hundreds of thousands
-    // of kilometres. That is far finer than anything the galaxy draws and far
-    // coarser than anything a system does, which is the whole reason for
-    // going down.
+    // is the system's own, whose cells are a metre, so what a float has left
+    // over is nanometres and everything drawn near it is drawn exactly. Out
+    // in the galaxy the cells are a light year and the remainder is hundreds
+    // of thousands of kilometres. That is far finer than anything the galaxy
+    // draws and far coarser than anything a system does, which is the whole
+    // reason for going down.
+    //
+    // Nothing is subtracted here. The frame the eye is held in is already
+    // the one the grid taking it is laid out from, [`OrbitCamera::rebase`]
+    // having put it there, so the only difference between the two arms is
+    // which grid is asked.
     let (eye_cell, eye_translation) = match descended {
-        Some((grid, system)) => grid
-            .translation_to_grid(crate::space::metres(eye - system.position())),
+        Some((inside, _)) => {
+            inside.translation_to_grid(crate::space::metres(eye))
+        }
         None => grid.translation_to_grid(crate::space::metres(eye)),
     };
     cell.set_if_neq(eye_cell);
@@ -2295,5 +2507,120 @@ mod tests {
 
         assert_eq!(center, DVec3::ZERO, "the view moved on its own");
         assert_eq!(target, DVec3::ZERO, "the view was sent somewhere");
+    }
+
+    /// A world holding one system `away` light years out, with a body of
+    /// `radius` metres at the heart of it, and the camera down inside it at
+    /// its zoom floor
+    ///
+    /// Answers how far off that body the camera was asked to stand and how
+    /// far off it the rendered eye actually lands, taken right round a turn
+    /// of the view.
+    fn turned_about(away: f64, radius: f32) -> (f64, f64, f64) {
+        use crate::space;
+
+        let grid = space::system_grid();
+        let position = DVec3::new(away, 0., 0.);
+        let floor =
+            stand_back((radius as f64 / space::LIGHT_YEAR) as f32, None);
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.insert_resource(spyglass(false, false));
+        app.insert_resource(PointerOverUi(false));
+        app.init_resource::<PressOwner>();
+        app.init_resource::<ButtonInput<MouseButton>>();
+        app.init_resource::<AccumulatedMouseMotion>();
+        app.insert_resource(AccumulatedMouseScroll::default());
+        app.world_mut().spawn((BigSpace::default(), space::galaxy_grid()));
+        let system = app
+            .world_mut()
+            .spawn((crate::systems::tests::placed(1, position), grid.clone()))
+            .id();
+        app.world_mut().spawn((
+            Body {
+                address: 1,
+                name: String::new(),
+                id: 0,
+                radius,
+                ancestors: 0,
+                primary: true,
+                star: true,
+            },
+            Inside,
+            CellCoord::default(),
+            Transform::default(),
+            ChildOf(system),
+        ));
+        let mut orbit = OrbitCamera::stood_back(floor);
+        orbit.looks_at(position);
+        let eye = app
+            .world_mut()
+            .spawn((
+                orbit,
+                CellCoord::default(),
+                Transform::default(),
+                ChildOf(system),
+            ))
+            .id();
+        app.add_systems(Update, orbit_camera);
+
+        let (mut low, mut high) = (f64::MAX, 0f64);
+        for step in 0..360 {
+            let angle = step as f32 * std::f32::consts::TAU / 360.;
+            {
+                let mut orbit =
+                    app.world_mut().get_mut::<OrbitCamera>(eye).unwrap();
+                orbit.yaw = angle;
+                orbit.target_yaw = angle;
+            }
+            app.update();
+
+            let cell = *app.world().get::<CellCoord>(eye).unwrap();
+            let at = app.world().get::<Transform>(eye).unwrap();
+            let stood =
+                (cell.as_dvec3(&grid) + at.translation.as_dvec3()).length();
+            low = low.min(stood);
+            high = high.max(stood);
+        }
+
+        (floor as f64 * space::LIGHT_YEAR, low, high)
+    }
+
+    /// The view holds still about a small star however far out the system is
+    ///
+    /// The reported trouble: a system that jumped about as it was zoomed into,
+    /// where most systems do not. Zoomed all the way in, the camera stands
+    /// [`stand_back`] off the nearest body, and for a neutron star that is
+    /// some tens of kilometres — five orders of magnitude nearer than an
+    /// ordinary star lets the camera come, and finer than one rounding of the
+    /// galactic light years the orbit used to be worked out in. The offset
+    /// was therefore built, added to the center, and lost, and every turn of
+    /// the view landed the eye on whichever rounding it fell nearest: at
+    /// twenty-two thousand light years out the eye came back anywhere from
+    /// nine tenths to nearly double the distance asked for.
+    ///
+    /// Held in the system's own frame it is exact, and this asks for exactly
+    /// that: a turn right round the star leaves the camera the same distance
+    /// off it at every angle, whether the system is at Sol's doorstep or out
+    /// at the rim. The tolerance is an `f32` rounding of the radius, which is
+    /// what the orbit offset is built in, and nothing to do with where the
+    /// system stands.
+    #[test]
+    fn the_view_holds_still_about_a_small_star_anywhere_in_the_galaxy() {
+        // A neutron star of the smallest sort on record, which is what makes
+        // the floor tens of kilometres rather than millions.
+        let radius = 720.;
+
+        for away in [0., 658., 7000., 22002., 64000.] {
+            let (asked, low, high) = turned_about(away, radius);
+
+            assert!(
+                (high - low) / asked < 1e-5,
+                "{away} light years out, a turn about a star {radius} metres \
+                 across stood the camera between {low} and {high} metres off \
+                 it, having been asked for {asked}",
+            );
+        }
     }
 }

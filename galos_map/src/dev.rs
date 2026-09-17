@@ -327,7 +327,7 @@ fn diagnostics(
                                 (
                                     system,
                                     grid,
-                                    orbit.center.distance(system.position()),
+                                    orbit.center().distance(system.position()),
                                 )
                             })
                             .min_by(|(_, _, one), (_, _, other)| {
@@ -351,7 +351,7 @@ fn diagnostics(
                             "—".to_string(),
                             |(system, _, orbit)| {
                                 let away = crate::space::metres(
-                                    orbit.eye - system.position(),
+                                    orbit.eye() - system.position(),
                                 )
                                 .length()
                                     as f32;
@@ -390,7 +390,7 @@ fn diagnostics(
                             "—".to_string(),
                             |(system, _, orbit)| {
                                 let away = crate::space::metres(
-                                    orbit.eye - system.position(),
+                                    orbit.eye() - system.position(),
                                 )
                                 .length()
                                     as f32;
@@ -417,7 +417,8 @@ fn diagnostics(
                                 format!(
                                     "{:.2} left",
                                     crate::systems::bodies::spawn::standing_for(
-                                        system, orbit.eye,
+                                        system,
+                                        orbit.eye(),
                                     )
                                 )
                             },

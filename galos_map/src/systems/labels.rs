@@ -480,13 +480,19 @@ pub struct PlateText(pub String);
 /// on its own rather than through this, since a place on screen is a ratio of
 /// two lengths and does not care which unit either is in.
 ///
-/// Both ends come from [`OrbitCamera`], which publishes an absolute position
-/// and a rotation during `Update`. The camera's `GlobalTransform` answers
-/// neither question: it is written in `PostUpdate`, so it lags a frame, and
-/// it holds a position relative to the floating origin rather than to the
-/// galaxy. Negative behind the camera.
+/// Both ends come from [`OrbitCamera`], which publishes a rotation and where
+/// it stands during `Update`. The camera's `GlobalTransform` answers neither
+/// question: it is written in `PostUpdate`, so it lags a frame, and it holds
+/// a position relative to the floating origin rather than to the galaxy.
+/// Negative behind the camera.
+///
+/// Asked of the camera as how far it stands from `point` rather than by
+/// subtracting two galactic positions, so that a point the camera is
+/// standing at — the star of the system it has descended into — is answered
+/// exactly rather than to one rounding of a galactic light year. See
+/// [`OrbitCamera::eye_from`].
 pub(super) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
-    depth_of(camera, crate::space::metres(point - camera.eye))
+    depth_of(camera, crate::space::metres(-camera.eye_from(point)))
 }
 
 /// How far in front of the camera something `offset` from the eye is
@@ -585,7 +591,7 @@ pub(super) fn screen_position(
     viewport: Vec2,
     point: DVec3,
 ) -> Option<Vec2> {
-    screen_offset(camera, cot_half_fov, viewport, point - camera.eye)
+    screen_offset(camera, cot_half_fov, viewport, -camera.eye_from(point))
 }
 
 /// Where something `offset` from the eye lands on screen
@@ -793,7 +799,7 @@ pub(crate) fn choose_names(
         }
 
         let position = DVec3::from(system.position);
-        let from_center = (position - orbit.center).length() as f32;
+        let from_center = orbit.center_from(position).length() as f32;
 
         // In the realistic view a star's brightness is what sizes it, so it
         // both admits the name and, through `name_score`, leads it. Read the
@@ -803,7 +809,9 @@ pub(crate) fn choose_names(
         let floor = sky.exposure.zero_point() as f32;
         let apparent = matches!(*sky.view, View::Realistic).then(|| {
             Magnitude(system.absolute_magnitude())
-                .apparent(Distance::light_years(orbit.eye.distance(position)))
+                .apparent(Distance::light_years(
+                    orbit.eye_from(position).length(),
+                ))
                 .0 as f32
         });
         // The margin above the floor is what the weight reads; `None` leaves
@@ -1841,7 +1849,9 @@ mod tests {
 
     /// A camera at the origin, looking the way `Quat::IDENTITY` faces
     fn camera(rotation: Quat) -> OrbitCamera {
-        OrbitCamera { eye: DVec3::ZERO, rotation, ..default() }
+        let mut camera = OrbitCamera::default();
+        camera.rotation = rotation;
+        camera
     }
 
     /// Two points at the same depth measure the same, however far apart
@@ -2724,7 +2734,8 @@ mod tests {
         let radius = 250f32;
         let eye = center + (rotation * Vec3::Z * radius).as_dvec3();
 
-        let camera = OrbitCamera { eye, rotation, ..default() };
+        let mut camera = OrbitCamera::standing_at(eye);
+        camera.rotation = rotation;
         // The radius is a distance the camera is set up in, which is light
         // years; the depth comes back in the metres it is drawn in.
         let expected = (radius as f64 * crate::space::LIGHT_YEAR) as f32;

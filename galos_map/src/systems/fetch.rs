@@ -527,7 +527,7 @@ fn fetch_spyglass(
     populated: &Res<Populated>,
 ) {
     let Ok(camera) = camera_query.single() else { return };
-    let center = camera.center.as_ivec3();
+    let center = camera.center().as_ivec3();
     // What to ask the database for, which is not what the spyglass draws. The
     // reach follows the camera with no least (see
     // [`crate::systems::reach_with_camera`]), and a camera standing inside a

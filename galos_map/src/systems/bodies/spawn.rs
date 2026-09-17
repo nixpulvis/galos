@@ -285,7 +285,7 @@ fn fade(
     holding: Res<HeldSystem>,
     mut systems: Query<(Entity, &System, &Visibility, &mut Strength)>,
 ) {
-    let Ok(eye) = camera.single().map(|camera| camera.eye) else { return };
+    let Ok(eye) = camera.single().map(|camera| camera.eye()) else { return };
     let drawing = holding.of();
     let step = time.delta_secs() / GOES_OUT_IN;
 
@@ -749,7 +749,7 @@ fn draw(
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye, across)) =
-        camera.single().map(|(e, c, lens)| (e, c.eye, seen_across(c, lens)))
+        camera.single().map(|(e, c, lens)| (e, c.eye(), seen_across(c, lens)))
     else {
         holding.0 = None;
         return;
@@ -1056,6 +1056,23 @@ impl Places<'_, '_> {
 
         Some(system.position() + space::light_years(metres))
     }
+
+    /// Where `body` stands, in metres from the system holding it
+    ///
+    /// What [`Self::of`] is worked out from, and the finer of the two: a
+    /// system's own grid is laid out in metres and a body's place in it is
+    /// exact, while saying that place in light years from the galactic centre
+    /// rounds it to some tens of kilometres out at the rim (see
+    /// [`crate::camera::OrbitCamera`]). Asked by whatever has to tell two
+    /// readings of a place apart rather than say where in the galaxy it is:
+    /// how far a body moved while the clock ran on, which the camera is
+    /// carried by.
+    pub fn metres(&self, body: Entity) -> Option<DVec3> {
+        let (child_of, cell, at) = self.inside.get(body).ok()?;
+        let (_, grid) = self.systems.get(child_of.parent()).ok()?;
+
+        Some(cell.as_dvec3(grid) + at.translation.as_dvec3())
+    }
 }
 
 /// A star, drawn at its own size and lighting what is around it
@@ -1295,7 +1312,12 @@ fn redash(
     let orbits = contents.orbits();
     let since = contents.since(&clock);
     let middle = contents.middle(&orbits, since);
-    let standing = space::metres(orbit.eye - system.position()) + middle;
+    // Where the camera stands in the system's own frame, which is the frame
+    // the rings are laid in. Off the camera's reading of that rather than off
+    // its galactic position, whose roundings are tens of kilometres wide out
+    // at the rim and would have the dashes laid about somewhere the camera is
+    // not. See [`crate::camera::OrbitCamera`].
+    let standing = space::metres(orbit.eye_from(system.position())) + middle;
 
     for (mut line, of, mesh, mut cell, mut at) in &mut lines {
         let Some(id) = line.dashed else { continue };
@@ -1861,7 +1883,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Time<Real>>();
         app.world_mut()
-            .spawn(OrbitCamera { eye: DVec3::new(away, 0., 0.), ..default() });
+            .spawn(OrbitCamera::standing_at(DVec3::new(away, 0., 0.)));
         // A system of the middling sort, at the origin. Its mark goes out
         // between 0.0127 light years and 0.0032.
         let held = app
@@ -1912,7 +1934,10 @@ mod tests {
         {
             let world = app.world_mut();
             let mut cameras = world.query::<&mut OrbitCamera>();
-            cameras.single_mut(world).unwrap().eye = DVec3::new(away, 0., 0.);
+            cameras
+                .single_mut(world)
+                .unwrap()
+                .stands_at(DVec3::new(away, 0., 0.));
         }
         app.world_mut()
             .resource_mut::<Time<Real>>()
@@ -2291,10 +2316,7 @@ mod tests {
 
         let map = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Map(map));
-        app.world_mut().spawn((
-            OrbitCamera { eye: DVec3::ZERO, ..default() },
-            ChildOf(map),
-        ));
+        app.world_mut().spawn((OrbitCamera::default(), ChildOf(map)));
 
         // A fifth of a light year, and the eye far enough off that the mark
         // standing for it is part way out but the system is no longer worth

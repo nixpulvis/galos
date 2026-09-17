@@ -205,7 +205,7 @@ fn choose(
     mut polling: ResMut<Polling>,
     mut approaching: ResMut<Approaching>,
 ) {
-    let Ok(center) = camera.single().map(|camera| camera.center) else {
+    let Ok(center) = camera.single().map(|camera| camera.center()) else {
         return;
     };
     let now = time.last_update().unwrap_or(time.startup());

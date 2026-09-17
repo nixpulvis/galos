@@ -675,10 +675,10 @@ fn panels(
     let ctx = contexts.ctx_mut()?;
     // Where the camera is looking, which is the distance the spyglass and
     // the selection's own row are measured in.
-    let center = orbit.single().map(|camera| camera.center).ok();
+    let center = orbit.single().map(|camera| camera.center()).ok();
     // Where the eye stands, for a system's apparent magnitude — how bright it
     // looks from here, the figure the realistic view sizes a star by.
-    let eye = orbit.single().map(|camera| camera.eye).ok();
+    let eye = orbit.single().map(|camera| camera.eye()).ok();
     // The top right corner, clear of the settings pane and the bar, which
     // stand against the left edge and the top of it. The corner itself, since
     // a panel is placed by its own right hand top rather than by its left: a

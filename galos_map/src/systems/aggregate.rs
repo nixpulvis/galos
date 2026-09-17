@@ -82,7 +82,7 @@ fn plan(
         View::Realistic => Mode::Real,
     };
     let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
-    let key = (orbit.eye, mode, size);
+    let key = (orbit.eye(), mode, size);
     if last.as_ref() == Some(&key) && !index.is_changed() {
         return;
     }
@@ -102,7 +102,7 @@ pub fn view(orbit: &OrbitCamera, camera: &Camera) -> Option<Viewpoint> {
     // `y_axis.y` of the clip matrix is the cotangent of half the vertical field
     // of view.
     let cot_half_fov = camera.clip_from_view().y_axis.y;
-    Some(viewpoint(orbit.eye, orbit.rotation, cot_half_fov, viewport))
+    Some(viewpoint(orbit.eye(), orbit.rotation, cot_half_fov, viewport))
 }
 
 /// Where the eye is, which way it faces, and the lens, as the index wants them
@@ -295,7 +295,7 @@ mod tests {
             .entity_mut(camera)
             .get_mut::<OrbitCamera>()
             .unwrap()
-            .eye = DVec3::new(32., 0., 0.);
+            .stands_at(DVec3::new(32., 0., 0.));
         app.update();
         assert!(
             app.world().resource::<Walks>().0 > walked,

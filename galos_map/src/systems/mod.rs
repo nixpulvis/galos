@@ -473,7 +473,7 @@ pub(crate) fn visibility(
     let mut tally = InReach::default();
     for (system, mut visibility, filtered, hop, descended) in &mut systems {
         let within =
-            spyglass.reaches(camera.center, DVec3::from(system.position));
+            spyglass.reaches(camera.center(), DVec3::from(system.position));
         if within {
             tally.total += 1;
             if !filtered {
@@ -587,7 +587,8 @@ pub(crate) fn evict(
                 return false;
             }
             let out_of_reach = clears
-                && camera.center.distance(DVec3::from(system.position)) > keep;
+                && camera.center().distance(DVec3::from(system.position))
+                    > keep;
             let excluded = drops_filtered && !filters.admit(system, now);
             out_of_reach || excluded
         })
@@ -607,7 +608,7 @@ pub(crate) fn evict(
     // as resident as it was, and the filters forget their own surveys.
     if clears {
         tasks.surveyed.retain_mut(|survey| {
-            match survey.asked.clamp_to(camera.center, keep) {
+            match survey.asked.clamp_to(camera.center(), keep) {
                 Some(asked) => {
                     survey.asked = asked;
                     true
@@ -922,7 +923,7 @@ pub(crate) mod tests {
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
 
-        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera::default());
 
         // A non-system child of the galaxy — stand-in for a route line — must
         // survive: the evictor touches far systems, not all the galaxy holds.
@@ -1027,7 +1028,7 @@ pub(crate) mod tests {
 
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
-        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera::default());
 
         let here = DVec3::new(1., 0., 0.);
         let admitted =
@@ -1082,7 +1083,7 @@ pub(crate) mod tests {
 
         let galaxy = app.world_mut().spawn_empty().id();
         app.insert_resource(crate::space::Galaxy(galaxy));
-        app.world_mut().spawn(OrbitCamera { center: DVec3::ZERO, ..default() });
+        app.world_mut().spawn(OrbitCamera::default());
 
         let inside = app
             .world_mut()
@@ -1529,11 +1530,7 @@ pub(crate) mod tests {
             lock_camera,
             follow_camera,
         });
-        app.world_mut().spawn(OrbitCamera {
-            radius: back,
-            target_radius: back,
-            ..default()
-        });
+        app.world_mut().spawn(OrbitCamera::stood_back(back));
         app.add_systems(
             Update,
             (zoom_with_spyglass, reach_with_camera).chain(),

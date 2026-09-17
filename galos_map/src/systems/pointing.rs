@@ -541,7 +541,7 @@ pub fn size_indicators(
         // What the floor is for is the sign rather than the distance. Along the
         // line to the system, which is what the field sizes by.
         let away =
-            crate::space::metres(orbit.eye - DVec3::from(system.position))
+            crate::space::metres(orbit.eye_from(DVec3::from(system.position)))
                 .length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // Only where it moved, as everything asked of every system every frame
@@ -917,7 +917,7 @@ pub fn ring(
             };
             let color = super::selection::going(hue, standing);
 
-            let there = DVec3::from(system.position) - orbit.eye;
+            let there = -orbit.eye_from(DVec3::from(system.position));
             let landed = screen_offset(orbit, cot_half_fov, viewport, there)
                 .map(|at| at - middle)
                 .filter(|at| at.abs().cmple(middle).all());
@@ -1308,7 +1308,7 @@ mod tests {
 
     /// A camera at the origin, looking down `-Z`
     fn looking() -> OrbitCamera {
-        OrbitCamera { eye: DVec3::ZERO, rotation: Quat::IDENTITY, ..default() }
+        OrbitCamera::default()
     }
 
     /// The cotangent of half the vertical field of view, for a default lens
@@ -1839,8 +1839,10 @@ mod tests {
         let settled = marks(&app);
 
         let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
-        cameras.single_mut(app.world_mut()).unwrap().eye =
-            DVec3::new(0., 0., -2.);
+        cameras
+            .single_mut(app.world_mut())
+            .unwrap()
+            .stands_at(DVec3::new(0., 0., -2.));
         app.update();
 
         assert!(marks(&app) > settled, "left a mark at the size it was");

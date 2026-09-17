@@ -505,6 +505,12 @@ struct Placement<'a> {
     /// Where the planes sit, in [`Placement::unit`], measured from whatever
     /// the space is measured from
     at: DVec3,
+    /// Where this space is measured from, in absolute galactic light years
+    ///
+    /// The galactic centre for the galaxy and the star for a system, and what
+    /// every figure above is counted out from. Carried on to
+    /// [`Reading::from`], where the readouts drawn over the plane read it.
+    from: DVec3,
     /// Where the rulers cross, likewise
     ///
     /// A multiple of the tick step rather than of the cell, so that every
@@ -534,6 +540,7 @@ impl Placement<'_> {
         Reading {
             at: self.at,
             step: self.step,
+            from: self.from,
             unit: self.unit,
             strength: self.showing(),
             bright,
@@ -636,39 +643,12 @@ pub(crate) fn draw_readouts(
     let painter = ctx.layer_painter(annotations_layer());
     let font = egui::FontId::new(READS, egui::FontFamily::Monospace);
     let hue = Srgba::from(LINE);
-    // The plane hangs through what the camera looks at, so its altitude is the
-    // middle's own, in absolute light years.
-    let plane_y = orbit.center.y;
 
-    let project =
-        |place: DVec3| screen_offset(orbit, cot, viewport, place - orbit.eye);
     let seg = |a: Vec2, b: Vec2, width: f32, color: egui::Color32| {
         painter.line_segment(
             [egui::pos2(a.x, a.y), egui::pos2(b.x, b.y)],
             egui::Stroke::new(width, color),
         );
-    };
-    // A cross laid in the plane along its own axes, so it lies on the grid and
-    // foreshortens with it rather than floating flat over the view. Its arms are
-    // sized in the world to draw about [`CROSS`] pixels at the depth the place
-    // lies at — measured into the view, not along the plane's own normal, or a
-    // plane seen face on would size its cross to nothing.
-    let cross = |at: DVec3, facing: Quat, color: egui::Color32| {
-        let ahead =
-            (at - orbit.eye).dot((orbit.rotation * Vec3::NEG_Z).as_dvec3());
-        if ahead <= 0. {
-            return;
-        }
-        let per_pixel = 2. * ahead / (cot as f64 * viewport.y as f64);
-        let arm = CROSS as f64 * per_pixel;
-        for axis in [Vec3::X, Vec3::Z] {
-            let along = (facing * axis).as_dvec3() * arm;
-            if let (Some(a), Some(b)) =
-                (project(at - along), project(at + along))
-            {
-                seg(a, b, MARK_STROKE, color);
-            }
-        }
     };
     let row = |at: Vec2, align, said: String, color: egui::Color32| {
         painter.text(egui::pos2(at.x, at.y), align, said, font.clone(), color);
@@ -686,16 +666,50 @@ pub(crate) fn draw_readouts(
         // metres, being a distance out through the world; everything here is
         // in light years, so it is spoken into those once.
         let reach = plane.reach / space::LIGHT_YEAR;
-        // Where this space is measured from, in absolute light years. The
-        // middle is said in the plane's unit out from here, so undoing that on
-        // the middle recovers it: nought for the galaxy, the star for a system.
-        let from =
-            orbit.center - reading.at * (unit.metres / space::LIGHT_YEAR);
+        // Everything below is light years out from where this space is
+        // measured from — nought for the galaxy, the star for a system —
+        // rather than out from the galactic centre. Inside a system that is
+        // the whole of what makes a readout land where the thing it is about
+        // is drawn: a place said absolutely is rounded to some tens of
+        // kilometres at the rim, and once the camera is down among the bodies
+        // that is most of the way across the view. See [`Reading::from`].
+        let from = reading.from;
+        let eye = orbit.eye_from(from);
+        // The middle of the view, where the plane hangs; its altitude is the
+        // plane's own.
+        let looking = orbit.center_from(from);
+        let plane_y = looking.y;
+
+        let project =
+            |place: DVec3| screen_offset(orbit, cot, viewport, place - eye);
+        // A cross laid in the plane along its own axes, so it lies on the grid
+        // and foreshortens with it rather than floating flat over the view.
+        // Its arms are sized in the world to draw about [`CROSS`] pixels at
+        // the depth the place lies at — measured into the view, not along the
+        // plane's own normal, or a plane seen face on would size its cross to
+        // nothing.
+        let cross = |at: DVec3, facing: Quat, color: egui::Color32| {
+            let ahead =
+                (at - eye).dot((orbit.rotation * Vec3::NEG_Z).as_dvec3());
+            if ahead <= 0. {
+                return;
+            }
+            let per_pixel = 2. * ahead / (cot as f64 * viewport.y as f64);
+            let arm = CROSS as f64 * per_pixel;
+            for axis in [Vec3::X, Vec3::Z] {
+                let along = (facing * axis).as_dvec3() * arm;
+                if let (Some(a), Some(b)) =
+                    (project(at - along), project(at + along))
+                {
+                    seg(a, b, MARK_STROKE, color);
+                }
+            }
+        };
 
         // What a mark or a number `base` strong is drawn in, faded by how far
         // toward the plane's horizon its place lies.
         let inked = |place: DVec3, base: f32| {
-            drawn_at(base * faded(place - orbit.eye, reach), reading.bright)
+            drawn_at(base * faded(place - eye, reach), reading.bright)
                 * reading.strength
         };
         let tint = |place: DVec3, base: f32| {
@@ -709,14 +723,14 @@ pub(crate) fn draw_readouts(
 
         // The middle of the view: the three numbers of the place looked at,
         // marked and hung below. Kept for the crowding test below either way.
-        let middle = reading.middle.then(|| project(orbit.center)).flatten();
+        let middle = reading.middle.then(|| project(looking)).flatten();
         if let Some(at) = middle {
-            cross(orbit.center, plane.facing, tint(orbit.center, INK));
+            cross(looking, plane.facing, tint(looking, INK));
             row(
                 at + Vec2::new(0., LIFT),
                 egui::Align2::CENTER_CENTER,
                 format!("{} {}", told(reading.at, reading.step), unit.mark),
-                lettered(orbit.center, INK),
+                lettered(looking, INK),
             );
         }
 
@@ -726,13 +740,22 @@ pub(crate) fn draw_readouts(
         // A system the map has put away is not there to be located, and a line
         // dropped from where it would have stood is a line about nothing; a
         // body is there to be located for as long as it is there at all.
+        //
+        // A body off its own system's grid in the metres that grid is laid out
+        // in, rather than off the light years the galaxy places its systems
+        // in: the system this rules is what the readouts are measured from, so
+        // the trip out to the galaxy and back is both needless and lossy.
         let located: Vec<DVec3> = if ruler.inside {
-            bodies.iter().filter_map(|body| places.of(body)).collect()
+            bodies
+                .iter()
+                .filter_map(|body| places.metres(body))
+                .map(space::light_years)
+                .collect()
         } else {
             systems
                 .iter()
                 .filter(|(_, shown)| **shown != Visibility::Hidden)
-                .map(|(system, _)| system.position())
+                .map(|(system, _)| system.position() - from)
                 .collect()
         };
         for place in located {
@@ -741,19 +764,19 @@ pub(crate) fn draw_readouts(
             else {
                 continue;
             };
-            // The line, kept clearly visible as the connector to what is picked
-            // out, and a cross where it meets the plane.
+            // The line, kept clearly visible as the connector to what is
+            // picked out, and a cross where it meets the plane.
             seg(top, foot, LINE_STROKE, tint(foot_at, INK));
             cross(foot_at, plane.facing, tint(foot_at, INK));
 
             // Its three numbers under the foot, and how far off the plane it
-            // stands beside the line — unless they would be written through the
-            // middle's, of which the middle is the one kept.
+            // stands beside the line — unless they would be written through
+            // the middle's, of which the middle is the one kept.
             let below = foot + Vec2::new(0., LIFT);
             let crowds =
                 middle.is_some_and(|m| (below - m).abs().cmplt(CROWDS).all());
             if !crowds {
-                let at_unit = (place - from) * space::LIGHT_YEAR / unit.metres;
+                let at_unit = place * space::LIGHT_YEAR / unit.metres;
                 row(
                     below,
                     egui::Align2::CENTER_CENTER,
@@ -792,15 +815,19 @@ fn placed<'a>(
     orbit: &OrbitCamera,
     share: f32,
 ) -> Placement<'a> {
-    // Everything from here is in `unit`. The view is measured in light years
-    // whatever is being looked at, so it is spoken into the space's own unit
-    // once, here, and not thought about again.
-    let spoken =
-        |place: DVec3| (place - from) * space::LIGHT_YEAR / unit.metres;
+    // Everything from here is in `unit`, out from `from`. The view is
+    // measured in light years whatever is being looked at, so it is spoken
+    // into the space's own unit once, here, and not thought about again.
+    //
+    // Off the camera's reading of where it stands in this space rather than
+    // off its galactic position, which inside a system is the coarser of the
+    // two by some tens of kilometres: the ruling inside a system is laid in
+    // light seconds and read to a few decimal places of one, which is metres.
+    // See [`crate::camera::OrbitCamera`].
     let across = across * space::LIGHT_YEAR / unit.metres;
 
     let decade = ruling(across, finest(unit, grid));
-    let looking = spoken(orbit.center);
+    let looking = orbit.center_from(from) * space::LIGHT_YEAR / unit.metres;
     let step = numbering(across);
 
     // The plane hangs through exactly what the camera is looking at, and its
@@ -825,6 +852,7 @@ fn placed<'a>(
         grid,
         decade,
         at,
+        from,
         crossing,
         across,
         step,
@@ -964,7 +992,7 @@ fn rule(
         .and_then(|entity| inside.get(entity).ok())
         .map(|(_, system, _, standing)| {
             let away = orbit.map_or(f32::INFINITY, |orbit| {
-                space::metres(orbit.eye - system.position()).length() as f32
+                space::metres(orbit.eye_from(system.position())).length() as f32
             });
             let stood_in =
                 away <= crate::systems::scale::drawn_shell(system.reach());
@@ -1545,13 +1573,10 @@ mod tests {
             .spawn((BigSpace::default(), crate::space::galaxy_grid()))
             .id();
         app.insert_resource(Map(map));
+        let mut orbit = OrbitCamera::stood_back(back);
+        orbit.looks_at(center);
         app.world_mut().spawn((
-            OrbitCamera {
-                radius: back,
-                target_radius: back,
-                center,
-                ..default()
-            },
+            orbit,
             CellCoord::default(),
             Transform::default(),
         ));
@@ -1766,6 +1791,46 @@ mod tests {
         assert!(
             system < galaxy / 1e3,
             "the galaxy stops at {galaxy}m and a system at {system}m"
+        );
+    }
+
+    /// The ruling inside a system is read off that system, to the metre
+    ///
+    /// A plane ruled in light seconds is read to several decimal places of
+    /// one, and a decimal place of a light second is three hundred
+    /// kilometres — so the numbers under the view are asking to be told
+    /// where the camera is far more precisely than a galactic light year can
+    /// say it. At the rim an `f64` holding one rounds to some tens of
+    /// kilometres, which the readouts would show as a place that steps rather
+    /// than moves.
+    ///
+    /// So the ruling is taken off where the camera stands in the system it
+    /// has descended into, which is how a descended camera holds its own
+    /// position (see [`OrbitCamera::rebase`]). Asked here of a metre's
+    /// worth: a camera a hundred light seconds and one metre off the star
+    /// reads exactly that.
+    #[test]
+    fn a_ruling_inside_a_system_is_read_off_that_system() {
+        // Magellan, twenty-two thousand light years out, whose neutron star
+        // the camera can be pulled within tens of kilometres of.
+        let system = DVec3::new(-9509.313, -914.625, 19819.969);
+        let out = 100. * space::LIGHT_SECOND + 1.;
+        let off = space::light_years(DVec3::new(out, 0., 0.));
+        // Standing a light second back, which is the zoom a ruling in light
+        // seconds is drawn at.
+        let back = (space::LIGHT_SECOND / space::LIGHT_YEAR) as f32;
+        let orbit = OrbitCamera::inside(system, off, back);
+
+        let grid = crate::space::system_grid();
+        let space =
+            placed(LIGHT_SECONDS, &grid, system, back as f64, &orbit, 1.);
+
+        let said = space.at.x * LIGHT_SECONDS.metres;
+        assert!(
+            (said - out).abs() < 0.5,
+            "a hundred light seconds and a metre out read as {said}m, which \
+             is {}m off",
+            said - out,
         );
     }
 }

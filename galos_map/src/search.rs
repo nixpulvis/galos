@@ -305,7 +305,7 @@ fn searched(
     names: Res<Names>,
 ) {
     let now = time.last_update().unwrap_or(time.startup());
-    let near = camera.single().map(|camera| camera.center).ok();
+    let near = camera.single().map(|camera| camera.center()).ok();
     let pool = AsyncComputeTaskPool::get();
 
     for event in search_events.read() {
