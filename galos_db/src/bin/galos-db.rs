@@ -15,7 +15,7 @@
 
 use clap::{Parser, Subcommand};
 use galos_catalog::hyg;
-use galos_db::{catalog, Database};
+use galos_db::{catalog, Database, HEARD};
 use std::io::{stderr, IsTerminal};
 use std::path::PathBuf;
 
@@ -43,14 +43,15 @@ enum Command {
 }
 
 fn main() -> galos_db::Result<()> {
-    // Without a subscriber nothing the tool or the crate traces is heard;
-    // `--watch` in particular would run silently. Info and above by default,
-    // `RUST_LOG` to change it, color only when stderr is a terminal.
+    // Without a subscriber nothing the tool or the crate traces is heard.
+    // [`HEARD`] by default, which is info and above less the `~/.pgpass`
+    // line every pool opens with; `RUST_LOG` to change it, color only when
+    // stderr is a terminal.
     tracing_subscriber::fmt()
         .with_ansi(stderr().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+                .unwrap_or_else(|_| HEARD.into()),
         )
         .init();
     async_std::task::block_on(run(Cli::parse().command))

@@ -25,7 +25,7 @@
 //! gone. That is the right default: a lock that cleared itself on a guess
 //! would clear itself exactly when a long build was still running and slow to
 //! answer. Check the pid the refusal names, and if nothing is running under
-//! it, clear the lock with [`Lock::force`].
+//! it, run again with `galos-sync --force-lock`, which is [`Lock::force`].
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -82,7 +82,8 @@ impl Lock {
                     io::ErrorKind::AlreadyExists,
                     format!(
                         "{} is already being written: {} holds {}. \
-                         If that process is gone, remove the lock.",
+                         If that process is gone, run again with \
+                         --force-lock.",
                         dir.display(),
                         if held.is_empty() {
                             "an unnamed writer"

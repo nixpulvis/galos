@@ -88,7 +88,9 @@ use galos::sink::relay::{Dropped, Live};
 use galos::sink::{Db, Fan, Index, Relay, Sink};
 use galos::{bar, Shard, Shutdown};
 use galos_db::index::Parts;
-use galos_db::Database;
+// `HEARD` is what `RUST_LOG` falls back to, and it is this crate's `sqlx`
+// that writes the one line it silences.
+use galos_db::{Database, HEARD};
 use galos_index::{
     region_budget, Build, BuildParams, Built, By, Ending, Rows, Start,
 };
@@ -148,6 +150,16 @@ struct Cli {
     /// `DIR.checkpoint` beside the index directory by default.
     #[arg(long, value_name = "FILE")]
     checkpoint: Option<PathBuf>,
+
+    /// Take the index directory even if a lock file is already there.
+    ///
+    /// For a lock left behind by a killed run: `SIGKILL`, a lost host or a
+    /// container killed for its memory all leave the file without the
+    /// process that made it. Check the pid the refusal names first — this
+    /// clears the lock whether or not anything is still writing, and two
+    /// writers over one directory interleave two galaxies into it.
+    #[arg(long = "force-lock")]
+    force_lock: bool,
 
     /// Whose journal this is, overriding what the files say. Only with
     /// `--from journal=PATH`.
@@ -275,17 +287,6 @@ fn parts_of(named: &[Part]) -> Parts {
     }
     parts
 }
-
-/// What is listened for when `RUST_LOG` says nothing.
-///
-/// Info upwards from everything, less one line `sqlx` writes on every
-/// connection: that it could not open `~/.pgpass`. Not having a password
-/// file is the ordinary case — a `DATABASE_URL` carries what it needs, or
-/// the socket trusts the user — and it is said at `warn` once per pool, so
-/// a run that opens one for collecting and one for deriving greets a
-/// commander with two warnings about a file they were never expected to
-/// have. `RUST_LOG` overrides all of this, including the silence.
-const HEARD: &str = "info,sqlx_postgres::options::pgpass=off";
 
 #[async_std::main]
 async fn main() -> ExitCode {
@@ -600,10 +601,19 @@ async fn run(cli: Cli) -> Result<bool, String> {
     // One writer per directory for the length of the run. Two would each
     // hold their own tree of it and publish over one another, which nothing
     // downstream can notice and no resume point can repair.
+    //
+    // `--force-lock` clears one a killed run left behind, which is the only
+    // way out of it: the file names a pid that is gone and nothing else
+    // removes it. The judgement stays with whoever passed the flag, which
+    // is why it is a flag and not a retry.
     let _lock = match &cli.index {
         Some(dir) => Some(
-            galos_index::Lock::take(dir)
-                .map_err(|err| format!("{}: {err}", dir.display()))?,
+            if cli.force_lock {
+                galos_index::Lock::force(dir)
+            } else {
+                galos_index::Lock::take(dir)
+            }
+            .map_err(|err| format!("{}: {err}", dir.display()))?,
         ),
         None => None,
     };

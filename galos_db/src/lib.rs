@@ -20,6 +20,21 @@ pub use self::error::{Error, Result};
 /// caller that has no `sqlx` of its own still has to name one.
 pub use sqlx;
 
+/// What a tool of this crate's listens for when `RUST_LOG` says nothing.
+///
+/// Info upwards from everything, less one line `sqlx` writes on every
+/// connection: that it could not open `~/.pgpass`. Not having a password
+/// file is the ordinary case — a `DATABASE_URL` carries what it needs, or
+/// the socket trusts the user — and it is said at `warn` once per pool, so
+/// a run that opens one for collecting and one for deriving greets a
+/// commander with two warnings about a file they were never expected to
+/// have. `RUST_LOG` overrides all of this, including the silence.
+///
+/// It lives here rather than in either binary because the line comes from
+/// this crate's `sqlx`, so whoever opens one of these pools is who has to
+/// silence it.
+pub const HEARD: &str = "info,sqlx_postgres::options::pgpass=off";
+
 #[derive(Clone)]
 pub struct Database {
     pub(crate) pool: PgPool,
