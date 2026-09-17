@@ -41,6 +41,7 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::space;
 use crate::systems::System;
+use crate::systems::labels::world_per_pixel;
 use crate::systems::pointing::Indicator;
 use crate::systems::roundness::Roundness;
 use crate::systems::route::{LineList, LineStrip};
@@ -51,9 +52,8 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
 use galos_index::meta::{Body as DbBody, Star as DbStar};
-use galos_index::orbit::{Orbits, Spacing};
+use galos_index::orbit::{Orbits, Spacing, turn};
 use std::collections::HashSet;
-use std::f64::consts::PI;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<DrawnContents>();
@@ -78,10 +78,15 @@ pub fn plugin(app: &mut App) {
     // standing where the clock says, `draw` having read the same clock.
     app.add_systems(Update, stand.in_set(MapSet::Populate).after(draw));
     // After the camera has settled where it is standing, that being what says
-    // how much of a ring to lay out.
+    // how much of a dashed ring to lay out, and after the bodies have been
+    // stood where the clock puts them, which is what a ridden ring is laid
+    // about.
     app.add_systems(
         Update,
-        redash.in_set(MapSet::Present).after(crate::camera::orbit_camera),
+        relay
+            .in_set(MapSet::Present)
+            .after(crate::camera::orbit_camera)
+            .after(stand),
     );
     // Reads where the camera came to rest, which `Camera` settles, and is read
     // by everything drawn in `Present`.
@@ -112,7 +117,8 @@ pub struct OrbitLine {
     /// Where the ring's own points are measured from, about whatever it goes
     /// round
     ///
-    /// Which is where the thing riding the line stood when it was drawn. The
+    /// Which is where the thing riding the line stood when the run was last
+    /// laid about it, or where the camera stood for a dashed one. The
     /// points are held as offsets from there so that the ones near what rides
     /// the line are small numbers: a mesh is `f32`, and the ring Pluto and
     /// Charon go round reaches 5.9e12 metres, where one float stands 524
@@ -121,17 +127,23 @@ pub struct OrbitLine {
     /// orbit at a step, and rotating close in on the pair sweeps it through a
     /// couple of hundred of them.
     pub pin: DVec3,
-    /// Which ring this is, where it is drawn in dashes
+    /// Which ring this is
     ///
-    /// A dashed ring is laid closest where the camera stands, so it has to be
-    /// laid again as the camera moves and has to say which ring to ask about.
-    /// [`None`] for a line drawn whole, which is laid about the thing riding it
-    /// and left alone.
-    pub dashed: Option<i16>,
+    /// Both kinds are laid again as what they are laid about moves: a dashed
+    /// ring about the camera, a ridden one about the thing riding it. So both
+    /// have to say which ring to ask after. See [`relay`].
+    pub id: i16,
+    /// Whether it is drawn in dashes, which is to say with nothing standing
+    /// anywhere on it
+    ///
+    /// A dashed ring is laid closest where the camera stands. One with
+    /// something on it is laid closest about that thing, being a line that has
+    /// to pass through it rather than a run of marks.
+    pub dashed: bool,
     /// How its points were laid, when they last were
     ///
-    /// What [`redash`] compares against to know whether the camera has moved far
-    /// enough to be worth laying them again.
+    /// What [`relay`] compares against to know whether enough has moved to be
+    /// worth laying them again.
     pub spacing: Spacing,
 }
 
@@ -1225,7 +1237,7 @@ fn drawn_orbit(
     };
     Some((
         Inside,
-        OrbitLine { about: parent, pin, dashed: bare.then_some(id), spacing },
+        OrbitLine { about: parent, pin, id, dashed: bare, spacing },
         cell,
         Transform::from_translation(offset),
         Mesh3d(mesh),
@@ -1261,30 +1273,62 @@ fn relaid(was: &Spacing, now: &Spacing) -> bool {
     !(1. / RELAID_AT..=RELAID_AT).contains(&(wanted / drawn))
 }
 
-/// An angle taken the short way round, within half a turn of nothing
+/// How far the thing riding a ring may stand off its own line before the line
+/// is laid again, in logical pixels
 ///
-/// How far round a ring the camera has moved, which crossing the start of the
-/// ring would otherwise read as a whole turn.
-fn turn(angle: f64) -> f64 {
-    let turn = angle.rem_euclid(std::f64::consts::TAU);
-    if turn > PI { turn - std::f64::consts::TAU } else { turn }
+/// The other half of [`relay`], and the one measured against the screen. What
+/// [`RELAID_AT`] weighs is a spacing against a spacing, which is the right
+/// question about dashes and the wrong one here: a body's straying off its
+/// line grows as the square of how far along a chord it has walked (see
+/// [`Orbit::strays`]), so holding it to a share of one step barely holds it at
+/// all — a third of the way along, it is already nine tenths of the worst of
+/// it.
+///
+/// What a reader sees is the gap in pixels, and nothing else about it matters:
+/// the same straying is a body sitting clear of its ring at one zoom and
+/// nothing at all at another. So it is read in pixels, at the body's own
+/// distance, and a pixel is the width of the line it is meant to be sitting
+/// on.
+///
+/// Which also bounds the work. A ring whose body is far off has metres to a
+/// pixel out there, so it answers no however long the clock runs; only the
+/// rings being looked at are laid again.
+const STRAYS_BY: f32 = 1.;
+
+/// Whether a ring laid to `was` is worth laying again for the body that rides
+/// it having walked to `anomaly`
+///
+/// `strayed` is how far off its line the body now stands and `per_pixel` how
+/// much world a pixel covers out where it is.
+fn strayed(strayed: f64, per_pixel: f32) -> bool {
+    strayed > (STRAYS_BY * per_pixel.max(f32::MIN_POSITIVE)) as f64
 }
 
-/// Lay each dashed ring out again as the camera moves
+/// Lay each ring out again as what it is laid about moves
 ///
-/// The piece of a ring that is drawn is chosen from how much sky the camera
-/// takes in and from what it is looking at, so it is a different piece at
-/// every zoom and everywhere along the ring. Zooming out leaves its dashes too
-/// far apart to read and panning runs off the end of it, so both are watched.
+/// Two rings and two reasons, and the same work either way.
 ///
-/// The points and where the line hangs both move, the piece being laid out
+/// A **dashed** ring has nothing standing on it, so the piece of it that is
+/// drawn is chosen from how much sky the camera takes in and from where the
+/// camera stands: a different piece at every zoom and everywhere along the
+/// ring. Zooming out leaves its dashes too far apart to read and panning runs
+/// off the end of it, so both are watched, by [`relaid`].
+///
+/// A **ridden** ring is laid about the thing riding it, so that a point of the
+/// run falls exactly where that thing stands and the line passes through it.
+/// The clock is what moves it: the body walks along the curve while the chords
+/// stay where they were laid, and by half a step it stands off its own line by
+/// the sag of one chord — half an Earth's radius for an Earth, three times
+/// over for an outer giant (see [`Orbit::strays`]). So the ring is laid again
+/// about where the body has got to, which is [`strayed`]'s question and only
+/// worth asking on a frame the clock moved.
+///
+/// The points and where the line hangs both move, the run being laid out
 /// about somewhere new. The mesh is rebuilt under the handle the line already
 /// holds, so nothing downstream has to be told.
-///
-/// Only the rings drawn in dashes. A line with something standing on it is
-/// drawn whole and laid out once.
-fn redash(
-    camera: Query<(&OrbitCamera, Option<&Projection>)>,
+#[allow(clippy::too_many_arguments)]
+fn relay(
+    camera: Query<(&OrbitCamera, &Camera, Option<&Projection>)>,
     holding: Res<HeldSystem>,
     systems: Query<&System>,
     grids: Query<&Grid>,
@@ -1302,11 +1346,13 @@ fn redash(
     if lines.is_empty() {
         return;
     }
-    let Ok((orbit, lens)) = camera.single() else { return };
+    let Ok((orbit, eye, lens)) = camera.single() else { return };
     let Some(system) = holding.of().and_then(|held| systems.get(held).ok())
     else {
         return;
     };
+    let Some(viewport) = eye.logical_viewport_size() else { return };
+    let cot_half_fov = eye.clip_from_view().y_axis.y;
 
     let across = seen_across(orbit, lens);
     let orbits = contents.orbits();
@@ -1318,33 +1364,63 @@ fn redash(
     // at the rim and would have the dashes laid about somewhere the camera is
     // not. See [`crate::camera::OrbitCamera`].
     let standing = space::metres(orbit.eye_from(system.position())) + middle;
+    // A ridden ring only strays as the clock carries its body along it, and
+    // the clock steps rather than runs (see [`super::WITHIN`]), so there is
+    // nothing to ask on the frames between. Dragging the slider is every
+    // frame, which is exactly where the straying is watched.
+    let ticked = clock.is_changed();
 
     for (mut line, of, mesh, mut cell, mut at) in &mut lines {
-        let Some(id) = line.dashed else { continue };
         let Ok(grid) = grids.get(of.parent()) else { continue };
+        let id = line.id;
 
         let about = line
             .about
             .map_or(DVec3::ZERO, |parent| orbits.place(parent, since));
-        let spacing =
-            laid(&orbits, id, orbits.nearest(id, standing - about), across);
 
-        // Only where enough has moved to be worth the work, which past a
-        // scroll click or two, or a drag of the same, is no ring at all.
-        if !relaid(&line.spacing, &spacing) {
-            continue;
-        }
+        // What the run should be laid about now, and whether enough has moved
+        // to be worth laying it. Past a scroll click or two, or a drag of the
+        // same, or a second of the clock, that is no ring at all.
+        let spacing = if line.dashed {
+            let spacing =
+                laid(&orbits, id, orbits.nearest(id, standing - about), across);
+            if !relaid(&line.spacing, &spacing) {
+                continue;
+            }
+            spacing
+        } else {
+            if !ticked {
+                continue;
+            }
+            let anomaly = orbits.anomaly(id, since);
+            // How much world a pixel covers out where the body is, which is
+            // what its straying is read against. Along the line to the body
+            // rather than into the view, this being a size; see
+            // [`world_per_pixel`].
+            let away =
+                (orbits.place(id, since) - standing).length().max(1.) as f32;
+            let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away);
+            if !strayed(orbits.strays(id, &line.spacing, anomaly), per_pixel) {
+                continue;
+            }
+            Spacing::even(anomaly, ORBIT_POINTS)
+        };
 
         let Some(path) = orbits.path(id, &spacing) else { continue };
-        // The middle of the run, which is where its points are laid closest.
+        // The middle of the run, which is where its points are laid closest —
+        // the camera for a dashed ring, and the thing riding a ridden one.
         let pin = path[path.len() / 2];
         let points: Vec<Vec3> =
             path.into_iter().map(|p| (p - pin).as_vec3()).collect();
 
         // Nothing to write to where the mesh has already gone. How it was laid
         // is left as it was, so it is tried again rather than taken as done.
-        let cut = LineList::plain(dashed(&points, spacing.run));
-        if meshes.insert(&mesh.0, cut.into()).is_err() {
+        let laid: Mesh = if line.dashed {
+            LineList::plain(dashed(&points, spacing.run)).into()
+        } else {
+            LineStrip { points }.into()
+        };
+        if meshes.insert(&mesh.0, laid).is_err() {
             continue;
         }
 
@@ -1414,9 +1490,14 @@ fn follow(mut clock: ResMut<Clock>) {
 /// so a moon's sits on its planet, and everything here is a flat child of the
 /// system: nothing is carried along by its parent moving.
 ///
-/// The paths themselves are left alone. Winding the clock on moves a thing
-/// along its orbit and does not change the orbit, so the mesh a line was built
-/// from is still the right shape wherever it has to be put.
+/// The paths themselves are only moved, not rebuilt. Winding the clock on
+/// carries a thing along its orbit and does not change the orbit, so the mesh
+/// a line was built from is still the right shape wherever it has to be put.
+///
+/// What it is not is still laid about the right place. A ring is a run of
+/// chords laid to pass through the thing riding it, and the thing has walked
+/// on; laying it again about where that thing has got to is [`relay`]'s, on
+/// the same frames as this and after it.
 fn stand(
     clock: Res<Clock>,
     contents: Res<Contents>,
@@ -1662,7 +1743,8 @@ mod tests {
                 OrbitLine {
                     about: None,
                     pin: DVec3::ZERO,
-                    dashed: None,
+                    id: 1,
+                    dashed: false,
                     spacing: Spacing::even(0., ORBIT_POINTS),
                 },
                 Visibility::Inherited,
@@ -1805,7 +1887,8 @@ mod tests {
                 OrbitLine {
                     about: Some(1),
                     pin,
-                    dashed: None,
+                    id: 2,
+                    dashed: false,
                     spacing: Spacing::even(0., ORBIT_POINTS),
                 },
                 cell,
@@ -1867,6 +1950,141 @@ mod tests {
         let (body, line) = stood(1e11, 0.5, DVec3::ZERO);
 
         assert_eq!(body, line, "the line was left behind at {line}");
+    }
+
+    /// A system with one body `out` metres out, its ring laid about where the
+    /// body stood at the start, and the camera standing `back` metres off it
+    ///
+    /// The clock is then wound `through` of the way round the body's year and
+    /// [`relay`] is given its say. Answers how far off its own line the body
+    /// stands at the end of that, and what the sag of one chord of the ring
+    /// comes to, which is what it would stand off if the ring were left as it
+    /// was laid.
+    fn carried_on(out: f64, back: f64, through: f64) -> (f64, f64) {
+        use super::super::{Clock, Contents, FetchState};
+
+        let year = 400. * crate::systems::info::DAY;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.init_resource::<Assets<Mesh>>();
+        app.insert_resource(Clock::default());
+        app.insert_resource(Contents {
+            of: Some(1),
+            revision: 0,
+            state: FetchState::Known(SystemBodies {
+                bodies: vec![{
+                    let mut row = super::super::tests::body(out as f32);
+                    row.orbit.orbital_period = year as f32;
+                    row
+                }],
+                ..default()
+            }),
+        });
+
+        let grid = space::system_grid();
+        let system = app
+            .world_mut()
+            .spawn((crate::systems::tests::at(1, 0.), grid.clone()))
+            .id();
+        app.insert_resource(HeldSystem::holding(system));
+
+        // The ring as `draw` lays it: evenly, about where the body stands at
+        // the moment it is drawn, so the run has a point exactly there.
+        let (orbits, since, middle) = {
+            let contents = app.world().resource::<Contents>();
+            let orbits = contents.orbits();
+            let since = contents.since(app.world().resource::<Clock>());
+            let middle = contents.middle(&orbits, since);
+            (orbits, since, middle)
+        };
+        let spacing = Spacing::even(orbits.anomaly(1, since), ORBIT_POINTS);
+        let path = orbits.path(1, &spacing).expect("a path");
+        let pin = path[path.len() / 2];
+        let points: Vec<Vec3> =
+            path.into_iter().map(|p| (p - pin).as_vec3()).collect();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(LineStrip { points });
+        let (cell, offset) = placed(pin - middle, &grid);
+        let line = app
+            .world_mut()
+            .spawn((
+                OrbitLine { about: None, pin, id: 1, dashed: false, spacing },
+                Mesh3d(mesh),
+                cell,
+                Transform::from_translation(offset),
+                ChildOf(system),
+            ))
+            .id();
+
+        // Standing off the body itself, which is what the straying is read
+        // against: a pixel out there is what it may stray by.
+        let mut camera = OrbitCamera::default();
+        camera.stands_at(space::light_years(
+            orbits.place(1, since) + DVec3::new(back, 0., 0.) - middle,
+        ));
+        app.world_mut().spawn((camera, crate::systems::tests::seeing()));
+        app.add_systems(Update, relay);
+
+        app.update();
+        app.world_mut().resource_mut::<Clock>().offset = through * year;
+        app.update();
+
+        let laid = app.world().get::<OrbitLine>(line).expect("a line").spacing;
+        let since = app
+            .world()
+            .resource::<Contents>()
+            .since(app.world().resource::<Clock>());
+        let anomaly = orbits.anomaly(1, since);
+
+        (
+            orbits.strays(1, &laid, anomaly),
+            out * (1. - (laid.finest / 2.).cos()),
+        )
+    }
+
+    /// A body the clock has carried along its ring is put back on it
+    ///
+    /// The reported trouble: a body drawn beside its own orbit line rather
+    /// than on it. The ring is a run of chords laid to pass through the body,
+    /// and the clock then walks the body along the curve while the chords stay
+    /// where they were — by half a step it stands off its line by that
+    /// chord's whole sag, which for a body an Earth's distance out is half an
+    /// Earth's radius. So the ring is laid again about where the body has got
+    /// to.
+    #[test]
+    fn a_body_the_clock_has_carried_on_is_put_back_on_its_line() {
+        // Half a step round, which is where a run left as it was laid strays
+        // furthest, and a quarter of the way round the year, which is a step
+        // and a quarter of the run past that.
+        for through in [0.5 / ORBIT_POINTS as f64, 0.25] {
+            let (strayed, sag) = carried_on(1e11, 1e7, through);
+
+            assert!(
+                strayed < sag / 100.,
+                "{through} of the way round its year the body stood \
+                 {strayed}m off its own line, where a ring left as it was \
+                 laid sags {sag}m",
+            );
+        }
+    }
+
+    /// And one whose body is a pixel wide is left where it was
+    ///
+    /// What a reader sees is the gap in pixels, so a ring whose body is far
+    /// enough off that its straying is under one is a ring with nothing to
+    /// put right. Which is what bounds the work: the rings laid again are the
+    /// ones being looked at.
+    #[test]
+    fn a_ring_whose_body_is_too_far_to_read_is_left_alone() {
+        let (strayed, sag) = carried_on(1e11, 1e14, 0.5 / ORBIT_POINTS as f64);
+
+        assert!(
+            (strayed - sag).abs() < sag / 100.,
+            "a ring a reader cannot see the straying of was laid again: \
+             {strayed}m off against a sag of {sag}m",
+        );
     }
 
     /// How much of the mark for a system looking `seen` radians across is left

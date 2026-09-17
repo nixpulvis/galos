@@ -289,6 +289,44 @@ impl Orbit {
         (low + high) / 2.
     }
 
+    /// How far off the ring as it is drawn the body at `anomaly` stands
+    ///
+    /// What is drawn is a run of chords and every chord cuts inside the
+    /// curve, so a body is on its own line only where the run has a point at
+    /// it. [`Spacing::even`] lays one there — but a ring is laid once and the
+    /// clock goes on running, and the body walks along the curve while the
+    /// chords stay where they were. This is the distance that opens up: from
+    /// where the body stands to the chord spanning it.
+    ///
+    /// Nothing at the moment the run was laid about the body, and at its
+    /// widest halfway between two points, where it comes to the semi-major
+    /// axis times one minus the cosine of half a step -- some two hundredths
+    /// of a percent of the way out to a body at five hundred points round.
+    /// Which is nothing beside the orbit and rather a lot beside the body:
+    /// an Earth at an Earth's distance stands half its own radius off its
+    /// line, and an outer giant three of them.
+    pub fn strays(&self, spacing: &Spacing, anomaly: f64) -> f64 {
+        if self.semi_major_axis <= 0. {
+            return 0.;
+        }
+
+        let (low, high) = spacing.spans(turn(anomaly - spacing.at));
+        let (from, to) = (self.place(low), self.place(high));
+        let place = self.place(anomaly);
+
+        // How far along the chord the body's own place falls, held to the
+        // chord itself: a body past the end of the run is measured to the end
+        // of it rather than to the line the chord lies along.
+        let along = to - from;
+        let reach = along.length_squared();
+        if reach <= 0. {
+            return place.distance(from);
+        }
+        let share = ((place - from).dot(along) / reach).clamp(0., 1.);
+
+        place.distance(from + along * share)
+    }
+
     /// Where the body stands at an eccentric anomaly of `anomaly`
     ///
     /// The ellipse is laid out with its near point along the plane's own `x`,
@@ -430,14 +468,74 @@ impl Spacing {
         (-steps..=steps).map(move |step| self.at + self.along(step))
     }
 
+    /// Which two of the ring's points a place `from` radians round from
+    /// [`Spacing::at`] falls between, as anomalies
+    ///
+    /// The chord that spans it, which is what the ring is drawn as there. Held
+    /// to the run, which closes half a turn either way: a place past the end
+    /// of it is spanned by the last chord.
+    ///
+    /// `from` is signed and taken the short way round, the run being laid out
+    /// from `at` in both directions.
+    pub fn spans(&self, from: f64) -> (f64, f64) {
+        let side = if from < 0. { -1. } else { 1. };
+        let crossed =
+            self.crossed(from.abs()).floor().min(self.steps as f64 - 1.);
+
+        (
+            self.at + side * self.reach(crossed),
+            self.at + side * self.reach(crossed + 1.),
+        )
+    }
+
     /// How far round from `at` the `step`th point lands, signed
     fn along(&self, step: isize) -> f64 {
         let (side, step) = (step.signum() as f64, step.unsigned_abs() as f64);
+
+        side * self.reach(step)
+    }
+
+    /// How far round from `at` `steps` of the run reach, unsigned
+    ///
+    /// Whole numbers of steps land on the ring's own points; the fractions
+    /// between them are what [`Spacing::crossed`] is read back through.
+    fn reach(&self, steps: f64) -> f64 {
         if self.flare <= 0. {
-            return side * step * self.finest;
+            return steps * self.finest;
         }
 
-        side * self.finest / self.flare * ((step * self.flare).exp() - 1.)
+        self.finest / self.flare * ((steps * self.flare).exp() - 1.)
+    }
+
+    /// How many steps of the run reach `from` radians round from `at`
+    ///
+    /// [`Spacing::reach`] read backwards, which is where a place along the
+    /// ring says which of its points it lies between.
+    fn crossed(&self, from: f64) -> f64 {
+        if self.flare <= 0. {
+            return from / self.finest;
+        }
+
+        (1. + from * self.flare / self.finest).max(1.).ln() / self.flare
+    }
+}
+
+/// An angle taken the short way round, within half a turn of nothing
+///
+/// How far round a ring one place is from another, where crossing the start
+/// of the run would otherwise read as a whole turn. An anomaly runs on
+/// without bound as the clock does — [`Orbit::anomaly`] adds a turn per
+/// period — so the difference of two of them is folded back here before it
+/// is measured against anything.
+pub fn turn(angle: f64) -> f64 {
+    let turned = angle % std::f64::consts::TAU;
+
+    if turned > std::f64::consts::PI {
+        turned - std::f64::consts::TAU
+    } else if turned < -std::f64::consts::PI {
+        turned + std::f64::consts::TAU
+    } else {
+        turned
     }
 }
 
@@ -661,6 +759,12 @@ impl Orbits {
     /// times are counted from
     pub fn anomaly(&self, id: i16, since: f64) -> f64 {
         self.0.get(&id).map_or(0., |held| held.orbit.anomaly(since))
+    }
+
+    /// How far off its own ring, laid as `spacing` laid it, `id` stands at an
+    /// eccentric anomaly of `anomaly`
+    pub fn strays(&self, id: i16, spacing: &Spacing, anomaly: f64) -> f64 {
+        self.0.get(&id).map_or(0., |held| held.orbit.strays(spacing, anomaly))
     }
 
     /// How far apart to lay `id`'s points where the camera stands, in radians
@@ -1255,5 +1359,109 @@ mod tests {
 
         let place = orbits.place(1, 0.);
         assert!(place.is_finite(), "the walk ran off to {place}");
+    }
+
+    /// A place along a ring is spanned by the two points either side of it
+    ///
+    /// Which chord of the drawn ring a place falls on, and the question
+    /// [`Orbit::strays`] rests on. Asked of a run laid evenly and of one laid
+    /// to a view, whose steps open out as they go round: read back through
+    /// the wrong one, a place a hundred steps round a flared run lands
+    /// hundreds of steps out.
+    #[test]
+    fn a_place_along_a_ring_falls_between_two_of_its_points() {
+        for spacing in [
+            Spacing::even(0.3, 512),
+            Spacing::round(0.3, 1e-4, 512),
+            Spacing::round(0.3, 1e-6, 512),
+        ] {
+            for step in [0usize, 1, 7, 100, 255] {
+                let point = spacing.along(step as isize);
+                // A third of the way along the step after it, which is a
+                // place no point of the run stands at.
+                let along =
+                    point + (spacing.along(step as isize + 1) - point) / 3.;
+
+                let (low, high) = spacing.spans(along);
+                assert!(
+                    low <= spacing.at + along && spacing.at + along <= high,
+                    "{along} rad round is drawn by the chord from {low} to \
+                     {high}, which does not span it",
+                );
+                assert_eq!(
+                    (low, high),
+                    (
+                        spacing.at + point,
+                        spacing.at + spacing.along(step as isize + 1)
+                    ),
+                    "spanned by some chord other than its own",
+                );
+            }
+        }
+    }
+
+    /// The body the run was laid about stands on its own line
+    ///
+    /// Which is what laying a ridden ring about its body is for: the run has
+    /// a point exactly where the body stands, so there is no chord between
+    /// the two to cut inside the curve.
+    #[test]
+    fn a_body_the_ring_was_laid_about_stands_on_it() {
+        let orbit = circle(1.5e11);
+        let anomaly = orbit.anomaly(0.);
+        let laid = Spacing::even(anomaly, 512);
+
+        assert!(
+            orbit.strays(&laid, anomaly) < 1e-6,
+            "stood {}m off a line laid about it",
+            orbit.strays(&laid, anomaly),
+        );
+    }
+
+    /// And walks off it as the clock carries it along
+    ///
+    /// The reported trouble: a body drawn beside its own orbit line rather
+    /// than on it. The ring is laid once and the body goes on moving, so by
+    /// half a step it stands off the chord spanning it by that chord's whole
+    /// sag — the semi-major axis times one minus the cosine of half a step,
+    /// which five hundred and twelve points put at two hundredths of a
+    /// percent of the way out. Nothing beside the orbit, and half an Earth's
+    /// radius for an Earth.
+    #[test]
+    fn a_body_that_has_walked_on_stands_off_its_ring() {
+        let a = 1.5e11;
+        let orbit = circle(a);
+        let laid = Spacing::even(orbit.anomaly(0.), 512);
+        let sag = a * (1. - (laid.finest / 2.).cos());
+
+        let half = orbit.strays(&laid, laid.at + laid.finest / 2.);
+        assert!(
+            (half - sag).abs() < sag * 1e-6,
+            "halfway between two points it stood {half}m off, where the \
+             chord sags {sag}m",
+        );
+
+        // And nowhere along the step does it stray further than that.
+        for k in 0..=100 {
+            let along = laid.finest * k as f64 / 100.;
+            assert!(
+                orbit.strays(&laid, laid.at + along) <= sag * (1. + 1e-9),
+                "{along} rad on it stood further off than the chord sags",
+            );
+        }
+    }
+
+    /// An angle is measured the short way round whichever turn it is on
+    ///
+    /// An anomaly runs on without bound as the clock does, so the difference
+    /// of two of them carries however many turns have passed and has to be
+    /// folded back before it is measured against a step.
+    #[test]
+    fn an_angle_is_taken_the_short_way_round() {
+        assert_eq!(turn(0.), 0.);
+        assert!((turn(TAU + 0.5) - 0.5).abs() < 1e-12);
+        assert!((turn(-TAU - 0.5) + 0.5).abs() < 1e-12);
+        assert!((turn(1000. * TAU + 0.25) - 0.25).abs() < 1e-9);
+        assert!(turn(PI + 0.1) < 0., "the long way round");
     }
 }
