@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future::poll_once;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::meta::NameEntry;
+use galos_index::names::MIN_PREFIX;
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
@@ -311,14 +312,21 @@ fn searched(
     for event in search_events.read() {
         match event {
             Search::System { name, .. } => {
-                // Matched against the resident names table on the spot; handed
-                // through a ready task so the bar's spinner machinery is fed the
-                // same way a database answer once was.
-                let found = search_names(&names, name, near, RESULTS as usize);
+                // The lookup itself, off the main thread: a handle on the
+                // table is an `Arc` pair, and the work is a binary search of
+                // `byname.bin` plus a copy of the few names it answers with.
+                // Warm that is ~3 ms, but the pages it walks are mapped and a
+                // cold one faults them in, which is what may not happen in
+                // the frame.
+                let table = names.clone();
+                let name = name.clone();
+                let asked = name.clone();
                 searching.ask(
-                    name.clone(),
+                    asked,
                     now,
-                    pool.spawn(async move { found }),
+                    pool.spawn(async move {
+                        search_names(&table, &name, near, RESULTS as usize)
+                    }),
                 );
             }
             // A route needs every stop. Say which one is the problem rather
@@ -326,10 +334,18 @@ fn searched(
             Search::Route { stops, .. } => {
                 // The first in the order flown, and only it: a stop looked up
                 // after the one before it turned out to be wrong is a lookup
-                // whose answer nothing reads.
-                let trouble =
-                    stops.iter().find_map(|stop| locate(&names, stop).err());
-                locating.ask((), now, pool.spawn(async move { trouble }));
+                // whose answer nothing reads. Off the main thread for the
+                // reason above — each stop is a binary search of the same
+                // mapping.
+                let table = names.clone();
+                let stops = stops.clone();
+                locating.ask(
+                    (),
+                    now,
+                    pool.spawn(async move {
+                        stops.iter().find_map(|stop| locate(&table, stop).err())
+                    }),
+                );
             }
             // Nothing to look up: stopping asks for no names and answers
             // none. What it does to the searches is
@@ -392,6 +408,11 @@ fn entry_pos(entry: &NameEntry) -> DVec3 {
 /// A name that found nothing is said in the note rather than left as an empty
 /// list. Nothing on screen is what the map looks like before anything has been
 /// asked, and the two have to be told apart. What is picked out is left alone.
+///
+/// A query the table will not search — shorter than
+/// [`galos_index::names::MIN_PREFIX`] — is said as itself. It found nothing
+/// because nothing was looked for, and "no system named S" would be a claim
+/// about the galaxy rather than about the query.
 fn answered(
     name: &str,
     found: Vec<NameEntry>,
@@ -399,11 +420,13 @@ fn answered(
     results: &mut SearchResults,
 ) {
     results.clear();
-    note.0 = if found.is_empty() {
-        Some(format!("No system named {name}"))
-    } else {
+    note.0 = if !found.is_empty() {
         results.set(found);
         None
+    } else if name.chars().count() < MIN_PREFIX {
+        Some(format!("Keep typing: {MIN_PREFIX} letters at least"))
+    } else {
+        Some(format!("No system named {name}"))
     };
 }
 
@@ -430,6 +453,20 @@ pub(crate) mod tests {
 
         assert_eq!(note.0.as_deref(), Some("No system named NOWHERE"));
         assert!(results.is_empty());
+    }
+
+    /// A query too short to be searched says that, not that the galaxy is
+    /// empty of it
+    #[test]
+    fn a_query_under_the_floor_says_to_keep_typing() {
+        let mut note = SearchNote(None);
+        let mut results = SearchResults::default();
+
+        answered("S", Vec::new(), &mut note, &mut results);
+
+        let said = note.0.expect("a note");
+        assert!(said.contains("Keep typing"), "{said}");
+        assert!(!said.contains("No system"), "{said}");
     }
 
     /// What was found is listed, and nothing is said about it
