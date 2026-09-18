@@ -384,6 +384,26 @@ const COVERAGE: f64 = 0.3;
 /// headroom to spread before it saturates.
 const CEILING: f32 = 8.0;
 
+/// How far past touching a crowd is let alone, as a multiple of `fill`
+///
+/// Where the roll-off starts. Below it a crowd is a plain density, held
+/// down by [`Gains::crowd`] and no more: this is where the galaxy's own
+/// structure lives — the web of filaments and voids between the arms, laid
+/// by cells whose marks would cover their footprint a few times over — and
+/// pressing it is what took that web off the map. Above it the correction
+/// goes on growing as the square root of the crowding, which is what keeps
+/// the bubble and the galactic core from blowing out to white discs.
+///
+/// Thirty-two, measured over `.index/full` at the two zooms the complaints
+/// came from. Against no roll-off at all, the middling splat is untouched
+/// from twenty light years out to two thousand, the galaxy's disc keeps
+/// two thirds of what it lays, and the white on the frame halves: 1,190
+/// pixels past white with the galaxy seen whole against 2,578, and 1,264
+/// against 2,130 from two thousand. Pressing from the touching point
+/// instead — where it started — took the disc to a sixth and the web with
+/// it.
+const PACKED: f32 = 32.0;
+
 /// How a splat is laid: the radius it is drawn at, and the light it peaks at
 ///
 /// **The one deposit law.** `light` is what the systems this stands for
@@ -402,17 +422,16 @@ const CEILING: f32 = 8.0;
 ///   footprint over and over. Ten thousand systems in a pixel are a
 ///   backdrop and not ten thousand marks' worth of light, so a crowd is
 ///   held down by `crowd`, which is the field's whole exposure and what
-///   keeps the galaxy a picture rather than a white sheet. And the denser
-///   the crowd the harder it is held: past the point where the marks touch
-///   the correction goes on growing, as the square root of the crowding, so
-///   a region twice as dense is not twice as bright. That is the difference
-///   between a core that reads as a bright coloured knot and one that reads
-///   as a white disc — the light along a line of sight through the bubble
-///   is the whole bubble's, and measured over `.galos_index` from ten
-///   thousand light years out it summed to 10.1 units over 1,633 pixels of
-///   blown white. Pressed, the same frame peaks at 2.8 over 882, keeps its
-///   colour, and the faint half of the field is untouched: the middling
-///   splat does not move.
+///   keeps the galaxy a picture rather than a white sheet.
+/// - **A packed crowd** (`fill >= PACKED`) is held harder still, the
+///   correction growing as the square root of the crowding from there up.
+///   A line of sight through the bubble carries the whole bubble's light,
+///   and conserved, that is a white disc however the rest of the frame is
+///   exposed: measured over `.galos_index` from ten thousand light years
+///   out it summed to 10.1 units over 1,633 pixels past white. What the
+///   roll-off must not do is take the galaxy's own web of filaments with
+///   it, which is why it starts where it does rather than at the touching
+///   point; see [`PACKED`].
 /// - **A scatter** (`fill < 1`) is not a crowd, and there is nothing to
 ///   correct. Its systems have come apart on screen: every one of them is a
 ///   mark the map draws at full as soon as its payload lands, and the field
@@ -450,7 +469,13 @@ pub(crate) fn splat(
     // Off the radius actually drawn, so a cell floored to a point is read as
     // the crowd it is rather than as a scatter over an area it was not given.
     let fill = covered / area;
-    let pressed = if fill <= 1. { fill } else { fill.sqrt() };
+    let pressed = if fill <= 1. {
+        fill
+    } else if fill <= PACKED {
+        1.
+    } else {
+        (fill / PACKED).sqrt()
+    };
     let crowding = 1. + (crowd - 1.) * pressed;
     let peak = light / (crowding * area);
     (radius, peak.min(Vec3::splat(CEILING)))
@@ -1116,18 +1141,19 @@ mod tests {
         );
     }
 
-    /// A crowd is still a density — it thins as the footprint it is spread
-    /// over grows — and the denser it is the harder it is held down.
+    /// A crowd is laid as a density, thinning as the footprint it is spread
+    /// over grows — until it is packed, where the correction takes over.
     ///
     /// The other end of the same law, and the reason there is a `crowd` at
     /// all. A hundred thousand systems inside a pixel are a backdrop and
-    /// not a hundred thousand marks' worth of light. Past the point where
-    /// the marks touch the correction goes on growing as the square root of
-    /// the crowding, so the thinning is square-rooted with it: spreading the
-    /// same crowd over sixteen times the area leaves it four times fainter
-    /// rather than sixteen. That is what keeps the bubble's core a bright
-    /// knot instead of a white disc, and it is a compression of the bright
-    /// end and nothing else — a scatter never reaches it.
+    /// not a hundred thousand marks' worth of light.
+    ///
+    /// Both halves are load-bearing and they were tuned against each other.
+    /// Ordinary crowds — the galaxy's own arms and the web of filaments
+    /// between them — are a plain density and thin with their footprint,
+    /// and pressing *them* is what took the web off the map; a packed one
+    /// is pressed, which is what keeps a line of sight through the bubble
+    /// off the top of the scale.
     #[test]
     fn a_crowd_is_laid_as_a_density() {
         let gains = Gains::default();
@@ -1135,16 +1161,20 @@ mod tests {
         let systems = 100_000.;
         let covered = systems * MARK_AREA;
         let light = Hue::Cyan.light() * systems * level * MARK_AREA;
+        // Wide enough that even the tighter of the two is under the roll-off.
+        let wide = (covered / (std::f32::consts::TAU * PACKED)).sqrt();
 
-        let (tight, close) = splat(light, covered, 20., gains.crowd);
-        let (wide, far) = splat(light, covered, 80., gains.crowd);
-        assert_eq!(tight, 20. * REACH, "a crowded splat covers its cell");
-        assert_eq!(wide, 80. * REACH);
+        let (tight, close) = splat(light, covered, wide, gains.crowd);
+        let (broad, far) = splat(light, covered, wide * 4., gains.crowd);
+        assert_eq!(tight, wide * REACH, "a crowded splat covers its cell");
+        assert_eq!(broad, wide * 4. * REACH);
+        // Four times the spread is sixteen times the area, and the same
+        // light over it: a crowd this side of the roll-off is a density and
+        // nothing else.
         let thinning = close.max_element() / far.max_element();
         assert!(
-            (thinning - 4.).abs() < 0.2,
-            "a crowd did not thin with its footprint as the law says: {} to \
-             {} is {thinning}",
+            (thinning - 16.).abs() < 0.1,
+            "a crowd did not thin with its footprint: {} to {} is {thinning}",
             close.max_element(),
             far.max_element()
         );
@@ -1152,6 +1182,18 @@ mod tests {
             far.max_element() < level,
             "a crowd of systems was laid brighter than one mark: {}",
             far.max_element()
+        );
+
+        // And past the roll-off it stops keeping up with its own density:
+        // sixteen times packed together is four times the light, not
+        // sixteen.
+        let (_, packed) = splat(light, covered, wide / 4., gains.crowd);
+        let steepness = packed.max_element() / close.max_element();
+        assert!(
+            (steepness - 4.).abs() < 0.2,
+            "a packed crowd was not held down: {} against {} is {steepness}",
+            packed.max_element(),
+            close.max_element()
         );
     }
 
@@ -1480,17 +1522,19 @@ mod exposure {
         }
 
         // And the fade itself, which is a ratio and not a level: what went
-        // wrong was the field thinning as the camera came in, and how bright
-        // any one splat is depends on how finely the directory is cut — a
-        // 204,466-cell galaxy lays a tenth of what a 4,072-cell one does per
-        // quad and the same total. Measured under a flat correction, the
-        // middling splat came in at a nineteenth of its galaxy-wide value;
-        // the correction spent as a cell resolves holds it to within a
-        // fifth.
+        // wrong was the field thinning as the camera came in, and how
+        // bright any one splat is depends on how finely the directory is
+        // cut — a 204,466-cell galaxy lays a tenth of what a 4,072-cell one
+        // does per quad and the same total. Under a flat correction the
+        // middling splat came in at a nineteenth of its galaxy-wide value.
+        // Measured now: a sixth over `.galos_index` and a fifth over
+        // `.index/full`, the gap between the two being that a coarse
+        // directory's galaxy-zoom cells are packed enough to sit under the
+        // roll-off.
         let closest = middling[0];
         let widest = middling[middling.len() - 1];
         assert!(
-            closest * 5. > widest,
+            closest * 8. > widest,
             "the field faded as it was resolved: {closest} against {widest} \
              with the galaxy seen whole"
         );
