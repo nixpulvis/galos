@@ -367,6 +367,11 @@ fn ask_leg(
     // No moment. A route is a line between two named systems rather than
     // a region, so there is no sky it leaves the map able to answer for.
     let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
+        // The search as one zone, named with the leg's reach: this is the
+        // longest thing the map does off the main thread — tens of millions
+        // of neighbours for a galactic leg — and it never yields, being a walk
+        // of a mapped graph with no read in it.
+        let _zone = info_span!("route search", reach = ?reach).entered();
         let systems = match (graph, ends, reach) {
             (Some(graph), Some((start, end)), Some(range)) => graph
                 .route(start, end, range, how, drive, tune, watching.as_ref())

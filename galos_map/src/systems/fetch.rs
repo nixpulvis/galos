@@ -5,6 +5,7 @@ use crate::systems::selection::Selection;
 use crate::systems::spawn::system_at;
 use crate::systems::{Spyglass, System, route::fetch::fetch_route};
 use crate::{Names, Populated, ResidentIndex, Transport, search::Search};
+use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
@@ -572,33 +573,46 @@ fn fetch_spyglass(
                     let names = names.clone();
                     let populated = populated.clone();
                     let cells = slice.to_vec();
-                    pool.spawn(async move {
-                        let mut systems = Vec::new();
-                        for cell in cells {
-                            let Ok(points) = transport.payload(cell).await
-                            else {
-                                continue;
-                            };
-                            for point in points {
-                                let pos = point.pos;
-                                // A cell straddling the sphere carries systems
-                                // outside it, so each point is weighed against
-                                // the true radius.
-                                let dx = pos[0] - cent[0];
-                                let dy = pos[1] - cent[1];
-                                let dz = pos[2] - cent[2];
-                                if dx * dx + dy * dy + dz * dz <= range * range
-                                {
-                                    systems.push(
-                                        super::bounded::build_from_point(
-                                            &point, &populated, &names,
-                                        ),
-                                    );
+                    // Named on the worker's zone rather than read inside it,
+                    // the share being moved into the task.
+                    let count = cells.len();
+                    pool.spawn(
+                        async move {
+                            let mut systems = Vec::new();
+                            for cell in cells {
+                                let Ok(points) = transport.payload(cell).await
+                                else {
+                                    continue;
+                                };
+                                for point in points {
+                                    let pos = point.pos;
+                                    // A cell straddling the sphere carries systems
+                                    // outside it, so each point is weighed against
+                                    // the true radius.
+                                    let dx = pos[0] - cent[0];
+                                    let dy = pos[1] - cent[1];
+                                    let dz = pos[2] - cent[2];
+                                    if dx * dx + dy * dy + dz * dz
+                                        <= range * range
+                                    {
+                                        systems.push(
+                                            super::bounded::build_from_point(
+                                                &point, &populated, &names,
+                                            ),
+                                        );
+                                    }
                                 }
                             }
+                            systems
                         }
-                        systems
-                    })
+                        // One zone per worker, named with the share of the
+                        // region it was given: what a fetch's latency is made
+                        // of is these running at once. The task that fans them
+                        // out carries no zone of its own — it awaits them, and
+                        // a span over a future that yields is one a profiler
+                        // cannot close on the thread that opened it.
+                        .instrument(info_span!("region cells", cells = count)),
+                    )
                 })
                 .collect();
             let mut systems = Vec::new();

@@ -55,6 +55,12 @@ fn main() {
             .build()
             .disable::<TransformPlugin>(),
     );
+    // Said as soon as the layer is up, which is where `DefaultPlugins` built
+    // `LogPlugin`. Tracy is the other way round from what a reader expects:
+    // the profiled program listens and the profiler dials in, so this is the
+    // address to point `tracy` or `tracy-capture -a` at.
+    #[cfg(feature = "tracy")]
+    tracy_listening();
     app.add_plugins(EguiPlugin {
         // Bevy cannot use bindless textures on Metal, and bevy_egui warns at
         // startup whenever they're requested. This UI is a couple of small
@@ -104,4 +110,27 @@ fn main() {
     app.add_plugins(WorldInspectorPlugin::new());
 
     app.run();
+}
+
+/// Say where the Tracy client is listening, once the layer is up
+///
+/// The client binds a socket and waits; a profiler connects to it, and until
+/// one does everything it is told is held in memory (which is what bevy warns
+/// about on the line above this one). The port is the Tracy default unless
+/// `TRACY_PORT` says otherwise, which the client reads itself — so this reads
+/// the same variable rather than being told, and a run started with one says
+/// the number it is actually on.
+#[cfg(feature = "tracy")]
+fn tracy_listening() {
+    /// What Tracy binds with no `TRACY_PORT` in the environment.
+    const TRACY_PORT: u16 = 8086;
+
+    let port = std::env::var("TRACY_PORT")
+        .ok()
+        .and_then(|it| it.parse::<u16>().ok())
+        .unwrap_or(TRACY_PORT);
+    info!(
+        "Tracy is listening on 0.0.0.0:{port}: `tracy` or \
+         `tracy-capture -a 127.0.0.1 -p {port} -o galos.tracy` to connect"
+    );
 }

@@ -6,7 +6,25 @@ rust-version.workspace = true
 
 [features]
 inspector = ["bevy-inspector-egui"]
+# Profiling, read with Tracy. One feature does two things: `bevy/trace_tracy`
+# pulls in bevy's own `trace`, which is what compiles a zone per system, per
+# schedule and per render pass and a frame mark per present, and the
+# `tracing-tracy` layer that `LogPlugin` then installs, which ships them to a
+# profiler over a socket. Nothing in the map changes with it: its own spans
+# over the work that happens off the main thread are always compiled and go
+# wherever the subscriber sends them, which without this is nowhere.
+#
+# The wire protocol is versioned and checked when the profiler connects, so
+# the profiler has to be the release the client speaks: `tracy-client-sys`
+# 0.28, which is what `Cargo.lock` holds, is Tracy 0.13.1. A `cargo update`
+# that moves it moves which profiler runs. See the README.
 tracy = ["bevy/trace_tracy"]
+# The same, and every allocation with it: a second stream, each allocation
+# attributed to the zone that was open when it was made. Its own feature
+# because it installs a global allocator that reports — worth paying for a
+# leak or a per-frame allocation to chase, and a tax on every fetch
+# otherwise.
+tracy_memory = ["tracy", "bevy/trace_tracy_memory"]
 
 [dependencies]
 ab_glyph = "0.2"

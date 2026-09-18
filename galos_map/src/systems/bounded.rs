@@ -35,6 +35,7 @@ use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
 use bevy::ecs::system::SystemParam;
+use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -287,14 +288,25 @@ pub(crate) fn fetch(
         let source = transport.0.clone();
         tasks.0.insert(
             id,
-            pool.spawn(async move {
-                // The stamp first: a payload republished between the two is
-                // then held under the older stamp and re-read by the next
-                // refresh, where the other order would hold a stamp for
-                // contents the map does not have.
-                let stamp = source.stamp(Part::Cell(id)).await.ok().flatten();
-                Ok((source.payload(id).await?, stamp))
-            }),
+            pool.spawn(
+                async move {
+                    // The stamp first: a payload republished between the two is
+                    // then held under the older stamp and re-read by the next
+                    // refresh, where the other order would hold a stamp for
+                    // contents the map does not have.
+                    let stamp =
+                        source.stamp(Part::Cell(id)).await.ok().flatten();
+                    Ok((source.payload(id).await?, stamp))
+                }
+                // One zone per cell, named with it. At info with the rest: the
+                // walk is the map's live payload path, so a capture that left
+                // these out would show every frame and none of the reads the
+                // frames are waiting on. A view change asks for the cells it
+                // newly reaches and no more — the map holds the others and
+                // this loop skips what is already on the wire — so the count
+                // is a view's worth of zones, not a frame's.
+                .instrument(info_span!("cell payload", cell = ?id)),
+            ),
         );
     }
 }

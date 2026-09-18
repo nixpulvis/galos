@@ -39,6 +39,7 @@ use crate::systems::bounded::{PointOrders, Republished, ResidentCells, adopt};
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::Jumps;
 use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
+use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -235,7 +236,12 @@ fn poll(
         .map(|(id, _)| (id, held.cells.get(&id).copied().flatten()))
         .collect();
 
-    refreshing.task = Some(AsyncComputeTaskPool::get().spawn(async move {
+    // The pass as one zone, wrapped around the future for the reason
+    // [`crate::loading::start`] gives: a task pool future cannot hold an
+    // entered span's guard, and nothing under this one yields — a stamp and a
+    // part are both blocking reads — so the span opens and closes on the one
+    // pool thread.
+    let pass = async move {
         let mut found = Refreshed::default();
 
         // Whether a part has moved since the stamp in hand. Every part the
@@ -315,7 +321,11 @@ fn poll(
         }
 
         found
-    }));
+    };
+    refreshing.task = Some(
+        AsyncComputeTaskPool::get()
+            .spawn(pass.instrument(info_span!("refresh poll"))),
+    );
 }
 
 /// Take what a finished pass read into the resident tables

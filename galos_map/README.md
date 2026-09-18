@@ -139,3 +139,42 @@ bindings window is the exception and goes first, being read over everything —
 a form left standing while something is looked up included.
 
 The map is quit by closing its window.
+
+## Profiling
+
+`--features tracy` builds the map to be profiled and
+[Tracy](https://github.com/wolfpld/tracy) reads it: bevy's own zones — one per
+system, per schedule and per render pass, and a frame mark per present — plus
+the map's, which are the work that happens off the main thread and would
+otherwise be unexplained gaps on the pool threads: `index read` (opening),
+`refresh poll`, `cell payload` (one per cell a view change asks for, named
+with it), `region cells` (one per worker of the legacy region fetch, named
+with its share), `route search`, `name search`, `stop lookup` and `bodies
+read`. Those are compiled into every build and go wherever the subscriber
+sends them, which without the feature is nowhere.
+
+The protocol is versioned and checked when the profiler connects, so the
+profiler has to be the release the client speaks: **Tracy 0.13.1**, which is
+the `tracy-client-sys` 0.28 in `Cargo.lock`. `brew install tracy`, or a build
+of that tag.
+
+```sh
+cargo run --release --features tracy -- --index "$HOME/.galos_index"
+# In another shell: the profiler to watch it live, or a capture to read after.
+tracy
+tracy-capture -o galos.tracy -s 20
+# Every allocation as well, attributed to the zone that made it.
+cargo run --release --features tracy_memory
+```
+
+The map first, then the profiler. Until something connects the client holds
+everything it is told, which is what bevy warns about on startup — memory
+grows until it is read — and a profiler already listening when the map starts
+can lose the handshake and exit rather than wait through it.
+
+`RUST_LOG` replaces bevy's filter whole, and a filter that drops a span drops
+it from the capture as well as from the log, so a run with `RUST_LOG=warn`
+profiles nothing. Leave it unset, or keep `info` in whatever it says.
+
+A release build is the one to read. The dev profile is `opt-level = 1` with
+its dependencies at 3, which is playable but is not what the numbers mean.

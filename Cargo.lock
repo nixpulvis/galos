@@ -1629,6 +1629,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tracy",
  "tracing-wasm",
+ "tracy-client",
 ]
 
 [[package]]

@@ -156,6 +156,10 @@ cargo run --release -p galos_map
 cargo run --release -p galos_map -- --index /srv/galos_index
 GALOS_INDEX=/srv/galos_index cargo run --release -p galos_map
 
+# The same, built to be profiled: bevy's spans and the map's, shipped to a
+# Tracy profiler of the version the client speaks. See galos_map/README.md.
+cargo run --release -p galos_map --features tracy
+
 # What a built index directory holds, without writing anything anywhere.
 cargo run -p galos_index -- info .galos_index
 ```

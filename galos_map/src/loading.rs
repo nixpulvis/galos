@@ -35,6 +35,7 @@ use crate::systems::route::graph::Jumps;
 use crate::{
     Boosts, Factions, IndexDir, Names, Populated, ResidentIndex, Transport,
 };
+use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -167,8 +168,18 @@ fn start(
     let saying = Arc::clone(&step);
     let dir = dir.0.clone();
 
-    let task = AsyncComputeTaskPool::get()
-        .spawn(async move { read(&source, &saying, &dir).await });
+    // The whole of opening as one zone, on whichever pool thread runs it.
+    // Wrapped around the future rather than entered inside it: the guard
+    // `entered()` hands back is not `Send`, and a future holding one across an
+    // await is one the task pool will not take. Instrumenting enters the span
+    // on each poll instead, which for a read that never yields — every
+    // `Source` method behind it is a blocking file read in an `async fn` — is
+    // one zone opened and closed on the one thread, as a profiler's zone has
+    // to be.
+    let task = AsyncComputeTaskPool::get().spawn(
+        async move { read(&source, &saying, &dir).await }
+            .instrument(info_span!("index read")),
+    );
 
     commands.insert_resource(Reading { task, step, failed: None });
 }

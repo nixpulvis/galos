@@ -325,6 +325,10 @@ fn searched(
                     asked,
                     now,
                     pool.spawn(async move {
+                        // The lookup as one zone. A binary search of a mapped
+                        // table, so the interesting captures are the cold ones
+                        // where the zone is the page faults.
+                        let _zone = info_span!("name search").entered();
                         search_names(&table, &name, near, RESULTS as usize)
                     }),
                 );
@@ -343,6 +347,7 @@ fn searched(
                     (),
                     now,
                     pool.spawn(async move {
+                        let _zone = info_span!("stop lookup").entered();
                         stops.iter().find_map(|stop| locate(&table, stop).err())
                     }),
                 );

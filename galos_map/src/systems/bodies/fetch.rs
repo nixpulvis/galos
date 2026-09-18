@@ -11,6 +11,7 @@ use crate::schedule::MapSet;
 use crate::systems::System;
 use crate::systems::bodies::spawn::Strength;
 use crate::systems::fetch::Poll;
+use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
@@ -177,13 +178,19 @@ impl Polling {
     /// Put the question about `address`, dropping whatever was outstanding
     fn ask(&mut self, transport: &Transport, address: i64, now: Instant) {
         let transport = transport.0.clone();
-        let task = AsyncComputeTaskPool::get().spawn(async move {
-            // Nothing is made of a failure but an empty answer. A system the
-            // source cannot speak about and one it has nothing to say about
-            // are the same thing to a map that has to draw something either
-            // way.
-            transport.bodies(address).await.unwrap_or_default()
-        });
+        let task = AsyncComputeTaskPool::get().spawn(
+            async move {
+                // Nothing is made of a failure but an empty answer. A system
+                // the source cannot speak about and one it has nothing to say
+                // about are the same thing to a map that has to draw something
+                // either way.
+                transport.bodies(address).await.unwrap_or_default()
+            }
+            // One zone per system asked about, named with the address: the read
+            // is a file apiece, and a poll landing on a system with a thousand
+            // bodies is a different zone to one with three.
+            .instrument(info_span!("bodies read", address)),
+        );
 
         self.query = Some((address, task));
         self.asked_at = Some(now);
