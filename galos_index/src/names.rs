@@ -461,15 +461,87 @@ impl Names {
         // The sectors the query's words name, most words matched first: a
         // derived name is a sector and then coordinates, so this is the
         // only road that reaches the 97.4 % of names nothing stored.
-        let sectors =
-            crate::procedural::sectors_holding_all(&words, near, limit);
-        // A few rows each, for the same reason the roads take a share:
-        // a sector holds a hundred thousand systems and their names differ
-        // in the coordinates, so one sector's first rows are the least
+        // **A word that is coordinates is constructed, not matched.** `EUQ
+        // YE-Q` used to answer nothing: the sector road walks a sector's
+        // rows in name order and the `YE-Q` boxels sit a hundred thousand
+        // rows down them, past any window worth reading. But `YE-Q` is not
+        // a name at all — it is the boxel's ordinal in base 26 — so the
+        // address it names in a given sector is arithmetic, and all the
+        // table is asked is whether it holds it. See
+        // [`crate::procedural::addresses_in`].
+        if let Some(coded) = crate::procedural::coded(&words) {
+            // The words that are not coordinates name the sector; where
+            // there are none, the query is a boxel of *every* sector and
+            // only where the reader is looking can say which to try.
+            let named: Vec<&str> = words
+                .iter()
+                .copied()
+                .filter(|word| !crate::procedural::is_coordinate(word))
+                .collect();
+            let sectors: Vec<u32> = match (named.is_empty(), near) {
+                (true, Some(near)) => crate::procedural::sectors_near(
+                    near,
+                    crate::procedural::TRIED_SECTORS,
+                ),
+                (true, None) => Vec::new(),
+                _ => {
+                    crate::procedural::sectors_holding_all(&named, near, limit)
+                        .into_iter()
+                        .filter_map(|(_, sector)| {
+                            crate::procedural::sector_named(sector)
+                                .map(crate::procedural::sector_key)
+                        })
+                        .collect()
+                }
+            };
+            let each = (limit - found.len()).div_ceil(sectors.len().max(1));
+            for key in sectors {
+                let mut kept = 0;
+                for address in crate::procedural::addresses_in(
+                    key,
+                    &coded,
+                    crate::procedural::TRIED,
+                ) {
+                    if found.len() >= limit || kept >= each {
+                        break;
+                    }
+                    if self.delta.said(address).is_some()
+                        || found.iter().any(|held| held.address == address)
+                    {
+                        continue;
+                    }
+                    if let Some(at) = self.base.index_of(address) {
+                        found.push(self.base.entry_at(at));
+                        kept += 1;
+                    }
+                }
+            }
+            if found.len() >= limit {
+                return found;
+            }
+        }
+        // **Spelled right before spelled nearly, whichever road answers.**
+        // A sector merely near what was typed is a worse answer than a
+        // stored name holding the word exactly, so the sector road is two:
+        // the sectors spelled right run here and the ones only nearly
+        // spelled run behind the text sweep below. Without that, `COLONA`
+        // answered with five systems of `COJOA`, two edits out, and never
+        // reached `COLONIA`.
+        //
+        // A few rows from each sector, for the same reason the roads take
+        // a share: a sector holds a hundred thousand systems whose names
+        // differ in the coordinates, so its first dozen rows are the least
         // useful dozen answers there are. `EUQ` offered six of `BLAEA EUQ
         // AA-A` and nothing of the other sectors named `EUQ`.
+        let sectors =
+            crate::procedural::sectors_holding_all(&words, near, limit);
+        let mut nearly: Vec<&str> = Vec::new();
         let each = (limit - found.len()).div_ceil(sectors.len().max(1));
-        for sector in sectors {
+        for (exactly, sector) in sectors {
+            if !exactly {
+                nearly.push(sector);
+                continue;
+            }
             for at in
                 self.base.rows_starting(sector, reach).into_iter().take(each)
             {
@@ -484,6 +556,35 @@ impl Names {
                 return found;
             }
             take(at, &mut found);
+        }
+        // **And last, the stored names nearly spelled.** The procedural
+        // ones are fuzzed off the dictionary by every road above; a given
+        // name has no vocabulary to fuzz against, so the only answer is to
+        // walk the text a word at a time ([`Table::rows_near`]).
+        // Only where nothing was spelled right. A query that found real
+        // names is a query a reader spelled, and near misses beside them
+        // are noise; and this is the one road that reads all 128 MB of the
+        // text, which measured 20–90 ms against the 1–6 ms the roads above
+        // cost. `SOL` pays none of it.
+        if found.is_empty() {
+            for at in self.base.rows_near(probe, limit) {
+                if found.len() >= limit {
+                    return found;
+                }
+                take(at, &mut found);
+            }
+        }
+        // And the sectors only nearly spelled, last of all.
+        let each = (limit - found.len()).div_ceil(nearly.len().max(1));
+        for sector in nearly {
+            for at in
+                self.base.rows_starting(sector, reach).into_iter().take(each)
+            {
+                if found.len() >= limit {
+                    return found;
+                }
+                take(at, &mut found);
+            }
         }
         found
     }
@@ -1283,6 +1384,99 @@ impl Table {
                         if found.len() >= limit {
                             return;
                         }
+                    }
+                }
+            }
+        });
+        found
+    }
+
+    /// Which systems' *stored* names hold a word near enough to `word`, at
+    /// most `limit` of them
+    ///
+    /// **The fuzzy road for the names nothing derives.** The procedural
+    /// ones are fuzzed against a compiled-in dictionary — 11,662 sectors
+    /// and 192 KB — because everything else about them is coordinates; the
+    /// given ones have no such vocabulary, so the only place a misspelling
+    /// can be answered from is the text itself.
+    ///
+    /// Which is affordable for the same reason the word-start sweep is:
+    /// `text.bin` holds only the names no address spells, 128 MB of a 200 M
+    /// galaxy. This walks it a *word* at a time rather than looking for a
+    /// run of bytes — a banded edit distance has nowhere to start from in a
+    /// byte search — and it is swept in parallel, a run of spans a thread.
+    ///
+    /// The bound is the word's own ([`crate::procedural::matches_word`]),
+    /// so a coordinate is never fuzzed and three letters are matched
+    /// exactly.
+    pub fn rows_near(&self, word: &str, limit: usize) -> Vec<usize> {
+        let Some(held) = self.held.as_ref() else {
+            return Vec::new();
+        };
+        if word.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let text = &held.text;
+        let hands = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(text.bytes.len().div_ceil(SWEEP).max(1));
+        let run = text.stored.div_ceil(hands.max(1));
+
+        let mut found = Vec::new();
+        std::thread::scope(|scope| {
+            let mut hands = Vec::new();
+            let mut from = 0usize;
+            while from < text.stored {
+                let upto = (from + run).min(text.stored);
+                let (at, end) = (from, upto);
+                hands.push(scope.spawn(move || {
+                    let mut hits = Vec::new();
+                    for span in at..end {
+                        let name =
+                            &text.bytes[text.start(span)..text.start(span + 1)];
+                        let Ok(name) = std::str::from_utf8(name) else {
+                            continue;
+                        };
+                        // The nearest of the name's words, a name of
+                        // several being as near as its best one.
+                        let edits = name
+                            .split(' ')
+                            .filter_map(|part| {
+                                crate::procedural::edits_to(word, part)
+                            })
+                            .min();
+                        if let Some(edits) = edits {
+                            // How much name there is around the word that
+                            // matched, which is the tie-break: `COLONA` is
+                            // one edit from `COLONIA` and one from the
+                            // `CORONA` of `CORONA AUSTR. DARK REGION FG-Y
+                            // E12`, and a name that is nearly the query is
+                            // a better answer than a region label holding
+                            // a word that is.
+                            let held = name.split(' ').count();
+                            hits.push((edits, held, text.row_of(span)));
+                        }
+                    }
+                    hits
+                }));
+                from = upto;
+            }
+            let mut hits: Vec<(usize, usize, usize)> = Vec::new();
+            for hand in hands {
+                hits.extend(hand.join().expect("a sweep"));
+            }
+            // **The nearest first, not the first swept.** A loose query
+            // matches thousands of names and there is room for a
+            // screenful: `COLONA` reached `R CORONAE AUSTRINI` before
+            // `COLONIA` — two edits against one — and filled the answer
+            // with it. Ties by row, so the answer is the same on every
+            // machine.
+            hits.sort_unstable();
+            for (.., row) in hits {
+                if !found.contains(&row) {
+                    found.push(row);
+                    if found.len() >= limit {
+                        return;
                     }
                 }
             }
@@ -2575,6 +2769,49 @@ mod tests {
         // And a word nothing holds still answers nothing, however the rest
         // of the query reads.
         assert!(named("PRUE NOWHERE").is_empty());
+    }
+
+    /// A boxel code is built, not matched, and a given name may be
+    /// misspelled
+    ///
+    /// The two roads a derived galaxy needs and a stored one does not.
+    /// `EUQ YE-Q` answered nothing before: the sector road walks a
+    /// sector's rows in name order and the `YE-Q` boxels are a hundred
+    /// thousand rows down them, so the code has to be read as the
+    /// coordinates it is. And a misspelled *given* name has no vocabulary
+    /// to be offered from — the dictionary holds sectors — so the only
+    /// answer is the text, a word at a time.
+    #[test]
+    fn a_code_is_built_and_a_stored_name_may_be_misspelled() {
+        let dir = Scratch::new("coded");
+        let entries = vec![
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 1.0),
+            entry(96_076_086, "SIDGIO AA-A G1", 2.0),
+            entry(10, "ACHENAR", 3.0),
+        ];
+        published(&dir.0, &entries);
+        let names = Names::open(&dir.0).expect("the table opens");
+        let named = |query: &str| -> Vec<String> {
+            names
+                .matching(query, 25)
+                .into_iter()
+                .map(|entry| entry.name.into_string())
+                .collect()
+        };
+
+        // The sector word and the code, which no by-name order reaches.
+        assert_eq!(named("EAEWSY NR-W"), ["PRUE EAEWSY NR-W E1-0"]);
+        // And the whole tail, which names one address.
+        assert_eq!(named("PRUE EAEWSY NR-W E1-0"), ["PRUE EAEWSY NR-W E1-0"]);
+        // A code naming a boxel nothing is in answers nothing, the road
+        // asking the table rather than trusting the arithmetic.
+        assert!(named("EAEWSY AA-B").is_empty());
+
+        // A given name nearly spelled, which only the text can answer.
+        assert_eq!(named("ACHENR"), ["ACHENAR"]);
+        // And the code is never fuzzed: a wrong letter there is a
+        // different boxel rather than a near miss.
+        assert!(named("EAEWSY NR-X").is_empty());
     }
 
     /// One character is not searched, and a name is still resolvable by it

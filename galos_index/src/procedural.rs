@@ -245,8 +245,26 @@ pub fn slack(word: &str) -> usize {
 /// sector vocabulary here, and the rows a caller sieves behind it. A prefix
 /// counts because that is what a search is; the edits are [`slack`]'s.
 pub fn matches_word(word: &str, held: &str) -> bool {
-    held.starts_with(word)
-        || within(word.as_bytes(), held.as_bytes(), slack(word)).is_some()
+    edits_to(word, held).is_some()
+}
+
+/// The same, answering how many letters are wrong
+///
+/// Nought for a prefix, which is what a search is, and otherwise the edit
+/// distance — so a caller with more answers than room offers the nearest
+/// rather than whichever it swept first.
+pub fn edits_to(word: &str, held: &str) -> Option<usize> {
+    if held.starts_with(word) {
+        return Some(0);
+    }
+    // **Coordinates are never fuzzed.** A wrong letter in `YE-Q` is a
+    // different boxel rather than a near miss, and the boxels are all
+    // real: fuzzing it answered `YE-Q D5-0` with `TE-Q D5-0`, a place
+    // the reader did not ask about and cannot tell from the one they did.
+    if is_coordinate(word) {
+        return None;
+    }
+    within(word.as_bytes(), held.as_bytes(), slack(word))
 }
 
 /// The sectors holding the most of `words`, the most first, at most `limit`
@@ -264,7 +282,7 @@ pub fn sectors_holding_all(
     words: &[&str],
     near: Option<[f64; 3]>,
     limit: usize,
-) -> Vec<&'static str> {
+) -> Vec<(bool, &'static str)> {
     if words.is_empty() || limit == 0 {
         return Vec::new();
     }
@@ -323,7 +341,205 @@ pub fn sectors_holding_all(
         (usize::MAX - held, *away, *sector)
     });
     found.truncate(limit);
-    found.into_iter().map(|(.., sector)| sector).collect()
+    // Whether the sector was spelled right, which is the caller's to rank
+    // by: a sector merely *near* what was typed is worth less than a
+    // stored name that holds the word exactly, and only the caller can
+    // weigh the two.
+    found
+        .into_iter()
+        .map(|(held, _, sector)| (held == 2 * words.len(), sector))
+        .collect()
+}
+
+/// What the words of a query say about a *boxel*
+///
+/// **The half of a procedural name that is coordinates.** `PRAEA EUQ YE-Q
+/// D5-0` is two sector words and then `YE-Q D5-0`, which is not a name to
+/// be matched but a position to be read: the three letters are the boxel's
+/// coordinates inside its sector in base 26, the letter after them is the
+/// mass class, and the numbers are the run and the system's index. A search
+/// that matched those as text was searching for a number, which is why
+/// `EUQ YE-Q` used to answer nothing while every sector named `EUQ` held a
+/// `YE-Q`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Coded {
+    /// The boxel's ordinal within its run, from the three letters.
+    pub code: u32,
+    /// The mass class, where a class letter was typed.
+    pub mass: Option<u8>,
+    /// The run, where one was written — `D5-0` is run 5 and `D5` is not.
+    pub run: Option<u32>,
+    /// The system's index in its boxel, where one was typed.
+    pub index: Option<u32>,
+}
+
+/// Whether `word` is coordinates rather than a name
+///
+/// The two shapes a tail is written in: `YE-Q`, three letters with a dash
+/// before the last, and `D5-0` or `D5`, a mass class and its numbers. A
+/// caller matching words against a vocabulary skips these, there being no
+/// sector spelled like one.
+pub fn is_coordinate(word: &str) -> bool {
+    code_of(word).is_some() || class_of(word).is_some()
+}
+
+/// The boxel ordinal three letters spell, `YE-Q` being one.
+fn code_of(word: &str) -> Option<u32> {
+    let (pair, one) = word.split_once('-')?;
+    let (pair, one) = (pair.as_bytes(), one.as_bytes());
+    if pair.len() != 2 || one.len() != 1 {
+        return None;
+    }
+    let letter = |b: u8| b.is_ascii_uppercase().then(|| u32::from(b - b'A'));
+    Some(letter(pair[0])? + 26 * letter(pair[1])? + 676 * letter(one[0])?)
+}
+
+/// The class, run and index a word like `D5-0` spells.
+fn class_of(word: &str) -> Option<(u8, Option<u32>, Option<u32>)> {
+    let (class, numbers) = word.as_bytes().split_first()?;
+    if !class.is_ascii_uppercase() {
+        return None;
+    }
+    let mass = class - b'A';
+    if mass > 7 {
+        return None;
+    }
+    let numbers = std::str::from_utf8(numbers).ok()?;
+    if numbers.is_empty() {
+        return Some((mass, None, None));
+    }
+    match numbers.split_once('-') {
+        // `D5-0`: run five, index nought.
+        Some((run, index)) => {
+            Some((mass, Some(run.parse().ok()?), Some(index.parse().ok()?)))
+        }
+        // `D5`: the game writes a run of nought by leaving it out, so this
+        // is index five in run nought — and the run is *known*, which is
+        // what keeps a query this specific from being enumerated.
+        None => Some((mass, Some(0), Some(numbers.parse().ok()?))),
+    }
+}
+
+/// What `words` say about a boxel, or [`None`] where none of them do
+///
+/// The code is what makes a query coordinates at all: a class on its own
+/// (`D5`) says nothing about *where*, only which of a boxel's systems, so
+/// it is read only beside one.
+pub fn coded(words: &[&str]) -> Option<Coded> {
+    let code = words.iter().find_map(|word| code_of(word))?;
+    let class = words.iter().find_map(|word| class_of(word));
+    Some(match class {
+        Some((mass, run, index)) => {
+            Coded { code, mass: Some(mass), run, index }
+        }
+        None => Coded { code, ..Coded::default() },
+    })
+}
+
+/// How many runs of a boxel code a query that named none is tried at.
+///
+/// A run is the code repeating as a sector fills up, so low runs hold most
+/// of what has been reported: the first is every sector's, and a sector
+/// deep enough to reach run sixteen is one somebody has surveyed. A query
+/// naming a run pays none of this.
+const RUNS: u32 = 16;
+
+/// And how many of a boxel's systems, on the same argument: an index past
+/// a handful is a boxel with a crowd in it.
+const INDICES: u32 = 8;
+
+/// How many addresses a sector is tried at, where the query left the class,
+/// the run or the index open
+///
+/// The enumeration is [`RUNS`] deep by [`INDICES`] wide over eight mass
+/// classes, and a sector that holds none of them holds none: this is the
+/// bound on what a miss costs, at an address lookup each.
+pub const TRIED: usize = 128;
+
+/// And how many sectors are tried, where the query named a word that
+/// several of them hold
+///
+/// A word like `EUQ` names sixty-odd sectors and every one of them holds a
+/// boxel called `YE-Q`, so what bounds this road is how many sectors are
+/// worth asking about rather than how many match. Eight nearest the reader,
+/// because a coordinate query is about a place: measured over the v4 table,
+/// `EUQ YE-Q` answered in 891 ms over twenty-five sectors and 128 ms over
+/// eight, and the answers are the eight the reader is nearest.
+pub const TRIED_SECTORS: usize = 8;
+
+/// Every address `coded` could name in the sector `key` stands for, most
+/// likely first
+///
+/// **Construction, not matching.** The address packs the sector, the
+/// boxel and the index, so a query that pins all three names exactly one
+/// address and the caller has only to ask whether the table holds it. What
+/// a query leaves open is enumerated, narrowest first: the mass class it
+/// did not say, then the run, then the index — [`RUNS`] and [`INDICES`]
+/// deep, which is where the systems anybody has reported are.
+///
+/// At most `most` of them, and the order is what makes that bound worth
+/// having: a caller filling a screenful stops at the first answers rather
+/// than the last.
+pub fn addresses_in(key: u32, coded: &Coded, most: usize) -> Vec<i64> {
+    let sector = sector_of(key);
+    let masses: Vec<u8> = match coded.mass {
+        Some(mass) => vec![mass],
+        None => (0..8).collect(),
+    };
+    let runs: Vec<u32> = match coded.run {
+        Some(run) => vec![run],
+        None => (0..RUNS).collect(),
+    };
+    let indices: Vec<u32> = match coded.index {
+        Some(index) => vec![index],
+        None => (0..INDICES).collect(),
+    };
+    let mut found = Vec::new();
+    for index in indices {
+        for run in &runs {
+            for mass in &masses {
+                let Some(ordinal) = elite_journal::boxel::LETTERS
+                    .checked_mul(*run)
+                    .and_then(|run| coded.code.checked_add(run))
+                else {
+                    continue;
+                };
+                let boxel = Boxel { mass: *mass, sector, ordinal, index };
+                if let Some(address) = boxel.address() {
+                    found.push(address);
+                    if found.len() >= most {
+                        return found;
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The sectors nearest `at`, at most `limit`
+///
+/// What answers a query that is coordinates and nothing else — `YE-Q D5-0`
+/// names a boxel of *every* sector, so which sectors are worth trying is
+/// the only question, and where the reader is looking is the only answer
+/// there is.
+pub fn sectors_near(at: [f64; 3], limit: usize) -> Vec<u32> {
+    let away = |key: u32| {
+        let sector = sector_of(key);
+        (0..3)
+            .map(|axis| {
+                let middle = elite_journal::boxel::ORIGIN[axis]
+                    + f64::from(sector[axis]) * elite_journal::boxel::SECTOR_LY
+                    + elite_journal::boxel::SECTOR_LY / 2.0;
+                (middle - at[axis]).powi(2)
+            })
+            .sum::<f64>() as u64
+    };
+    let mut found: Vec<(u64, u32)> =
+        SECTOR_TABLE.by_key.iter().map(|(key, _)| (away(*key), *key)).collect();
+    found.sort_unstable();
+    found.truncate(limit);
+    found.into_iter().map(|(_, key)| key).collect()
 }
 
 /// How far a query may be from a sector's name and still be offered.
@@ -336,90 +552,6 @@ pub fn sectors_holding_all(
 /// and then how many systems a sector holds, which the caller can weigh
 /// against where the camera is looking.
 pub const NEAREST: usize = 2;
-
-/// Below this many characters a query is matched exactly.
-///
-/// One edit on three letters reaches a quarter of the alphabet's worth of
-/// sectors and says nothing about which was meant.
-pub const EXACTLY_UNDER: usize = 5;
-
-/// A sector a query nearly spells.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Near {
-    /// How many edits from the query, nought being exactly it.
-    pub edits: usize,
-    /// The sector's name.
-    pub sector: &'static str,
-    /// Its key, for [`sector_at`]'s side of the table.
-    pub key: u32,
-}
-
-/// The sectors `query` nearly spells, nearest first, at most `limit`.
-///
-/// **The whole point of deriving names is that this is small.** A galaxy's
-/// 200 M names hold only 11,662 distinct sectors — 192 KB, compiled in and
-/// resident — so a fuzzy match is a sweep of the vocabulary rather than of
-/// the galaxy, with no prefilter and no index. Everything else about a
-/// procedural name is coordinates, which are parsed rather than matched.
-///
-/// `most` is the edit bound, clamped to [`NEAREST`]; a query shorter than
-/// [`EXACTLY_UNDER`] is matched exactly whatever is asked for. Ties are
-/// broken by name so the answer is the same on every machine.
-pub fn sectors_like(query: &str, most: usize, limit: usize) -> Vec<Near> {
-    let most = if query.len() < EXACTLY_UNDER { 0 } else { most.min(NEAREST) };
-    let mut found: Vec<Near> = SECTOR_TABLE
-        .by_name
-        .iter()
-        .filter_map(|(sector, key)| {
-            within(query.as_bytes(), sector.as_bytes(), most)
-                .map(|edits| Near { edits, sector, key: *key })
-        })
-        .collect();
-    found.sort_unstable_by_key(|near| (near.edits, near.sector));
-    found.truncate(limit);
-    found
-}
-
-/// The names `query` nearly spells, nearest first, at most `limit`.
-///
-/// A procedural name is a sector and then coordinates, and only the sector
-/// can be misspelled: the tail has to *parse*, because a wrong letter there
-/// is a different boxel rather than a near miss. So this fuzzes the words
-/// and keeps the tail exactly, and answers a name with the address that
-/// bears it.
-///
-/// **An address it answers with is a place, not a promise.** Every boxel
-/// has an address whether or not a system was ever reported in it, so the
-/// caller still has to ask the table or the index whether the system
-/// exists — which is what a search does anyway to draw it.
-pub fn names_like(
-    query: &str,
-    most: usize,
-    limit: usize,
-) -> Vec<(usize, SystemName, i64)> {
-    let Some((head, last)) = query.rsplit_once(' ') else { return Vec::new() };
-    let Some((sector, code)) = head.rsplit_once(' ') else { return Vec::new() };
-    let tail = format!("{code} {last}");
-    sectors_like(sector, most, limit)
-        .into_iter()
-        .filter_map(|near| {
-            let boxel = Boxel::spelled(&tail, sector_of(near.key))?;
-            let address = boxel.address()?;
-            let name =
-                SystemName::new(format!("{} {}", near.sector, boxel.tail()));
-            (Boxel::of(address) == boxel).then_some((near.edits, name, address))
-        })
-        .collect()
-}
-
-/// Whether `query` is within `most` edits of `word`, and how many if so
-///
-/// The same bound the sector search uses, for a caller sieving rows behind
-/// it: a fuzzy road whose sieve was exact would throw away every row it
-/// just found. See [`within`].
-pub fn near(query: &str, word: &str, most: usize) -> Option<usize> {
-    within(query.as_bytes(), word.as_bytes(), most)
-}
 
 /// Whether `a` and `b` are within `most` edits, and how many if so.
 ///
@@ -544,6 +676,66 @@ mod tests {
         }
     }
 
+    /// A word is coordinates or it is a name, and the difference is read
+    ///
+    /// **What lets a query be constructed rather than matched.** The code
+    /// is the boxel's ordinal in base 26 and the class carries the run and
+    /// the index, so a query naming all three names one address; a word
+    /// that is a name is left to the vocabulary.
+    #[test]
+    fn a_coordinate_word_is_told_from_a_name() {
+        // The code alone leaves the class, the run and the index open.
+        assert_eq!(
+            coded(&["EUQ", "YE-Q"]),
+            Some(Coded { code: code_of("YE-Q").unwrap(), ..Coded::default() }),
+        );
+        // `D5-0` is run five, index nought; `D5` is the run left out,
+        // which is run nought and index five.
+        let code = code_of("YE-Q").unwrap();
+        assert_eq!(
+            coded(&["YE-Q", "D5-0"]),
+            Some(Coded { code, mass: Some(3), run: Some(5), index: Some(0) }),
+        );
+        assert_eq!(
+            coded(&["YE-Q", "D5"]),
+            Some(Coded { code, mass: Some(3), run: Some(0), index: Some(5) }),
+        );
+
+        // A class on its own says nothing about *where*, only which of a
+        // boxel's systems, so it is read beside a code and not instead of
+        // one.
+        assert_eq!(coded(&["D5-0"]), None);
+        assert_eq!(coded(&["PRAEA", "EUQ"]), None);
+        // And a class past `H` is no class at all.
+        assert_eq!(
+            coded(&["YE-Q", "Z5-0"]),
+            Some(Coded { code, ..Coded::default() })
+        );
+
+        assert!(is_coordinate("YE-Q"));
+        assert!(is_coordinate("D5-0"));
+        assert!(!is_coordinate("PRAEA"));
+        assert!(!is_coordinate("SOL"));
+    }
+
+    /// The addresses a coded query names are built, and the narrowest is one
+    #[test]
+    fn a_coded_query_builds_its_addresses() {
+        let key = sector_key(Boxel::of(1_038_034_644).sector);
+        let pinned = coded(&["NR-W", "E1-0"]).expect("coordinates");
+        assert_eq!(addresses_in(key, &pinned, TRIED), [1_038_034_644]);
+
+        // With the class left open every class is tried, and the address
+        // each yields spells the tail back.
+        let open = coded(&["NR-W"]).expect("coordinates");
+        let built = addresses_in(key, &open, TRIED);
+        assert!(built.len() > 8, "{}", built.len());
+        assert!(built.contains(&1_038_034_644), "{built:?}");
+        for address in built {
+            assert_eq!(name_of(address).is_some(), true, "{address}");
+        }
+    }
+
     /// An address whose sector nobody has named spells nothing.
     #[test]
     fn an_unnamed_sector_spells_nothing() {
@@ -551,74 +743,5 @@ mod tests {
         let boxel = Boxel { mass: 0, sector: [0, 0, 0], ordinal: 0, index: 0 };
         let address = boxel.address().expect("an address");
         assert_eq!(name_of(address), None);
-    }
-
-    /// A misspelled sector is offered the one that was meant
-    ///
-    /// Real sectors, off `.index/full`, with the mistakes people make: a
-    /// dropped letter, a transposition, a doubled one.
-    #[test]
-    fn a_misspelled_sector_is_found() {
-        let named = |query: &str| -> Vec<(usize, &'static str)> {
-            sectors_like(query, NEAREST, 4)
-                .into_iter()
-                .map(|near| (near.edits, near.sector))
-                .collect()
-        };
-
-        // Exactly right comes back at no edits, and first.
-        assert_eq!(named("EOL PROU")[0], (0, "EOL PROU"));
-        // A letter dropped, and a transposition.
-        assert!(
-            named("EOL PRU").contains(&(1, "EOL PROU")),
-            "{:?}",
-            named("EOL PRU")
-        );
-        assert!(
-            named("PREA EUQ").contains(&(1, "PRAEA EUQ")),
-            "{:?}",
-            named("PREA EUQ"),
-        );
-        // A doubled letter in a one-word sector.
-        assert!(named("SIDGIIO").contains(&(1, "SIDGIO")));
-
-        // Nothing within the bound is nothing offered, rather than the
-        // nearest thing whatever it costs.
-        assert!(named("ZZZZZZZZZZ").is_empty());
-
-        // And a short query is exact, however wide a bound is asked for: a
-        // stray letter in four would answer with a swathe of the sky.
-        // `AEMO` is a real sector and `CUQE` is its neighbour in the file,
-        // one edit from `CUQI`, `CUQO` and `CUQU` — none of which is
-        // offered.
-        assert_eq!(named("AEMO"), [(0, "AEMO")]);
-        assert_eq!(named("CUQE"), [(0, "CUQE")]);
-        assert!(named("CUQ").is_empty());
-    }
-
-    /// A misspelled name is offered the system it nearly spells
-    ///
-    /// The sector is fuzzed and the tail is not: a wrong letter in `YE-Q
-    /// D5-0` is a different boxel, not a near miss, so it has to parse.
-    #[test]
-    fn a_misspelled_name_is_offered_its_system() {
-        let found = names_like("PRUE EAEWSY NR-W E1-0", NEAREST, 4);
-        assert_eq!(found[0].0, 0, "{found:?}");
-        assert_eq!(found[0].1, SystemName::new("PRUE EAEWSY NR-W E1-0"));
-        assert_eq!(found[0].2, 1_038_034_644);
-
-        // A dropped letter in the sector still lands on the system.
-        let found = names_like("PRUE EAEWSY NR-W E1-0", NEAREST, 4);
-        let slipped = names_like("PRUE EAEWS NR-W E1-0", NEAREST, 4);
-        assert!(
-            slipped.iter().any(|(edits, name, address)| {
-                *edits == 1 && *name == found[0].1 && *address == found[0].2
-            }),
-            "{slipped:?}",
-        );
-
-        // A tail that does not parse is not a near miss of anything.
-        assert!(names_like("PRUE EAEWSY NR-W Z1-0", NEAREST, 4).is_empty());
-        assert!(names_like("SOL", NEAREST, 4).is_empty());
     }
 }
