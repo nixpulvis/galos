@@ -44,10 +44,13 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::image::Image;
+use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+use bevy::render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat,
+};
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -183,6 +186,24 @@ pub(crate) fn drawn_radius(
     )
 }
 
+/// The side of the disc-mask texture, in texels
+///
+/// What sets how crisp a mark's rim is, because the fade at that rim is
+/// authored in texels: a mark drawn `d` pixels across spreads a texel over
+/// `d / MARK_TEXELS` of them, so the blur is a fixed *fraction* of whatever
+/// size the mark is drawn at. At sixty-four texels that fraction is some two
+/// and a half percent of the diameter, which a mark of a few pixels never
+/// shows and a mark the width of a system — a system the camera has come in
+/// on, or a busy one under the population scale — wears as a couple of
+/// pixels of soft edge. Reported as blurry circles, and it was.
+///
+/// Here the same fade is under a pixel out to a mark a hundred and fifty
+/// pixels across, which is wider than any mark left standing: past that the
+/// system's own contents are drawn and the mark has faded out
+/// ([`super::bodies::spawn::WORTH_HIDING`]). A quarter of a megabyte of
+/// texels, uploaded once.
+const MARK_TEXELS: u32 = 256;
+
 /// Put the field's mesh, its two materials, and the origin camera up
 fn spawn_field(
     mut commands: Commands,
@@ -208,11 +229,15 @@ fn spawn_field(
     // realistic view's blackbody color at its HDR level, added for the bloom
     // to grow a bright star past its faint neighbours. Unlit either way: a
     // mark is a light, not a thing lit by one.
+    // Solid and round, and added rather than blended. The disc is what makes
+    // a system a system: a mark cut to a Gaussian read as a glowing smudge
+    // rather than a place, and up close, where a mark is the largest thing on
+    // screen, as a fade with no edge at all. What the field is laid through is
+    // a distribution and wants a Gaussian; what a mark is drawn through stands
+    // for one object and wants its rim.
     let solid = materials.add(StandardMaterial {
         base_color: Color::WHITE,
-        base_color_texture: Some(
-            images.add(crate::systems::glow::gaussian_mask()),
-        ),
+        base_color_texture: Some(images.add(disc_mask())),
         alpha_mode: AlphaMode::Add,
         unlit: true,
         cull_mode: None,
@@ -486,9 +511,104 @@ fn field_mesh(
     mesh
 }
 
+/// A round mask for the field's marks: white and opaque at the centre, clear
+/// at the rim
+///
+/// The marks are screen-aligned quads, and painted bare they are squares.
+/// Sampled as a material's base color, this cuts each quad to the disc
+/// inscribed in it — in every channel, so it rounds the solid mark's alpha and
+/// the glint's color alike. A texel and a half of fade at the rim antialiases
+/// the edge — read in texels, so how soft it comes out on screen is
+/// [`MARK_TEXELS`]'s to say — and the centre holds solid at any size, so a
+/// mark a pixel across is still a point of light rather than a sample of a
+/// faint edge that vanishes.
+fn disc_mask() -> Image {
+    let n = MARK_TEXELS;
+    let centre = (n as f32 - 1.) / 2.;
+    let mut data = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let dx = x as f32 - centre;
+            let dy = y as f32 - centre;
+            let dist = (dx * dx + dy * dy).sqrt();
+            // Solid out to the quad's edge, then a texel and a half to clear.
+            let mask = ((centre - dist) / 1.5).clamp(0., 1.);
+            let value = (mask * 255.) as u8;
+            let texel = ((y * n + x) * 4) as usize;
+            data[texel] = value;
+            data[texel + 1] = value;
+            data[texel + 2] = value;
+            data[texel + 3] = value;
+        }
+    }
+    let mut image = Image::new(
+        Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mark is a disc, not the square its quad would draw bare
+    ///
+    /// A solid centre and clear corners, in every channel, so the box the eye
+    /// used to read is gone whichever way the mark is painted.
+    #[test]
+    fn the_mark_mask_is_round() {
+        let image = disc_mask();
+        let n = MARK_TEXELS as usize;
+        let data = image.data.expect("the mask carries its texels");
+
+        let centre = ((n / 2) * n + n / 2) * 4;
+        assert_eq!(
+            &data[centre..centre + 4],
+            &[255, 255, 255, 255],
+            "the centre of the mark is not solid"
+        );
+        assert_eq!(
+            &data[0..4],
+            &[0, 0, 0, 0],
+            "the corner of the quad is still drawn"
+        );
+    }
+
+    /// And its rim is crisp at the sizes a mark is actually drawn at
+    ///
+    /// Reported as blurry circles. The rim's fade is authored in texels, so
+    /// on screen it is a fraction of whatever the mark is drawn at, and at
+    /// sixty-four texels a mark the width of a system wore a couple of pixels
+    /// of soft edge. Read as that fraction, and against the widest mark left
+    /// standing: past about this the system's own contents are drawn and the
+    /// mark has faded out.
+    #[test]
+    fn the_mark_rim_is_crisp_at_the_sizes_it_is_drawn() {
+        let n = MARK_TEXELS as usize;
+        let data = disc_mask().data.expect("the mask carries its texels");
+        let alpha = |x: usize| data[((n / 2) * n + x) * 4 + 3];
+
+        // Out from the middle of the mask: how far it holds solid, and how
+        // far anything is drawn at all.
+        let solid = (n / 2..n).take_while(|x| alpha(*x) == 255).count();
+        let lit = (n / 2..n).take_while(|x| alpha(*x) > 0).count();
+        let fade = (lit - solid) as f32 / n as f32;
+
+        assert!(fade < 0.01, "the rim fades over {fade} of a mark's width");
+
+        // The widest mark still drawn, in pixels.
+        let widest = 150.;
+        assert!(
+            fade * widest < 1.5,
+            "a {widest} px mark wore {} px of soft edge",
+            fade * widest
+        );
+    }
 
     /// The realistic view draws only the stars that clear the eye's floor
     ///
