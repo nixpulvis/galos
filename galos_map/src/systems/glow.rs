@@ -18,15 +18,28 @@
 //! cell that holds it. [`galos_index::Inhabited`] is the second distribution
 //! and exists for this.
 //!
-//! **What the two channels are worth is a gain and not a colour.** An
-//! uninhabited system is a density fact and not a political one, and there are
-//! forty-odd of them for every colony, so laid down at equal weight they bury
-//! every shell colour under grey — which is what the map did. The uncolored
-//! backdrop therefore deposits at [`Gains::backdrop`], derived from the
-//! index's own populated share rather than guessed, and an inhabited system
-//! with nothing political on record deposits at [`Gains::unaligned`]. Neither
-//! is stored: a weight baked into an aggregate cannot be retuned and makes a
-//! residual wrong under any other gain.
+//! **One light per system, and a correction for the crowd.** A system is
+//! worth the same light whether the map draws it as its own mark or the
+//! field stands in for it — [`mark_light`] is the one figure — and that is
+//! what makes the handoff between them invisible: as a cell's payload lands,
+//! its light moves out of the field and into the marks with nothing added
+//! and nothing lost. What the field does differently is hold a *crowd*
+//! down. An uninhabited system is a density fact and not a political one,
+//! and there are forty-odd of them for every colony, so laid down at equal
+//! weight they bury every shell colour under grey — which is what the map
+//! did. So a crowded splat is divided by [`Gains::crowd`], and the crowd
+//! nobody lives in by [`Gains::backdrop`] again, derived from the index's
+//! own populated share rather than guessed. Neither is stored: a weight
+//! baked into an aggregate cannot be retuned and makes a residual wrong
+//! under any other gain.
+//!
+//! **The correction is spent as a cell resolves**, in proportion to the
+//! crowding it corrects for, so by the time a cell's systems have come apart
+//! on screen the field is laying down exactly the light their marks will.
+//! Flat, it left the field seventeen times under those marks *and* falling
+//! as the square of the zoom, so a filament faded out as the camera came in
+//! and lit up again when its payload landed. See [`splat`], which is the
+//! whole of the law.
 //!
 //! **Resolved per cell and added in linear light.** Each splat's mix is summed
 //! on the CPU — eight multiply-adds against a histogram that is already the
@@ -104,12 +117,27 @@ pub struct Laid {
     pub light: f32,
     /// The brightest peak any one quad was laid at, in linear light.
     ///
-    /// What says whether the field is exposed: near zero and it is invisible,
-    /// at [`CEILING`] for everything and it is a white sheet. The peak rather
-    /// than the mean, because a field is read by its bright end — the core
-    /// over the bubble is what clips, and how far past one it runs is how hard
-    /// the bloom spreads.
+    /// The top of the field: at [`CEILING`] for everything it is a white
+    /// sheet, and the core over the bubble is what is meant to clip.
     pub peak: f32,
+    /// The faintest and the middling peak, in linear light.
+    ///
+    /// **What says whether the field is a picture.** The brightest splat is
+    /// one cell in the galaxy's core and is bright at every zoom, so a field
+    /// that has faded to nothing everywhere else reads the same by it. The
+    /// median is what the frame is actually made of, and the fade the
+    /// crowding correction is spent to stop showed up here and nowhere
+    /// else: measured over `.galos_index` under a flat correction, three
+    /// thousandths with the galaxy seen whole and a hundred and sixty
+    /// *millionths* from twenty light years out — one level off black on an
+    /// eight-bit display — with the brightest splat sat at a third of a
+    /// unit throughout, saying nothing was wrong.
+    ///
+    /// The faintest is the tail and not the reading: there is always some
+    /// cell holding a handful of systems across a degree of sky, and what
+    /// it lays down underflows to nothing at any exposure worth having.
+    pub faintest: f32,
+    pub typical: f32,
     /// The smallest, median-ish and largest footprint radius laid, in pixels,
     /// and how many were floored at [`SMALLEST`] — what says whether the field
     /// is a set of overlapping distributions or a lattice of points.
@@ -119,12 +147,30 @@ pub struct Laid {
     pub median: f32,
     pub widest: f32,
     pub floored: u32,
+    /// Quads whose systems have separated on screen: their marks would cover
+    /// less of the footprint than they are spread over (see [`splat`]).
+    ///
+    /// The resolving half of the frame, and what the crowding correction is
+    /// spent over. These are the cells the map is about to draw as marks and
+    /// has not fetched yet, so the number is also how much of the field is
+    /// waiting on a payload.
+    pub separated: u32,
     /// Quads whose peak hit [`CEILING`] and clipped.
     ///
     /// A handful is the bright core doing what the bright core does; most of
     /// the frame is an over-exposed field, and the number is what tells the
     /// two apart without a picture.
     pub clipped: u32,
+}
+
+impl Laid {
+    /// Count one quad in, off what [`Quads::deposit`] laid.
+    fn took(&mut self, lit: Lit) {
+        self.light += lit.light;
+        self.peak = self.peak.max(lit.peak);
+        self.clipped += u32::from(lit.peak >= CEILING);
+        self.separated += u32::from(lit.separated);
+    }
 }
 
 impl Default for Laid {
@@ -134,7 +180,10 @@ impl Default for Laid {
             backdrop: 0,
             light: 0.,
             peak: 0.,
+            faintest: 0.,
+            typical: 0.,
             clipped: 0,
+            separated: 0,
             thinnest: f32::INFINITY,
             tenth: 0.,
             quarter: 0.,
@@ -151,70 +200,91 @@ struct GlowMark;
 
 /// What each channel of the field is worth, in the linear light it deposits
 ///
-/// Held as a resource rather than as constants because the balance between the
-/// two channels is a reading and not a fact: how loud the ungoverned galaxy
-/// should be behind a political view is the question the whole field turns on.
+/// **One light per system, and a suppression for the crowd.** A system is
+/// worth the same light whether it is drawn as itself or stood in for by the
+/// field — that is what makes the handoff between them invisible — so the
+/// three levels below are the mark's and the field's alike. What the field
+/// then does differently is hold a *crowd* down: ten thousand systems in a
+/// pixel are not ten thousand marks' worth of light, they are a backdrop,
+/// and [`crowd`](Self::crowd) is how hard that backdrop is pressed. It is
+/// undone as the crowd resolves (see [`splat`]), so what the field lays down
+/// where its systems separate is exactly what their marks will draw.
+///
+/// Held as a resource rather than as constants because the balance between
+/// the colonies and the ungoverned galaxy behind them is a reading and not a
+/// fact, and because [`settle_gains`] derives one of them from the index.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct Gains {
-    /// What one system nobody lives in deposits, against one that somebody
-    /// does.
+    /// How bright an ordinary inhabited system is drawn, in linear light
     ///
-    /// Derived from the index rather than chosen: [`settle_gains`] sets it to
-    /// the share of the galaxy anybody lives in, which is the weighting under
-    /// which the two channels reach the same brightness where the colonies
-    /// are dense. Measured over `.galos_index`, 77,061 inhabited of 3,399,743
-    /// — one in forty-four.
-    pub backdrop: f32,
-    /// What one inhabited system with nothing political on record deposits.
+    /// The unit the other two are shares of, and the field's exposure with
+    /// it: a crowded cell is this divided by [`crowd`](Self::crowd), and a
+    /// resolved one is this outright.
+    pub mark: f32,
+    /// How much of [`mark`](Self::mark) an inhabited system with nothing
+    /// political on record is worth
     ///
     /// Not zero. A colony whose allegiance nobody has reported is still a
-    /// colony, and the grey it draws in is how the map says so; what it must
-    /// not do is out-shout the systems that do have a reading.
+    /// colony, and the neutral light it draws in is how the map says so;
+    /// what it must not do is out-shout the systems that do have a reading.
     pub unaligned: f32,
-    /// How bright an ordinary inhabited system's own mark is drawn, in linear
-    /// light
-    ///
-    /// **A mark is a light and not a density, and this is the difference.**
-    /// The field carries light per unit area: a cell's weight spread over its
-    /// footprint, so it says systems-per-pixel and correctly goes dark as the
-    /// camera resolves it. A mark is one object and has to stay visible while
-    /// it is what the view is made of. Put a single system through the field's
-    /// conserving law and it peaks at `(1/44) * level / 2 pi sigma^2` — three
-    /// thousandths, which is black, and rightly so: one system really is a
-    /// ten-thousandth of what its cell carries.
-    ///
-    /// So a mark's peak is set rather than divided out, and only the ratios
-    /// between the three kinds are shared with the field, which is what keeps
-    /// grey from swamping a shell either way.
-    pub mark: f32,
-    /// How much of [`mark`](Self::mark) a system nobody lives in draws at
+    /// How much of [`mark`](Self::mark) a system nobody lives in is worth
     ///
     /// Dimmer, not absent: an uninhabited system is most of the galaxy and
-    /// still a system, so it is a faint point rather than nothing. This is the
-    /// per-object cousin of [`backdrop`](Self::backdrop), which is a per-system
-    /// share of a cell and far smaller because there are thousands of them in
-    /// one.
+    /// still a system, so it is a faint point rather than nothing.
     pub faint: f32,
-    /// The linear level one unit of weight deposits, which sets where the
-    /// field clips to white.
+    /// What a crowd of colonies is held down by, against the light their
+    /// marks would carry
     ///
-    /// A sixteenth. At one, measured, the brightest splat sat on
-    /// [`CEILING`] at every distance and eighty quads of four thousand
-    /// clipped with the galaxy seen whole — a white sheet with the marks
-    /// reading as dirt on it. Here the typical peak is six tenths, which
-    /// leaves the bloom something to spread and the dense core the only thing
-    /// that clips.
-    pub level: f32,
+    /// The field's exposure, and the one number that says how loud the
+    /// unresolved galaxy is. Seventeen, which is where the field already
+    /// stood: it is what the old pair of weights came to — a sixteenth of a
+    /// unit against a mark's own light over a mark's own footprint — so the
+    /// crowded end of the law is the exposure that was measured and looked
+    /// at, and not a fresh guess. At one, the field and the marks at equal
+    /// weight, the galaxy is a white sheet with the marks reading as dirt on
+    /// it.
+    ///
+    /// It is a *crowding* correction and not a scale, so it is spent in
+    /// proportion to the crowding it corrects for and is gone by the time a
+    /// cell's systems separate on screen. Flat, it left the field seventeen
+    /// times dimmer than the very marks that replace it, so a region faded
+    /// out as the camera came in and then lit up again when its payload
+    /// landed — the field saying there was nothing where there was about to
+    /// be a shell.
+    pub crowd: f32,
+    /// How much harder the crowd nobody lives in is held down, over and
+    /// above [`crowd`](Self::crowd)
+    ///
+    /// Derived from the index rather than chosen: [`settle_gains`] sets it
+    /// so the two channels reach the same brightness where the colonies are
+    /// dense, which for a populated share `p` and an uninhabited system
+    /// worth [`faint`](Self::faint) of a colony is `faint · (1/p - 1)`.
+    /// Measured over `.galos_index`, 77,061 inhabited of 3,399,743 — one in
+    /// forty-four, so a crowd of the uninhabited is pressed three and a half
+    /// times harder than a crowd of colonies.
+    ///
+    /// Without it the map goes grey: there are forty-odd uninhabited systems
+    /// for every colony, so laid down at equal weight they bury every shell
+    /// colour. It rides on the crowd and not on the system, because one
+    /// uninhabited system standing on its own is not a crowd and is drawn at
+    /// [`faint`](Self::faint) either way — as its own mark, and as the
+    /// field's stand-in for it.
+    pub backdrop: f32,
 }
 
 impl Default for Gains {
     fn default() -> Gains {
+        let faint = 0.08;
         Gains {
-            backdrop: 1. / 44.,
-            unaligned: 0.25,
             mark: 0.6,
-            faint: 0.08,
-            level: 0.0625,
+            unaligned: 0.25,
+            faint,
+            crowd: 17.,
+            // Off the share `.galos_index` measures, until `settle_gains`
+            // reads the directory actually in front of the map: one system
+            // in forty-four is inhabited, so forty-three are not.
+            backdrop: faint * 43.,
         }
     }
 }
@@ -238,9 +308,23 @@ const REACH: f32 = 4.0;
 ///
 /// A cell tighter than this still lands its whole weight, in one pixel rather
 /// than in none: the peak is worked out from the radius actually drawn, so
-/// flooring the radius spreads the light without losing any of it. The same
-/// figure [`super::field::SMALLEST`] floors a mark at, for the same reason.
-const SMALLEST: f32 = 0.75;
+/// flooring the radius spreads the light without losing any of it.
+///
+/// [`super::field::SMALLEST`] itself and not a second copy of the figure,
+/// because the two are now one statement and not two that happen to agree: a
+/// mark is drawn at this radius out where the map floors it, so this is the
+/// area one system's light fills, which is what [`splat`] measures a cell's
+/// own footprint against.
+const SMALLEST: f32 = super::field::SMALLEST;
+
+/// The pixels one system's mark covers, at the floor it is drawn at
+///
+/// The bridge between the two halves of the map. The field stands in for
+/// systems that are not drawn yet, and what says whether it should read as a
+/// wash or as a point of light is how much of its footprint those systems
+/// would cover if they were: `count · MARK_AREA` against the footprint's own
+/// area. See [`splat`].
+const MARK_AREA: f32 = std::f32::consts::PI * SMALLEST * SMALLEST;
 
 /// The side of the Gaussian mask, in texels
 ///
@@ -292,26 +376,78 @@ const COVERAGE: f64 = 0.5;
 /// headroom to spread before it saturates.
 const CEILING: f32 = 8.0;
 
-/// What a weight peaks at, laid as a Gaussian over `radius` pixels
+/// How a splat is laid: the radius it is drawn at, and the light it peaks at
 ///
-/// The one deposit law, shared so that a system and a cell are the same
-/// arithmetic rather than two readings kept in step by hand. The mask
-/// integrates to `2 pi sigma^2` at unit peak, so dividing by that area makes
-/// what lands on the framebuffer the weight asked for whatever it was spread
-/// over — and a cell is then only a system with a spread, which is exactly
-/// what [`Moments`](galos_index::Moments) says it is: a single point has no
-/// deviation from its own mean.
-pub(crate) fn peak(light: Vec3, radius: f32) -> Vec3 {
-    let sigma = radius.max(SMALLEST) / REACH;
-    (light / (std::f32::consts::TAU * sigma * sigma)).min(Vec3::splat(CEILING))
+/// **The one deposit law.** `light` is what the systems this stands for
+/// would be drawn at as marks, summed; `covered` is the pixels those marks
+/// would cover; `spread` is how far the cell says its systems are
+/// scattered, as a standard deviation in pixels. The mask integrates to
+/// `2 pi sigma^2` at unit peak, so the light divided by that area is what
+/// lands on the framebuffer, and the quantity is conserved: a parent's one
+/// splat and its children's several integrate to the same total, and the
+/// cross-fade between them neither pumps brightness nor loses any.
+///
+/// What the law settles on top of that is the level, off `fill` — the share
+/// of the footprint those marks would cover.
+///
+/// - **A crowd** (`fill >= 1`) is a density: its marks would cover the
+///   footprint over and over. Ten thousand systems in a pixel are a
+///   backdrop and not ten thousand marks' worth of light, so a crowd is
+///   held down by `crowd`, which is the field's whole exposure and what
+///   keeps the galaxy a picture rather than a white sheet.
+/// - **A scatter** (`fill < 1`) is not a crowd, and there is nothing to
+///   correct. Its systems have come apart on screen: every one of them is a
+///   mark the map draws at full as soon as its payload lands, and the field
+///   is only standing in until it does. So the correction is spent in
+///   proportion to the crowding it corrects for, and by the time a cell has
+///   separated the field is laying down exactly the light its marks will.
+///
+/// That is the handoff, and it is what the map was getting wrong. Under a
+/// flat correction the field stood seventeen times under the very marks
+/// that replace it — and, being a density, it dimmed as the square of the
+/// zoom while they did not — so a filament faded out as the camera came in
+/// and then lit up again when its payload landed, the map saying there was
+/// nothing where there was about to be a shell. Measured over
+/// `.galos_index`, the middling splat fell nineteenfold between the galaxy
+/// seen whole and twenty light years out, to one level off black.
+///
+/// **The spread is the cell's, always**, and the light is never more than
+/// the marks'. Cutting the spread to what the light can fill — so a sparse
+/// cell keeps its marks' peak instead of their mean — holds the brightness
+/// at any zoom, and it was tried, and it is the one thing this must not do.
+/// A splat tight enough to read as an object is one the user tries to
+/// click; and a cell's centroid moves as its neighbours resolve and as its
+/// own systems are drawn out of it, so those objects slide about under a
+/// zoom. The field says where its systems are to a cell's precision and no
+/// better, and it says so as a wash.
+pub(crate) fn splat(
+    light: Vec3,
+    covered: f32,
+    spread: f32,
+    crowd: f32,
+) -> (f32, Vec3) {
+    let radius = (spread * REACH).max(SMALLEST);
+    let sigma = radius / REACH;
+    let area = std::f32::consts::TAU * sigma * sigma;
+    // Off the radius actually drawn, so a cell floored to a point is read as
+    // the crowd it is rather than as a scatter over an area it was not given.
+    let fill = (covered / area).min(1.);
+    let crowding = 1. + (crowd - 1.) * fill;
+    let peak = light / (crowding * area);
+    (radius, peak.min(Vec3::splat(CEILING)))
 }
 
-/// What one system's mark is drawn at, in linear light
+/// What one system is worth, in linear light
 ///
-/// Set, not conserved — see [`Gains::mark`]. The ratios are the field's: a
-/// system nobody lives in is faint, an inhabited one with nothing political on
-/// record is held down by [`Gains::unaligned`] so a crowd of them cannot bury
-/// a shell, and a system with a reading draws at full.
+/// The light its mark is painted at, and the light the field deposits for it
+/// where it is not drawn yet — one figure, which is what makes the two
+/// halves of the map one picture. A system nobody lives in is faint, an
+/// inhabited one with nothing political on record is held down by
+/// [`Gains::unaligned`] so a crowd of them cannot bury a shell, and a system
+/// with a reading draws at full.
+///
+/// What the field does to a *crowd* of them is [`Gains::crowd`]'s, and is
+/// spent as the crowd resolves; see [`splat`].
 pub(crate) fn mark_light(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
     let share = match (peopled, hue) {
         (false, _) => gains.faint,
@@ -356,7 +492,13 @@ fn spawn_glow(
     ));
 }
 
-/// Set the backdrop gain from the index's own populated share
+/// Set the backdrop's own suppression from the index's populated share
+///
+/// The crowd nobody lives in is held down until it weighs the same as the
+/// crowd of colonies standing in it, which for a populated share `p` and an
+/// uninhabited system worth [`Gains::faint`] of a colony is
+/// `faint · (1/p - 1)`. Derived rather than chosen, so a directory of a
+/// different composition is exposed for what it holds.
 ///
 /// Only when either side of it moves. A directory with no colonies in it
 /// leaves the default standing rather than dividing by nothing.
@@ -374,13 +516,14 @@ fn settle_gains(
         .map_or(0, |cell| cell.aggregate.count());
     let peopled =
         settled.0.get(galos_index::CellId::ROOT).map_or(0, Inhabited::count);
-    if stellar > 0 && peopled > 0 {
-        gains.backdrop = (peopled as f64 / stellar as f64) as f32;
+    if stellar > peopled && peopled > 0 {
+        let empty = (stellar - peopled) as f64 / peopled as f64;
+        gains.backdrop = gains.faint * empty as f32;
     }
 }
 
 /// What a cell's political histogram comes to: the light it lays down, summed
-/// over its buckets, and the weight that light carries
+/// over its buckets, and how many systems that light is
 ///
 /// Premultiplied — the colour returned is already scaled by the counts — so
 /// the caller deposits one quad for the whole cell instead of one a bucket,
@@ -388,6 +531,12 @@ fn settle_gains(
 /// is read off is the one the map is coloured by, through the very mapping a
 /// mark is painted by, so the field and the symbols over it cannot disagree
 /// about what a colour means.
+///
+/// In shares of [`Gains::mark`], so a bucket's light here is exactly what its
+/// systems' own marks are painted at; the caller spends the level. The colour
+/// is [`Hue::light`], which is a chromaticity — an unreported colony is
+/// neutral at [`Gains::unaligned`] and not a dark grey paint dimmed a second
+/// time by a gain that already said it was dim.
 fn composition(
     held: &Inhabited,
     color_by: ColorBy,
@@ -401,8 +550,7 @@ fn composition(
         }
         let gain = if hue == Hue::Grey { unaligned } else { 1.0 };
         let w = count as f32 * gain;
-        let c = LinearRgba::from(hue.color());
-        light += Vec3::new(c.red, c.green, c.blue) * w;
+        light += hue.light() * w;
         weight += w;
     };
     match color_by {
@@ -524,17 +672,19 @@ fn build_glow(
             // The share of this cell's own content the splat carries: one where
             // it stands for its whole subtree, less where it is part way into a
             // cross-fade with its children.
-            let share = splat.blend as f32 * total / count as f32 * gains.level;
+            let carried = splat.blend as f32 * total / count as f32;
 
             // The systems nobody lives in, at the stellar moments: one
             // uncolored channel, because a backdrop is a density question and
             // not a composition one.
             //
-            // Neutral, and dimmed by `backdrop` alone. Painting it in the
+            // Neutral, and held down as a crowd alone. Painting it in the
             // palette's own grey discounted it twice — that colour is `0.15` in
             // sRGB, a fiftieth in the linear light this adds in, so the channel
             // came out four ten-thousandths of its weight and the galaxy behind
-            // the shells went black.
+            // the shells went black. [`Hue::light`] is neutral for the same
+            // reason, which is what leaves this channel and a mark of the same
+            // system agreeing.
             //
             // The residual's own moments, not the total's: a cell half drawn
             // has its drawn half subtracted out of the geometry as well as out
@@ -554,20 +704,22 @@ fn build_glow(
                 && let Some(at) = mass.centroid()
                 && in_reach(at)
             {
-                let w = empty as f32 * gains.backdrop * share;
-                if let Some(peak) = quads.deposit(
+                let systems = empty as f32 * carried;
+                let light =
+                    Vec3::splat(systems * gains.faint * gains.mark * MARK_AREA);
+                if let Some(lit) = quads.deposit(
                     orbit,
                     cot_half_fov,
                     viewport,
                     half,
                     at,
                     mass.rms_radius().max(finest),
-                    Vec3::splat(w),
+                    light,
+                    systems * MARK_AREA,
+                    gains.crowd * gains.backdrop,
                 ) {
                     counted.backdrop += 1;
-                    counted.light += w * 3.;
-                    counted.peak = counted.peak.max(peak);
-                    counted.clipped += u32::from(peak >= CEILING);
+                    counted.took(lit);
                 }
             }
 
@@ -586,20 +738,21 @@ fn build_glow(
                 && let Some(at) = held.centroid()
                 && in_reach(at)
             {
-                let (light, _) = composition(&held, *color_by, gains.unaligned);
-                if let Some(peak) = quads.deposit(
+                let (mix, _) = composition(&held, *color_by, gains.unaligned);
+                let systems = held.count() as f32 * carried;
+                if let Some(lit) = quads.deposit(
                     orbit,
                     cot_half_fov,
                     viewport,
                     half,
                     at,
                     held.spread().max(finest),
-                    light * share,
+                    mix * carried * gains.mark * MARK_AREA,
+                    systems * MARK_AREA,
+                    gains.crowd,
                 ) {
                     counted.colonies += 1;
-                    counted.light += light.element_sum() * share;
-                    counted.peak = counted.peak.max(peak);
-                    counted.clipped += u32::from(peak >= CEILING);
+                    counted.took(lit);
                 }
             }
         }
@@ -618,6 +771,11 @@ fn build_glow(
         counted.tenth = at(0.1);
         counted.quarter = at(0.25);
     }
+    if !quads.peaks.is_empty() {
+        quads.peaks.sort_unstable_by(f32::total_cmp);
+        counted.faintest = quads.peaks[0];
+        counted.typical = quads.peaks[(quads.peaks.len() - 1) / 2];
+    }
     laid.set_if_neq(counted);
 
     mesh3d.0 = meshes.add(glow_mesh(
@@ -628,11 +786,27 @@ fn build_glow(
     ));
 }
 
+/// What one quad came to, for [`Laid`]
+#[derive(Clone, Copy)]
+struct Lit {
+    /// The brightest channel it was laid at, in linear light.
+    peak: f32,
+    /// The linear light it actually lays on the framebuffer, summed over its
+    /// three channels — after the crowding and after any clip, so a quad that
+    /// asked for more than [`CEILING`] is counted for what it got.
+    light: f32,
+    /// Whether its systems' marks would cover less than the footprint it was
+    /// spread over, which is the resolving end of [`splat`]'s law.
+    separated: bool,
+}
+
 /// The frame's quads, as the mesh wants them
 #[derive(Default)]
 struct Quads {
     /// Footprint radii laid this frame, for [`Laid`].
     radii: Vec<f32>,
+    /// And the peak each was laid at.
+    peaks: Vec<f32>,
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
@@ -640,21 +814,18 @@ struct Quads {
 }
 
 impl Quads {
-    /// Lay `light` down as a Gaussian about `at`, spread `spread` light years
+    /// Lay `light` down as a Gaussian about `at`
     ///
-    /// Conserving: the mask peaks at one and integrates to `2 pi sigma^2`
-    /// pixels, so dividing the light by that area makes what lands on the
-    /// framebuffer the light asked for, whatever radius it was spread over.
-    /// That is what lets a parent's one splat and its children's several
-    /// integrate to the same total and a cross-fade between them neither pump
-    /// brightness nor lose any — the weights the walk hands out are shares of
-    /// a quantity, and this is where the quantity is spent.
+    /// `spread` is how far the cell says its systems are scattered, in light
+    /// years; `covered` is the pixels their marks would cover, and `crowd`
+    /// what a crowd of them is held down by while they are one. [`splat`] is
+    /// where the three meet; this is the projection either side of it, and
+    /// the quad.
     ///
     /// [`None`] where nothing was laid: no light to lay, or a centroid the
     /// camera cannot see. The second is bounded by the walk — a cell drawn as
     /// a splat spans a few pixels at most — so what a centroid off the frame
-    /// costs is a few pixels at the very edge. Otherwise the peak it was laid
-    /// at, which is what says whether the field is exposed.
+    /// costs is a few pixels at the very edge.
     #[allow(clippy::too_many_arguments)]
     fn deposit(
         &mut self,
@@ -665,7 +836,9 @@ impl Quads {
         at: [f64; 3],
         spread: f64,
         light: Vec3,
-    ) -> Option<f32> {
+        covered: f32,
+        crowd: f32,
+    ) -> Option<Lit> {
         if light.max_element() <= 0.0 {
             return None;
         }
@@ -679,16 +852,12 @@ impl Quads {
         // a light year is spoken to the grid.
         let spread_px =
             (spread * crate::space::LIGHT_YEAR / per_pixel as f64) as f32;
-
-        // The radius drawn, and the sigma that radius actually stands for: a
-        // cell tighter than a pixel is spread over one rather than over none,
-        // and the peak follows the radius so nothing is lost by it.
-        let radius = (spread_px * REACH).max(SMALLEST);
-        if !radius.is_finite() {
+        if !spread_px.is_finite() {
             return None;
         }
-        let peak = peak(light, radius);
-        if !peak.is_finite() {
+
+        let (radius, peak) = splat(light, covered, spread_px, crowd);
+        if !radius.is_finite() || !peak.is_finite() {
             return None;
         }
         let color = [peak.x, peak.y, peak.z, 1.];
@@ -717,7 +886,13 @@ impl Quads {
             base + 3,
         ]);
         self.radii.push(radius);
-        Some(peak.max_element())
+        self.peaks.push(peak.max_element());
+        let sigma = radius / REACH;
+        Some(Lit {
+            peak: peak.max_element(),
+            light: peak.element_sum() * std::f32::consts::TAU * sigma * sigma,
+            separated: covered < std::f32::consts::TAU * spread_px * spread_px,
+        })
     }
 }
 
@@ -816,11 +991,8 @@ mod tests {
     #[test]
     fn a_colony_lays_down_its_own_colour() {
         let (light, weight) = composition(&empire(), ColorBy::Allegiance, 0.25);
-        let cyan = LinearRgba::from(Hue::Cyan.color());
         assert_eq!(weight, 1.0);
-        assert!((light.x - cyan.red).abs() < 1e-6);
-        assert!((light.y - cyan.green).abs() < 1e-6);
-        assert!((light.z - cyan.blue).abs() < 1e-6);
+        assert!((light - Hue::Cyan.light()).length() < 1e-6);
     }
 
     /// The whole point of the gain: a colony nobody has reported an allegiance
@@ -845,10 +1017,9 @@ mod tests {
         }
         let cell = crowd.merge(empire());
         let (light, _) = composition(&cell, ColorBy::Allegiance, 0.25);
-        let grey = LinearRgba::from(Hue::Grey.color()).red * 4.0 * 0.25;
-        let cyan = LinearRgba::from(Hue::Cyan.color());
-        // The red channel carries only the grey; blue and green carry the
-        // Empire's cyan over it.
+        let grey = 4.0 * 0.25;
+        // The red channel carries only the grey, which is neutral; blue and
+        // green carry the Empire's cyan over it.
         assert!((light.x - grey).abs() < 1e-6);
         assert!(
             light.z > light.x,
@@ -856,17 +1027,17 @@ mod tests {
             light.x,
             light.z
         );
-        assert!((light.z - (cyan.blue + grey)).abs() < 1e-6);
+        assert!((light.z - (Hue::Cyan.light().z + grey)).abs() < 1e-6);
     }
 
-    /// Every kind of mark is drawn at a level the eye can find, and they keep
+    /// Every kind of system is worth a level the eye can find, and they keep
     /// the order the gains mean.
     ///
     /// The regression this guards is the whole galaxy going black at the
-    /// default zoom. A mark was briefly put through the field's conserving
-    /// law, where one uninhabited system peaks at `(1/44) * level` over the
-    /// floor footprint — three thousandths, invisible — because a density
-    /// correctly vanishes as it is resolved and a mark must not.
+    /// default zoom. Grey was painted as a dark grey *and* held down by the
+    /// gain that already said an unknown system is dim, so an uninhabited
+    /// mark came out at nine ten-thousandths of a unit — three levels off
+    /// black on an eight-bit display.
     #[test]
     fn a_mark_is_bright_enough_to_find() {
         let gains = Gains::default();
@@ -877,9 +1048,10 @@ mod tests {
         for (what, level) in
             [("empty", empty), ("unaligned", unaligned), ("aligned", aligned)]
         {
+            let painted = Hue::Grey.light() * level;
             assert!(
-                level > 0.01,
-                "an {what} system draws at {level}, which is black"
+                painted.max_element() > 0.01,
+                "an {what} system is painted at {painted}, which is black"
             );
             assert!(level <= 1.0, "an {what} system draws past white");
         }
@@ -888,26 +1060,115 @@ mod tests {
             unaligned < aligned,
             "a colony with nothing on record outshone one with a reading"
         );
+    }
 
-        // And it is not the field's law. The tell is not a margin at one
-        // footprint — that only moves when `REACH` does — but that the two
-        // answer differently to footprint at all: a density divides by the
-        // area it is spread over, so one system laid down that way fades to
-        // nothing across a cell-sized splat, where a mark is the same
-        // brightness wherever it is drawn.
-        let one = Vec3::splat(gains.backdrop * gains.level);
-        let tight = peak(one, SMALLEST).x;
-        let spread = peak(one, 50.).x;
+    /// A splat of systems that have separated on screen lays down exactly
+    /// the light their marks will lay down.
+    ///
+    /// **This is the handoff.** A cell's light moves from the field to its
+    /// own marks as its payload arrives, and the two halves have to meet at
+    /// the crossing or the map lies twice: a filament fades out as the
+    /// camera comes in, and then lights up again when its systems land.
+    ///
+    /// The light and not the peak. A wash over the cell and a scatter of
+    /// marks inside it cannot have the same peak and the same total, and
+    /// which of the two the field keeps is the whole argument in [`splat`]:
+    /// it keeps the total, because the cell is all it knows about where the
+    /// systems are.
+    #[test]
+    fn a_resolved_splat_meets_the_marks_it_stands_for() {
+        let gains = Gains::default();
+        let level = mark_light(Hue::Cyan, true, &gains);
+        // A hundred colonies scattered over a cell three hundred pixels
+        // across: their marks would cover a five-hundredth of it, which is
+        // the far side of resolved.
+        let systems = 100.;
+        let covered = systems * MARK_AREA;
+        let marks = systems * level * MARK_AREA;
+        let (radius, peak) =
+            splat(Hue::Cyan.light() * marks, covered, 300., gains.crowd);
+
+        assert_eq!(radius, 300. * REACH, "the splat left its cell's own size");
+        let sigma = radius / REACH;
+        let laid = peak.max_element() * std::f32::consts::TAU * sigma * sigma;
         assert!(
-            spread < tight / 100.,
-            "the field's law did not fall away with footprint: \
-             {tight} to {spread}"
+            (laid - marks).abs() < marks * 0.01,
+            "a resolved splat laid {laid} where its marks lay {marks}"
+        );
+    }
+
+    /// A crowd is still a density: held down by [`Gains::crowd`], and fading
+    /// as the footprint it is spread over grows.
+    ///
+    /// The other end of the same law, and the reason there is a `crowd` at
+    /// all. A hundred thousand systems inside a pixel are a backdrop and not
+    /// a hundred thousand marks' worth of light, so what they lay down is
+    /// what they cover divided by what they are spread over — which is what
+    /// keeps the galaxy a picture rather than a white sheet.
+    #[test]
+    fn a_crowd_is_laid_as_a_density() {
+        let gains = Gains::default();
+        let level = mark_light(Hue::Cyan, true, &gains);
+        let systems = 100_000.;
+        let covered = systems * MARK_AREA;
+        let light = Hue::Cyan.light() * systems * level * MARK_AREA;
+
+        let (tight, close) = splat(light, covered, 20., gains.crowd);
+        let (wide, far) = splat(light, covered, 80., gains.crowd);
+        assert_eq!(tight, 20. * REACH, "a crowded splat covers its cell");
+        assert_eq!(wide, 80. * REACH);
+        // Four times the spread is sixteen times the area, and the same
+        // light over it.
+        assert!(
+            (close.max_element() / far.max_element() - 16.).abs() < 0.1,
+            "a crowd did not thin with its footprint: {} to {}",
+            close.max_element(),
+            far.max_element()
         );
         assert!(
-            empty > spread * 100.,
-            "a mark is being conserved like a density: {empty} against \
-             {spread} over a cell-sized footprint"
+            far.max_element() < level,
+            "a crowd of systems was laid brighter than one mark: {}",
+            far.max_element()
         );
+    }
+
+    /// A splat always covers its cell, and never lays down more light than
+    /// the systems it stands for would as marks.
+    ///
+    /// The two bounds that keep the field honest at every density and every
+    /// zoom. It is a wash over the cell — never a tighter thing the eye
+    /// would read as an object — and the crowding correction only ever takes
+    /// light away, so the field cannot claim more systems than are there.
+    #[test]
+    fn a_splat_lays_no_more_light_than_its_marks_would() {
+        let gains = Gains::default();
+        let level = mark_light(Hue::Grey, false, &gains);
+        for spread in [0.5f32, 5., 50., 500., 5_000.] {
+            for systems in [1f32, 10., 1_000., 100_000.] {
+                let covered = systems * MARK_AREA;
+                let marks = systems * level * MARK_AREA;
+                let (radius, peak) = splat(
+                    Vec3::splat(marks),
+                    covered,
+                    spread,
+                    gains.crowd * gains.backdrop,
+                );
+                assert_eq!(
+                    radius,
+                    (spread * REACH).max(SMALLEST),
+                    "{systems} systems over {spread} px were not laid over \
+                     their cell"
+                );
+                let sigma = radius / REACH;
+                let laid =
+                    peak.max_element() * std::f32::consts::TAU * sigma * sigma;
+                assert!(
+                    laid <= marks * 1.001,
+                    "{systems} systems over {spread} px laid {laid} where \
+                     their marks lay {marks}"
+                );
+            }
+        }
     }
 
     /// The composition is a sum, so it composes the way the aggregate does: a
@@ -1109,27 +1370,42 @@ mod exposure {
         (*world.resource::<Laid>(), planned)
     }
 
-    /// The field is exposed: it lays both channels down, and the brightest
-    /// splat lands in the range a luminance field is read in rather than
-    /// vanishing or saturating.
+    /// The field is exposed at every zoom: it lays both channels down, and
+    /// the splat the frame is *made* of lands in the range a luminance field
+    /// is read in rather than vanishing or saturating.
     ///
-    /// Both ends have been wrong and neither showed up as an error. Spending
-    /// `blend * count` rather than `blend * total` took the peak to four
-    /// thousandths and the field was invisible; spending it without a ceiling
-    /// took the peak past what `Rgba16Float` holds, and the `inf` became a
-    /// `NaN` in the bloom chain that blackened the whole frame — the chrome and
-    /// the grid with it.
+    /// Read on the median peak and not the brightest one. The brightest
+    /// splat is a cell in the galaxy's core and is bright from anywhere, so
+    /// a field that has faded to nothing everywhere else passes on it —
+    /// which is exactly what happened. Measured over `.galos_index` under a
+    /// flat crowding correction, the middling splat fell from 0.0032 with
+    /// the galaxy seen whole to 0.00016 at twenty light years out, a
+    /// nineteenfold fade to one level off black on an eight-bit display,
+    /// and the faintest splat underflowed to zero — while the brightest sat
+    /// at a third of a unit throughout and said nothing was wrong. Spending
+    /// the correction as a cell resolves ([`splat`]) lays the same four
+    /// zooms at 0.00078, 0.00078, 0.00080 and 0.0040.
+    ///
+    /// Both ends of the exposure have been wrong and neither showed up as an
+    /// error. Spending `blend * count` rather than `blend * total` took the
+    /// peak to four thousandths and the field was invisible; spending it
+    /// without a ceiling took the peak past what `Rgba16Float` holds, and the
+    /// `inf` became a `NaN` in the bloom chain that blackened the whole frame
+    /// — the chrome and the grid with it.
     #[test]
     fn the_field_is_exposed() {
         let Some(dir) = measured() else { return };
-        for away in [200., 2_000., 30_000.] {
+        for away in [20., 200., 2_000., 30_000.] {
             let (laid, splats) = laid_at(&dir, away, Set::open());
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
-                 {:>5} backdrop, {:>8.3} peak, {:>5} clipped, \
-                 radius {:.2}|{:.2}|{:.2}|{:.2}|{:.2} px, {} floored",
+                 {:>5} backdrop, peak {:.5}|{:.5}|{:.3}, {:>5} clipped, \
+                 radius {:.2}|{:.2}|{:.2}|{:.2}|{:.2} px, {} floored, \
+                 {} separated",
                 laid.colonies,
                 laid.backdrop,
+                laid.faintest,
+                laid.typical,
                 laid.peak,
                 laid.clipped,
                 laid.thinnest,
@@ -1137,42 +1413,50 @@ mod exposure {
                 laid.quarter,
                 laid.median,
                 laid.widest,
-                laid.floored
+                laid.floored,
+                laid.separated,
             );
             assert!(
                 laid.backdrop > 0,
                 "the galaxy behind the shells was not drawn at {away} ly"
             );
+            // Five ten-thousandths. The flat correction laid its middling
+            // splat under two of them at every zoom inside two thousand
+            // light years, which is the fade this guards: the number is
+            // between what that law managed and what this one does, so it
+            // catches a return to it without pinning the exposure.
             assert!(
-                laid.peak > 1e-1,
-                "the field is invisible at {away} ly: peak {}",
-                laid.peak
-            );
-            // No splat laid as a point. A cell's light is spread over the
-            // cell at least ([`COVERAGE`]), so the footprints reach their
-            // neighbours and the field sums flat instead of stippling a
-            // lattice of cores with dark seams between.
-            assert_eq!(
-                laid.floored, 0,
-                "{} splats at {away} ly were laid on the point floor",
-                laid.floored
+                laid.typical > 5e-4,
+                "the middling splat is invisible at {away} ly: {}",
+                laid.typical
             );
             assert!(
                 laid.peak <= CEILING,
                 "the field ran past the ceiling at {away} ly: peak {}",
                 laid.peak
             );
-            // A field whose every splat clips is a white sheet. Measured at
-            // one unit of light a system: one quad of some three and a half
-            // thousand clips from inside the bubble, and eighty of nearly four
-            // thousand with the galaxy seen whole — the dense core, which is
-            // the part of a luminance field that is meant to.
+            // A field whose every splat clips is a white sheet. Measured: one
+            // quad of some three and a half thousand clips from inside the
+            // bubble, and eighty of nearly four thousand with the galaxy seen
+            // whole — the dense core, which is the part of a luminance field
+            // that is meant to.
             let laid_quads = laid.colonies + laid.backdrop;
             assert!(
                 laid.clipped * 20 < laid_quads,
                 "the field is over-exposed at {away} ly: {} of {laid_quads} \
                  quads clipped",
                 laid.clipped
+            );
+            // No splat laid as a point. A cell's light is spread over the
+            // cell at least ([`COVERAGE`]), so the footprints reach their
+            // neighbours and the field sums flat instead of stippling a
+            // lattice of cores with dark seams between — and so that nothing
+            // the field draws is tight enough to read as a system somebody
+            // could click on.
+            assert_eq!(
+                laid.floored, 0,
+                "{} splats at {away} ly were laid on the point floor",
+                laid.floored
             );
         }
     }

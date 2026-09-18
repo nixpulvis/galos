@@ -416,20 +416,21 @@ pub(crate) fn build_field(
             // whatever was behind it, so a grey system punched a hole in the
             // very light it stood in.
             //
-            // Its brightness is set rather than conserved over its footprint:
-            // a mark is a light and the field is a density, and putting one
-            // system through the field's law peaks it at three thousandths --
-            // correct, one system being a ten-thousandth of its cell, and
-            // black. See [`super::glow::Gains::mark`].
+            // The hue is a chromaticity and the level is the whole of the
+            // brightness: painting the palette's own dark grey *and* holding
+            // it down by the gain that says an unknown system is dim
+            // discounted it twice, and a system nobody lives in came out at
+            // nine ten-thousandths of a unit, which is black. See
+            // [`super::spawn::Hue::light`].
             View::Map => {
                 let tone = hue(system, &color_by);
-                let c = LinearRgba::from(tone.color());
                 let level = crate::systems::glow::mark_light(
                     tone,
                     system.population > 0,
                     &gains,
                 ) * fade;
-                [c.red * level, c.green * level, c.blue * level, 1.]
+                let c = tone.light() * level;
+                [c.x, c.y, c.z, 1.]
             }
             // A photometric glint: the blackbody tint at its HDR level, spread
             // by the bloom, added rather than blended so the fade scales the

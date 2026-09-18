@@ -249,7 +249,7 @@ pub struct StarProfile(pub ProfileKind);
 ///
 /// Named rather than numbered, so that a scheme below says which color it
 /// means. One color each, and nothing indexes them: [`super::field`] asks
-/// `Hue::color` for the three channels it paints a mark with, and
+/// `Hue::light` for the three channels it paints a mark with, and
 /// [`super::glow`] for the three it weights a cell's political histogram by.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
@@ -264,24 +264,40 @@ pub enum Hue {
 }
 
 impl Hue {
-    /// What the hue is painted in
+    /// The light the hue lays down, at unit level
     ///
-    /// The color alone. What [`super::field`] paints a mark at is these
-    /// three channels and a fade of its own — how much of the mark is left as
-    /// it goes out, and how far the filters have dimmed it — so an alpha
-    /// carried here would be read by nobody. The grey a system with nothing
-    /// on record comes out is darker than the rest, so that an unknown system
-    /// does not read as a finding.
-    pub(crate) const fn color(self) -> Color {
+    /// **A chromaticity, not a brightness.** How bright a thing painted in a
+    /// hue comes out is the gains' to say — [`super::glow::Gains::mark`] for
+    /// a mark, and [`super::glow::Gains::faint`] and
+    /// [`super::glow::Gains::unaligned`] for how much of one an uninhabited
+    /// or unreported system is worth — and every one of those is already a
+    /// statement about how much a system is worth seeing.
+    ///
+    /// So grey is white here, the absence of a colour rather than a dark
+    /// paint. Painted as the swatch grey it reads as, `0.15` in sRGB, it was
+    /// discounted twice: that is a fiftieth in the linear light a mark is
+    /// added in, so an unreported colony came out at three thousandths of a
+    /// unit and a system nobody lives in at nine ten-thousandths — three
+    /// levels off black on an eight-bit display, which is the whole of why
+    /// the ungoverned galaxy was invisible. [`super::glow`]'s backdrop
+    /// channel has deposited neutral for exactly this reason since it
+    /// landed; this is the same fix in the two places that were left.
+    ///
+    /// Written in linear light rather than converted from sRGB per call:
+    /// [`super::field`] asks this once a system a frame, and the map draws a
+    /// hundred thousand of them. `srgb_to_linear` is checked against the one
+    /// value that is not a zero or a one in
+    /// [`tests::orange_is_half_way_up_in_srgb`].
+    pub(crate) const fn light(self) -> Vec3 {
         match self {
-            Hue::Green => Color::srgb(0., 1., 0.),
-            Hue::Cyan => Color::srgb(0., 1., 1.),
-            Hue::Red => Color::srgb(1., 0., 0.),
-            Hue::Orange => Color::srgb(1., 0.5, 0.),
-            Hue::Yellow => Color::srgb(1., 1., 0.),
-            Hue::Blue => Color::srgb(0., 0., 1.),
-            Hue::Magenta => Color::srgb(1., 0., 1.),
-            Hue::Grey => Color::srgb(0.15, 0.15, 0.15),
+            Hue::Green => Vec3::new(0., 1., 0.),
+            Hue::Cyan => Vec3::new(0., 1., 1.),
+            Hue::Red => Vec3::new(1., 0., 0.),
+            Hue::Orange => Vec3::new(1., 0.214_041_14, 0.),
+            Hue::Yellow => Vec3::new(1., 1., 0.),
+            Hue::Blue => Vec3::new(0., 0., 1.),
+            Hue::Magenta => Vec3::new(1., 0., 1.),
+            Hue::Grey => Vec3::ONE,
         }
     }
 }
@@ -1480,6 +1496,30 @@ pub(crate) fn security_hue(security: Option<Security>) -> Hue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The one hue whose light is not a zero or a one is the sRGB transfer
+    /// applied by hand, and this is what says it was applied right
+    ///
+    /// [`Hue::light`] is written in linear light so a mark costs no
+    /// conversion, which is worth doing once and worth checking once: every
+    /// other channel is an endpoint, where sRGB and linear agree, and orange
+    /// is the only one carrying a curve.
+    #[test]
+    fn orange_is_half_way_up_in_srgb() {
+        let converted = LinearRgba::from(Color::srgb(1., 0.5, 0.));
+        let light = Hue::Orange.light();
+        assert!(
+            (light.y - converted.green).abs() < 1e-6,
+            "orange's green is {} and sRGB 0.5 is {}",
+            light.y,
+            converted.green
+        );
+        assert_eq!(
+            Hue::Grey.light(),
+            Vec3::ONE,
+            "grey is a level, not a paint"
+        );
+    }
 
     /// A system named by address is drawn where the galaxy puts it
     ///

@@ -498,10 +498,29 @@ fn diagnostics(
                         ui,
                         "deposited",
                         &format!("{:.2} / {:.2}", glow.light, glow.peak),
-                        "Linear light the field laid down and the brightest \
-                         peak any one splat was laid at. Near zero and the \
-                         field is invisible; at the ceiling everywhere and it \
-                         is a white sheet.",
+                        "Linear light the political field laid down, and the \
+                         brightest peak any one splat was laid at. At the \
+                         ceiling everywhere it is a white sheet.",
+                    );
+                    pair(
+                        ui,
+                        "splat peak",
+                        &format!("{:.4} / {:.4}", glow.faintest, glow.typical),
+                        "The faintest and the middling splat, in linear \
+                         light. The middling one is what the frame is made \
+                         of: near zero and the field is invisible however \
+                         bright the core over the bubble reads.",
+                    );
+                    pair(
+                        ui,
+                        "separated",
+                        &format!("{}", glow.separated),
+                        "Splats whose systems have come apart on screen: \
+                         their marks would cover less than the cell they \
+                         are spread over. These are the cells the map is \
+                         about to draw as marks and has not fetched yet, \
+                         and the field lays them down at the light those \
+                         marks will carry.",
                     );
                 },
             );
