@@ -375,7 +375,7 @@ const MARK_AREA: f32 = std::f32::consts::PI * SMALLEST * SMALLEST;
 /// the profile per fragment instead of sampling it.
 const GLOW_TEXELS: u32 = 64;
 
-/// The least a splat is spread over, as a share of its cell's own edge
+/// The least a backdrop splat is spread over, as a share of its cell's edge
 ///
 /// **A cell cannot assert structure finer than itself.** Its moments say
 /// where its systems sit and how far they spread, but the finest thing it
@@ -402,6 +402,9 @@ const GLOW_TEXELS: u32 = 64;
 /// buys it lands as a slight lumpiness in the galaxy's disc rather than as
 /// a lattice: the cells are a pitch apart only where they are the same
 /// size, and a real tree is never that regular.
+///
+/// The backdrop's, and only the backdrop's: the colonies are a chain and
+/// not a fog, and need more overlap to read as one thing. See [`CHAIN`].
 const COVERAGE: f64 = 0.3;
 
 /// The brightest a single splat may peak at, in linear light
@@ -439,6 +442,25 @@ const CEILING: f32 = 8.0;
 /// instead — where it started — took the disc to a sixth and the web with
 /// it.
 const PACKED: f32 = 32.0;
+
+/// The least a *colony* splat is spread over, as a share of its cell's edge
+///
+/// **A chain needs more overlap than a fog does.** [`COVERAGE`] is three
+/// tenths because the backdrop fills space: every cell carries stars, they
+/// tile the sky in three dimensions, and along any line of sight dozens of
+/// them overlap, so each one may be laid tight and the sum still comes out
+/// smooth — which is what let the galaxy's own web resolve.
+///
+/// The colonies do not fill space. A colonisation filament is a *line* of
+/// cells with nothing beside it, so consecutive splats sit exactly one cell
+/// apart with nothing else to fill the gap between them, and Gaussians on a
+/// lattice of pitch `d` only sum flat once `sigma` is about half of it: at
+/// three tenths the ripple is a third and the filament came out as a string
+/// of beads, reported as such. A half, so the light reaches the next
+/// centroid along and a line reads as a line — fuzzy across it, which is
+/// honest, a cell being all the map knows about where inside it the
+/// colonies sit.
+const CHAIN: f64 = 0.5;
 
 /// How a splat is laid: the radius it is drawn at, and the light it peaks at
 ///
@@ -781,7 +803,8 @@ fn build_glow(
             let empty = count.saturating_sub(peopled).saturating_sub(
                 taken.count.saturating_sub(taken.inhabited.count()),
             );
-            // The finest this cell is allowed to claim, in light years.
+            // The finest the backdrop may claim of this cell, in light
+            // years; the colonies have a floor of their own ([`CHAIN`]).
             let finest = cell.id.edge_ly() * COVERAGE;
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
@@ -831,7 +854,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    held.spread().max(finest),
+                    held.spread().max(cell.id.edge_ly() * CHAIN),
                     mix * carried * gains.mark * MARK_AREA * opened,
                     systems * MARK_AREA,
                     gains.crowd,
