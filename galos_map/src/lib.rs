@@ -334,8 +334,17 @@ impl Names {
     /// galaxy and sorting it down. What [`crate::search`] does on top is
     /// sort the few that come back by how near they are to where the
     /// camera looks.
-    pub fn find(&self, query: &str, limit: usize) -> Vec<NameEntry> {
-        self.table.matching(SystemName::new(query).as_str(), limit)
+    pub fn find(
+        &self,
+        query: &str,
+        near: Option<DVec3>,
+        limit: usize,
+    ) -> Vec<NameEntry> {
+        self.table.matching_near(
+            SystemName::new(query).as_str(),
+            near.map(|at| [at.x, at.y, at.z]),
+            limit,
+        )
     }
 
     /// Whether any system is named exactly `name`.

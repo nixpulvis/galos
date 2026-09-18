@@ -258,20 +258,40 @@ pub fn matches_word(word: &str, held: &str) -> bool {
 /// offered before one matching a single word, and a word that matches no
 /// sector at all is left to the caller to check against the coordinates.
 ///
-/// Ties are broken by name, so the answer is the same on every machine.
-pub fn sectors_holding_all(words: &[&str], limit: usize) -> Vec<&'static str> {
+/// `near` is where the reader is looking, in light years, and is what
+/// settles which of sixty sectors named `EUQ` are offered.
+pub fn sectors_holding_all(
+    words: &[&str],
+    near: Option<[f64; 3]>,
+    limit: usize,
+) -> Vec<&'static str> {
     if words.is_empty() || limit == 0 {
         return Vec::new();
     }
+    // Where a sector sits, in light years, for ranking by nearness: the
+    // key is its coordinates on the galaxy's own grid, so this is
+    // arithmetic and not a lookup. Squared, the ordering being the same.
+    let away = |key: u32| {
+        let Some(near) = near else { return 0.0 };
+        let at = sector_of(key);
+        (0..3)
+            .map(|axis| {
+                let middle = elite_journal::boxel::ORIGIN[axis]
+                    + f64::from(at[axis]) * elite_journal::boxel::SECTOR_LY
+                    + elite_journal::boxel::SECTOR_LY / 2.0;
+                (middle - near[axis]).powi(2)
+            })
+            .sum()
+    };
     // Two for a word spelled right and one for a word nearly spelled, so
     // a sector matching both words exactly is offered before one matching
     // both approximately and before one matching a single word. A word
     // matching nothing here is left to the caller, it being a boxel code
     // or a word of a stored name rather than a sector's.
-    let mut found: Vec<(usize, &'static str)> = SECTOR_TABLE
+    let mut found: Vec<(usize, u64, &'static str)> = SECTOR_TABLE
         .by_name
         .iter()
-        .filter_map(|(sector, _)| {
+        .filter_map(|(sector, key)| {
             let held: usize = words
                 .iter()
                 .map(|word| {
@@ -285,16 +305,25 @@ pub fn sectors_holding_all(words: &[&str], limit: usize) -> Vec<&'static str> {
                     }
                 })
                 .sum();
-            (held > 0).then_some((held, *sector))
+            (held > 0).then_some((held, away(*key) as u64, *sector))
         })
         .collect();
     // The most words matched first, and the whole list is swept whatever
     // the limit: 11,662 sectors is the vocabulary, and taking the first
     // few that matched one word would answer `EUQ PRAEA` with the sectors
     // alphabetically nearest `PRAEA` rather than with `PRAEA EUQ`.
-    found.sort_unstable_by_key(|(held, sector)| (usize::MAX - held, *sector));
+    // The most words matched first, then the nearest to where the caller
+    // is looking, then the name so the answer is the same on every
+    // machine. **Nearness is most of what makes this useful**: `EUQ` names
+    // sixty-odd sectors and offering them alphabetically answers with
+    // whichever the vocabulary happens to begin with, which is nowhere the
+    // reader is. With no place to measure from every sector is nought away
+    // and the order is the name's, as it was.
+    found.sort_unstable_by_key(|(held, away, sector)| {
+        (usize::MAX - held, *away, *sector)
+    });
     found.truncate(limit);
-    found.into_iter().map(|(_, sector)| sector).collect()
+    found.into_iter().map(|(.., sector)| sector).collect()
 }
 
 /// How far a query may be from a sector's name and still be offered.

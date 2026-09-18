@@ -726,7 +726,7 @@ mod tests {
         let names = app.world().resource::<Names>();
         assert_eq!(names.len(), 3, "three systems named, each counted once");
         assert_eq!(
-            names.find("First", 25).len(),
+            names.find("First", None, 25).len(),
             1,
             "a renamed system is listed once, under its new name"
         );

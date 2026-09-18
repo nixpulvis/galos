@@ -383,7 +383,12 @@ fn search_names(
     near: Option<DVec3>,
     limit: usize,
 ) -> Vec<NameEntry> {
-    let mut found: Vec<NameEntry> = names.find(query, limit);
+    // **Where the camera looks goes into the search, not just the sort.** A
+    // word like `EUQ` names sixty-odd sectors and no answer holds them all,
+    // so ranking what came back cannot help if the table chose them
+    // alphabetically: the place picks *which* sectors are walked, and the
+    // sort below then orders the systems inside them.
+    let mut found: Vec<NameEntry> = names.find(query, near, limit);
     if let Some(near) = near {
         found.sort_by(|a, b| {
             near.distance_squared(entry_pos(a))

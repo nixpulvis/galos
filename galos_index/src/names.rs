@@ -367,6 +367,23 @@ impl Names {
     ///    192 KB, compiled in, so finding the sector costs microseconds
     ///    and the rows come back through the same prefix search as ever.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<NameEntry> {
+        self.matching_near(needle, None, limit)
+    }
+
+    /// The same, ranked from where the reader is looking
+    ///
+    /// **Which sectors are offered is the whole of what this changes.** A
+    /// word like `EUQ` names sixty-odd of them and no search can offer
+    /// them all, so without a place to measure from the answer is whichever
+    /// the vocabulary begins with — alphabetically, which is nowhere in
+    /// particular. `near` is the camera's own centre, and a sector's place
+    /// is arithmetic on its key.
+    pub fn matching_near(
+        &self,
+        needle: &str,
+        near: Option<[f64; 3]>,
+        limit: usize,
+    ) -> Vec<NameEntry> {
         if needle.chars().count() < MIN_PREFIX {
             return Vec::new();
         }
@@ -419,7 +436,23 @@ impl Names {
                 found.push(entry);
             }
         };
-        for at in self.base.matching(probe, reach) {
+        // **A share each, because a road that answers cannot be allowed to
+        // starve one that answers differently.** The by-name road ran
+        // first and filled the whole limit, so `EUQ` came back as three
+        // systems of `EUQAIPPY` — the sector `PRAEA EUQ` holds a hundred
+        // thousand and not one of them was offered, the road that knows
+        // about them never having been reached. Precedence was the bug:
+        // the two roads answer *different questions* about the same query,
+        // "named this" and "in a sector called this", and which of them a
+        // reader meant is not something the order of a match can say.
+        //
+        // So each takes half, and whatever half one leaves is the other's.
+        // The by-name road goes first with its share and again at the end
+        // with the remainder, which keeps a query nothing procedural
+        // matches reading exactly as it did.
+        let share = (limit - found.len()).div_ceil(2);
+        let mut by_name = self.base.matching(probe, reach).into_iter();
+        for at in by_name.by_ref().take(share) {
             if found.len() >= limit {
                 return found;
             }
@@ -428,13 +461,29 @@ impl Names {
         // The sectors the query's words name, most words matched first: a
         // derived name is a sector and then coordinates, so this is the
         // only road that reaches the 97.4 % of names nothing stored.
-        for sector in crate::procedural::sectors_holding_all(&words, limit) {
-            for at in self.base.rows_starting(sector, reach) {
+        let sectors =
+            crate::procedural::sectors_holding_all(&words, near, limit);
+        // A few rows each, for the same reason the roads take a share:
+        // a sector holds a hundred thousand systems and their names differ
+        // in the coordinates, so one sector's first rows are the least
+        // useful dozen answers there are. `EUQ` offered six of `BLAEA EUQ
+        // AA-A` and nothing of the other sectors named `EUQ`.
+        let each = (limit - found.len()).div_ceil(sectors.len().max(1));
+        for sector in sectors {
+            for at in
+                self.base.rows_starting(sector, reach).into_iter().take(each)
+            {
                 if found.len() >= limit {
                     return found;
                 }
                 take(at, &mut found);
             }
+        }
+        for at in by_name {
+            if found.len() >= limit {
+                return found;
+            }
+            take(at, &mut found);
         }
         found
     }
@@ -2433,6 +2482,51 @@ mod tests {
         assert_eq!(named("SOL"), ["SOL"]);
         // And a word nothing holds answers nothing.
         assert!(named("NOWHERE").is_empty());
+    }
+
+    /// A road that answers cannot starve the one that answers differently
+    ///
+    /// **What `EUQ` did.** Names beginning with the query came out of the
+    /// by-name order, filled the limit, and the road that knows which
+    /// *sectors* hold that word was never reached — so a query naming a
+    /// sector of a hundred thousand systems answered with three systems of
+    /// a system named `EUQAIPPY`. Each road takes a share of the limit
+    /// now, and the sector road spreads its share over the sectors rather
+    /// than spending it all on the first one's first rows.
+    #[test]
+    fn a_by_name_match_does_not_crowd_out_a_sector() {
+        let dir = Scratch::new("shares");
+        // Two systems whose *names* begin with the query, and two whose
+        // sector merely holds it — one sector each, so the spread shows.
+        let entries = vec![
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 1.0),
+            entry(43_113_546_002, "PRUE EAEWSY BQ-P E5-0", 2.0),
+            entry(96_076_086, "SIDGIO AA-A G1", 3.0),
+            entry(3_107_510, "PRUE AA-A H1", 4.0),
+        ];
+        published(&dir.0, &entries);
+        let names = Names::open(&dir.0).expect("the table opens");
+        let named = |query: &str, limit: usize| -> Vec<String> {
+            names
+                .matching(query, limit)
+                .into_iter()
+                .map(|entry| entry.name.into_string())
+                .collect()
+        };
+
+        // `PRUE` begins three of these names and is a sector word of all
+        // four. At a limit of two the by-name road takes one and the
+        // sector road the other, where it used to take both.
+        let two = named("PRUE", 2);
+        assert_eq!(two.len(), 2, "{two:?}");
+        assert!(
+            two.iter().any(|name| name.starts_with("PRUE EAEWSY")),
+            "no by-name answer: {two:?}",
+        );
+        assert!(
+            two.iter().any(|name| name == "PRUE AA-A H1"),
+            "no sector answer: {two:?}",
+        );
     }
 
     /// The words of a query may come in any order, and one may be wrong
