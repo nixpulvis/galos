@@ -93,7 +93,7 @@ pub fn plugin(app: &mut App) {
 /// is the whole question the gains answer: a frame of nothing but backdrop is
 /// a political field that has been buried, and a frame of no backdrop at all
 /// is one that has lost the galaxy behind it.
-#[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
 pub struct Laid {
     /// Quads laid at a cell's inhabited centroid.
     pub colonies: u32,
@@ -110,12 +110,33 @@ pub struct Laid {
     /// over the bubble is what clips, and how far past one it runs is how hard
     /// the bloom spreads.
     pub peak: f32,
+    /// The smallest, median-ish and largest footprint radius laid, in pixels,
+    /// and how many were floored at [`SMALLEST`] — what says whether the field
+    /// is a set of overlapping distributions or a lattice of points.
+    pub thinnest: f32,
+    pub widest: f32,
+    pub floored: u32,
     /// Quads whose peak hit [`CEILING`] and clipped.
     ///
     /// A handful is the bright core doing what the bright core does; most of
     /// the frame is an over-exposed field, and the number is what tells the
     /// two apart without a picture.
     pub clipped: u32,
+}
+
+impl Default for Laid {
+    fn default() -> Laid {
+        Laid {
+            colonies: 0,
+            backdrop: 0,
+            light: 0.,
+            peak: 0.,
+            clipped: 0,
+            thinnest: f32::INFINITY,
+            widest: 0.,
+            floored: 0,
+        }
+    }
 }
 
 /// The mesh the field is laid into, one quad a channel a splat
@@ -209,10 +230,25 @@ const SMALLEST: f32 = 0.75;
 
 /// The side of the Gaussian mask, in texels
 ///
-/// The footprint is a few pixels across at most — a cell wider than that has
-/// split into its children — so the mask is sampled far below its own
-/// resolution and sixty-four texels is already finer than anything reads.
-const GLOW_TEXELS: u32 = 64;
+/// A splat is not a few pixels across. The walk splits a cell once its
+/// contents subtend more than `SPLIT_FULL_PX`, but a *leaf* splats whatever
+/// it subtends, having no children to hand to — so a near leaf lays a
+/// footprint hundreds of pixels wide. Measured over `.galos_index`, the radii
+/// laid in one frame run from the 0.75 px floor to **2,165 px**.
+///
+/// That is the mask being magnified, and magnifying a bilinear texture puts a
+/// crease at every texel boundary. At sixty-four texels a thousand-pixel quad
+/// spreads one texel over fifteen pixels of screen, and the creases read as a
+/// regular grid over the whole field — reported as a checker, and it was:
+/// screen-aligned, no perspective, on the field and never on the marks, which
+/// are a few pixels wide and so minified instead.
+///
+/// A thousand and twenty-four takes that to about a pixel on the quads that
+/// carry most of the light, for four megabytes uploaded once. It does not
+/// remove the class of artifact — a wide enough splat still magnifies — and
+/// what does is evaluating the profile per fragment instead of sampling it,
+/// which is a shader and is the reason to want one.
+const GLOW_TEXELS: u32 = 1024;
 
 /// The brightest a single splat may peak at, in linear light
 ///
@@ -541,6 +577,11 @@ fn build_glow(
         }
     }
 
+    for radius in &quads.radii {
+        counted.thinnest = counted.thinnest.min(*radius);
+        counted.widest = counted.widest.max(*radius);
+        counted.floored += u32::from(*radius <= SMALLEST + 1e-3);
+    }
     laid.set_if_neq(counted);
 
     mesh3d.0 = meshes.add(glow_mesh(
@@ -554,6 +595,8 @@ fn build_glow(
 /// The frame's quads, as the mesh wants them
 #[derive(Default)]
 struct Quads {
+    /// Footprint radii laid this frame, for [`Laid`].
+    radii: Vec<f32>,
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
@@ -637,6 +680,7 @@ impl Quads {
             base + 2,
             base + 3,
         ]);
+        self.radii.push(radius);
         Some(peak.max_element())
     }
 }
@@ -1026,8 +1070,15 @@ mod exposure {
             let (laid, splats) = laid_at(&dir, away, Set::open());
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
-                 {:>5} backdrop, {:>8.3} peak, {:>5} clipped",
-                laid.colonies, laid.backdrop, laid.peak, laid.clipped
+                 {:>5} backdrop, {:>8.3} peak, {:>5} clipped, \
+                 radius {:.2}..{:.2} px, {} floored",
+                laid.colonies,
+                laid.backdrop,
+                laid.peak,
+                laid.clipped,
+                laid.thinnest,
+                laid.widest,
+                laid.floored
             );
             assert!(
                 laid.backdrop > 0,
