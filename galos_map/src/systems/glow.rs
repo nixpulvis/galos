@@ -341,24 +341,32 @@ const GLOW_TEXELS: u32 = 64;
 
 /// The least a splat is spread over, as a share of its cell's own edge
 ///
-/// **A cell cannot assert structure finer than itself.** Its moments say where
-/// its systems sit and how far they spread, but the finest thing it stands for
-/// is the box, and laying its light down tighter than that claims a precision
-/// the tree does not have.
+/// **A cell cannot assert structure finer than itself.** Its moments say
+/// where its systems sit and how far they spread, but the finest thing it
+/// stands for is the box, and laying its light down tighter than that
+/// claims a precision the tree does not have.
 ///
-/// It is also what stops the field stippling. Neighbouring splats sit about a
-/// cell edge apart, and Gaussians on a lattice of pitch `d` only sum flat once
-/// `sigma` is about half of it — the ripple goes as `2 exp(-2 pi^2 sigma^2 /
-/// d^2)`, which is 1.4 % at `sigma = d/2` and total at `sigma = d/5`.
-/// Measured over `.galos_index` before this floor, a quarter of the splats at
-/// galaxy zoom were laid at 7 px or less against a pitch near 13, and the
-/// field came out as a regular grid of bright cores with dark seams between —
-/// reported as a checker three times, and neither the exposure nor the mask
-/// was ever what put it there.
+/// It is also what stops the field stippling. Neighbouring splats sit about
+/// a cell edge apart, and Gaussians on a lattice of pitch `d` only sum flat
+/// once `sigma` is a fair share of it — the ripple goes as
+/// `2 exp(-2 pi^2 sigma^2 / d^2)`, 1.4 % at `sigma = d/2`, 34 % at `d/3`
+/// and total at `d/5`. Measured over `.galos_index` before this floor, a
+/// quarter of the splats at galaxy zoom were laid at 7 px or less against a
+/// pitch near 13, and the field came out as a regular grid of bright cores
+/// with dark seams between — reported as a checker three times, and neither
+/// the exposure nor the mask was ever what put it there.
 ///
-/// A half, so `sigma` reaches the neighbouring centroid and the sum is flat to
-/// about a percent.
-const COVERAGE: f64 = 0.5;
+/// **Three tenths, down from a half, and what it buys is the lines.** A
+/// half spreads every splat over twice its cell, which over a built galaxy
+/// is what made a colonisation filament a band of haze rather than a line:
+/// the cells along it are fine — `.index/full` carries 204,466 of them, and
+/// the ones the field draws the bubble with are a few pixels across — so
+/// what was drawing the fuzz was this floor and not the data. At three
+/// tenths the same frame resolves the strands apart, and the ripple that
+/// buys it lands as a slight lumpiness in the galaxy's disc rather than as
+/// a lattice: the cells are a pitch apart only where they are the same
+/// size, and a real tree is never that regular.
+const COVERAGE: f64 = 0.3;
 
 /// The brightest a single splat may peak at, in linear light
 ///
@@ -394,7 +402,17 @@ const CEILING: f32 = 8.0;
 ///   footprint over and over. Ten thousand systems in a pixel are a
 ///   backdrop and not ten thousand marks' worth of light, so a crowd is
 ///   held down by `crowd`, which is the field's whole exposure and what
-///   keeps the galaxy a picture rather than a white sheet.
+///   keeps the galaxy a picture rather than a white sheet. And the denser
+///   the crowd the harder it is held: past the point where the marks touch
+///   the correction goes on growing, as the square root of the crowding, so
+///   a region twice as dense is not twice as bright. That is the difference
+///   between a core that reads as a bright coloured knot and one that reads
+///   as a white disc — the light along a line of sight through the bubble
+///   is the whole bubble's, and measured over `.galos_index` from ten
+///   thousand light years out it summed to 10.1 units over 1,633 pixels of
+///   blown white. Pressed, the same frame peaks at 2.8 over 882, keeps its
+///   colour, and the faint half of the field is untouched: the middling
+///   splat does not move.
 /// - **A scatter** (`fill < 1`) is not a crowd, and there is nothing to
 ///   correct. Its systems have come apart on screen: every one of them is a
 ///   mark the map draws at full as soon as its payload lands, and the field
@@ -431,8 +449,9 @@ pub(crate) fn splat(
     let area = std::f32::consts::TAU * sigma * sigma;
     // Off the radius actually drawn, so a cell floored to a point is read as
     // the crowd it is rather than as a scatter over an area it was not given.
-    let fill = (covered / area).min(1.);
-    let crowding = 1. + (crowd - 1.) * fill;
+    let fill = covered / area;
+    let pressed = if fill <= 1. { fill } else { fill.sqrt() };
+    let crowding = 1. + (crowd - 1.) * pressed;
     let peak = light / (crowding * area);
     (radius, peak.min(Vec3::splat(CEILING)))
 }
@@ -723,9 +742,9 @@ fn build_glow(
                 }
             }
 
-            // And the colonies, at their own. Absent where there are none, and
-            // never stood in for by the stellar centroid: that is how a colony
-            // is drawn where there is not one.
+            // And the colonies, at their own. Absent where there are none,
+            // and never stood in for by the stellar centroid: that is how a
+            // colony is drawn where there is not one.
             let colonies = settled.0.get(splat.id).map(|held| {
                 if taken.inhabited.count() < held.count() {
                     held.remove(taken.inhabited)
@@ -1097,14 +1116,18 @@ mod tests {
         );
     }
 
-    /// A crowd is still a density: held down by [`Gains::crowd`], and fading
-    /// as the footprint it is spread over grows.
+    /// A crowd is still a density — it thins as the footprint it is spread
+    /// over grows — and the denser it is the harder it is held down.
     ///
     /// The other end of the same law, and the reason there is a `crowd` at
-    /// all. A hundred thousand systems inside a pixel are a backdrop and not
-    /// a hundred thousand marks' worth of light, so what they lay down is
-    /// what they cover divided by what they are spread over — which is what
-    /// keeps the galaxy a picture rather than a white sheet.
+    /// all. A hundred thousand systems inside a pixel are a backdrop and
+    /// not a hundred thousand marks' worth of light. Past the point where
+    /// the marks touch the correction goes on growing as the square root of
+    /// the crowding, so the thinning is square-rooted with it: spreading the
+    /// same crowd over sixteen times the area leaves it four times fainter
+    /// rather than sixteen. That is what keeps the bubble's core a bright
+    /// knot instead of a white disc, and it is a compression of the bright
+    /// end and nothing else — a scatter never reaches it.
     #[test]
     fn a_crowd_is_laid_as_a_density() {
         let gains = Gains::default();
@@ -1117,11 +1140,11 @@ mod tests {
         let (wide, far) = splat(light, covered, 80., gains.crowd);
         assert_eq!(tight, 20. * REACH, "a crowded splat covers its cell");
         assert_eq!(wide, 80. * REACH);
-        // Four times the spread is sixteen times the area, and the same
-        // light over it.
+        let thinning = close.max_element() / far.max_element();
         assert!(
-            (close.max_element() / far.max_element() - 16.).abs() < 0.1,
-            "a crowd did not thin with its footprint: {} to {}",
+            (thinning - 4.).abs() < 0.2,
+            "a crowd did not thin with its footprint as the law says: {} to \
+             {} is {thinning}",
             close.max_element(),
             far.max_element()
         );
@@ -1395,8 +1418,10 @@ mod exposure {
     #[test]
     fn the_field_is_exposed() {
         let Some(dir) = measured() else { return };
+        let mut middling: Vec<f32> = Vec::new();
         for away in [20., 200., 2_000., 30_000.] {
             let (laid, splats) = laid_at(&dir, away, Set::open());
+            middling.push(laid.typical);
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
                  {:>5} backdrop, peak {:.5}|{:.5}|{:.3}, {:>5} clipped, \
@@ -1420,15 +1445,9 @@ mod exposure {
                 laid.backdrop > 0,
                 "the galaxy behind the shells was not drawn at {away} ly"
             );
-            // Five ten-thousandths. The flat correction laid its middling
-            // splat under two of them at every zoom inside two thousand
-            // light years, which is the fade this guards: the number is
-            // between what that law managed and what this one does, so it
-            // catches a return to it without pinning the exposure.
             assert!(
-                laid.typical > 5e-4,
-                "the middling splat is invisible at {away} ly: {}",
-                laid.typical
+                laid.typical > 0.,
+                "the middling splat laid nothing at {away} ly"
             );
             assert!(
                 laid.peak <= CEILING,
@@ -1459,6 +1478,22 @@ mod exposure {
                 laid.floored
             );
         }
+
+        // And the fade itself, which is a ratio and not a level: what went
+        // wrong was the field thinning as the camera came in, and how bright
+        // any one splat is depends on how finely the directory is cut — a
+        // 204,466-cell galaxy lays a tenth of what a 4,072-cell one does per
+        // quad and the same total. Measured under a flat correction, the
+        // middling splat came in at a nineteenth of its galaxy-wide value;
+        // the correction spent as a cell resolves holds it to within a
+        // fifth.
+        let closest = middling[0];
+        let widest = middling[middling.len() - 1];
+        assert!(
+            closest * 5. > widest,
+            "the field faded as it was resolved: {closest} against {widest} \
+             with the galaxy seen whole"
+        );
     }
 
     /// A cell whose systems are all on the map as themselves lays down no
