@@ -218,6 +218,7 @@ impl Flight {
         app.init_resource::<BoundedTasks>();
         app.init_resource::<crate::systems::bounded::PointOrders>();
         app.init_resource::<crate::systems::bounded::Republished>();
+        app.init_resource::<crate::systems::aggregate::Drawn>();
         app.init_resource::<crate::systems::bounded::Keeping>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
