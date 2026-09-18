@@ -386,29 +386,12 @@ impl Index {
         })
     }
 
-    /// Every cell whose box comes within `radius` light years of `center`: the
-    /// cells a spyglass region must load to hold every system inside it.
+    /// Every cell whose box comes within `radius` light years of `center`,
+    /// found by descending the tree rather than scanning it.
     ///
-    /// A cell straddling the sphere is kept, so the caller filters the points it
-    /// loads by their true distance; a cell wholly outside cannot own a system
-    /// inside and is left out. Additive slices put a system in exactly one cell,
-    /// so the union of these cells' payloads is every system in reach with no
-    /// duplicate. Linear over the resident index, which is small and asked only
-    /// when the region moves, not per frame.
-    pub fn region(&self, center: [f64; 3], radius: f64) -> Vec<CellId> {
-        self.cells
-            .values()
-            .filter(|cell| cell.id.bounds().distance_to(center) <= radius)
-            .map(|cell| cell.id)
-            .collect()
-    }
-
-    /// The same set, found by descending the tree rather than scanning it.
-    ///
-    /// [`region`](Self::region) is linear over every cell there is, which is
-    /// right for a spyglass — asked once when the region moves — and hopeless
-    /// for a router, which asks per expansion: 204,466 cells at 200 M systems,
-    /// half a million times a route.
+    /// A linear scan over every cell there is would answer the same set, and
+    /// is hopeless for a router, which asks per expansion: 204,466 cells at
+    /// 200 M systems, half a million times a route.
     ///
     /// This descends from the root instead, dropping a subtree whose box is
     /// already further than `radius` from `center`, so the work is the cells
@@ -417,8 +400,10 @@ impl Index {
     /// [`Cell::rank_lo`]), so the brightest systems in reach sit in the
     /// ancestors and a walk that stopped at leaves would route past them.
     ///
-    /// A cell straddling the sphere is handed over, as in `region`: the caller
-    /// measures its systems' true distances.
+    /// A cell straddling the sphere is handed over rather than measured: the
+    /// caller weighs its systems' true distances. Additive slices put a
+    /// system in exactly one cell, so the union of these cells' payloads is
+    /// every system in reach with no duplicate.
     pub fn each_near(
         &self,
         center: [f64; 3],
@@ -1071,31 +1056,12 @@ mod tests {
         }
     }
 
-    /// The region query keeps a cell whose box reaches the sphere and drops one
-    /// beyond it, so a spyglass loads every cell that could hold a system in
-    /// reach and no cell that cannot.
-    #[test]
-    fn region_keeps_cells_within_reach() {
-        let (index, parent, kids) = small_tree(10, 10, 4.0);
-        let center = parent.bounds().center();
-
-        // A radius spanning the parent's own box takes it and its children.
-        let near = index.region(center, parent.edge_ly());
-        assert!(near.contains(&parent));
-        assert!(near.contains(&kids[0]));
-
-        // A vanishing radius about the centre still takes the cells that contain
-        // the point, but a centre far outside the galaxy takes nothing.
-        let far = index.region([1.0e9, 1.0e9, 1.0e9], 1.0);
-        assert!(far.is_empty());
-    }
-
     /// Descending finds exactly the cells scanning finds.
     ///
-    /// `each_near` is what a router asks per expansion and `region` is the
-    /// answer it must not differ from: a cell the descent prunes is a cell
-    /// whose systems a route would never see, and a system missed is a jump
-    /// the plan does not know it can make.
+    /// `each_near` is what a router asks per expansion, and a linear scan
+    /// over every cell is the answer it must not differ from: a cell the
+    /// descent prunes is a cell whose systems a route would never see, and a
+    /// system missed is a jump the plan does not know it can make.
     #[test]
     fn descending_finds_what_scanning_finds() {
         let (index, parent, _) = small_tree(10, 10, 4.0);
@@ -1105,7 +1071,11 @@ mod tests {
             let mut walked = Vec::new();
             index.each_near(center, radius, |id| walked.push(id));
             walked.sort_unstable_by_key(|id| (id.level, id.morton()));
-            let mut scanned = index.region(center, radius);
+            let mut scanned: Vec<CellId> = index
+                .cells()
+                .filter(|cell| cell.id.bounds().distance_to(center) <= radius)
+                .map(|cell| cell.id)
+                .collect();
             scanned.sort_unstable_by_key(|id| (id.level, id.morton()));
             assert_eq!(walked, scanned, "at radius {radius}");
         }

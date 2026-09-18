@@ -310,11 +310,13 @@ fn composition(
 fn build_glow(
     camera: Query<(&OrbitCamera, &Camera)>,
     planned: Res<Planned>,
+    drawn: Res<crate::systems::aggregate::Drawn>,
     index: Res<ResidentIndex>,
     settled: Res<Settled>,
     color_by: Res<ColorBy>,
     gains: Res<Gains>,
     view: Res<View>,
+    spyglass: Res<crate::systems::Spyglass>,
     mut laid: ResMut<Laid>,
     mut glow: Query<&mut Mesh3d, With<GlowMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -362,13 +364,35 @@ fn build_glow(
             break 'lay;
         }
 
+        // To bound the view is to clear away what the reach does not hold, and
+        // the field is part of the view. The same predicate the marks are held
+        // to ([`Spyglass::reaches`], which `super::visibility` asks of every
+        // drawn system), so the spyglass is one boundary over the whole map
+        // rather than a sphere of symbols standing in a field that carries on
+        // past it. Answers true for everything while the spyglass is not
+        // clearing, which is what that mode means.
+        //
+        // Asked of each channel at its own centroid, since a cell's colonies
+        // and its stars do not sit in the same place: a cell whose colonies
+        // are inside the reach draws them even where its stellar centre is
+        // outside. A splat's own footprint still bleeds past the edge by its
+        // spread, which the walk holds to a few pixels by splitting anything
+        // wider — so the boundary is soft by a few pixels and not by a cell.
+        let in_reach =
+            |at: [f64; 3]| spyglass.reaches(orbit.center(), DVec3::from(at));
+
         for splat in &planned.0.splats {
             let Some(cell) = index.0.get(splat.id) else { continue };
             let count = cell.aggregate.count();
             if count == 0 {
                 continue;
             }
-            let held = settled.0.get(splat.id);
+            // What the marks have already taken out of this cell. A cell can
+            // be marked and splatted by the same walk, so without this its
+            // systems are drawn twice: once as themselves and again inside the
+            // field behind them. Absent for a cell with nothing drawn out of
+            // it, which is the ordinary far case and leaves the total standing.
+            let taken = drawn.0.get(&splat.id).copied().unwrap_or_default();
             // The share of this cell's own content the splat carries: one where
             // it stands for its whole subtree, less where it is part way into a
             // cross-fade with its children.
@@ -383,10 +407,22 @@ fn build_glow(
             // sRGB, a fiftieth in the linear light this adds in, so the channel
             // came out four ten-thousandths of its weight and the galaxy behind
             // the shells went black.
-            let peopled = held.map_or(0, Inhabited::count);
-            let empty = count.saturating_sub(peopled);
+            //
+            // The residual's own moments, not the total's: a cell half drawn
+            // has its drawn half subtracted out of the geometry as well as out
+            // of the weight, so the light that is left sits where the systems
+            // that are left sit. The backdrop's weight counts only the systems
+            // nobody lives in while its moments count every system in the cell,
+            // which is a fiftieth of a difference at one populated system in
+            // forty-four and not worth a fourth weighting to carry.
+            let peopled = settled.0.get(splat.id).map_or(0, Inhabited::count);
+            let empty = count.saturating_sub(peopled).saturating_sub(
+                taken.count.saturating_sub(taken.inhabited.count()),
+            );
+            let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
-                && let Some(at) = cell.aggregate.count_centroid()
+                && let Some(at) = mass.centroid()
+                && in_reach(at)
             {
                 let w = empty as f32 * gains.backdrop * share;
                 if let Some(peak) = quads.deposit(
@@ -395,7 +431,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    cell.aggregate.count_extent(),
+                    mass.rms_radius(),
                     Vec3::splat(w),
                 ) {
                     counted.backdrop += 1;
@@ -408,10 +444,19 @@ fn build_glow(
             // And the colonies, at their own. Absent where there are none, and
             // never stood in for by the stellar centroid: that is how a colony
             // is drawn where there is not one.
-            if let Some(held) = held
+            let colonies = settled.0.get(splat.id).map(|held| {
+                if taken.inhabited.count() < held.count() {
+                    held.remove(taken.inhabited)
+                } else {
+                    // Every colony under the cell is on the map as itself.
+                    Inhabited::ZERO
+                }
+            });
+            if let Some(held) = colonies
                 && let Some(at) = held.centroid()
+                && in_reach(at)
             {
-                let (light, _) = composition(held, *color_by, gains.unaligned);
+                let (light, _) = composition(&held, *color_by, gains.unaligned);
                 if let Some(peak) = quads.deposit(
                     orbit,
                     cot_half_fov,
@@ -740,7 +785,25 @@ mod exposure {
     /// sets a radius the camera's own placement system derives an eye from,
     /// and that system does not run here — so three radii measured three times
     /// at the origin and read as one answer.
-    fn laid_at(dir: &PathBuf, away: f64) -> (Laid, usize) {
+    /// How the map is set up for a measurement: how wide the spyglass is
+    /// clearing at, and whether the marks have already accounted for every
+    /// system the field would otherwise draw.
+    #[derive(Clone, Copy)]
+    struct Set {
+        /// The spyglass radius in light years, or [`None`] for not clearing.
+        reach: Option<f32>,
+        /// Whether every splatted cell is taken as drawn in full.
+        accounted: bool,
+    }
+
+    impl Set {
+        /// The far case the exposure is judged on: no boundary, nothing drawn.
+        fn open() -> Set {
+            Set { reach: None, accounted: false }
+        }
+    }
+
+    fn laid_at(dir: &PathBuf, away: f64, set: Set) -> (Laid, usize) {
         let source = FsSource::new(dir);
         let (index, populated) = pollster::block_on(async {
             (
@@ -757,6 +820,16 @@ mod exposure {
         app.insert_resource(ResidentIndex(index));
         app.insert_resource(Settled(std::sync::Arc::new(settled)));
         app.insert_resource(Populated::default());
+        // Nothing is drawn as itself in this harness, so nothing is accounted
+        // for and the field lays every cell's aggregate down whole. That is
+        // the far case the exposure is judged on.
+        app.init_resource::<crate::systems::aggregate::Drawn>();
+        app.insert_resource(crate::systems::Spyglass {
+            radius: set.reach.unwrap_or(0.),
+            clear: set.reach.is_some(),
+            lock_camera: false,
+            follow_camera: true,
+        });
         app.insert_resource(View::Map);
         app.insert_resource(ColorBy::Allegiance);
         app.init_resource::<Gains>();
@@ -798,6 +871,34 @@ mod exposure {
         let gains = world.register_system(settle_gains);
         world.run_system(gains).expect("the gains settle");
         world.run_system(plan).expect("the walk plans");
+        // Every splatted cell taken as fully drawn, by handing the field
+        // exactly the totals it is about to subtract. Built from the
+        // aggregates rather than from points so the residual is zero to the
+        // bit, which is what the claim under test is.
+        if set.accounted {
+            let splats: Vec<_> = world
+                .resource::<Planned>()
+                .0
+                .splats
+                .iter()
+                .map(|splat| splat.id)
+                .collect();
+            let index = world.resource::<ResidentIndex>().0.clone();
+            let settled = world.resource::<Settled>().0.clone();
+            let mut drawn =
+                world.resource_mut::<crate::systems::aggregate::Drawn>();
+            for id in splats {
+                let Some(cell) = index.get(id) else { continue };
+                drawn.0.insert(
+                    id,
+                    crate::systems::aggregate::Accounted {
+                        count: cell.aggregate.count(),
+                        mass: cell.aggregate.mass(),
+                        inhabited: settled.get(id).copied().unwrap_or_default(),
+                    },
+                );
+            }
+        }
         world.run_system(build).expect("the field builds");
         let planned = world.resource::<Planned>().0.splats.len();
         (*world.resource::<Laid>(), planned)
@@ -817,7 +918,7 @@ mod exposure {
     fn the_field_is_exposed() {
         let Some(dir) = measured() else { return };
         for away in [200., 2_000., 30_000.] {
-            let (laid, splats) = laid_at(&dir, away);
+            let (laid, splats) = laid_at(&dir, away, Set::open());
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
                  {:>5} backdrop, {:>8.3} peak, {:>5} clipped",
@@ -850,6 +951,71 @@ mod exposure {
                 laid.clipped
             );
         }
+    }
+
+    /// A cell whose systems are all on the map as themselves lays down no
+    /// field, so the two halves of the walk never draw one system twice.
+    ///
+    /// The walk marks a cell and splats it in the same pass, deliberately, so
+    /// without the residual the field carries every marked cell's whole
+    /// subtree a second time behind the marks standing in front of it. This is
+    /// that subtraction, at its limit: account for everything and nothing is
+    /// left to lay.
+    #[test]
+    fn what_the_marks_draw_the_field_does_not() {
+        let Some(dir) = measured() else { return };
+        let (whole, splats) = laid_at(&dir, 2_000., Set::open());
+        let (residual, same) =
+            laid_at(&dir, 2_000., Set { reach: None, accounted: true });
+
+        assert_eq!(splats, same, "the plan moved between the two");
+        assert!(
+            whole.colonies > 0 && whole.backdrop > 0,
+            "nothing to subtract"
+        );
+        println!(
+            "{splats} splats: {} + {} quads whole, {} + {} after the marks",
+            whole.colonies,
+            whole.backdrop,
+            residual.colonies,
+            residual.backdrop
+        );
+        assert_eq!(
+            (residual.colonies, residual.backdrop),
+            (0, 0),
+            "the field drew systems the marks had already drawn"
+        );
+        assert_eq!(residual.light, 0., "light was laid twice");
+    }
+
+    /// To bound the view is to clear away what the reach does not hold, and
+    /// the field is part of the view.
+    ///
+    /// A spyglass that clears is a boundary over the whole map, not a sphere
+    /// of symbols standing in a field that carries on past it. Measured from
+    /// far enough out that most of the galaxy is on screen, so there is plenty
+    /// outside the reach for the field to have drawn.
+    #[test]
+    fn the_spyglass_holds_the_field_in() {
+        let Some(dir) = measured() else { return };
+        let (open, splats) = laid_at(&dir, 30_000., Set::open());
+        let (held, _) =
+            laid_at(&dir, 30_000., Set { reach: Some(200.), accounted: false });
+
+        println!(
+            "{splats} splats: {} + {} quads unbounded, {} + {} inside 200 ly",
+            open.colonies, open.backdrop, held.colonies, held.backdrop
+        );
+        assert!(
+            held.backdrop < open.backdrop / 10,
+            "the field drew past the reach: {} of {} quads",
+            held.backdrop,
+            open.backdrop
+        );
+        assert!(
+            held.light < open.light,
+            "clearing the view laid no less light down"
+        );
     }
 
     /// The colonies are drawn where the colonies are, which is not where the

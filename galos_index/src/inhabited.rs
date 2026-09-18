@@ -183,7 +183,10 @@ pub fn security_at(bucket: usize) -> Option<Security> {
 ///
 /// The prune key is `count > 0`: a subtree with nobody in it cannot matter to
 /// a political view, and that is free to ask.
-#[derive(Copy, Clone, Debug, PartialEq)]
+///
+/// [`Default`] is [`ZERO`](Self::ZERO): a record of nobody is the identity of
+/// [`merge`](Self::merge), so the two cannot mean different things.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Inhabited {
     /// How many systems in the subtree anybody lives in.
     count: u64,

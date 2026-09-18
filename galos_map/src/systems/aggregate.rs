@@ -28,8 +28,11 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::scale::View;
 use bevy::math::DVec3;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use galos_index::{Mode, Needed, View as Viewpoint};
+use galos_index::{
+    CellId, Inhabited, Mode, Moments, Needed, View as Viewpoint,
+};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -37,6 +40,7 @@ pub fn plugin(app: &mut App) {
         marks: Vec::new(),
         splats: Vec::new(),
     }));
+    app.init_resource::<Drawn>();
     // After the camera has settled where it stands this frame, and read for the
     // same reason everything in `Present` is: the plan follows the eye.
     app.add_systems(Update, plan.in_set(MapSet::Present));
@@ -46,10 +50,63 @@ pub fn plugin(app: &mut App) {
 ///
 /// `marks` is the discrete set — one system apiece from a cell's payload, and
 /// so also what a loader fetches — and `splats` is the aggregate field drawn
-/// from the index alone. The map does not read it yet; it is the seam the
-/// bounded fetch and the glow will both plan on.
+/// from the index alone. Both halves are read: [`super::bounded`] fetches and
+/// spawns the marks, [`super::glow`] lays the splats down.
 #[derive(Resource)]
 pub struct Planned(pub Needed);
+
+/// What each marked cell's drawn systems already account for
+///
+/// The other half of the plan, and the thing that keeps the two halves from
+/// drawing the same systems twice. A cell can be marked *and* splatted in the
+/// same walk — the two tests are independent, and `galos_index::walk` means
+/// them to be — so a cell whose systems are on the map would also have its
+/// whole subtree laid into the field behind them. The field subtracts this and
+/// draws the rest.
+///
+/// **It is what makes the fetch and the budget invisible.** What a cell has
+/// not loaded, what the spawn budget has not reached, what the spyglass clamps
+/// away per point and what the resolvable prefix leaves out are all simply
+/// absent from here, so they stay in the residual and go on being drawn as
+/// light. A cell mid-fetch shows its field; as its points arrive the light
+/// moves from the splat to the marks with nothing added and nothing lost.
+///
+/// Written by [`super::bounded::reconcile`], which is the only thing that
+/// knows the drawn set: the prefix is not a rank range, the filters having
+/// promoted systems out of magnitude order (see `drawn_first`).
+#[derive(Resource, Default)]
+pub struct Drawn(pub HashMap<CellId, Accounted>);
+
+/// One cell's drawn systems, in the terms the two channels of the field are
+/// laid in
+///
+/// Counts and moments rather than a list of addresses: what the field needs is
+/// exactly what [`Moments::remove`] and [`Inhabited::remove`] take, and both
+/// are the exact inverses of the merges that built the totals.
+#[derive(Clone, Copy, Default)]
+pub struct Accounted {
+    /// How many of the cell's systems are drawn as themselves.
+    pub count: u64,
+    /// Their positions in count weight, for the backdrop's residual.
+    pub mass: Moments,
+    /// What they carry politically, for the colonies'.
+    pub inhabited: Inhabited,
+}
+
+impl Accounted {
+    /// Take one drawn system into the account.
+    ///
+    /// `political` is the system's reading where it is on the populated table
+    /// and somebody lives in it, and [`None`] otherwise — the same
+    /// `population > 0` the rest of the map tells inhabited by.
+    pub fn took(&mut self, position: [f64; 3], political: Option<Inhabited>) {
+        self.count += 1;
+        self.mass = self.mass.merge(Moments::point(1.0, position));
+        if let Some(one) = political {
+            self.inhabited = self.inhabited.merge(one);
+        }
+    }
+}
 
 /// Walk the index for what the camera needs, when the camera has moved
 ///

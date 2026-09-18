@@ -362,8 +362,8 @@ fn approach(smoothness: f32, dt: f32) -> f32 {
 ///
 /// [`approach`] covers a fraction of what remains each frame, so it
 /// converges on a target without reaching it. Pinning gives it an exact
-/// end, which lets the star fetch settle: its regions are keyed on the
-/// center, and a center that never stops moving keeps re-requesting them.
+/// end, which lets the map settle: the walk plans against the center and the
+/// reach around it, and a center that never stops moving keeps re-planning.
 fn snap(value: f64, target: f64) -> f64 {
     if (target - value).abs() <= SNAP_TOLERANCE * target.abs().max(1.) {
         target

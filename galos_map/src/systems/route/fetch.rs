@@ -24,12 +24,6 @@ use std::sync::Arc;
 /// behind `Arc`s, and each walk is its own task on the compute pool, so a trip
 /// costs about what its longest leg costs rather than the sum of them.
 ///
-/// No clock is written. [`LastFetchedAt`](crate::systems::fetch::LastFetchedAt)
-/// is the spyglass region fetch's own, measuring the throttle and the poll from
-/// the last region asked for; a route is not a region, and resetting it here
-/// put off the next region read by the throttle for no better reason than that
-/// the user had plotted something.
-///
 /// Stop every route being searched, and ask for nothing
 ///
 /// Dropping the tasks is not enough on its own: a body the pool has begun
@@ -364,15 +358,13 @@ fn ask_leg(
     let names = Names::clone(names);
     let populated = Populated::clone(populated);
 
-    // No moment. A route is a line between two named systems rather than
-    // a region, so there is no sky it leaves the map able to answer for.
     let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
         // The search as one zone, named with the leg's reach: this is the
         // longest thing the map does off the main thread — tens of millions
         // of neighbours for a galactic leg — and it never yields, being a walk
         // of a mapped graph with no read in it.
         let _zone = info_span!("route search", reach = ?reach).entered();
-        let systems = match (graph, ends, reach) {
+        match (graph, ends, reach) {
             (Some(graph), Some((start, end)), Some(range)) => graph
                 .route(start, end, range, how, drive, tune, watching.as_ref())
                 .map(|hops| {
@@ -393,8 +385,7 @@ fn ask_leg(
                 })
                 .unwrap_or_default(),
             _ => Vec::new(),
-        };
-        (systems, None)
+        }
     });
     tasks.fetched.insert(index, (task, now));
 }

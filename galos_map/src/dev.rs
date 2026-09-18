@@ -301,8 +301,7 @@ fn diagnostics(
             row(
                 ui,
                 "spyglass",
-                "The reach around what the camera looks at, and the fetching \
-                 that fills it.",
+                "The reach around what the camera looks at, and what it bounds.",
                 |ui| {
                     pair(
                         ui,
@@ -318,19 +317,9 @@ fn diagnostics(
                         "radius",
                         &reach(spyglass.radius),
                         "How far the spyglass reaches from what the camera \
-                         looks at. Everything inside is fetched and drawn. It \
-                         follows the camera all the way in, so inside a \
-                         system it is a fraction of a light year.",
-                    );
-                    let keep =
-                        spyglass.radius as f64 * crate::systems::EVICT_MARGIN;
-                    pair(
-                        ui,
-                        "keep",
-                        &reach(keep as f32),
-                        "How far a system is kept before it is dropped: the \
-                         radius times the eviction margin. Wider than the \
-                         reach so the edge does not churn.",
+                         looks at. It bounds what the walk loads and what is \
+                         drawn. It follows the camera all the way in, so \
+                         inside a system it is a fraction of a light year.",
                     );
                     pair(
                         ui,
@@ -343,14 +332,8 @@ fn diagnostics(
                         ui,
                         "fetch tasks",
                         &tasks.fetched.len().to_string(),
-                        "Region reads in flight, not yet landed.",
-                    );
-                    pair(
-                        ui,
-                        "surveys",
-                        &tasks.surveyed.len().to_string(),
-                        "Regions the map remembers holding, so it does not ask \
-                         again. Clamped to what the evictor still holds.",
+                        "Route and picked-out-system reads in flight, not yet \
+                         landed.",
                     );
                 },
             );

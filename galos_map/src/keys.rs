@@ -320,9 +320,8 @@ fn head_for(selection: &Selection, at: DVec3, radius: f32) -> Option<DVec3> {
 /// The only binding that asks [`Keyboard::focused`] rather than
 /// [`Keyboard::typing`]. Egui reads a space as a click on whatever holds the
 /// focus, so a control tabbed onto and left holding it would be clicked again
-/// by every press of this key — and the source the whole map is loaded
-/// through is one of those controls, switching it clearing the map and
-/// rebuilding from nothing.
+/// by every press of this key — and the spyglass bound is one of those
+/// controls, turning it off drawing the whole sky the walk can resolve.
 fn fly(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
@@ -1832,8 +1831,8 @@ mod tests {
     ///
     /// Egui reads a space as a click on whatever holds the focus, so a
     /// checkbox tabbed onto and left there would be clicked again by every
-    /// press of this key — the source the whole map is loaded through is one
-    /// of them, and switching it clears the map and rebuilds from nothing.
+    /// press of this key — the spyglass bound is one of them, and turning it
+    /// off draws the whole sky the walk can resolve.
     #[test]
     fn a_control_holding_the_focus_does_not_fly_the_map() {
         let mut app = gathered(picked(&[somewhere(1.)]));

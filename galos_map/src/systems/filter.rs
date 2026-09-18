@@ -10,8 +10,8 @@
 //! mean either faction heard from within it. Counted alongside the factions it
 //! would put the whole of the last hour onto a map asked for two factions.
 //!
-//! This is a layer over the map rather than a mode: the spyglass goes on
-//! fetching by region and the camera stays where it is. Whether it despawns
+//! This is a layer over the map rather than a mode: the walk goes on loading
+//! the cells it marks and the camera stays where it is. Whether it despawns
 //! depends on the dim below.
 //!
 //! [`DimTo`] says how faintly what none of them admits is drawn, and answers
@@ -34,7 +34,6 @@
 use crate::schedule::MapSet;
 use crate::search::Pending;
 use crate::systems::System;
-use crate::systems::fetch::FetchTasks;
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::{Drive, Routing, Tuning};
 use crate::systems::spawn::system_at;
@@ -66,14 +65,6 @@ pub fn plugin(app: &mut App) {
         mark.in_set(MapSet::Populate)
             .in_set(Marking)
             .after(super::spawn::spawn),
-    );
-    // The dim and the filters decide which systems belong on the map at all, so
-    // a change to either asks the loaded regions again to catch up.
-    app.add_systems(
-        Update,
-        refetch_on_filter_change
-            .in_set(MapSet::Fetch)
-            .before(super::fetch::fetch),
     );
 }
 
@@ -1334,11 +1325,11 @@ impl Filters {
     /// How far back an enabled filter on time looks, where one is asked
     ///
     /// The span rather than the moment it reaches back to. A moment is a
-    /// different value every time it is worked out, so a region carrying one
-    /// would be somewhere new every frame; the span moves only when the user
-    /// moves the control, which is exactly when the region is a new question.
-    /// Whoever puts the question turns it into a moment against the clock they
-    /// ask at.
+    /// different value every time it is worked out, so a filter carrying one
+    /// would read as changed every frame and re-cut the whole map every
+    /// frame; the span moves only when the user moves the control, which is
+    /// exactly when the answer is a new one. Whoever puts the question turns
+    /// it into a moment against the clock they ask at.
     ///
     /// The longest where several are somehow asked, that being the one whose
     /// answer holds the others.
@@ -1408,8 +1399,8 @@ pub struct Filtered;
 /// Zero is not merely invisible. A star drawn at no opacity is still loaded —
 /// spawned, its transform walked every frame, its pointer target waiting — so
 /// zero goes further and takes it off the map: [`super::spawn`] never loads
-/// what no filter admits, and [`super::evict`] drops what already stands, name,
-/// ring and hit box with it.
+/// what no filter admits, and [`super::bounded`]'s walk drops what already
+/// stands, name, ring and hit box with it.
 #[derive(Resource)]
 pub struct DimTo(pub f32);
 
@@ -1452,11 +1443,12 @@ impl DimTo {
     /// [`DIM_FLOOR`], the faintest that still reads as present, so no part of
     /// the travel above zero lands on an opacity too low to see.
     ///
-    /// Zero stays zero — the load-and-evict decisions keyed on the slider
-    /// ([`Filtering::excluded_are_drawn`], [`super::spawn`], [`super::evict`])
-    /// read a dropped system off either the position or the opacity — and just
-    /// above zero steps to the floor, which is "off" giving way to "barely
-    /// there", exactly what the bottom of the control should mean.
+    /// Zero stays zero — the load-and-drop decisions keyed on the slider
+    /// ([`Filtering::excluded_are_drawn`], [`super::spawn`],
+    /// [`super::bounded`]) read a dropped system off either the position or
+    /// the opacity — and just above zero steps to the floor, which is "off"
+    /// giving way to "barely there", exactly what the bottom of the control
+    /// should mean.
     pub fn opacity(&self) -> f32 {
         if self.0 <= 0. { 0. } else { DIM_FLOOR.powf(1. - self.0) }
     }
@@ -1478,43 +1470,6 @@ impl Filtering<'_> {
     /// dropped from the map altogether.
     pub fn excluded_are_drawn(&self) -> bool {
         self.dim.0 > 0.
-    }
-}
-
-/// Ask the loaded regions again when systems that are absent must return
-///
-/// The spyglass region fetch's, and only its: the walk chooses its set afresh
-/// every frame off payloads it already holds, so a filter change there is
-/// answered by the next [`super::bounded`] pass and asks the transport for
-/// nothing. The regions this clears are the surveys that path remembers.
-///
-/// The fetch is unfiltered — the whole region in reach, dimmed or dropped by
-/// the filters afterwards — so what they admit never drives it. A fetch is
-/// worth issuing only when a system that is off the map has to come back onto
-/// it, and nothing the spyglass fetched is off the map while the excluded are
-/// drawn: above zero dim it spawns every system in reach, filtered or not, so a
-/// filter change there only re-marks what already stands and asks for nothing.
-///
-/// Below zero the excluded are dropped ([`super::spawn`] never spawns them and
-/// [`super::evict`] drops what stands), so two moves bring absent systems
-/// back and must refetch: the dim coming up through zero, which wants them all
-/// again, and a filter relaxed while at zero, which readmits some. A move
-/// within the visible range changes only how faint the excluded are drawn, so
-/// it asks for nothing.
-fn refetch_on_filter_change(
-    filters: Res<Filters>,
-    dim: Res<DimTo>,
-    mut tasks: ResMut<FetchTasks>,
-    mut were_drawn: Local<Option<bool>>,
-) {
-    let drawn = dim.0 > 0.;
-    let came_back = *were_drawn == Some(false) && drawn;
-    *were_drawn = Some(drawn);
-    // A filter change matters only where the excluded are absent — at zero
-    // dim. Above it they are on the map already, so the change is `mark`'s to
-    // carry and no fetch follows.
-    if came_back || (filters.is_changed() && !drawn) {
-        tasks.surveyed.clear();
     }
 }
 
@@ -2329,94 +2284,6 @@ mod tests {
         app
     }
 
-    /// A world with the filters, the dim, and the refetch that watches both.
-    /// Stepped once so the first run's clear, on the filters being newly
-    /// added, is behind it.
-    fn refetching() -> App {
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins);
-        app.init_resource::<Filters>();
-        app.init_resource::<DimTo>();
-        app.init_resource::<FetchTasks>();
-        app.add_systems(Update, refetch_on_filter_change);
-        app.update();
-        app
-    }
-
-    /// A region the map thinks it holds, so a clear is something to see.
-    fn hold_a_region(app: &mut App) {
-        let (asked, at) = crate::systems::fetch::tests::surveyed_at(0, 100, 0);
-        app.world_mut().resource_mut::<FetchTasks>().surveyed(asked, at);
-    }
-
-    fn holds_a_survey(app: &App) -> bool {
-        !app.world().resource::<FetchTasks>().surveyed.is_empty()
-    }
-
-    /// Nudging the opacity within its visible range asks for nothing
-    ///
-    /// The bug this guards: 0.30 does not round-trip through the slider, so it
-    /// used to clear the surveys every frame and refetch without end.
-    #[test]
-    fn a_dim_within_range_does_not_refetch() {
-        let mut app = refetching();
-        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
-        app.update();
-        hold_a_region(&mut app);
-
-        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
-        app.update();
-
-        assert!(holds_a_survey(&app), "a dim nudge cleared the surveys");
-    }
-
-    /// Bringing the dim back up through zero asks the dropped systems back
-    #[test]
-    fn coming_back_up_through_zero_refetches() {
-        let mut app = refetching();
-        app.world_mut().resource_mut::<DimTo>().0 = 0.;
-        app.update();
-        hold_a_region(&mut app);
-
-        app.world_mut().resource_mut::<DimTo>().0 = 0.30;
-        app.update();
-
-        assert!(
-            !holds_a_survey(&app),
-            "coming back up from zero held the surveys"
-        );
-    }
-
-    /// A filter changing while the excluded are drawn asks for nothing: they
-    /// are already on the map, and the change is only a re-mark
-    #[test]
-    fn a_filter_change_while_drawn_does_not_refetch() {
-        let mut app = refetching();
-        app.world_mut().resource_mut::<DimTo>().0 = 0.25;
-        app.update();
-        hold_a_region(&mut app);
-
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
-        app.update();
-
-        assert!(holds_a_survey(&app), "a filter change at opacity refetched");
-    }
-
-    /// A filter changing at zero dim asks the regions again, since what it
-    /// readmits there was dropped rather than dimmed
-    #[test]
-    fn a_filter_change_at_zero_refetches() {
-        let mut app = refetching();
-        app.world_mut().resource_mut::<DimTo>().0 = 0.;
-        app.update();
-        hold_a_region(&mut app);
-
-        app.world_mut().resource_mut::<Filters>().add(faction(7));
-        app.update();
-
-        assert!(!holds_a_survey(&app), "a filter change at zero held surveys");
-    }
-
     /// The mark lands on what the filters exclude
     #[test]
     fn the_mark_lands_on_what_is_excluded() {
@@ -2633,11 +2500,11 @@ mod tests {
 
     /// And the span itself holds still while it does
     ///
-    /// Which is what the region is keyed on. The moment it works out to is a
-    /// different value every frame, so a region carrying one would never be the
-    /// question it was last time; the span is the same question until the user
-    /// moves the control, and whoever puts it turns it into a moment against
-    /// the clock they ask at.
+    /// Which is what a cut is worth doing on. The moment it works out to is a
+    /// different value every frame, so a filter carrying one would read as
+    /// changed every frame; the span is the same question until the user moves
+    /// the control, and whoever puts it turns it into a moment against the
+    /// clock they ask at.
     #[test]
     fn the_span_holds_still_while_the_clock_runs() {
         let mut filters = Filters::default();

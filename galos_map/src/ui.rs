@@ -781,7 +781,6 @@ pub(crate) struct Settings<'w> {
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
     bright: ResMut<'w, Bright>,
-    bounded: ResMut<'w, crate::systems::bounded::LodFetch>,
 }
 
 /// The whole of the bar's filter section
@@ -929,28 +928,14 @@ pub(crate) fn chrome(
             });
         }
 
-        // The source and the map-wide actions apply whether or not the
-        // spyglass bounds the view, so they stand outside it. LoD Fetch is the
-        // source the spyglass now bounds; the two buttons are debug escapes.
+        // The map-wide actions apply whether or not the spyglass bounds the
+        // view, so they stand outside it; the two buttons are debug escapes.
         ui.add_space(FIELD_GAP);
-        // The map's source: draw only what the walk marks, off the cell
-        // payloads, in place of the spyglass region. On by default — it is what
-        // ends the far-view entity explosion — and off falls back to the old
-        // region fetch. Switching it clears the map and rebuilds from nothing.
-        check(
-            ui,
-            &mut settings.bounded.0,
-            "LoD Fetch",
-            "Load systems by detail, not by whole regions",
-        );
         // How often the map goes back for what it already holds. Out here
         // rather than under the spyglass because it is not the spyglass's:
-        // `bodies::fetch` asks the inside of a system on it, and
-        // `filter::mark` re-cuts the time filter on it, and neither has
-        // anything to do with a region. Under the spyglass it was reachable
-        // only while the bound was on and the region fetch with it, which hid
-        // the one control that governs what the map does whichever source is
-        // running.
+        // `bodies::fetch` asks the inside of a system on it, `filter::mark`
+        // re-cuts the time filter on it, and `crate::refresh` picks up a
+        // republished index on it. Not one of them is about the reach.
         ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
 
         // What belongs to both views, which is what this section is for and
@@ -1301,9 +1286,8 @@ pub(crate) fn chrome(
         // after frame at a value it is already at — 0.30 is not exactly
         // representable, so `dim.0 * 100` snapped back to `/ 100` never settles
         // — and writing that every frame marks the resource changed every
-        // frame, which repaints every dimmed star and (through
-        // `refetch_on_filter_change`) clears the surveys and refetches without
-        // end.
+        // frame, which repaints every dimmed star and re-marks the whole sky
+        // without end.
         if slider.changed() {
             let set = showing / 100.;
             if filter.dim.0 != set {

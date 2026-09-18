@@ -37,7 +37,7 @@
 
 use crate::camera::OrbitCamera;
 use crate::space::Galaxy;
-use crate::systems::bounded::{BoundedTasks, LodFetch, ResidentCells};
+use crate::systems::bounded::{BoundedTasks, ResidentCells};
 use crate::systems::filter::{Cut, DimTo, Filters};
 use crate::systems::scale::{ScalePopulation, View};
 use crate::systems::spawn::PendingSpawns;
@@ -201,7 +201,6 @@ impl Flight {
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
         app.insert_resource(ScalePopulation(false));
-        app.insert_resource(LodFetch(true));
         app.insert_resource(Spyglass {
             radius: 100.,
             clear: true,

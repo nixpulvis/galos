@@ -1,34 +1,32 @@
 //! Drawing only the systems the walk marks, off the index's own payloads
 //!
-//! An alternative source of star entities to the spyglass region fetch. The
-//! spyglass reads a sphere and spawns every system in it; this reads the cells
-//! the walk marks (`Planned::marks`) and spawns one entity per system in their
-//! payloads. The walk spends no budget: a cell's slice draws exactly where its
-//! systems separate on screen and everything coarser is summed into splats, so
-//! what is drawn is bounded by what the screen can resolve rather than by the
-//! million entities a spyglass wide enough to hold the same sky would pay a
-//! transform for every frame. The count that reaches the map is held down here
-//! instead — see [`reach`] and the per-point clamp in `reconcile`.
+//! The map's one source of star entities. It reads the cells the walk marks
+//! (`Planned::marks`) and spawns one entity per system in their payloads. The
+//! walk spends no budget: a cell's slice draws exactly where its systems
+//! separate on screen and everything coarser is summed into splats, so what
+//! is drawn is bounded by what the screen can resolve rather than by the
+//! million entities a sphere wide enough to hold the same sky would pay a
+//! transform for every frame. That sphere is what this replaced — a spyglass
+//! region fetch that read everything in reach at full density — and the count
+//! reaching the map is held down here instead: see [`reach`] and the
+//! per-point clamp in `reconcile`.
 //!
-//! On by default, behind [`LodFetch`]. While it is on the spyglass region
-//! fetch and its eviction stand down through their run conditions and this
-//! takes their place; turned off, the spyglass drives the map as it once did.
-//! Only one source of systems runs at a time. The spyglass radius lives on as
-//! an optional clamp on the walk — see [`reach`].
+//! The spyglass lives on as a bound and not as a source. It says how far the
+//! walk is clamped and how much of what the walk holds is drawn, never what
+//! is loaded — see [`reach`].
 //!
-//! It owns no drawing of its own: a built system is pushed onto the same
-//! [`PendingSpawns`] queue the spyglass fills and turned into an entity by
-//! [`super::spawn`]'s `drain_spawns`, and an evicted one onto
-//! [`PendingEvictions`] for `super`'s `drain_evictions`. The rest of the map — visibility, sizing,
-//! pointing, selection, labels — reads a [`System`] without caring which
-//! source spawned it.
+//! It owns no drawing of its own: a built system is pushed onto the
+//! [`PendingSpawns`] queue a route's stops and a picked-out system arrive on
+//! too, and turned into an entity by [`super::spawn`]'s `drain_spawns`; an
+//! evicted one goes onto [`PendingEvictions`] for `super`'s
+//! `drain_evictions`. The rest of the map — visibility, sizing, pointing,
+//! selection, labels — reads a [`System`] without caring where it came from.
 
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
-use crate::space::Map;
-use crate::systems::aggregate::Planned;
+use crate::systems::aggregate::{Accounted, Planned};
 use crate::systems::bodies::spawn::HeldSystem;
-use crate::systems::fetch::{FetchTasks, RawSystem};
+use crate::systems::fetch::RawSystem;
 use crate::systems::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
@@ -43,8 +41,8 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
 use galos_index::{
-    CellId, MARK_SEPARATION_PX, Part, Point, Resident, STAR_SEPARATION_PX,
-    Stamp, resolvable_count,
+    CellId, Inhabited, MARK_SEPARATION_PX, Part, Point, Resident,
+    STAR_SEPARATION_PX, Stamp, resolvable_count,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -53,19 +51,15 @@ use std::io;
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<LodFetch>();
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
     app.init_resource::<PointOrders>();
     app.init_resource::<Republished>();
     app.init_resource::<Keeping>();
 
-    // Clears the map when the source is switched, before either source runs,
-    // so the two never overlap on screen.
-    app.add_systems(Update, switch.in_set(MapSet::Search));
-    app.add_systems(Update, fetch.in_set(MapSet::Fetch).run_if(enabled));
+    app.add_systems(Update, fetch.in_set(MapSet::Fetch));
     // Arrived payloads land in the cache; the draw reads them from there.
-    app.add_systems(Update, collect.in_set(MapSet::Populate).run_if(enabled));
+    app.add_systems(Update, collect.in_set(MapSet::Populate));
     // Then draw each resident cell's resolvable prefix — grown and shed per
     // system with distance — and drop whatever falls outside every prefix.
     //
@@ -79,40 +73,10 @@ pub fn plugin(app: &mut App) {
         reconcile
             .in_set(MapSet::Populate)
             .after(collect)
-            .after(crate::systems::filter::Marking)
-            .run_if(enabled),
+            .after(crate::systems::filter::Marking),
     );
     // Free the payloads of cells the walk no longer wants at all.
-    app.add_systems(
-        Update,
-        evict_payloads.in_set(MapSet::Present).run_if(enabled),
-    );
-}
-
-/// Whether the walk's level-of-detail fetch drives the map
-///
-/// On by default: the walk — clamped to the spyglass reach when the bound is
-/// on — is the map's source. Turned off, the old spyglass region fetch drives
-/// it instead, until that path is retired (see the TODO on
-/// `fetch::fetch_spyglass`).
-#[derive(Resource)]
-pub struct LodFetch(pub bool);
-
-impl Default for LodFetch {
-    fn default() -> Self {
-        LodFetch(true)
-    }
-}
-
-/// Whether the bounded source is on, for the systems it drives to run under.
-pub(crate) fn enabled(bounded: Res<LodFetch>) -> bool {
-    bounded.0
-}
-
-/// Whether the spyglass source should run, which is whenever the bounded one
-/// is not.
-pub(crate) fn spyglass(bounded: Res<LodFetch>) -> bool {
-    !bounded.0
+    app.add_systems(Update, evict_payloads.in_set(MapSet::Present));
 }
 
 /// The spyglass reach as a clamp on the walk, in light years, or `None` when
@@ -165,6 +129,27 @@ const KEEP: Duration = Duration::from_secs(2);
 /// the view rather than a fixed count, so the memory a wide zoom holds stays
 /// what that zoom needs — which is what it was before the grace existed.
 const SLACK: usize = 2;
+
+/// How many cells the map loads systems for with the spyglass not clearing
+///
+/// The spyglass bounds the load by a sphere. Turned off there is no sphere,
+/// and the walk goes on marking every cell one of whose systems separates on
+/// screen — 151,619 of them from inside the bubble at galaxy zoom, measured
+/// (`galos_index::walk::walk_screen`). Loading that is a full-density read of
+/// the sky, which is the cost the level of detail exists to refuse.
+///
+/// **What makes a ceiling safe here is the field.** A cell nobody fetches has
+/// nothing drawn out of it, so it accounts for nothing in
+/// [`Accounted`](crate::systems::aggregate::Accounted) and
+/// [`super::glow`] lays its aggregate down whole. Past this the map stops
+/// drawing systems and goes on drawing the galaxy, which is a change of
+/// resolution and not a change of extent — so the number is a memory and
+/// frame-cost policy rather than a claim about what is worth seeing, and it
+/// can move on measurement without anything reading differently.
+///
+/// Four thousand cells is a few tens of megabytes of payload at the leaf cap,
+/// and comfortably more than the mark count any bounded view asks for.
+const UNCLAMPED_CELLS: usize = 4096;
 
 /// Which cells the walk wants, and when each held payload was last wanted
 ///
@@ -271,6 +256,9 @@ pub(crate) struct Worked<'w> {
     /// read it a frame late.
     keeping: ResMut<'w, Keeping>,
     planned: Res<'w, Planned>,
+    /// What each marked cell's marks account for, which the field subtracts
+    /// from the aggregate it lays down so the two never draw one system twice.
+    drawn: ResMut<'w, crate::systems::aggregate::Drawn>,
 }
 
 /// The payload reads in flight, one per marks cell not yet resident or asked
@@ -302,69 +290,13 @@ impl BoundedTasks {
     }
 }
 
-/// Clear the map when the source switches, so one does not draw over the other
-///
-/// Both sources spawn [`System`] entities and neither evicts the other's, so a
-/// flip would otherwise leave the old set standing. On the frame the switch
-/// changes, every system is queued for eviction and both sources' memory is
-/// reset, so whichever is now on rebuilds from nothing.
-///
-/// TODO(bounded): the whole-map clear is here only because both sources can
-/// spawn at once behind the toggle. When the spyglass path is retired and the
-/// toggle with it, there is one source and nothing to clear between — drop
-/// this system then.
-fn switch(
-    bounded: Res<LodFetch>,
-    map: Res<Map>,
-    systems: Query<Entity, With<System>>,
-    camera: Query<Entity, With<OrbitCamera>>,
-    mut evictions: ResMut<PendingEvictions>,
-    mut resident: ResMut<ResidentCells>,
-    mut tasks: ResMut<BoundedTasks>,
-    mut orders: ResMut<PointOrders>,
-    mut held: ResMut<crate::refresh::Held>,
-    mut fetched: ResMut<FetchTasks>,
-    mut last: Local<Option<bool>>,
-    mut commands: Commands,
-) {
-    // Not `is_changed`: the settings checkbox takes `&mut` of this every frame
-    // it is drawn, which marks the resource changed whether or not the value
-    // moved. Only a real flip should clear the map, so the value is compared
-    // against the last one seen.
-    if *last == Some(bounded.0) {
-        return;
-    }
-    *last = Some(bounded.0);
-    // Up out of whatever it was standing in first, as `super::despawn` does: a
-    // camera that has descended into a system is a child of it, and that system
-    // is about to be evicted and despawned with its children. Re-parenting it
-    // to the map keeps the one floating origin when the system goes.
-    if let Ok(eye) = camera.single() {
-        commands.entity(eye).insert(ChildOf(map.0));
-    }
-    for entity in &systems {
-        evictions.0.insert(entity);
-    }
-    // The payloads, what was worked out about them, and the stamps they were
-    // read under: one set of three, dropped together. A stamp left behind for
-    // a cell that is no longer resident is never asked about again — the
-    // refresh stamps what it holds — so it is a row that would sit there for
-    // the life of the process.
-    resident.0 = Resident::default();
-    orders.clear();
-    held.clear();
-    tasks.0.clear();
-    fetched.fetched.clear();
-    fetched.surveyed.clear();
-}
-
 /// Ask for the payloads of the marks cells the map does not hold yet
 ///
 /// Only the cells not already resident or already on the wire, so a still view
 /// whose marks are all held asks for nothing and a zoom asks only for the
 /// annulus it newly reaches. Run every frame rather than on a plan change: a
-/// switch turning this source on holds a still camera whose plan has not
-/// moved, and its marks must still be asked for.
+/// still camera whose plan has not moved may yet have marks nobody has asked
+/// for — the map opening on one, or a payload freed and wanted again.
 pub(crate) fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
@@ -379,10 +311,37 @@ pub(crate) fn fetch(
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
     // what a capture has to be able to see.
-    let asking = {
+    let mut asking = {
         let _zone = info_span!("missing cells").entered();
         resident.0.missing(&planned.0)
     };
+    // With no bubble to clamp against, the nearest [`UNCLAMPED_CELLS`] and no
+    // more. The walk marks a cell wherever one of its systems separates on
+    // screen, which from inside the bubble at galaxy zoom is 151,619 cells —
+    // a full-density load of the whole sky, and the thing that used to explode
+    // on zoom-out.
+    //
+    // What is cut here is not lost: a cell nobody fetches has nothing drawn
+    // out of it, so it accounts for nothing in [`Accounted`] and the field
+    // lays its aggregate down whole. The cut moves a region from marks to
+    // light rather than taking it off the map, which is what makes it safe to
+    // make at all.
+    //
+    // Nearest first, by the camera's own centre, so the set is a function of
+    // where the eye stands and not of where it points: a turn in place asks
+    // for nothing new, which is the same property the walk itself is built to
+    // keep.
+    if bubble.is_none()
+        && asking.len() > UNCLAMPED_CELLS
+        && let Ok(camera) = cameras.single()
+    {
+        let centre = camera.center().to_array();
+        asking.sort_unstable_by(|a, b| {
+            let away = |id: &CellId| id.bounds().distance_to(centre);
+            away(a).total_cmp(&away(b))
+        });
+        asking.truncate(UNCLAMPED_CELLS);
+    }
     let _zone = info_span!("cell tasks", missing = asking.len()).entered();
     for id in asking {
         // Past the clamp, a marks cell beyond the reach is left unfetched, so a
@@ -527,13 +486,6 @@ impl PointOrders {
             self.cells.clear();
             self.at.clear();
         }
-    }
-
-    /// Forget every cell, the map having been cleared out from under them
-    fn clear(&mut self) {
-        self.cells.clear();
-        self.peopled.clear();
-        self.at.clear();
     }
 
     /// Work out whatever this cut has not asked about this cell yet
@@ -784,9 +736,9 @@ fn busiest_first<'a>(
 /// systems not already on the map, and everything outside every cell's prefix
 /// is queued to drop.
 ///
-/// Three things are spared, as [`super::evict`] spares them on the spyglass
-/// path: the system the camera is standing in, since its `FloatingOrigin`
-/// hangs under it; a route's stops, which are how the way on is found; and
+/// Three things are spared: the system the camera is standing in, since its
+/// `FloatingOrigin` hangs under it; a route's stops, which are how the way on
+/// is found; and
 /// whatever the user has picked out, which they are holding onto by hand.
 /// Dropping a selection here does not merely lose it — the ring and the row go
 /// on naming it, so [`super::fetch`]'s `fetch_selected` builds the star again
@@ -824,7 +776,13 @@ pub(crate) fn reconcile(
         ref mut republished,
         ref mut keeping,
         ref planned,
+        ref mut drawn,
     } = worked;
+    // Afresh each pass. A cell that has stopped being marked, been evicted or
+    // fallen outside the bubble accounts for nothing now, and an account left
+    // standing would go on subtracting marks that are no longer drawn — a hole
+    // in the field exactly where the map has stopped drawing anything at all.
+    drawn.0.clear();
     // The marked set as a set, for this pass and for the evictor after it.
     // Rebuilt only where the plan has moved, which a still camera never does.
     if planned.is_changed() {
@@ -893,9 +851,9 @@ pub(crate) fn reconcile(
     // See [`Filters::prepared`].
     let asked_for = filtering.filters.prepared();
     // Whether the excluded are wanted on screen at all. Below the dim they are
-    // never spawned ([`super::spawn`]) and dropped where they stand
-    // ([`super::evict`]), so queueing them is a slot of the spawn budget spent
-    // on a system that cannot land and rebuilt again next frame.
+    // never spawned ([`super::spawn`]) and queued to drop by this pass, so
+    // queueing them is a slot of the spawn budget spent on a system that
+    // cannot land and rebuilt again next frame.
     let fill = !asking || filtering.excluded_are_drawn();
     // One clock for the pass, as the spawn batch takes one: a span's near edge
     // moves by a frame's worth in a frame.
@@ -961,6 +919,12 @@ pub(crate) fn reconcile(
         } else {
             taken.extend(drawn_first(&cell.points, admits, fill).take(target));
         }
+        // What this cell's marks account for, so [`super::glow`] can lay the
+        // rest of it down and not the whole. Built here because here is the
+        // only place the drawn set is known: it is not a rank range, the
+        // filters having promoted systems out of magnitude order, and it is
+        // cut again per point by the bubble just below.
+        let mut took = Accounted::default();
         for &index in &taken {
             let point = &cell.points[index];
             // A cell straddling the bubble draws only the points inside it, so
@@ -971,6 +935,26 @@ pub(crate) fn reconcile(
                 continue;
             }
             let address = point.id64 as i64;
+            // Counted before it is queued rather than after it is spawned: a
+            // system the budget has not reached yet is one the field would
+            // otherwise go on drawing for the frame or two it takes to land,
+            // and a mark arriving over light that is already there reads as a
+            // flash. Accounting for it now hands the light over on the frame
+            // the walk decides, and the spawn catches up under it.
+            took.took(
+                point.pos,
+                populated
+                    .get(address)
+                    .filter(|system| system.population > 0)
+                    .map(|system| {
+                        Inhabited::of_system(
+                            point.pos,
+                            system.allegiance,
+                            system.government,
+                            system.security,
+                        )
+                    }),
+            );
             // Already drawn is already answered, except out of a cell that
             // has just been published again: then the system on the map was
             // built from the payload this one replaced, and what it says about
@@ -998,6 +982,7 @@ pub(crate) fn reconcile(
                 }
             }
         }
+        drawn.0.insert(id, took);
         if refreshed {
             republished.settled(id);
         }
@@ -1121,7 +1106,18 @@ pub(crate) fn evict_payloads(
     // And the ceiling, over whatever the grace left standing: the oldest
     // stamps first, so what goes is what has gone longest without being asked
     // for.
-    let budget = planned.0.marks.len().saturating_mul(SLACK);
+    //
+    // Held to [`UNCLAMPED_CELLS`] as well as to the marked set, since with no
+    // bubble the marked set is the sky and a ceiling measured off it is no
+    // ceiling at all. The fetch stops asking past that count and this stops
+    // holding past it, so the two agree on how much of the map is drawn as
+    // systems and the rest is drawn as field.
+    let budget = planned
+        .0
+        .marks
+        .len()
+        .saturating_mul(SLACK)
+        .min(UNCLAMPED_CELLS.saturating_mul(SLACK));
     let holding = resident.0.len() - freeing.len();
     if holding > budget {
         spare.sort_unstable_by_key(|(last, _)| *last);
@@ -1141,12 +1137,12 @@ pub(crate) fn evict_payloads(
 ///
 /// The position comes straight from the payload, in light years — finer than
 /// the names table's whole-light-year placement, and present for every system,
-/// named or not. The name and the political columns are the same join the
-/// spyglass path does, keyed by the point's id.
+/// named or not. The name and the political columns are the same join a
+/// system named by hand gets, keyed by the point's id.
 ///
-/// The one place a point becomes a system, the spyglass fetch included, so the
-/// payload's [`Point::updated_at`] is read into a moment here rather than at
-/// each caller. Unix seconds on the wire and a moment on the map: the payload
+/// The one place a point becomes a system, so the payload's
+/// [`Point::updated_at`] is read into a moment here rather than at each
+/// caller. Unix seconds on the wire and a moment on the map: the payload
 /// keeps four bytes a system and the filter compares against a clock.
 pub(crate) fn build_from_point(
     point: &Point,
@@ -1309,7 +1305,7 @@ mod tests {
 
     /// Where the excluded are not drawn at all they are not offered either
     ///
-    /// At a dim of zero [`super::spawn`] refuses them and [`super::evict`]
+    /// At a dim of zero [`super::spawn`] refuses them and [`reconcile`]
     /// drops them, so queueing one spends a slot of the spawn budget on a
     /// system that cannot land — and it is rebuilt and queued again every frame,
     /// since it never becomes an entity to be found already drawn.
@@ -1516,7 +1512,7 @@ mod tests {
     /// The clamp is the spyglass reach, and only while it is clearing
     ///
     /// Clearing, the walk is cut off at the reach; not clearing, it runs to the
-    /// whole sky and the clamp stands down — the toggle never switches the LOD
+    /// whole sky and the clamp stands down — the bound never switches the LOD
     /// off, only where it ends.
     #[test]
     fn the_clamp_is_the_reach_only_while_clearing() {
@@ -1548,41 +1544,6 @@ mod tests {
         );
     }
 
-    /// Switching the source brings the camera up out of its system first
-    ///
-    /// The switch clears the whole map, the held system among it, and a camera
-    /// that has descended into one is a child of it. Left there it would be
-    /// despawned with the system and the big space would lose its one floating
-    /// origin. So it comes up onto the map, as a clear does (`super::super::despawn`).
-    #[test]
-    fn switching_the_source_brings_the_camera_up_out_of_its_system() {
-        use crate::systems::tests::system;
-
-        let mut app = App::new();
-        app.add_systems(Update, switch);
-        app.init_resource::<PendingEvictions>();
-        app.init_resource::<ResidentCells>();
-        app.init_resource::<BoundedTasks>();
-        app.init_resource::<PointOrders>();
-        app.init_resource::<crate::refresh::Held>();
-        app.init_resource::<FetchTasks>();
-        app.insert_resource(LodFetch(true));
-
-        let map = app.world_mut().spawn_empty().id();
-        app.insert_resource(Map(map));
-        let star = app.world_mut().spawn((system(1), ChildOf(map))).id();
-        let eye =
-            app.world_mut().spawn((OrbitCamera::default(), ChildOf(star))).id();
-
-        app.update();
-
-        assert_eq!(
-            app.world().get::<ChildOf>(eye).map(|of| of.parent()),
-            Some(map),
-            "the camera stayed inside a system the switch will despawn",
-        );
-    }
-
     /// A world with the walk holding nothing, so every system is out of reach
     /// of every prefix and only what is spared survives
     fn walking() -> App {
@@ -1599,6 +1560,7 @@ mod tests {
         app.init_resource::<PointOrders>();
         app.init_resource::<Republished>();
         app.init_resource::<Keeping>();
+        app.init_resource::<crate::systems::aggregate::Drawn>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -1664,8 +1626,8 @@ mod tests {
     /// `fetch::fetch_selected` built it again the moment
     /// `selection::follow_selection` rewrote the row off the star that had just
     /// arrived. The two ran a frame apart, and the system flickered in and out
-    /// for as long as the selection stood. Spared here, as
-    /// [`super::evict`] spares it on the spyglass path.
+    /// for as long as the selection stood. Spared here, where the walk is what
+    /// says whose star goes.
     #[test]
     fn the_walk_does_not_drop_a_selection() {
         use crate::systems::selection::{Picked, Selection};
@@ -1699,6 +1661,29 @@ mod tests {
         app.update();
 
         assert_eq!(dropping(&mut app), vec![2], "the walk dropped a stop");
+    }
+
+    /// Nor the system the camera is standing in, which carries the origin
+    ///
+    /// The `FloatingOrigin` hangs under it while the camera is inside, so a
+    /// walk that dropped it would take the camera down with it and leave the
+    /// map with nothing to draw from.
+    #[test]
+    fn the_walk_does_not_drop_the_system_it_stands_in() {
+        use crate::systems::tests::system;
+
+        let mut app = walking();
+        let inside = app.world_mut().spawn(system(1)).id();
+        app.world_mut().spawn(system(2));
+        app.insert_resource(HeldSystem::holding(inside));
+
+        app.update();
+
+        assert_eq!(
+            dropping(&mut app),
+            vec![2],
+            "the walk dropped the system the camera is standing in"
+        );
     }
 
     /// And every stop of a route it is showing, not only the two adjacent ones

@@ -224,6 +224,18 @@ impl Aggregate {
     pub fn count_extent(&self) -> f64 {
         self.mass.rms_radius()
     }
+
+    /// The count-weighted moments themselves, one unit a system.
+    ///
+    /// The centroid and the extent above are what most readers want; this is
+    /// for the one that has to take a slice back out. A field drawing a cell
+    /// whose systems have partly loaded draws the residual — the total less
+    /// what is already drawn as itself — and that subtraction is
+    /// [`Moments::remove`] against the moments of the drawn set, which cannot
+    /// be done through a centroid and a radius because neither composes.
+    pub fn mass(&self) -> Moments {
+        self.mass
+    }
 }
 
 /// A brightest magnitude on the wire, with `NaN` standing for none: a real
