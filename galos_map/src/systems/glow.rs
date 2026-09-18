@@ -114,6 +114,9 @@ pub struct Laid {
     /// and how many were floored at [`SMALLEST`] — what says whether the field
     /// is a set of overlapping distributions or a lattice of points.
     pub thinnest: f32,
+    pub tenth: f32,
+    pub quarter: f32,
+    pub median: f32,
     pub widest: f32,
     pub floored: u32,
     /// Quads whose peak hit [`CEILING`] and clipped.
@@ -133,6 +136,9 @@ impl Default for Laid {
             peak: 0.,
             clipped: 0,
             thinnest: f32::INFINITY,
+            tenth: 0.,
+            quarter: 0.,
+            median: 0.,
             widest: 0.,
             floored: 0,
         }
@@ -249,6 +255,27 @@ const SMALLEST: f32 = 0.75;
 /// what does is evaluating the profile per fragment instead of sampling it,
 /// which is a shader and is the reason to want one.
 const GLOW_TEXELS: u32 = 1024;
+
+/// The least a splat is spread over, as a share of its cell's own edge
+///
+/// **A cell cannot assert structure finer than itself.** Its moments say where
+/// its systems sit and how far they spread, but the finest thing it stands for
+/// is the box, and laying its light down tighter than that claims a precision
+/// the tree does not have.
+///
+/// It is also what stops the field stippling. Neighbouring splats sit about a
+/// cell edge apart, and Gaussians on a lattice of pitch `d` only sum flat once
+/// `sigma` is about half of it — the ripple goes as `2 exp(-2 pi^2 sigma^2 /
+/// d^2)`, which is 1.4 % at `sigma = d/2` and total at `sigma = d/5`.
+/// Measured over `.galos_index` before this floor, a quarter of the splats at
+/// galaxy zoom were laid at 7 px or less against a pitch near 13, and the
+/// field came out as a regular grid of bright cores with dark seams between —
+/// reported as a checker three times, and neither the exposure nor the mask
+/// was ever what put it there.
+///
+/// A half, so `sigma` reaches the neighbouring centroid and the sum is flat to
+/// about a percent.
+const COVERAGE: f64 = 0.5;
 
 /// The brightest a single splat may peak at, in linear light
 ///
@@ -521,6 +548,8 @@ fn build_glow(
             let empty = count.saturating_sub(peopled).saturating_sub(
                 taken.count.saturating_sub(taken.inhabited.count()),
             );
+            // The finest this cell is allowed to claim, in light years.
+            let finest = cell.id.edge_ly() * COVERAGE;
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
                 && let Some(at) = mass.centroid()
@@ -533,7 +562,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    mass.rms_radius(),
+                    mass.rms_radius().max(finest),
                     Vec3::splat(w),
                 ) {
                     counted.backdrop += 1;
@@ -565,7 +594,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    held.spread(),
+                    held.spread().max(finest),
                     light * share,
                 ) {
                     counted.colonies += 1;
@@ -581,6 +610,14 @@ fn build_glow(
         counted.thinnest = counted.thinnest.min(*radius);
         counted.widest = counted.widest.max(*radius);
         counted.floored += u32::from(*radius <= SMALLEST + 1e-3);
+    }
+    if !quads.radii.is_empty() {
+        quads.radii.sort_unstable_by(f32::total_cmp);
+        let at =
+            |f: f32| quads.radii[((quads.radii.len() - 1) as f32 * f) as usize];
+        counted.median = at(0.5);
+        counted.tenth = at(0.1);
+        counted.quarter = at(0.25);
     }
     laid.set_if_neq(counted);
 
@@ -1071,12 +1108,15 @@ mod exposure {
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
                  {:>5} backdrop, {:>8.3} peak, {:>5} clipped, \
-                 radius {:.2}..{:.2} px, {} floored",
+                 radius {:.2}|{:.2}|{:.2}|{:.2}|{:.2} px, {} floored",
                 laid.colonies,
                 laid.backdrop,
                 laid.peak,
                 laid.clipped,
                 laid.thinnest,
+                laid.tenth,
+                laid.quarter,
+                laid.median,
                 laid.widest,
                 laid.floored
             );
@@ -1088,6 +1128,15 @@ mod exposure {
                 laid.peak > 1e-1,
                 "the field is invisible at {away} ly: peak {}",
                 laid.peak
+            );
+            // No splat laid as a point. A cell's light is spread over the
+            // cell at least ([`COVERAGE`]), so the footprints reach their
+            // neighbours and the field sums flat instead of stippling a
+            // lattice of cores with dark seams between.
+            assert_eq!(
+                laid.floored, 0,
+                "{} splats at {away} ly were laid on the point floor",
+                laid.floored
             );
             assert!(
                 laid.peak <= CEILING,
