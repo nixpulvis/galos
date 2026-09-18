@@ -146,12 +146,19 @@ pub struct Gains {
     pub unaligned: f32,
     /// The linear level one unit of weight deposits, which sets where the
     /// field clips to white.
+    ///
+    /// A sixteenth. At one, measured, the brightest splat sat on
+    /// [`CEILING`] at every distance and eighty quads of four thousand
+    /// clipped with the galaxy seen whole — a white sheet with the marks
+    /// reading as dirt on it. Here the typical peak is six tenths, which
+    /// leaves the bloom something to spread and the dense core the only thing
+    /// that clips.
     pub level: f32,
 }
 
 impl Default for Gains {
     fn default() -> Gains {
-        Gains { backdrop: 1. / 44., unaligned: 0.25, level: 1.0 }
+        Gains { backdrop: 1. / 44., unaligned: 0.25, level: 0.0625 }
     }
 }
 
@@ -192,6 +199,36 @@ const GLOW_TEXELS: u32 = 64;
 /// and thirty-two is high enough that bloom still has several stops of
 /// headroom to spread before it saturates.
 const CEILING: f32 = 8.0;
+
+/// What a weight peaks at, laid as a Gaussian over `radius` pixels
+///
+/// The one deposit law, shared so that a system and a cell are the same
+/// arithmetic rather than two readings kept in step by hand. The mask
+/// integrates to `2 pi sigma^2` at unit peak, so dividing by that area makes
+/// what lands on the framebuffer the weight asked for whatever it was spread
+/// over — and a cell is then only a system with a spread, which is exactly
+/// what [`Moments`](galos_index::Moments) says it is: a single point has no
+/// deviation from its own mean.
+pub(crate) fn peak(light: Vec3, radius: f32) -> Vec3 {
+    let sigma = radius.max(SMALLEST) / REACH;
+    (light / (std::f32::consts::TAU * sigma * sigma)).min(Vec3::splat(CEILING))
+}
+
+/// What one system's mark deposits, before its footprint spreads it
+///
+/// The same gains the field lays a cell down by, asked one system at a time,
+/// so a region drawn as marks and the same region drawn as field carry the
+/// same light. A system nobody lives in is backdrop and weighs
+/// [`Gains::backdrop`]; one inhabited with nothing political on record weighs
+/// [`Gains::unaligned`]; everything else weighs one.
+pub(crate) fn mark_weight(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
+    let share = match (peopled, hue) {
+        (false, _) => gains.backdrop,
+        (true, Hue::Grey) => gains.unaligned,
+        (true, _) => 1.0,
+    };
+    share * gains.level
+}
 
 /// Put the field's mesh and its additive material up
 fn spawn_glow(
@@ -542,9 +579,7 @@ impl Quads {
         if !radius.is_finite() {
             return None;
         }
-        let sigma = radius / REACH;
-        let peak = (light / (std::f32::consts::TAU * sigma * sigma))
-            .min(Vec3::splat(CEILING));
+        let peak = peak(light, radius);
         if !peak.is_finite() {
             return None;
         }
@@ -614,7 +649,7 @@ fn glow_mesh(
 /// Cut to [`REACH`] standard deviations across the half-width, so the value at
 /// the rim is a percent of the peak and the seam where the quad ends does not
 /// show.
-fn gaussian_mask() -> Image {
+pub(crate) fn gaussian_mask() -> Image {
     let n = GLOW_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
     let sigma = centre / REACH;
@@ -1003,8 +1038,15 @@ mod exposure {
             laid_at(&dir, 30_000., Set { reach: Some(200.), accounted: false });
 
         println!(
-            "{splats} splats: {} + {} quads unbounded, {} + {} inside 200 ly",
-            open.colonies, open.backdrop, held.colonies, held.backdrop
+            "{splats} splats: {} + {} quads unbounded, {} + {} inside 200 ly \
+             (peak {:.2}, {} clipped of {})",
+            open.colonies,
+            open.backdrop,
+            held.colonies,
+            held.backdrop,
+            held.peak,
+            held.clipped,
+            held.colonies + held.backdrop,
         );
         assert!(
             held.backdrop < open.backdrop / 10,
