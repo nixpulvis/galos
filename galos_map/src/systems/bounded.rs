@@ -130,27 +130,6 @@ const KEEP: Duration = Duration::from_secs(2);
 /// what that zoom needs — which is what it was before the grace existed.
 const SLACK: usize = 2;
 
-/// How many cells the map loads systems for with the spyglass not clearing
-///
-/// The spyglass bounds the load by a sphere. Turned off there is no sphere,
-/// and the walk goes on marking every cell one of whose systems separates on
-/// screen — 151,619 of them from inside the bubble at galaxy zoom, measured
-/// (`galos_index::walk::walk_screen`). Loading that is a full-density read of
-/// the sky, which is the cost the level of detail exists to refuse.
-///
-/// **What makes a ceiling safe here is the field.** A cell nobody fetches has
-/// nothing drawn out of it, so it accounts for nothing in
-/// [`Accounted`](crate::systems::aggregate::Accounted) and
-/// [`super::glow`] lays its aggregate down whole. Past this the map stops
-/// drawing systems and goes on drawing the galaxy, which is a change of
-/// resolution and not a change of extent — so the number is a memory and
-/// frame-cost policy rather than a claim about what is worth seeing, and it
-/// can move on measurement without anything reading differently.
-///
-/// Four thousand cells is a few tens of megabytes of payload at the leaf cap,
-/// and comfortably more than the mark count any bounded view asks for.
-const UNCLAMPED_CELLS: usize = 4096;
-
 /// Which cells the walk wants, and when each held payload was last wanted
 ///
 /// Two answers with one owner, because the second is only meaningful against
@@ -311,37 +290,10 @@ pub(crate) fn fetch(
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
     // what a capture has to be able to see.
-    let mut asking = {
+    let asking = {
         let _zone = info_span!("missing cells").entered();
         resident.0.missing(&planned.0)
     };
-    // With no bubble to clamp against, the nearest [`UNCLAMPED_CELLS`] and no
-    // more. The walk marks a cell wherever one of its systems separates on
-    // screen, which from inside the bubble at galaxy zoom is 151,619 cells —
-    // a full-density load of the whole sky, and the thing that used to explode
-    // on zoom-out.
-    //
-    // What is cut here is not lost: a cell nobody fetches has nothing drawn
-    // out of it, so it accounts for nothing in [`Accounted`] and the field
-    // lays its aggregate down whole. The cut moves a region from marks to
-    // light rather than taking it off the map, which is what makes it safe to
-    // make at all.
-    //
-    // Nearest first, by the camera's own centre, so the set is a function of
-    // where the eye stands and not of where it points: a turn in place asks
-    // for nothing new, which is the same property the walk itself is built to
-    // keep.
-    if bubble.is_none()
-        && asking.len() > UNCLAMPED_CELLS
-        && let Ok(camera) = cameras.single()
-    {
-        let centre = camera.center().to_array();
-        asking.sort_unstable_by(|a, b| {
-            let away = |id: &CellId| id.bounds().distance_to(centre);
-            away(a).total_cmp(&away(b))
-        });
-        asking.truncate(UNCLAMPED_CELLS);
-    }
     let _zone = info_span!("cell tasks", missing = asking.len()).entered();
     for id in asking {
         // Past the clamp, a marks cell beyond the reach is left unfetched, so a
@@ -1107,17 +1059,10 @@ pub(crate) fn evict_payloads(
     // stamps first, so what goes is what has gone longest without being asked
     // for.
     //
-    // Held to [`UNCLAMPED_CELLS`] as well as to the marked set, since with no
-    // bubble the marked set is the sky and a ceiling measured off it is no
-    // ceiling at all. The fetch stops asking past that count and this stops
-    // holding past it, so the two agree on how much of the map is drawn as
-    // systems and the rest is drawn as field.
-    let budget = planned
-        .0
-        .marks
-        .len()
-        .saturating_mul(SLACK)
-        .min(UNCLAMPED_CELLS.saturating_mul(SLACK));
+    // Measured off the marked set, which `MARK_WORTH` is what bounds: the
+    // walk marks a cell only where a worthwhile share of it separates, so the
+    // set is a view's worth of cells rather than the sky.
+    let budget = planned.0.marks.len().saturating_mul(SLACK);
     let holding = resident.0.len() - freeing.len();
     if holding > budget {
         spare.sort_unstable_by_key(|(last, _)| *last);

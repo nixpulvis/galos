@@ -49,6 +49,34 @@ pub const SPLIT_FULL_PX: f64 = 4.0;
 /// until then, so a far cell never spawns a square of overlapping points.
 pub const MARK_SEPARATION_PX: f64 = 6.7;
 
+/// What share of a cell's slice must separate on screen before the map reads
+/// the cell at all, rather than leaving it to the field
+///
+/// The mark test used to be "one system separates", and that is the loosest
+/// threshold there is: a cell qualifies for a payload read — up to `LEAF_CAP`
+/// systems of it — to draw a single mark. It is not even a constant
+/// threshold, since a cell with more systems in it finds its one separating
+/// system at a smaller angle, so a big cell is read from further off than a
+/// small one for no reason anybody chose.
+///
+/// A share is scale-free and bounds what the map reads against what it draws:
+/// [`resolved`] is `slice · (projected / MARK_SEPARATION_PX)^3`, so requiring
+/// a share `w` of the slice is requiring the spacing to subtend
+/// `MARK_SEPARATION_PX · w^(1/3)` — a separation in pixels and nothing else —
+/// and it holds the read amplification at `1/w`. An eighth is 3.35 px, half
+/// of the separation two marks are told apart at.
+///
+/// **What makes a threshold here affordable is the field.** A cell the map
+/// does not read draws as its aggregate, which is a picture of every system
+/// in it rather than of none, so raising this trades resolution for reads and
+/// never coverage. Before the field existed the only way to see a region at
+/// all was to load it, and one separating system was the right answer.
+///
+/// The realistic sky cuts the same question on brightness instead: a star
+/// draws when it clears the visibility limit. This is the map's analogue, on
+/// separation, because a political reading has no magnitude to cut on.
+pub const MARK_WORTH: f64 = 0.125;
+
 /// The separation the realistic view resolves stars at, in pixels
 ///
 /// A star is a point the size of the instrument's spread (a pixel or two), so
@@ -488,17 +516,22 @@ impl Index {
         while let Some((at, weight)) = stack.pop() {
             let node = &self.nodes[at as usize];
 
-            // Marks: the cell's payload is wanted once even one of its systems
-            // separates on screen. How many actually draw is the resolvable
-            // prefix (see resolvable_count), grown per system at draw time; the
-            // walk only says which cells the draw will want.
+            // Marks: the cell's payload is wanted once a worthwhile share of
+            // its systems separates on screen, which is [`MARK_WORTH`] and is
+            // a separation in pixels by another name. How many actually draw
+            // is the resolvable prefix (see resolvable_count), grown per
+            // system at draw time; the walk only says which cells the draw
+            // will want. Below the share the cell is left to the field, which
+            // draws every system in it rather than the handful a read would
+            // have resolved.
             if resolved(
                 node.slice,
                 node.spacing,
                 node.center,
                 view,
                 MARK_SEPARATION_PX,
-            ) >= 1
+            ) as f64
+                >= (node.slice as f64 * MARK_WORTH).max(1.0)
             {
                 marks.push(node.id);
             }
@@ -899,6 +932,63 @@ mod tests {
 
         let near = eye_out(id, 3.0);
         assert!(index.walk_screen(&near).marks.contains(&id));
+    }
+
+    /// A cell the map would read whole to draw a handful out of is left to
+    /// the field instead.
+    ///
+    /// The mark test used to be "one system separates", which bought a
+    /// payload read of the whole cell for one mark. [`MARK_WORTH`] asks for a
+    /// share of it, so between the two there is a band where the cell
+    /// resolves something and is still not worth reading — and in that band
+    /// it splats, so the region is drawn by every system in it rather than by
+    /// the one the read would have resolved.
+    #[test]
+    fn a_cell_barely_resolving_is_left_to_the_field() {
+        let id = CellId::of_point(HERE, 11);
+        let c = id.bounds().center();
+        let mut agg = Aggregate::ZERO;
+        for i in 0..512u64 {
+            let off = i as f64 * 0.5;
+            agg = agg.merge(Aggregate::of_system(
+                [c[0] + off, c[1], c[2]],
+                4.0,
+                5000.0,
+                0,
+            ));
+        }
+        let leaf = Cell {
+            id,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0,
+            aggregate: agg,
+        };
+        let mut cells = chain_to(id, 4.0);
+        cells.push(leaf);
+        let index = Index::from_cells(cells);
+        let held = index.get(id).copied().expect("the leaf is in the tree");
+
+        // Out where the cell resolves something, but under the share: the
+        // band the old test admitted and this one refuses.
+        let barely = (60..4_000).step_by(20).find_map(|away| {
+            let view = eye_out(id, away as f64);
+            let count = resolvable_count(&held, &view, MARK_SEPARATION_PX);
+            (count >= 1 && (count as f64) < 512.0 * MARK_WORTH).then_some(view)
+        });
+        let Some(view) = barely else {
+            panic!("no distance resolves a cell of 512 under the share");
+        };
+
+        let out = index.walk_screen(&view);
+        assert!(
+            !out.marks.contains(&id),
+            "a cell resolving under the share was read anyway"
+        );
+        assert!(
+            splat_ids(&out).contains(&id),
+            "a cell left unread was not drawn as a field either"
+        );
     }
 
     /// A cell's resolvable prefix is full up close, a decimated fraction at
