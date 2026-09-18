@@ -6,17 +6,19 @@
 //! splats need nothing loaded, since a cell's aggregate stands for its whole
 //! subtree.
 //!
-//! [`Planned`]'s marks already drive the map: [`super::bounded`] fetches the
-//! cells they name and spawns one entity per system in their payloads, rather
-//! than every system in a spyglass sphere. The splats are still waiting on a
-//! renderer, and nothing draws them. Both halves read the one walk, so the two
-//! can never disagree about which cells are which.
+//! **Both halves drive the map.** [`super::bounded`] fetches the cells the
+//! marks name and spawns one entity per system in their payloads, rather than
+//! every system in a spyglass sphere; [`super::glow`] lays each splat down as
+//! one additive Gaussian off the cell's aggregates, with nothing fetched.
+//! Both read the one walk, so the two can never disagree about which cells are
+//! which.
 //!
 //! A cell's splat carried a drawable description here for a while — where the
 //! glow sits, how far it spreads, its flux-weighted tint — written every plan
 //! and read by nobody, the renderer it was for never having been written. It
-//! is in the history rather than in the build, to be worked out again against
-//! the renderer that will read it.
+//! stays out of the plan now that the renderer exists: [`super::glow`] reads
+//! the aggregates it needs off [`crate::ResidentIndex`] as it lays each quad,
+//! so nothing is worked out here for a consumer to ignore.
 //!
 //! Read off the resident aggregates, so it costs no fetch and no server, and
 //! only when the view moves.

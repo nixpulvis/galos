@@ -69,8 +69,10 @@ pub enum View {
     // The photometric sky: every system drawn as the star it is, sized to a
     // point and emitted at its flux so the eye's bloom spreads it into the disc
     // a sky reads a star as. The far aggregate glow behind the resolved stars —
-    // the Milky Way — is not drawn yet; `super::aggregate::Planned` carries
-    // the splats it will be drawn from.
+    // the Milky Way — is still not drawn: `super::glow` lays the political
+    // field down in `Map` and stands down here, the photometric weight (the
+    // flux buckets and the luminosity moments) being the half of it that is
+    // unwritten. `super::aggregate::Planned` already carries the splats.
     Realistic,
 }
 

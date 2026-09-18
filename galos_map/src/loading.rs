@@ -33,7 +33,8 @@ use crate::names;
 use crate::refresh::Held;
 use crate::systems::route::graph::Jumps;
 use crate::{
-    Boosts, Factions, IndexDir, Names, Populated, ResidentIndex, Transport,
+    Boosts, Factions, IndexDir, Names, Populated, ResidentIndex, Settled,
+    Transport,
 };
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
@@ -41,7 +42,7 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_index::meta::{Faction, PopulatedSystem};
-use galos_index::{Index, SystemBoost};
+use galos_index::{Index, Inhabitance, SystemBoost};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -151,6 +152,7 @@ struct Loaded {
     held: Held,
     index: ResidentIndex,
     populated: Populated,
+    settled: Settled,
     names: Names,
     boosts: Boosts,
     factions: Factions,
@@ -266,19 +268,28 @@ fn finish(
     let Some(found) = block_on(future::poll_once(&mut reading.task)) else {
         return;
     };
-    let Loaded { held, index, populated, names, boosts, factions, jumps } =
-        match found {
-            Ok(loaded) => loaded,
-            Err(said) => {
-                error!("galos: {said}");
-                reading.failed = Some(said);
-                return;
-            }
-        };
+    let Loaded {
+        held,
+        index,
+        populated,
+        settled,
+        names,
+        boosts,
+        factions,
+        jumps,
+    } = match found {
+        Ok(loaded) => loaded,
+        Err(said) => {
+            error!("galos: {said}");
+            reading.failed = Some(said);
+            return;
+        }
+    };
 
     commands.insert_resource(held);
     commands.insert_resource(index);
     commands.insert_resource(populated);
+    commands.insert_resource(settled);
     commands.insert_resource(names);
     commands.insert_resource(boosts);
     commands.insert_resource(factions);
@@ -359,6 +370,13 @@ fn stood_up(
         }
     };
 
+    // The political aggregation, rolled up here rather than fetched: every
+    // populated row contributes to each cell standing over it, so a cell
+    // carries the colonies in its whole subtree and a far political view needs
+    // nothing loaded. Built before the rows are folded into their map, which
+    // is the one place both the tree and the flat table are in hand.
+    let settled = Settled(Arc::new(Inhabitance::of(&index, populated.iter())));
+
     Loaded {
         held,
         jumps: sky.clone().map_or_else(Jumps::default, Jumps::over),
@@ -366,6 +384,7 @@ fn stood_up(
         populated: Populated(Arc::new(
             populated.into_iter().map(|s| (s.address, s)).collect(),
         )),
+        settled,
         names: Names::packed(table, reaches, sky),
         boosts,
         factions: Factions(

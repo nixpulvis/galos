@@ -31,6 +31,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(bodies::plugin);
     app.add_plugins(spawn::plugin);
     app.add_plugins(field::plugin);
+    app.add_plugins(glow::plugin);
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
     app.add_plugins(pointing::plugin);
@@ -257,6 +258,7 @@ pub(crate) mod field;
 pub(crate) mod filter;
 #[cfg(test)]
 pub(crate) mod flight;
+pub(crate) mod glow;
 pub(crate) mod info;
 pub(crate) mod labels;
 pub(crate) mod pointing;

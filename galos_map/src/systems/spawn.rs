@@ -249,7 +249,8 @@ pub struct StarProfile(pub ProfileKind);
 ///
 /// Named rather than numbered, so that a scheme below says which color it
 /// means. One color each, and nothing indexes them: [`super::field`] asks
-/// `Hue::color` for the three channels it paints a mark with.
+/// `Hue::color` for the three channels it paints a mark with, and
+/// [`super::glow`] for the three it weights a cell's political histogram by.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Hue {
     Green,
@@ -1436,9 +1437,9 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
 /// Which color a star is drawn in
 pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
     match color_by.deref() {
-        ColorBy::Allegiance => allegiance_hue(system),
-        ColorBy::Government => government_hue(system),
-        ColorBy::Security => security_hue(system),
+        ColorBy::Allegiance => allegiance_hue(system.allegiance),
+        ColorBy::Government => government_hue(system.government),
+        ColorBy::Security => security_hue(system.security),
     }
 }
 
@@ -1480,8 +1481,15 @@ fn reprofile(
     }
 }
 
-fn allegiance_hue(system: &System) -> Hue {
-    match system.allegiance {
+/// The color an allegiance is drawn in
+///
+/// Off the reading rather than off a system, so that the aggregate field
+/// colors a cell's allegiance histogram through the same mapping a mark is
+/// painted by and the two cannot drift apart. See
+/// [`galos_index::inhabited::allegiance_at`], which names the reading a
+/// bucket counts.
+pub(crate) fn allegiance_hue(allegiance: Option<Allegiance>) -> Hue {
+    match allegiance {
         Some(Allegiance::Alliance) => Hue::Green,
         Some(Allegiance::Empire) => Hue::Cyan,
         Some(Allegiance::Federation) => Hue::Red,
@@ -1497,8 +1505,9 @@ fn allegiance_hue(system: &System) -> Hue {
     }
 }
 
-fn government_hue(system: &System) -> Hue {
-    match system.government {
+/// The color a government is drawn in. See [`allegiance_hue`].
+pub(crate) fn government_hue(government: Option<Government>) -> Hue {
+    match government {
         Some(Government::Anarchy) => Hue::Yellow,
         // None of the three is a way of governing anybody. A carrier
         // answers to whoever owns it, a megaconstruction site to whoever
@@ -1524,8 +1533,9 @@ fn government_hue(system: &System) -> Hue {
     }
 }
 
-fn security_hue(system: &System) -> Hue {
-    match system.security {
+/// The color a security rating is drawn in. See [`allegiance_hue`].
+pub(crate) fn security_hue(security: Option<Security>) -> Hue {
+    match security {
         Some(Security::High) => Hue::Blue,
         Some(Security::Medium) => Hue::Cyan,
         Some(Security::Low) => Hue::Green,

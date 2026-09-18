@@ -47,7 +47,6 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
@@ -284,9 +283,22 @@ fn spawn_field(
 
 /// Turn the field to the view
 ///
-/// The field draws every view. The map wants flat solid marks and no bloom;
-/// the realistic view wants the glint material and the star bloom to spread
-/// its HDR points. Written only when the view moves.
+/// The field draws every view, and what changes between them is which
+/// material paints a mark: the map's flat solid disc or the realistic view's
+/// photometric glint. Written only when the view moves.
+///
+/// **The bloom stays on in both**, where the map used to have it taken off.
+/// The field camera draws [`super::glow`]'s aggregate splats beside the marks
+/// now, and bloom over an additive HDR field is not a post-effect on it — it
+/// is the point spread that turns a chain of few-pixel splats into a glow, and
+/// without it the political field reads as a mosaic of dots. Bloom answers to
+/// brightness, which is what makes one setting serve both: a splat's linear
+/// deposit runs past one where it is dense and blooms hard, and the map's
+/// marks are a blended colour under one and barely register — so the halo
+/// [`STAR_BLOOM`] was tuned down to avoid lands on the field and not on the
+/// symbols. If a mark's own halo ever does show, the escape is a camera and a
+/// layer of its own for the field rather than a second tuning here, bloom
+/// being per camera and not per pass.
 fn tune_field(
     view: Res<View>,
     mut commands: Commands,
@@ -299,11 +311,7 @@ fn tune_field(
     }
     let realistic = matches!(*view, View::Realistic);
     if let Ok(entity) = field.single() {
-        if realistic {
-            commands.entity(entity).insert(STAR_BLOOM);
-        } else {
-            commands.entity(entity).remove::<Bloom>();
-        }
+        commands.entity(entity).insert(STAR_BLOOM);
     }
     if let Ok(mut material) = mark.single_mut() {
         let wanted = if realistic { &palette.glint } else { &palette.solid };

@@ -321,6 +321,37 @@ impl Index {
         self.cells.get(&id)
     }
 
+    /// Hand `each` every cell standing over `point`, the root first and the
+    /// deepest cell the tree holds last.
+    ///
+    /// The descent follows the tree's own children rather than asking
+    /// [`CellId::of_point`] a level at a time and looking each answer up, so it
+    /// invents no cell the index does not hold and costs no hashing: the
+    /// children of a node are contiguous in [`nodes`](Index::nodes), so each
+    /// step is at most eight comparisons. A point outside the cube clamps to
+    /// the nearest edge cell, which is `of_point`'s rule and is what makes this
+    /// total.
+    ///
+    /// What a side aggregation is rolled up by: a system contributes to every
+    /// cell on its path, which is exactly what makes a cell's record the total
+    /// over its whole subtree.
+    pub fn descend(&self, point: [f64; 3], mut each: impl FnMut(CellId)) {
+        let mut at = 0usize;
+        while let Some(node) = self.nodes.get(at) {
+            each(node.id);
+            if node.children == 0 {
+                return;
+            }
+            let want = CellId::of_point(point, node.id.level + 1);
+            let first = node.first_child as usize;
+            let kids = first..first + node.children as usize;
+            match kids.clone().find(|&kid| self.nodes[kid].id == want) {
+                Some(kid) => at = kid,
+                None => return,
+            }
+        }
+    }
+
     /// How many cells the index holds.
     pub fn len(&self) -> usize {
         self.cells.len()

@@ -31,6 +31,7 @@ pub mod cold;
 pub mod derive;
 pub mod galaxy;
 pub mod geometry;
+pub mod inhabited;
 pub mod inside;
 pub mod lock;
 pub mod merge;
@@ -67,6 +68,7 @@ pub use cold::{
 };
 pub use galaxy::Galaxy;
 pub use geometry::{Aabb, CellId};
+pub use inhabited::{Inhabitance, Inhabited};
 pub use inside::STAND_IN;
 pub use lock::Lock;
 pub use meta::{

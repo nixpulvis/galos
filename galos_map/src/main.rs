@@ -27,6 +27,21 @@ struct Cli {
         default_value = INDEX_DIR
     )]
     index: String,
+
+    /// Draw one frame to this path as a PNG, then exit.
+    ///
+    /// What a render change is checked against: the window is the only place
+    /// the map exists, and nothing outside the process can read it.
+    #[arg(long, value_name = "PATH")]
+    screenshot: Option<String>,
+
+    /// How far to stand the camera off before a screenshot, in light years.
+    #[arg(long, value_name = "LY")]
+    screenshot_radius: Option<f32>,
+
+    /// Frames to let the map settle before a screenshot is taken.
+    #[arg(long, value_name = "N", default_value_t = 240)]
+    screenshot_after: u32,
 }
 
 fn main() {
@@ -35,7 +50,8 @@ fn main() {
     // stands the window up first and reads it behind a loading screen: it runs
     // to a hundred and thirty megabytes, and a window that waits on it is a
     // launch that looks hung.
-    let dir = Cli::parse().index;
+    let cli = Cli::parse();
+    let dir = cli.index;
     let source = FsSource::new(&dir);
 
     let mut app = App::new();
@@ -105,6 +121,13 @@ fn main() {
     app.add_plugins(keys::plugin);
     // After `ui`, whose `lettering` the diagnostics panel is drawn in.
     app.add_plugins(dev::plugin);
+    if let Some(path) = cli.screenshot {
+        app.insert_resource(dev::Shot {
+            path,
+            radius: cli.screenshot_radius,
+            after: cli.screenshot_after,
+        });
+    }
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());

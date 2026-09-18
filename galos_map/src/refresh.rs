@@ -38,13 +38,15 @@
 use crate::systems::bounded::{PointOrders, Republished, ResidentCells, adopt};
 use crate::systems::fetch::Poll;
 use crate::systems::route::graph::Jumps;
-use crate::{Boosts, Factions, Names, Populated, ResidentIndex, Transport};
+use crate::{
+    Boosts, Factions, Names, Populated, ResidentIndex, Settled, Transport,
+};
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::meta::{Faction, PopulatedSystem, SystemBoost, SystemReach};
-use galos_index::{CellId, Delta, Index, Part, Point, Stamp};
+use galos_index::{CellId, Delta, Index, Inhabitance, Part, Point, Stamp};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -346,6 +348,7 @@ fn apply(
     mut admitted: ResMut<PointOrders>,
     mut republished: ResMut<Republished>,
     mut populated: ResMut<Populated>,
+    mut settled: ResMut<Settled>,
     mut names: ResMut<Names>,
     mut factions: ResMut<Factions>,
     mut boosts: ResMut<Boosts>,
@@ -358,6 +361,11 @@ fn apply(
         return;
     }
 
+    // The political aggregation is derived from the tree and the populated
+    // table together, so either of them moving invalidates it. Read before
+    // the two branches below consume what they found.
+    let resettle = found.index.is_some() || found.populated.is_some();
+
     if let Some((read, stamp)) = found.index {
         index.0 = read;
         held.index = stamp;
@@ -366,6 +374,12 @@ fn apply(
         populated.0 =
             Arc::new(read.into_iter().map(|it| (it.address, it)).collect());
         held.populated = stamp;
+    }
+    // Rolled up again over whichever of the two just moved. The same cost as
+    // the whole-table replacements it sits among — one pass over a resident
+    // table — and it must run after both branches, since it reads both.
+    if resettle {
+        settled.0 = Arc::new(Inhabitance::of(&index.0, populated.0.values()));
     }
     if let Some((read, stamp)) = found.factions {
         factions.0 = read.into_iter().map(|it| (it.id, it.name)).collect();
@@ -548,6 +562,7 @@ mod tests {
         app.init_resource::<PointOrders>();
         app.init_resource::<Republished>();
         app.init_resource::<Populated>();
+        app.init_resource::<Settled>();
         app.init_resource::<Factions>();
         // The tables as `main` loads them: the names table mapped, and the
         // router's galaxy opened over the same directory the walk reads.

@@ -10,7 +10,7 @@ use galos_index::meta::{
     Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
 use galos_index::names::{Delta, Table};
-use galos_index::{Index, Source as IndexSource, SystemName};
+use galos_index::{Index, Inhabitance, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -65,6 +65,23 @@ pub struct ResidentIndex(pub Index);
 /// wait on a fetch. A system absent here is ungoverned, which is most of them.
 #[derive(Resource, Default, Clone)]
 pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
+
+/// What each cell carries about the systems anybody lives in: the political
+/// aggregation the field splats from.
+///
+/// Derived rather than fetched. It is [`Populated`] rolled up the tree
+/// [`ResidentIndex`] already holds — one pass over a table that is resident
+/// anyway — so a political field at any zoom costs no fetch and no server.
+/// Re-derived whenever either of the two moves, which [`refresh`] does.
+///
+/// Its own weighting and not a reading off [`ResidentIndex`]: a cell's stellar
+/// moments are the wrong place and the wrong size for the colonies under it.
+/// Measured over `.galos_index`, the root's inhabited centroid and its
+/// count-weighted centroid are 12.5 kly apart and their spreads differ
+/// tenfold, so a political splat laid on the stellar moments draws the bubble
+/// out toward the galactic core. See [`galos_index::inhabited`].
+#[derive(Resource, Default, Clone)]
+pub struct Settled(pub Arc<Inhabitance>);
 
 /// Every system's name, where it sits, and how far it reaches: what the map
 /// knows about any system without asking for it.
