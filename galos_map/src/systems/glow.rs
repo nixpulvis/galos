@@ -221,10 +221,18 @@ impl Default for Gains {
 
 /// How far out a splat's quad reaches, in standard deviations
 ///
-/// Three, which holds 98.9 % of a Gaussian's weight in two dimensions. Past
-/// that the mask is under a percent of its peak and the quad is paying for
-/// area that deposits nothing.
-const REACH: f32 = 3.0;
+/// Four. Three holds 98.9 % of a Gaussian's weight, which is plenty of the
+/// *light* — but the question at the rim is not how much is left outside it,
+/// it is how large a step the quad ends on. At three sigma the profile still
+/// stands at `exp(-4.5)`, 1.1 % of peak, so every quad finishes on a cliff;
+/// ten overlapping stack those cliffs into a tenth of the brightness, laid
+/// out on the cell lattice with darker seams where fewer overlap. That is the
+/// checker, and it reads as squares rather than as lumps because it is the
+/// quads' own boundaries and not their profiles.
+///
+/// Four sigma is `exp(-8)`, three ten-thousandths, and the pedestal
+/// [`gaussian_mask`] subtracts takes even that to nothing.
+const REACH: f32 = 4.0;
 
 /// The smallest a splat is drawn at, as a radius in pixels
 ///
@@ -760,6 +768,11 @@ fn glow_mesh(
 /// the rim is a percent of the peak and the seam where the quad ends does not
 /// show.
 pub(crate) fn gaussian_mask() -> Image {
+    /// What the bare profile still stands at when the quad ends, and so what
+    /// is taken off it everywhere: `exp(-REACH^2 / 2)`. Subtracting it costs
+    /// the deposit about a part in three thousand and removes an edge step
+    /// outright, which is the trade the whole constant exists to make.
+    const RIM: f32 = 0.000_335_462_63;
     let n = GLOW_TEXELS;
     let centre = (n as f32 - 1.) / 2.;
     let sigma = centre / REACH;
@@ -769,7 +782,12 @@ pub(crate) fn gaussian_mask() -> Image {
             let dx = x as f32 - centre;
             let dy = y as f32 - centre;
             let r2 = dx * dx + dy * dy;
-            let mask = (-r2 / (2. * sigma * sigma)).exp();
+            // Pedestal-subtracted, so the profile reaches exactly zero at the
+            // rim rather than stepping off whatever it still had there. A
+            // quad ending on a discontinuity draws its own edge, and a field
+            // is thousands of quads whose edges agree.
+            let mask = (((-r2 / (2. * sigma * sigma)).exp() - RIM).max(0.))
+                / (1. - RIM);
             let value = (mask * 255.).round().clamp(0., 255.) as u8;
             let texel = ((y * n + x) * 4) as usize;
             data[texel] = value;
@@ -880,14 +898,24 @@ mod tests {
             "a colony with nothing on record outshone one with a reading"
         );
 
-        // And it is not the field's law: one system through that is the bug.
-        let conserved =
-            peak(Vec3::splat(gains.backdrop * gains.level), SMALLEST);
+        // And it is not the field's law. The tell is not a margin at one
+        // footprint — that only moves when `REACH` does — but that the two
+        // answer differently to footprint at all: a density divides by the
+        // area it is spread over, so one system laid down that way fades to
+        // nothing across a cell-sized splat, where a mark is the same
+        // brightness wherever it is drawn.
+        let one = Vec3::splat(gains.backdrop * gains.level);
+        let tight = peak(one, SMALLEST).x;
+        let spread = peak(one, 50.).x;
         assert!(
-            empty > conserved.x * 10.,
+            spread < tight / 100.,
+            "the field's law did not fall away with footprint: \
+             {tight} to {spread}"
+        );
+        assert!(
+            empty > spread * 100.,
             "a mark is being conserved like a density: {empty} against \
-             {} from the field's law",
-            conserved.x
+             {spread} over a cell-sized footprint"
         );
     }
 
