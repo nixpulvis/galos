@@ -144,6 +144,30 @@ pub struct Gains {
     /// colony, and the grey it draws in is how the map says so; what it must
     /// not do is out-shout the systems that do have a reading.
     pub unaligned: f32,
+    /// How bright an ordinary inhabited system's own mark is drawn, in linear
+    /// light
+    ///
+    /// **A mark is a light and not a density, and this is the difference.**
+    /// The field carries light per unit area: a cell's weight spread over its
+    /// footprint, so it says systems-per-pixel and correctly goes dark as the
+    /// camera resolves it. A mark is one object and has to stay visible while
+    /// it is what the view is made of. Put a single system through the field's
+    /// conserving law and it peaks at `(1/44) * level / 2 pi sigma^2` — three
+    /// thousandths, which is black, and rightly so: one system really is a
+    /// ten-thousandth of what its cell carries.
+    ///
+    /// So a mark's peak is set rather than divided out, and only the ratios
+    /// between the three kinds are shared with the field, which is what keeps
+    /// grey from swamping a shell either way.
+    pub mark: f32,
+    /// How much of [`mark`](Self::mark) a system nobody lives in draws at
+    ///
+    /// Dimmer, not absent: an uninhabited system is most of the galaxy and
+    /// still a system, so it is a faint point rather than nothing. This is the
+    /// per-object cousin of [`backdrop`](Self::backdrop), which is a per-system
+    /// share of a cell and far smaller because there are thousands of them in
+    /// one.
+    pub faint: f32,
     /// The linear level one unit of weight deposits, which sets where the
     /// field clips to white.
     ///
@@ -158,7 +182,13 @@ pub struct Gains {
 
 impl Default for Gains {
     fn default() -> Gains {
-        Gains { backdrop: 1. / 44., unaligned: 0.25, level: 0.0625 }
+        Gains {
+            backdrop: 1. / 44.,
+            unaligned: 0.25,
+            mark: 0.6,
+            faint: 0.08,
+            level: 0.0625,
+        }
     }
 }
 
@@ -214,20 +244,19 @@ pub(crate) fn peak(light: Vec3, radius: f32) -> Vec3 {
     (light / (std::f32::consts::TAU * sigma * sigma)).min(Vec3::splat(CEILING))
 }
 
-/// What one system's mark deposits, before its footprint spreads it
+/// What one system's mark is drawn at, in linear light
 ///
-/// The same gains the field lays a cell down by, asked one system at a time,
-/// so a region drawn as marks and the same region drawn as field carry the
-/// same light. A system nobody lives in is backdrop and weighs
-/// [`Gains::backdrop`]; one inhabited with nothing political on record weighs
-/// [`Gains::unaligned`]; everything else weighs one.
-pub(crate) fn mark_weight(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
+/// Set, not conserved — see [`Gains::mark`]. The ratios are the field's: a
+/// system nobody lives in is faint, an inhabited one with nothing political on
+/// record is held down by [`Gains::unaligned`] so a crowd of them cannot bury
+/// a shell, and a system with a reading draws at full.
+pub(crate) fn mark_light(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
     let share = match (peopled, hue) {
-        (false, _) => gains.backdrop,
+        (false, _) => gains.faint,
         (true, Hue::Grey) => gains.unaligned,
         (true, _) => 1.0,
     };
-    share * gains.level
+    share * gains.mark
 }
 
 /// Put the field's mesh and its additive material up
@@ -738,6 +767,47 @@ mod tests {
             light.z
         );
         assert!((light.z - (cyan.blue + grey)).abs() < 1e-6);
+    }
+
+    /// Every kind of mark is drawn at a level the eye can find, and they keep
+    /// the order the gains mean.
+    ///
+    /// The regression this guards is the whole galaxy going black at the
+    /// default zoom. A mark was briefly put through the field's conserving
+    /// law, where one uninhabited system peaks at `(1/44) * level` over the
+    /// floor footprint — three thousandths, invisible — because a density
+    /// correctly vanishes as it is resolved and a mark must not.
+    #[test]
+    fn a_mark_is_bright_enough_to_find() {
+        let gains = Gains::default();
+        let empty = mark_light(Hue::Grey, false, &gains);
+        let unaligned = mark_light(Hue::Grey, true, &gains);
+        let aligned = mark_light(Hue::Cyan, true, &gains);
+
+        for (what, level) in
+            [("empty", empty), ("unaligned", unaligned), ("aligned", aligned)]
+        {
+            assert!(
+                level > 0.01,
+                "an {what} system draws at {level}, which is black"
+            );
+            assert!(level <= 1.0, "an {what} system draws past white");
+        }
+        assert!(empty < unaligned, "an empty system outshone a colony");
+        assert!(
+            unaligned < aligned,
+            "a colony with nothing on record outshone one with a reading"
+        );
+
+        // And it is not the field's law: one system through that is the bug.
+        let conserved =
+            peak(Vec3::splat(gains.backdrop * gains.level), SMALLEST);
+        assert!(
+            empty > conserved.x * 10.,
+            "a mark is being conserved like a density: {empty} against \
+             {} from the field's law",
+            conserved.x
+        );
     }
 
     /// The composition is a sum, so it composes the way the aggregate does: a

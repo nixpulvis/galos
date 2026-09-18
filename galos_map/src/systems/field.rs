@@ -380,26 +380,25 @@ pub(crate) fn build_field(
             continue;
         }
         let color = match *view {
-            // A deposit, not a dot. A mark used to be an opaque disc in the
-            // allegiance colour with its fade in the alpha, which over a field
-            // that is itself light did not add to it but replaced it: a grey
-            // system at `srgb(0.15)` composited over a bright region punched a
-            // hole in the very light it was standing in. Laid down through the
-            // field's own law instead, a mark adds what its system is worth and
-            // the two read as one picture.
+            // Added, not composited. An opaque disc over a field that is
+            // itself light does not add what its system is worth, it replaces
+            // whatever was behind it, so a grey system punched a hole in the
+            // very light it stood in.
+            //
+            // Its brightness is set rather than conserved over its footprint:
+            // a mark is a light and the field is a density, and putting one
+            // system through the field's law peaks it at three thousandths --
+            // correct, one system being a ten-thousandth of its cell, and
+            // black. See [`super::glow::Gains::mark`].
             View::Map => {
                 let tone = hue(system, &color_by);
                 let c = LinearRgba::from(tone.color());
-                let weight = crate::systems::glow::mark_weight(
+                let level = crate::systems::glow::mark_light(
                     tone,
                     system.population > 0,
                     &gains,
                 ) * fade;
-                let p = crate::systems::glow::peak(
-                    Vec3::new(c.red, c.green, c.blue) * weight,
-                    radius,
-                );
-                [p.x, p.y, p.z, 1.]
+                [c.red * level, c.green * level, c.blue * level, 1.]
             }
             // A photometric glint: the blackbody tint at its HDR level, spread
             // by the bloom, added rather than blended so the fade scales the
