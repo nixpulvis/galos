@@ -1,5 +1,6 @@
 use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
+use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use chrono::{DateTime, Utc};
@@ -250,7 +251,12 @@ pub(crate) mod bodies;
 pub(crate) mod bounded;
 pub(crate) mod fetch;
 pub(crate) mod field;
+// The walk's own cost guard, which flies a camera on rails over a real
+// directory. A unit-test module for the reason `route::perf` is one: what it
+// runs is `pub(crate)` systems and resources.
 pub(crate) mod filter;
+#[cfg(test)]
+pub(crate) mod flight;
 pub(crate) mod info;
 pub(crate) mod labels;
 pub(crate) mod pointing;
@@ -571,7 +577,7 @@ pub(crate) fn evict(
     let routed = filters.routed();
     let inside = holding.of();
 
-    let evicted: HashSet<Entity> = systems
+    let evicted: EntityHashSet = systems
         .iter()
         .filter(|(entity, system, hop)| {
             // Every stop of every route being shown, a picked-out system, and
@@ -637,7 +643,22 @@ const EVICT_BUDGET: usize = 4096;
 /// cost millions. Replacing the child list with the keepers empties the batch's
 /// links first, so each drop is O(1); a detached system then despawns with no
 /// parent left to unlink from, and anything hung under it goes with it.
-fn drain_evictions(
+///
+/// **The detaching is the whole of what a pass costs, and there is no cheaper
+/// primitive.** Measured over a batch of 4,096 out of 25,000 children: the
+/// keepers scan and `replace_children` together 2.2 ms, the despawns that
+/// follow 68 ns apiece, and despawning without detaching first 7.2 µs apiece —
+/// which is the quadratic. `replace_children_with_difference`, which bevy
+/// documents as the efficient one and which this has exactly the slices for,
+/// measured **45 ms** on the same batch. What would make it cheap is not a
+/// better call but a shallower parent: hang the stars off a grid a cell at a
+/// time rather than all of them off the galaxy, and a detach is a cell's worth
+/// of children instead of the sky's.
+///
+/// Waiting for the queue to be worth a pass was tried and measured: over one
+/// flight ([`flight`]) the pass already fired on 128 frames of
+/// 336, so a floor under it changed nothing and cost a frame of latency.
+pub(crate) fn drain_evictions(
     galaxy: Res<crate::space::Galaxy>,
     children: Query<&Children>,
     mut pending: ResMut<PendingEvictions>,
@@ -652,14 +673,23 @@ fn drain_evictions(
         return;
     };
 
-    let batch: HashSet<Entity> =
-        pending.0.iter().copied().take(EVICT_BUDGET).collect();
-    for entity in &batch {
-        pending.0.remove(entity);
-    }
+    // Three phases, each its own zone: what the budget takes, the scan over
+    // every child that the detaching needs, and the despawns themselves.
+    let batch: EntityHashSet = {
+        let _zone = info_span!("evict batch").entered();
+        let batch: EntityHashSet =
+            pending.0.iter().copied().take(EVICT_BUDGET).collect();
+        for entity in &batch {
+            pending.0.remove(entity);
+        }
+        batch
+    };
 
-    let keepers: Vec<Entity> =
-        children.iter().filter(|entity| !batch.contains(entity)).collect();
+    let keepers: Vec<Entity> = {
+        let _zone = info_span!("keepers", children = children.len()).entered();
+        children.iter().filter(|entity| !batch.contains(entity)).collect()
+    };
+    let _zone = info_span!("despawn batch", systems = batch.len()).entered();
     commands.entity(galaxy.0).replace_children(&keepers);
     for entity in &batch {
         commands.entity(*entity).despawn();
@@ -670,8 +700,15 @@ fn drain_evictions(
 }
 
 /// The systems [`evict`] has marked to drop, waiting on the budget.
+///
+/// An [`EntityHashSet`], not a `HashSet<Entity>`. Every child of the galaxy is
+/// weighed against this set once a frame — tens of thousands of them — and
+/// SipHash over an entity was most of what [`drain_evictions`] cost: measured
+/// over one flight ([`flight`]) at 890 µs a frame, of which
+/// the scan for keepers was the bulk. Entities are bevy's own numbering, so
+/// the hash can be arithmetic.
 #[derive(Resource, Default)]
-pub(crate) struct PendingEvictions(HashSet<Entity>);
+pub(crate) struct PendingEvictions(EntityHashSet);
 
 impl PendingEvictions {
     /// How many systems are waiting to be dropped, for the diagnostics panel.

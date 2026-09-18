@@ -68,7 +68,7 @@ pub struct Planned(pub Needed);
 /// mouse. Without this a republished cell could reach the map only by being
 /// evicted and asked for again, which is what zooming out until the walk stops
 /// marking it and coming back does. See [`crate::refresh`].
-fn plan(
+pub(crate) fn plan(
     cameras: Query<(&OrbitCamera, &Camera)>,
     index: Res<ResidentIndex>,
     view_mode: Res<View>,

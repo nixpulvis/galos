@@ -14,7 +14,7 @@ use crate::aggregate::temp_bucket;
 use crate::geometry::CellId;
 use crate::meta::StarKind;
 use crate::walk::Needed;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// One system as the payload carries it: its id, its exact position, the
 /// two photometric fields, and when it was last updated.
@@ -128,20 +128,19 @@ impl Resident {
         self.cells.iter().map(|(&id, cell)| (id, cell))
     }
 
+    /// How many cells are held, for a caller that says so in a diagnostic.
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Whether nothing is held.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
     /// What the loader fetches: the needed marks not yet resident.
     pub fn missing(&self, needed: &Needed) -> Vec<CellId> {
         needed.marks.iter().copied().filter(|&id| !self.contains(id)).collect()
-    }
-
-    /// What the evictor drops: resident payloads the walk no longer asks for.
-    ///
-    /// Only the marks want a payload (a splat draws from the index alone), so a
-    /// held payload outside the needed marks is what the evictor takes. The
-    /// margin the doc calls for is applied by widening the walk before this, so
-    /// the set arithmetic stays plain.
-    pub fn stale(&self, needed: &Needed) -> Vec<CellId> {
-        let wanted: HashSet<CellId> = needed.marks.iter().copied().collect();
-        self.cells.keys().copied().filter(|id| !wanted.contains(id)).collect()
     }
 }
 
@@ -187,11 +186,12 @@ mod tests {
         assert_eq!(cache.iter().count(), 0);
     }
 
-    /// The set arithmetic splits the marks cleanly: what is fetched is needed
-    /// and absent, what is evicted is resident and unneeded, and what is left
-    /// over — needed and resident — is what the draw reads off `iter`.
+    /// What is fetched is needed and absent, and what is needed and resident
+    /// is what the draw reads off `iter`. Which of the resident cells are
+    /// dropped again is the client's policy and not this cache's: see
+    /// `galos_map`'s `systems::bounded::evict_payloads`.
     #[test]
-    fn the_fetch_and_evict_sets_split_the_marks() {
+    fn the_fetch_set_is_what_is_needed_and_absent() {
         let (a, b, c) = (at(4, 0), at(4, 1), at(4, 2));
         let mut cache = Resident::default();
         cache.insert(a, vec![point(1)]); // needed and resident
@@ -201,13 +201,12 @@ mod tests {
             Needed { mode: Mode::Shell, marks: vec![a, b], splats: vec![] };
 
         assert_eq!(ids(cache.missing(&needed)), ids(vec![b]));
-        assert_eq!(ids(cache.stale(&needed)), ids(vec![c]));
     }
 
-    /// A splat cell wants no payload, so holding one for a cell that is only
-    /// splatted counts as stale.
+    /// A splat cell wants no payload, so one is never fetched for it: a
+    /// cell's aggregate stands for its whole subtree.
     #[test]
-    fn a_splat_only_cell_is_not_kept_resident() {
+    fn a_splat_only_cell_is_never_fetched() {
         let s = at(2, 1);
         let mut cache = Resident::default();
         cache.insert(s, vec![point(1)]);
@@ -217,6 +216,5 @@ mod tests {
             splats: vec![SplatRef { id: s, blend: 1.0 }],
         };
         assert!(cache.missing(&needed).is_empty());
-        assert_eq!(ids(cache.stale(&needed)), ids(vec![s]));
     }
 }

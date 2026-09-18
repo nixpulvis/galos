@@ -748,14 +748,34 @@ fn plotted_route(
     })
 }
 
-/// How many systems are turned into entities in one frame
+/// How many systems are turned into entities while the view is still moving
 ///
 /// A cap on the structural churn the map does per frame, since spawning an
 /// entity mutates the world and cannot leave the main thread. A wide region
 /// arrives as one payload of tens of thousands of systems, and building all of
 /// them at once is a visible hitch; spread over frames it streams in instead,
 /// which the map already reads as a region drawing before it has fully loaded.
+///
+/// **Low because a big budget buys a bigger map, not a sooner one.** Raising
+/// it was measured over one flight ([`super::flight`]):
+/// 4,096 cost 36% at the ninetieth percentile and 8,192 cost 63%, and both
+/// bought a *larger* map rather than a sooner one — 25,540 systems drawn at
+/// the peak against 41,684 and 51,449, and 402,071 despawns against 576,634
+/// and 584,884. The walk re-offers whatever is undrawn every frame, so while
+/// the plan is churning a system drawn sooner is mostly a system despawned
+/// sooner, and everything a frame does — the address map, the eviction scan,
+/// the keepers scan, the detaching — is over every drawn system.
 const SPAWN_BUDGET: usize = 2048;
+
+/// How many points one pass of the walk may offer
+///
+/// Four frames' worth of the spawn budget. A wide view resolves tens of
+/// thousands of points a pass and offering all of them was most of what the
+/// pass cost: the offers past this are re-made next frame, by which time the
+/// budget has drawn what it took from these. Deep enough that a frame the
+/// drain empties still has something left to take from, shallow enough that
+/// the offering is not the cost.
+const OFFER_BUDGET: usize = SPAWN_BUDGET * 4;
 
 /// How deep the queue is allowed to get
 ///
@@ -793,24 +813,16 @@ enum Waiting {
     /// system's name.
     Built(Box<System>),
     /// A point of a cell the map holds, read when it is drawn.
+    ///
+    /// No position. It used to carry one so [`PendingSpawns::prune`] could
+    /// weigh a queued point against the reach without reading the payload
+    /// back; the walk's offers are not queued now (see [`PendingSpawns`]) and
+    /// the spyglass path, which is what prunes, queues built systems alone.
     Point {
         /// The index's own cell, not the renderer's grid cell.
         cell: galos_index::CellId,
         at: u32,
-        /// Where it sits, kept here so the reach can be weighed against it
-        /// without reading the payload back.
-        position: [f64; 3],
     },
-}
-
-impl Waiting {
-    /// Where the system sits, which is what the reach is weighed against.
-    fn position(&self) -> DVec3 {
-        match self {
-            Waiting::Built(system) => DVec3::from(system.position),
-            Waiting::Point { position, .. } => DVec3::from(*position),
-        }
-    }
 }
 
 /// What is waiting under one address, and how it is waiting
@@ -823,32 +835,60 @@ struct Offered {
     asked: bool,
 }
 
+/// One point the walk offered this pass
+///
+/// Flat, and without an address key, because there is nothing to deduplicate:
+/// a payload point belongs to one cell, a cell is walked once a pass, and the
+/// walk offers a point only where no entity holds its address yet. What the
+/// keyed queue is for is the things that arrive from elsewhere and can arrive
+/// twice; see [`PendingSpawns`].
+struct Walked {
+    address: i64,
+    /// The index's own cell, not the renderer's grid cell.
+    cell: galos_index::CellId,
+    at: u32,
+}
+
 /// Systems waiting to become entities
 ///
-/// The fetch tasks return whole regions at once and the walk offers a
-/// prefix of every cell it holds; both queue here rather than spawning the
-/// lot in the frame they land. [`drain_spawns`] takes [`SPAWN_BUDGET`] of
-/// them a frame, bounded by [`QUEUE_CEILING`] in total.
+/// The fetch tasks return whole regions at once and the walk offers a prefix
+/// of every cell it holds; both queue here rather than spawning the lot in
+/// the frame they land. [`drain_spawns`] takes [`SPAWN_BUDGET`] of them a
+/// frame.
 ///
 /// **Two queues, because a frame's offers are not equally wanted.** What the
 /// user asked for by name — the stops of a route just plotted, a system
 /// picked out and flown to — goes in `asked` and is drawn first. Everything
-/// the walk and the spyglass offer of their own accord goes in `order`,
-/// which is arrival order as before. One queue meant the hundred and forty
-/// stops of a plotted route waited behind every mark the walk had offered
-/// that frame — tens of thousands of them, at 2,048 a frame — so the line
-/// landed and then filled in slowly from whatever end the queue reached
-/// first.
+/// the spyglass offers of its own accord goes in `order`, which is arrival
+/// order as before. One queue meant the hundred and forty stops of a plotted
+/// route waited behind every mark the walk had offered that frame — tens of
+/// thousands of them, at 2,048 a frame — so the line landed and then filled
+/// in slowly from whatever end the queue reached first.
 ///
 /// Keyed by address so a system offered twice before it is drawn holds one
 /// entry, keeping the later row: a re-fetch is a refresh, and one entry is
 /// also what stops two entities landing for a system the world does not yet
 /// hold when the second copy is read.
+///
+/// **The walk's own offers are not queued at all.** They used to be, and what
+/// that bought was a backlog: a wide view resolves tens of thousands of
+/// points a frame against a budget of two thousand, so the queue sat at its
+/// ceiling, every offer in it was re-made every frame at a hash lookup
+/// apiece, and what it eventually drew was the sky as the walk saw it several
+/// frames ago — spawned, found unwanted, and despawned. Measured over one
+/// flight ([`super::flight`]): a queue pinned at 63,488 entries and
+/// **487,097 systems despawned** to draw at most 21,173.
+///
+/// So [`Self::opening`] clears the walk's batch at the start of every pass and
+/// [`Self::offer`] fills it to [`OFFER_BUDGET`], and the walk offers what is
+/// still wanted again next frame — which is what it does every frame anyway.
 #[derive(Resource, Default)]
 pub struct PendingSpawns {
     asked: VecDeque<i64>,
     order: VecDeque<i64>,
     rows: HashMap<i64, Offered>,
+    /// What the walk offered this pass, in the order it walked the cells
+    walked: Vec<Walked>,
     arrived_at: Option<Instant>,
 }
 
@@ -870,25 +910,34 @@ impl PendingSpawns {
         self.waiting(address, what, pinned, asked, at);
     }
 
-    /// Queue the `at`th point of `cell`, to be read when it is drawn.
-    pub(crate) fn push_point(
+    /// Start the walk's pass: what it offered last frame is gone
+    ///
+    /// The walk is the only thing that calls this, and it calls it once a
+    /// pass. Nothing is lost by the clearing: an offer that is still wanted
+    /// is re-made a few microseconds later by the same pass, and one that is
+    /// not is an offer to draw sky the walk has moved off.
+    pub(crate) fn opening(&mut self, at: Instant) {
+        self.walked.clear();
+        self.arrived_at = Some(self.arrived_at.map_or(at, |prev| prev.max(at)));
+    }
+
+    /// Offer the `at`th point of `cell`, to be read when it is drawn
+    ///
+    /// Answers whether there was room: past [`OFFER_BUDGET`] the pass has
+    /// offered more than the frame's budget can draw several times over, and
+    /// the caller can stop looking for offers — it still has a wanted set to
+    /// finish marking.
+    pub(crate) fn offer(
         &mut self,
         address: i64,
         cell: galos_index::CellId,
         at: u32,
-        position: [f64; 3],
-        pinned: bool,
-        now: Instant,
-    ) {
-        self.waiting(
-            address,
-            Waiting::Point { cell, at, position },
-            pinned,
-            // The walk offers a whole galaxy of these; none of them is
-            // anything anyone asked for by name.
-            false,
-            now,
-        );
+    ) -> bool {
+        if self.walked.len() >= OFFER_BUDGET {
+            return false;
+        }
+        self.walked.push(Walked { address, cell, at });
+        true
     }
 
     /// Queue whichever of the two, under `address`.
@@ -951,9 +1000,17 @@ impl PendingSpawns {
         let rows = &mut self.rows;
         let mut weigh = |queue: &mut VecDeque<i64>| {
             queue.retain(|address| {
-                let kept = rows.get(address).is_some_and(|held| {
-                    held.pinned || center.distance(held.what.position()) <= keep
-                });
+                let kept =
+                    rows.get(address).is_some_and(|held| match &held.what {
+                        Waiting::Built(system) => {
+                            held.pinned
+                                || center.distance(DVec3::from(system.position))
+                                    <= keep
+                        }
+                        // Nothing queued here is a point: the walk's offers are
+                        // its own pass's and never reach this queue.
+                        Waiting::Point { .. } => true,
+                    });
                 if !kept {
                     rows.remove(address);
                 }
@@ -965,26 +1022,25 @@ impl PendingSpawns {
     }
 
     fn is_empty(&self) -> bool {
-        self.asked.is_empty() && self.order.is_empty()
+        self.asked.is_empty() && self.order.is_empty() && self.walked.is_empty()
     }
 
     /// How many systems are waiting, for the diagnostics panel to read.
     pub fn queued(&self) -> usize {
-        self.asked.len() + self.order.len()
+        self.asked.len() + self.order.len() + self.walked.len()
     }
 
     /// Take up to `budget` systems, building the ones that are still only a
     /// reference
     ///
-    /// What was asked for by name first, then arrival order. A pop that
-    /// finds no row is an address that was taken already — the stale copy a
-    /// promotion leaves behind — and costs nothing but the pop.
+    /// What was asked for by name first, then whatever else arrived, then the
+    /// walk's own offers — which are this pass's and no older, so what is
+    /// taken from them is the sky as the walk sees it now.
     ///
     /// `built` answers [`None`] where the payload a point named is gone or
     /// no longer holds that system — a cell freed or republished while the
     /// offer waited — and the offer is then dropped unread. The walk offers
-    /// it again next frame if it is still wanted, which is the same rule the
-    /// ceiling leans on.
+    /// it again next frame if it is still wanted.
     fn take(
         &mut self,
         budget: usize,
@@ -1001,6 +1057,19 @@ impl PendingSpawns {
                 batch.push(system);
             }
         }
+        // The walk's, from the front: the pass walked the cells in the order
+        // it holds them, and taking from the back would draw one end of that
+        // order every frame and never reach the other.
+        let mut walked = self.walked.drain(..).peekable();
+        while batch.len() < budget {
+            let Some(offer) = walked.next() else { break };
+            let what = Waiting::Point { cell: offer.cell, at: offer.at };
+            if let Some(system) = built(offer.address, what) {
+                batch.push(system);
+            }
+        }
+        // Whatever the budget did not reach is dropped with the iterator, and
+        // offered again by the next pass if it is still wanted.
         batch
     }
 }
@@ -1012,7 +1081,7 @@ impl PendingSpawns {
 /// [`SPAWN_BUDGET`] of what remains to [`spawn_systems`], so the frame's
 /// structural work is bounded however wide the region that arrived.
 #[allow(clippy::too_many_arguments)]
-fn drain_spawns(
+pub(crate) fn drain_spawns(
     mut pending: ResMut<PendingSpawns>,
     systems_query: Query<(Entity, &System)>,
     galaxy: Res<Galaxy>,
@@ -1047,22 +1116,31 @@ fn drain_spawns(
     // The frame's worth, built here and not when it was offered: a queued
     // system is mostly one that never gets drawn, and the name and the
     // political columns are a join apiece. See [`Waiting`].
-    let batch = pending.take(SPAWN_BUDGET, |address, what| match what {
-        Waiting::Built(system) => Some(*system),
-        Waiting::Point { cell, at, .. } => {
-            let held = resident.0.cell(cell)?;
-            let point = held.points.get(at as usize)?;
-            // The cell may have been published again while the offer
-            // waited, which renumbers its members: a point that is no
-            // longer the system that was offered is not this offer's, and
-            // the walk offers whatever is there now next frame.
-            (point.id64 as i64 == address).then(|| {
-                crate::systems::bounded::build_from_point(
-                    point, &populated, &names,
-                )
-            })
-        }
-    });
+    //
+    // The building and the spawning are a zone apiece: one is a name and a
+    // political join per system off the resident tables, the other is bevy
+    // structural work, and a batch that spikes is one or the other.
+    let batch = {
+        let _zone =
+            info_span!("build batch", queued = pending.queued()).entered();
+        pending.take(SPAWN_BUDGET, |address, what| match what {
+            Waiting::Built(system) => Some(*system),
+            Waiting::Point { cell, at } => {
+                let held = resident.0.cell(cell)?;
+                let point = held.points.get(at as usize)?;
+                // The cell may have been published again while the offer
+                // waited, which renumbers its members: a point that is no
+                // longer the system that was offered is not this offer's, and
+                // the walk offers whatever is there now next frame.
+                (point.id64 as i64 == address).then(|| {
+                    crate::systems::bounded::build_from_point(
+                        point, &populated, &names,
+                    )
+                })
+            }
+        })
+    };
+    let _zone = info_span!("spawn batch", systems = batch.len()).entered();
     spawn_systems(
         batch,
         &systems_query,
@@ -1220,6 +1298,17 @@ pub fn spawn_systems(
     // `updated_at`, so reading it once here rather than per row costs nothing
     // in accuracy.
     let now = Utc::now();
+    // What this call spawns, gathered and handed to bevy in one batch rather
+    // than an entity at a time. One `Commands::spawn` apiece measured 589 ns
+    // a star against 479 ns through `spawn_batch` over the map's own eight
+    // components — a fifth of the spawning, for a `Vec` of what was going to
+    // be spawned anyway. (Most of the 479 ns is the component count itself:
+    // the same spawn with three components is 205 ns.)
+    //
+    // The excluded are their own batch, `Filtered` being the one component
+    // that is not on every star, and a batch is one archetype.
+    let mut spawning: Vec<Star> = Vec::new();
+    let mut filtered: Vec<(Star, Filtered)> = Vec::new();
     for system in new_systems {
         // What no filter admits is dropped rather than dimmed once the dim is
         // zero, so it is never spawned in the first place: the load avoided,
@@ -1244,36 +1333,62 @@ pub fn spawn_systems(
                 fetched_at.duration_since(time.startup())
             );
 
-            let mut spawned = commands.spawn((
-                placement(&system, grid),
-                system,
-                // What the map draws as a star, and no more than a marker:
-                // the field paints the mark from this entity's position and
-                // the size `super::scale` writes onto it, so there is no
-                // mesh, material or render layer to carry.
-                Shell,
-                // Fitted by `pointing::size_indicators` before the first
-                // draw, and what the pointer is tested against.
-                Indicator::default(),
-                // A system does not block what lies behind it, so a name
-                // drawn over one is reported as well and `pointing` can
-                // weigh the two.
-                Pickable { should_block_lower: false, is_hoverable: true },
-                // Whether the system is drawn at all. Nothing inherits it:
-                // `field::build_field` and the `labels`, `pointing` and
-                // `selection` painters each read the value off the shell in
-                // their own query and skip the ones hidden.
-                Visibility::default(),
-                // A star outside the galaxy's grid is not placed by it,
-                // and would be drawn wherever its bare transform happened
-                // to put it rather than where the cell says.
-                ChildOf(galaxy.0),
-            ));
+            let star = star(system, grid, galaxy.0);
             if excluded {
-                spawned.insert(Filtered);
+                filtered.push((star, Filtered));
+            } else {
+                spawning.push(star);
             }
         }
     }
+    if !spawning.is_empty() {
+        commands.spawn_batch(spawning);
+    }
+    if !filtered.is_empty() {
+        commands.spawn_batch(filtered);
+    }
+}
+
+/// Everything a drawn star carries
+///
+/// Named because it is spawned in batches now and a batch wants one type; see
+/// [`spawn_systems`].
+type Star = (
+    (CellCoord, Transform),
+    System,
+    Shell,
+    Indicator,
+    Pickable,
+    Visibility,
+    ChildOf,
+);
+
+/// One drawn star, placed where its row puts it
+fn star(system: System, grid: &Grid, galaxy: Entity) -> Star {
+    (
+        placement(&system, grid),
+        system,
+        // What the map draws as a star, and no more than a marker: the field
+        // paints the mark from this entity's position and the size
+        // `super::scale` writes onto it, so there is no mesh, material or
+        // render layer to carry.
+        Shell,
+        // Fitted by `pointing::size_indicators` before the first draw, and
+        // what the pointer is tested against.
+        Indicator::default(),
+        // A system does not block what lies behind it, so a name drawn over
+        // one is reported as well and `pointing` can weigh the two.
+        Pickable { should_block_lower: false, is_hoverable: true },
+        // Whether the system is drawn at all. Nothing inherits it:
+        // `field::build_field` and the `labels`, `pointing` and `selection`
+        // painters each read the value off the shell in their own query and
+        // skip the ones hidden.
+        Visibility::default(),
+        // A star outside the galaxy's grid is not placed by it, and would be
+        // drawn wherever its bare transform happened to put it rather than
+        // where the cell says.
+        ChildOf(galaxy),
+    )
 }
 
 /// Carry a changed row onto where its star is drawn
@@ -1722,7 +1837,7 @@ mod tests {
         assert_eq!(about(&taken(&mut pending, 10)), vec![2, 3]);
     }
 
-    /// A queued point is a reference until it is drawn
+    /// An offered point is a reference until it is drawn
     ///
     /// The whole of what makes framing a galaxy affordable: what the walk
     /// offers is which point of which cell it wants, and nothing is named,
@@ -1731,12 +1846,12 @@ mod tests {
     /// system that would otherwise have been built and evicted in one
     /// breath.
     #[test]
-    fn a_queued_point_is_built_only_when_it_is_drawn() {
+    fn an_offered_point_is_built_only_when_it_is_drawn() {
         let mut pending = PendingSpawns::default();
-        let now = Instant::now();
         let cell = galos_index::CellId::ROOT;
-        pending.push_point(7, cell, 3, [1., 2., 3.], false, now);
-        pending.push_point(8, cell, 4, [4., 5., 6.], false, now);
+        pending.opening(Instant::now());
+        assert!(pending.offer(7, cell, 3));
+        assert!(pending.offer(8, cell, 4));
         assert_eq!(pending.queued(), 2);
 
         // Standing in for the payload read: 7 is still there, 8 is not.
@@ -1750,6 +1865,58 @@ mod tests {
 
         assert_eq!(about(&batch), vec![7], "8 was built anyway");
         assert!(pending.is_empty());
+    }
+
+    /// A pass's offers are the pass's, and the one before it is forgotten
+    ///
+    /// What the walk offers is the sky as it sees it now. An offer the frame's
+    /// budget never reached is not a promise to draw it later: the pass runs
+    /// again next frame and offers whatever is still wanted, and holding the
+    /// old offers is what drew the sky several frames behind the camera — a
+    /// system spawned, found unwanted and despawned. See [`PendingSpawns`].
+    #[test]
+    fn a_pass_forgets_what_the_pass_before_it_offered() {
+        let mut pending = PendingSpawns::default();
+        let cell = galos_index::CellId::ROOT;
+        pending.opening(Instant::now());
+        pending.offer(7, cell, 0);
+        pending.offer(8, cell, 1);
+
+        // The next pass, which wants one of the two.
+        pending.opening(Instant::now());
+        pending.offer(8, cell, 1);
+
+        let taken: Vec<i64> = pending
+            .take(10, |address, _| {
+                let mut system = system(address);
+                system.address = address;
+                Some(system)
+            })
+            .iter()
+            .map(|system| system.address)
+            .collect();
+        assert_eq!(taken, vec![8], "the pass before it was still queued");
+    }
+
+    /// What the walk offers in one pass is bounded
+    ///
+    /// A wide view resolves tens of thousands of points against a budget of
+    /// two thousand, and offering all of them was most of what the pass cost.
+    /// Past [`OFFER_BUDGET`] the offer is refused and the caller is told, so
+    /// it can stop looking; what it refused is offered again next frame.
+    #[test]
+    fn a_pass_stops_offering_past_its_budget() {
+        let mut pending = PendingSpawns::default();
+        let cell = galos_index::CellId::ROOT;
+        pending.opening(Instant::now());
+        for address in 0..OFFER_BUDGET as i64 {
+            assert!(pending.offer(address, cell, address as u32));
+        }
+        assert!(
+            !pending.offer(-1, cell, 0),
+            "the pass went on offering past its budget"
+        );
+        assert_eq!(pending.queued(), OFFER_BUDGET);
     }
 
     /// The queue is bounded, and what it turns away comes round again

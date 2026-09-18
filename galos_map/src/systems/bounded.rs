@@ -34,6 +34,7 @@ use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
 use crate::{Names, Populated, ResidentIndex, Transport};
+use bevy::ecs::entity::EntityHashSet;
 use bevy::ecs::system::SystemParam;
 use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
@@ -45,10 +46,11 @@ use galos_index::{
     CellId, MARK_SEPARATION_PX, Part, Point, Resident, STAR_SEPARATION_PX,
     Stamp, resolvable_count,
 };
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<LodFetch>();
@@ -56,6 +58,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<BoundedTasks>();
     app.init_resource::<PointOrders>();
     app.init_resource::<Republished>();
+    app.init_resource::<Keeping>();
 
     // Clears the map when the source is switched, before either source runs,
     // so the two never overlap on screen.
@@ -136,10 +139,87 @@ fn cell_in_reach(id: CellId, center: DVec3, radius: f64) -> bool {
 
 /// The cell payloads the map holds, the resident half of the walk's predicate
 ///
-/// Keyed by cell, so [`Resident::missing`] is the marks a fetch must load and
-/// [`Resident::stale`] the held cells the walk no longer asks for.
+/// Keyed by cell, so [`Resident::missing`] is the marks a fetch must load.
+/// What is dropped again is [`Keeping`]'s to say, not the marked set's.
 #[derive(Resource, Default)]
 pub(crate) struct ResidentCells(pub(crate) Resident);
+
+/// How long a payload the walk has stopped marking is held before it is freed
+///
+/// **The whole of why it is held at all.** A payload freed the frame it stops
+/// being marked is a payload read again the frame it is marked next, and a
+/// zoom marks a different set every frame: measured over one flight out to
+/// the galaxy and back ([`super::flight`]), 2,615 payload reads of which
+/// **1,818 were cells read a second time** — seventy per cent of the reads,
+/// and with them the systems built out of them, evicted and built again.
+///
+/// Two seconds, which is longer than a zoom step and shorter than a change of
+/// mind. What bounds the memory that buys is [`SLACK`], not this.
+const KEEP: Duration = Duration::from_secs(2);
+
+/// How many times the marked set's worth of payloads may be held at once
+///
+/// The ceiling under [`KEEP`], and what keeps the grace from being a leak: a
+/// held set is allowed to run to twice what the view asks for, and past that
+/// the least recently wanted are freed however new they are. Proportional to
+/// the view rather than a fixed count, so the memory a wide zoom holds stays
+/// what that zoom needs — which is what it was before the grace existed.
+const SLACK: usize = 2;
+
+/// Which cells the walk wants, and when each held payload was last wanted
+///
+/// Two answers with one owner, because the second is only meaningful against
+/// the first. The marked set is a `Vec` on [`Planned`] and every reader of it
+/// asks the same question — *is this cell marked* — so it is kept here as a
+/// set and rebuilt only when the plan moves ([`fetch`]), rather than walked
+/// or rebuilt by each of the three systems that ask.
+///
+/// The stamps are what [`KEEP`] is measured from. A cell wanted this frame is
+/// stamped with this frame; one nobody has asked for keeps the stamp of the
+/// last frame that did, and is freed once that is [`KEEP`] old.
+#[derive(Resource, Default)]
+pub(crate) struct Keeping {
+    /// The marked set as a set, rebuilt when [`Planned`] moves
+    marked: FxHashSet<CellId>,
+    /// When each held payload was last wanted
+    seen: FxHashMap<CellId, Instant>,
+}
+
+impl Keeping {
+    /// Take the plan's marks as the set every reader asks against
+    fn marks(&mut self, marks: &[CellId]) {
+        self.marked.clear();
+        self.marked.extend(marks.iter().copied());
+    }
+
+    /// Whether the walk marks this cell
+    ///
+    /// What [`reconcile`] draws from: a held payload the walk no longer marks
+    /// is kept against the next frame that marks it, and drawing it meanwhile
+    /// would put back the far, faint sky the walk had just shed.
+    fn marks_it(&self, id: CellId) -> bool {
+        self.marked.contains(&id)
+    }
+
+    /// Note that `id` is wanted as of `now`
+    fn wanted(&mut self, id: CellId, now: Instant) {
+        self.seen.insert(id, now);
+    }
+
+    /// When `id` was last wanted, taking arrival as wanted
+    ///
+    /// A payload that has just landed has never been through a pass that
+    /// stamps it, and reading its absence as "wanted nobody knows when" would
+    /// free it before it was ever drawn.
+    fn last(&mut self, id: CellId, now: Instant) -> Instant {
+        *self.seen.entry(id).or_insert(now)
+    }
+
+    /// Done with: the payload is gone and so is the stamp
+    fn forget(&mut self, id: CellId) {
+        self.seen.remove(&id);
+    }
+}
 
 /// The cells whose payload has been replaced since [`reconcile`] last read it
 ///
@@ -177,15 +257,20 @@ impl Republished {
 }
 
 /// What the draw has worked out about the resident payloads: the orders a
-/// cell's points are drawn in, and which cells have been published again
-/// since it last looked.
+/// cell's points are drawn in, which cells have been published again since it
+/// last looked, and which cells the walk marks.
 ///
-/// Bundled so [`reconcile`] reads both without spending two of Bevy's
+/// Bundled so [`reconcile`] reads all three without spending three of Bevy's
 /// system-parameter slots, that walk being at the limit.
 #[derive(SystemParam)]
 pub(crate) struct Worked<'w> {
     orders: ResMut<'w, PointOrders>,
     republished: ResMut<'w, Republished>,
+    /// The marked set, which this pass is the one to take from the plan: it
+    /// is the first of the three to read it and the only one that must not
+    /// read it a frame late.
+    keeping: ResMut<'w, Keeping>,
+    planned: Res<'w, Planned>,
 }
 
 /// The payload reads in flight, one per marks cell not yet resident or asked
@@ -199,6 +284,23 @@ pub(crate) struct Worked<'w> {
 pub(crate) struct BoundedTasks(
     HashMap<CellId, Task<io::Result<(Vec<Point>, Option<Stamp>)>>>,
 );
+
+#[cfg(test)]
+impl BoundedTasks {
+    /// The cells with a read in flight, for a caller that wants to know what
+    /// a frame put to the transport
+    ///
+    /// Read by the flight guard ([`super::flight`]), which counts a cell read
+    /// twice over one flight as work paid for twice.
+    pub(crate) fn cells(&self) -> impl Iterator<Item = CellId> + '_ {
+        self.0.keys().copied()
+    }
+
+    /// Whether nothing is on the wire
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Clear the map when the source switches, so one does not draw over the other
 ///
@@ -273,7 +375,16 @@ pub(crate) fn fetch(
 ) {
     let bubble = reach(&spyglass).zip(cameras.single().ok());
     let pool = AsyncComputeTaskPool::get();
-    for id in resident.0.missing(&planned.0) {
+    // The two halves of the frame's flat cost, measured apart: the set
+    // arithmetic over every marked cell, and the asking that follows it. A
+    // still view asks for nothing and pays the first of them anyway, which is
+    // what a capture has to be able to see.
+    let asking = {
+        let _zone = info_span!("missing cells").entered();
+        resident.0.missing(&planned.0)
+    };
+    let _zone = info_span!("cell tasks", missing = asking.len()).entered();
+    for id in asking {
         // Past the clamp, a marks cell beyond the reach is left unfetched, so a
         // zoom out never loads the far sky the walk still marks — only its
         // nearer, brighter tail is drawn.
@@ -320,7 +431,7 @@ pub(crate) fn fetch(
 /// The stamp it arrived under is noted with it, which is what lets
 /// [`crate::refresh`] ask whether the cell has been republished since instead
 /// of reading every resident payload on every poll.
-fn collect(
+pub(crate) fn collect(
     mut tasks: ResMut<BoundedTasks>,
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
@@ -686,7 +797,7 @@ fn busiest_first<'a>(
 /// The set is written rather than added to, so a system the walk wants again
 /// is not carried off by an eviction queued for it several frames ago and
 /// still waiting on the budget.
-fn reconcile(
+pub(crate) fn reconcile(
     cameras: Query<(&OrbitCamera, &Camera)>,
     index: Res<ResidentIndex>,
     resident: Res<ResidentCells>,
@@ -708,7 +819,18 @@ fn reconcile(
     let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
         return;
     };
-    let Worked { ref mut orders, ref mut republished } = worked;
+    let Worked {
+        ref mut orders,
+        ref mut republished,
+        ref mut keeping,
+        ref planned,
+    } = worked;
+    // The marked set as a set, for this pass and for the evictor after it.
+    // Rebuilt only where the plan has moved, which a still camera never does.
+    if planned.is_changed() {
+        let _zone = info_span!("marked set").entered();
+        keeping.marks(&planned.0.marks);
+    }
     let now = Instant::now();
     // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
     // the LOD is untouched inside it, only the far tail is shed.
@@ -721,8 +843,27 @@ fn reconcile(
         View::Realistic => STAR_SEPARATION_PX,
     };
 
-    let existing: HashSet<i64> =
-        systems.iter().map(|(_, system, _)| system.address).collect();
+    // The three phases of the pass, each its own zone: what it gathers about
+    // what is already drawn, the walk of every resident cell, and the scan
+    // that decides what goes. The system's own zone is all three together,
+    // which is not enough to act on.
+    //
+    // The entity beside the address, not the address alone. What the walk
+    // resolves is tens of thousands of points a frame and what is drawn is a
+    // couple of thousand entities, so the pass used to hash every resolved
+    // *address* into a wanted set to answer a question only the drawn ones
+    // could be asked — measured at 196 ms of a 512 ms flight
+    // ([`super::flight`]). Carrying the entity here means a resolved point
+    // that is already drawn marks its entity ([`EntityHashSet`], bevy's own
+    // numbering and a cheap hash) and one that is not goes to the queue,
+    // which is one lookup a point rather than two.
+    let existing: HashMap<i64, Entity> = {
+        let _zone = info_span!("reconcile setup").entered();
+        systems
+            .iter()
+            .map(|(entity, system, _)| (system.address, entity))
+            .collect()
+    };
     let picked: HashSet<i64> = selection.addresses().into_iter().collect();
     // Every stop of every route being shown. A line is only a line if it has
     // both ends of each leg to draw between, so these are wanted whatever the
@@ -760,10 +901,33 @@ fn reconcile(
     // moves by a frame's worth in a frame.
     let wall = Utc::now();
 
-    // The resolvable prefix of every resident cell: the systems close enough to
-    // separate. Build only the ones not already drawn; note every one wanted.
-    let mut wanted: HashSet<i64> = HashSet::new();
+    // The resolvable prefix of every marked cell the map holds: the systems
+    // close enough to separate. Build only the ones not already drawn; note
+    // every one wanted.
+    //
+    // Marked, not merely held. A payload outlives the marking by [`KEEP`] now
+    // (see [`evict_payloads`]), and drawing one the walk has stopped marking
+    // would put the far, faint sky the walk just shed back on the map — the
+    // level of detail comes from the marks and nowhere else.
+    let mut wanted: EntityHashSet = EntityHashSet::default();
+    // One buffer for every cell's take rather than one allocation apiece:
+    // a wide view walks thousands of cells a frame, and the indices taken are
+    // a budget's worth each.
+    let mut taken: Vec<usize> = Vec::new();
+    // The walk's offers are this pass's: what the last one offered and the
+    // budget never reached is gone, and what is still wanted is offered again
+    // below. See [`super::spawn::PendingSpawns`].
+    pending.opening(now);
+    // Whether the pass may still offer. Past the offer budget it goes on
+    // marking what is wanted — the eviction scan reads that — and stops
+    // looking for work the frame cannot do.
+    let mut offering = true;
+    let prefixes =
+        info_span!("cell prefixes", cells = resident.0.len()).entered();
     for (id, cell) in resident.0.iter() {
+        if !keeping.marks_it(id) {
+            continue;
+        }
         let Some(indexed) = index.0.get(id) else { continue };
         if let Some(radius) = bubble
             && !cell_in_reach(id, orbit.center(), radius)
@@ -788,14 +952,16 @@ fn reconcile(
         // Taken rather than walked lazily, since the two orders are different
         // iterators and what follows is the same for both. A budget's worth of
         // indices, which is a few tens.
-        let taken: Vec<usize> = if by_population {
-            busiest_first(orders.busiest(id), admits, asking, fill)
-                .take(target)
-                .collect()
+        taken.clear();
+        if by_population {
+            taken.extend(
+                busiest_first(orders.busiest(id), admits, asking, fill)
+                    .take(target),
+            );
         } else {
-            drawn_first(&cell.points, admits, fill).take(target).collect()
-        };
-        for index in taken {
+            taken.extend(drawn_first(&cell.points, admits, fill).take(target));
+        }
+        for &index in &taken {
             let point = &cell.points[index];
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
@@ -805,32 +971,38 @@ fn reconcile(
                 continue;
             }
             let address = point.id64 as i64;
-            wanted.insert(address);
             // Already drawn is already answered, except out of a cell that
             // has just been published again: then the system on the map was
             // built from the payload this one replaced, and what it says about
             // the moment, the magnitude and the politics is what the index
             // said last time. Queued either way, and `spawn_systems` replaces
             // it in place.
-            if !existing.contains(&address) || refreshed {
+            match existing.get(&address) {
+                Some(&entity) => {
+                    wanted.insert(entity);
+                    // A republished cell's systems were built from the payload
+                    // this one replaced, so they are offered again even though
+                    // they are drawn, and `spawn_systems` writes over them.
+                    if refreshed && offering {
+                        offering = pending.offer(address, id, index as u32);
+                    }
+                }
                 // Which point of which cell, not the system built out of
                 // it: most of what a walk offers is never drawn, and
                 // building it to queue it is a name and a political join
                 // thrown away. See [`super::spawn::Waiting`].
-                pending.push_point(
-                    address,
-                    id,
-                    index as u32,
-                    point.pos,
-                    false,
-                    now,
-                );
+                None => {
+                    if offering {
+                        offering = pending.offer(address, id, index as u32);
+                    }
+                }
             }
         }
         if refreshed {
             republished.settled(id);
         }
     }
+    drop(prefixes);
 
     // The route's own stops, which no cell prefix answers for. They lie
     // wherever the route goes rather than near the camera, so from far enough
@@ -849,10 +1021,14 @@ fn reconcile(
     // back to it by [`crate::systems::route::trim`]; what this settles is
     // that the stop is there to be reached at all.
     for &address in &routed {
-        wanted.insert(address);
-        if !existing.contains(&address) {
-            if let Some(system) = system_at(address, &populated, &names) {
-                pending.push(system, true, true, now);
+        match existing.get(&address) {
+            Some(&entity) => {
+                wanted.insert(entity);
+            }
+            None => {
+                if let Some(system) = system_at(address, &populated, &names) {
+                    pending.push(system, true, true, now);
+                }
             }
         }
     }
@@ -861,6 +1037,7 @@ fn reconcile(
     // recedes, the systems of a cell whose payload has been freed, and —
     // clearing — whatever fell outside the bubble above. Written whole, so a
     // system the walk has taken back is not still down for eviction.
+    let _zone = info_span!("evict scan", wanted = wanted.len()).entered();
     evictions.0 = systems
         .iter()
         .filter(|(entity, system, hop)| {
@@ -870,42 +1047,92 @@ fn reconcile(
             {
                 return false;
             }
-            !wanted.contains(&system.address)
+            // Unwanted now, not unwanted twice. A grace here was measured and
+            // dropped: over one flight ([`super::flight`]) it changed the
+            // despawn count by 588 in 401,857 — the turnover is the level of
+            // detail moving, not systems flickering on the threshold — and
+            // the frames it took to hold the extra systems cost 23% of the
+            // frame at the median.
+            !wanted.contains(entity)
         })
         .map(|(entity, ..)| entity)
         .collect();
 }
 
-/// Free the payloads of cells the walk no longer wants
+/// Free the payloads the walk has stopped wanting, once it has stopped
+/// wanting them for long enough
 ///
-/// [`Resident::stale`] is the held cells outside the marks — those with nothing
-/// left to resolve from here. Their entities are dropped by [`reconcile`], which
-/// finds them outside every prefix once the payload is gone; this only frees the
-/// memory the payload held, and the verdicts held about its points with it.
-fn evict_payloads(
+/// A payload is wanted where the walk marks its cell and the clamp still
+/// reaches it. It used to be freed the moment either stopped being true,
+/// which reads as the obvious rule and is the expensive one: a zoom marks a
+/// different set every frame, so cells left and came back, and a payload
+/// freed on one frame was read from disk again two frames later. Measured
+/// over one flight ([`super::flight`]), seventy per cent of the reads were of
+/// cells already read once, and each re-read rebuilt the systems in it.
+///
+/// So an unwanted payload is kept for [`KEEP`], and the held set is allowed
+/// to run to [`SLACK`] times what the view marks. Past that ceiling the least
+/// recently wanted go first, however new they are, which is what keeps a
+/// grace from being a leak: the memory held stays proportional to the view,
+/// as it was when the rule was immediate.
+///
+/// Their entities are not this system's business. [`reconcile`] draws the
+/// marked cells alone, so a held-but-unmarked payload is one nothing draws
+/// from — the systems in it are outside every prefix and queued to drop on
+/// the frame the walk stops marking it, exactly as before. What is deferred
+/// here is the reading, not the drawing.
+pub(crate) fn evict_payloads(
     planned: Res<Planned>,
     spyglass: Res<Spyglass>,
     cameras: Query<&OrbitCamera>,
+    time: Res<Time<Real>>,
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::refresh::Held>,
+    mut keeping: ResMut<Keeping>,
 ) {
-    let mut stale = resident.0.stale(&planned.0);
-    // The payloads the walk still marks but the clamp no longer reaches, so a
-    // bubble that has moved on does not go on holding the sky behind it.
-    if let (Some(radius), Ok(orbit)) = (reach(&spyglass), cameras.single()) {
-        stale.extend(
-            resident
-                .0
-                .iter()
-                .map(|(id, _)| id)
-                .filter(|&id| !cell_in_reach(id, orbit.center(), radius)),
-        );
+    let now = time.last_update().unwrap_or_else(|| time.startup());
+    let bubble = reach(&spyglass).zip(cameras.single().ok());
+
+    // One pass over what is held: stamp what is wanted now, take what has
+    // been unwanted past the grace, and note the rest with the stamp the
+    // ceiling sorts on. The marked set is [`Keeping`]'s, built once a plan by
+    // [`fetch`], so this is a lookup a held cell and no set to build.
+    let _zone = info_span!("keep or free", cells = resident.0.len()).entered();
+    let mut freeing: Vec<CellId> = Vec::new();
+    let mut spare: Vec<(Instant, CellId)> = Vec::new();
+    for (id, _) in resident.0.iter() {
+        let wanted = keeping.marks_it(id)
+            && bubble.is_none_or(|(radius, camera)| {
+                cell_in_reach(id, camera.center(), radius)
+            });
+        if wanted {
+            keeping.wanted(id, now);
+            continue;
+        }
+        let last = keeping.last(id, now);
+        if now.saturating_duration_since(last) >= KEEP {
+            freeing.push(id);
+        } else {
+            spare.push((last, id));
+        }
     }
-    for id in stale {
+
+    // And the ceiling, over whatever the grace left standing: the oldest
+    // stamps first, so what goes is what has gone longest without being asked
+    // for.
+    let budget = planned.0.marks.len().saturating_mul(SLACK);
+    let holding = resident.0.len() - freeing.len();
+    if holding > budget {
+        spare.sort_unstable_by_key(|(last, _)| *last);
+        freeing.extend(spare.iter().take(holding - budget).map(|(_, id)| *id));
+    }
+
+    for id in freeing {
         resident.0.remove(id);
         orders.forget(id);
         held.forget(id);
+        keeping.forget(id);
     }
 }
 
@@ -1371,6 +1598,7 @@ mod tests {
         app.init_resource::<crate::systems::filter::Cut>();
         app.init_resource::<PointOrders>();
         app.init_resource::<Republished>();
+        app.init_resource::<Keeping>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -1382,9 +1610,39 @@ mod tests {
             lock_camera: false,
             follow_camera: true,
         });
+        app.insert_resource(Planned(galos_index::Needed {
+            mode: galos_index::Mode::Shell,
+            marks: Vec::new(),
+            splats: Vec::new(),
+        }));
         app.world_mut()
             .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
         app
+    }
+
+    /// Hold every payload a build published, and mark every cell it holds
+    ///
+    /// Both halves, because the walk draws the cells the plan marks and holds
+    /// the payloads of those it has read: a test that filled one and not the
+    /// other would be a map holding a galaxy nothing marks. See
+    /// [`evict_payloads`].
+    fn holding(app: &mut App, built: &galos_index::Snapshot) {
+        let mut marks = Vec::new();
+        {
+            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
+            for cell in built.index.cells() {
+                let points = built.payload(cell.id);
+                if !points.is_empty() {
+                    resident.0.insert(cell.id, points.to_vec());
+                    marks.push(cell.id);
+                }
+            }
+        }
+        app.insert_resource(Planned(galos_index::Needed {
+            mode: galos_index::Mode::Shell,
+            marks,
+            splats: Vec::new(),
+        }));
     }
 
     /// Which systems the walk has queued to drop
@@ -1534,15 +1792,7 @@ mod tests {
 
         let mut app = walking();
         app.insert_resource(ResidentIndex(built.index.clone()));
-        {
-            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
-            for cell in built.index.cells() {
-                let points = built.payload(cell.id);
-                if !points.is_empty() {
-                    resident.0.insert(cell.id, points.to_vec());
-                }
-            }
-        }
+        holding(&mut app, &built);
         app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([(
             held,
             PopulatedSystem {
@@ -1589,9 +1839,9 @@ mod tests {
 
         // Dimmed to nothing, where an excluded system is not drawn at all:
         // only what the filter admits is wanted, and the rest go.
+        //
         app.insert_resource(crate::systems::filter::DimTo(0.));
         app.update();
-
         let dropped = dropping(&mut app);
         assert!(
             !dropped.contains(&held),
@@ -1633,15 +1883,7 @@ mod tests {
 
         let mut app = walking();
         app.insert_resource(ResidentIndex(built.index.clone()));
-        {
-            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
-            for cell in built.index.cells() {
-                let points = built.payload(cell.id);
-                if !points.is_empty() {
-                    resident.0.insert(cell.id, points.to_vec());
-                }
-            }
-        }
+        holding(&mut app, &built);
         // Two of the five have anybody in them: a world and a hamlet.
         let peopled = |address: i64, population: u64| {
             (
@@ -1719,15 +1961,7 @@ mod tests {
 
         let mut app = walking();
         app.insert_resource(ResidentIndex(built.index.clone()));
-        {
-            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
-            for cell in built.index.cells() {
-                let points = built.payload(cell.id);
-                if !points.is_empty() {
-                    resident.0.insert(cell.id, points.to_vec());
-                }
-            }
-        }
+        holding(&mut app, &built);
         // Everybody lives somewhere, so the population order holds them all.
         let peopled = |address: i64| {
             (
@@ -1806,6 +2040,12 @@ mod tests {
             .resource_mut::<ResidentCells>()
             .0
             .insert(owner, built.payload(owner).to_vec());
+        // Marked as well as held: the walk draws the cells the plan names.
+        app.insert_resource(Planned(galos_index::Needed {
+            mode: galos_index::Mode::Shell,
+            marks: vec![owner],
+            splats: Vec::new(),
+        }));
         // Drawn already, as it would be a frame after the first read.
         app.world_mut().spawn(crate::systems::tests::system(1));
 
