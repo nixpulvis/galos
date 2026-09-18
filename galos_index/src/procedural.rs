@@ -218,6 +218,85 @@ pub fn sectors_holding(needle: &str, limit: usize) -> Vec<&'static str> {
         .collect()
 }
 
+/// How many letters of a *word* may be wrong before it says nothing
+///
+/// [`EXACTLY_UNDER`] is about a whole sector name; a word of one is three
+/// to six letters, and the bound has to be read against that length or it
+/// answers with the vocabulary. One edit on three letters reaches a quarter
+/// of the alphabet — `EQU` is one from `EQ-G`, `ECU`, `EQZ` — so three
+/// letters are matched exactly and the slack opens with the word:
+///
+/// | letters | edits |
+/// |---|---|
+/// | under four | 0 |
+/// | four or five | 1 |
+/// | six or more | [`NEAREST`] |
+pub fn slack(word: &str) -> usize {
+    match word.len() {
+        0..=3 => 0,
+        4..=5 => 1,
+        _ => NEAREST,
+    }
+}
+
+/// Whether `word` matches `held`: at its start, or near enough
+///
+/// The one rule a query's word is matched by, wherever it is matched — the
+/// sector vocabulary here, and the rows a caller sieves behind it. A prefix
+/// counts because that is what a search is; the edits are [`slack`]'s.
+pub fn matches_word(word: &str, held: &str) -> bool {
+    held.starts_with(word)
+        || within(word.as_bytes(), held.as_bytes(), slack(word)).is_some()
+}
+
+/// The sectors holding the most of `words`, the most first, at most `limit`
+///
+/// **What answers a query whose words are out of order.** A derived name is
+/// a sector and then coordinates, so a reader typing `EUQ PRAEA` — or the
+/// sector of a place they have been and the boxel code off a screenshot —
+/// is naming the sector in pieces. A sector matching two of the words is
+/// offered before one matching a single word, and a word that matches no
+/// sector at all is left to the caller to check against the coordinates.
+///
+/// Ties are broken by name, so the answer is the same on every machine.
+pub fn sectors_holding_all(words: &[&str], limit: usize) -> Vec<&'static str> {
+    if words.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    // Two for a word spelled right and one for a word nearly spelled, so
+    // a sector matching both words exactly is offered before one matching
+    // both approximately and before one matching a single word. A word
+    // matching nothing here is left to the caller, it being a boxel code
+    // or a word of a stored name rather than a sector's.
+    let mut found: Vec<(usize, &'static str)> = SECTOR_TABLE
+        .by_name
+        .iter()
+        .filter_map(|(sector, _)| {
+            let held: usize = words
+                .iter()
+                .map(|word| {
+                    let parts = || sector.split(' ');
+                    if parts().any(|part| part.starts_with(*word)) {
+                        2
+                    } else if parts().any(|part| matches_word(word, part)) {
+                        1
+                    } else {
+                        0
+                    }
+                })
+                .sum();
+            (held > 0).then_some((held, *sector))
+        })
+        .collect();
+    // The most words matched first, and the whole list is swept whatever
+    // the limit: 11,662 sectors is the vocabulary, and taking the first
+    // few that matched one word would answer `EUQ PRAEA` with the sectors
+    // alphabetically nearest `PRAEA` rather than with `PRAEA EUQ`.
+    found.sort_unstable_by_key(|(held, sector)| (usize::MAX - held, *sector));
+    found.truncate(limit);
+    found.into_iter().map(|(_, sector)| sector).collect()
+}
+
 /// How far a query may be from a sector's name and still be offered.
 ///
 /// Two edits over a *generated* vocabulary is already generous: the
@@ -302,6 +381,15 @@ pub fn names_like(
             (Boxel::of(address) == boxel).then_some((near.edits, name, address))
         })
         .collect()
+}
+
+/// Whether `query` is within `most` edits of `word`, and how many if so
+///
+/// The same bound the sector search uses, for a caller sieving rows behind
+/// it: a fuzzy road whose sieve was exact would throw away every row it
+/// just found. See [`within`].
+pub fn near(query: &str, word: &str, most: usize) -> Option<usize> {
+    within(query.as_bytes(), word.as_bytes(), most)
 }
 
 /// Whether `a` and `b` are within `most` edits, and how many if so.

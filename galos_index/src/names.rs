@@ -370,30 +370,66 @@ impl Names {
         if needle.chars().count() < MIN_PREFIX {
             return Vec::new();
         }
+        // **The words of the query, and they need not be in order.** A
+        // reader holds a name in pieces — the sector of one they have been
+        // to and the boxel code off a screenshot, or the two words of a
+        // sector the wrong way round — and a search that only matched a run
+        // of bytes answered `EUQ PRAEA` with nothing while holding two
+        // hundred million names beginning `PRAEA EUQ`.
+        //
+        // One word is the old question exactly: the roads below take the
+        // longest of them, which is the most selective, and every candidate
+        // is then checked against the *whole* query. So the roads are
+        // unchanged and what is new is a sieve behind them.
+        let words = words_of(needle);
+        let probe = words
+            .iter()
+            .max_by_key(|word| word.len())
+            .copied()
+            .unwrap_or(needle);
+        // Room for the sieve to throw candidates away. A road asked for
+        // `limit` rows and filtered would answer a two-word query with
+        // almost nothing; asked for this many it has something to filter.
+        // Bounded, because the roads are a scan and a sector's run is
+        // millions of rows: a query whose words are spread thinly through
+        // one sector is the case [`crate::procedural`]'s coordinate search
+        // is for, and is not this.
+        let reach = match words.len() {
+            0 | 1 => limit,
+            _ => limit.saturating_mul(SIFT).min(SIFTED),
+        };
+        let holds = |name: &SystemName| holds_words(name.as_str(), &words);
         let mut found: Vec<NameEntry> = self
             .delta
             .entries()
-            .filter(|entry| entry.name.contains(needle))
+            .filter(|entry| holds(&entry.name))
             .take(limit)
             .cloned()
             .map(placed)
             .collect();
         let take = |at: usize, found: &mut Vec<NameEntry>| {
             let address = self.base.address_at(at);
-            if self.delta.said(address).is_none()
-                && !found.iter().any(|held| held.address == address)
+            if self.delta.said(address).is_some()
+                || found.iter().any(|held| held.address == address)
             {
-                found.push(self.base.entry_at(at));
+                return;
+            }
+            let entry = self.base.entry_at(at);
+            if holds(&entry.name) {
+                found.push(entry);
             }
         };
-        for at in self.base.matching(needle, limit) {
+        for at in self.base.matching(probe, reach) {
             if found.len() >= limit {
                 return found;
             }
             take(at, &mut found);
         }
-        for sector in crate::procedural::sectors_holding(needle, limit) {
-            for at in self.base.rows_starting(sector, limit - found.len()) {
+        // The sectors the query's words name, most words matched first: a
+        // derived name is a sector and then coordinates, so this is the
+        // only road that reaches the 97.4 % of names nothing stored.
+        for sector in crate::procedural::sectors_holding_all(&words, limit) {
+            for at in self.base.rows_starting(sector, reach) {
                 if found.len() >= limit {
                     return found;
                 }
@@ -454,6 +490,41 @@ impl Names {
     pub fn worth_compacting(&self) -> bool {
         self.delta.worth_folding()
     }
+}
+
+/// How many candidates a road is asked for per row wanted, where the query
+/// has more than one word
+///
+/// The roads match one word and the sieve checks the rest, so a road asked
+/// for exactly what the caller wants would answer a two-word query with
+/// almost nothing. Sixty-four is enough for a query whose words sit
+/// together — which is what a name is — and the cap below is what keeps a
+/// query whose words do not from reading a sector's whole run.
+const SIFT: usize = 64;
+
+/// And at most this many candidates however large the limit.
+const SIFTED: usize = 4_096;
+
+/// The words of a query, upper case and in the order typed.
+fn words_of(needle: &str) -> Vec<&str> {
+    needle.split(' ').filter(|word| !word.is_empty()).collect()
+}
+
+/// Whether `name` holds every one of `words`, in any order
+///
+/// The order they were typed in is not the order they have to appear in,
+/// which is the whole point; a word start each, for
+/// [`Table::rows_holding`]'s reason — `SOL` answering every `RESOLUTE` is
+/// noise dressed as an answer.
+///
+/// A word matches at the start of one of the name's words, or near enough
+/// to it — [`crate::procedural::matches_word`], which is the same rule the
+/// sector vocabulary is searched by, so the sieve cannot throw away a row
+/// the road in front of it just found.
+fn holds_words(name: &str, words: &[&str]) -> bool {
+    words.iter().all(|word| {
+        name.split(' ').any(|held| crate::procedural::matches_word(word, held))
+    })
 }
 
 /// What the delta says about one address.
@@ -1145,13 +1216,19 @@ impl Table {
             }
             for hand in hands {
                 for off in hand.join().expect("a sweep") {
-                    let row = text.row_at(off);
+                    // The span the hit landed in, and then the row that
+                    // span's name belongs to: the word-start test is about
+                    // where the *name* begins, and a row's number is no
+                    // index into the span array. See [`Text::span_at`].
+                    let span = text.span_at(off);
+                    let row = text.row_of(span);
                     // The start of a name or the byte after a space.
-                    // Without the row's own start a needle straddling two
+                    // Without the name's own start a needle straddling two
                     // names would match: the text has no separators, so
                     // `SOL` and `ACRUX` end to end hold `LACR` between
                     // them.
-                    let word = off == text.start(row) || bytes[off - 1] == b' ';
+                    let word =
+                        off == text.start(span) || bytes[off - 1] == b' ';
                     if word && !found.contains(&row) {
                         found.push(row);
                         if found.len() >= limit {
@@ -1382,15 +1459,24 @@ impl Text {
         }
     }
 
-    /// Which row the byte at `off` of the text belongs to.
+    /// Which *span* holds the byte at `off` of the text.
     ///
     /// The first span that *ends* past `off`, which is the owner. Sparse,
     /// that search is over the stored names alone — 5.26 M rather than 200
-    /// M at a galaxy — and the answer is read out of the exception list.
-    /// Dense, spans ascend with equal runs where rows are derived, so
-    /// asking for the last one starting at or before `off` would answer
-    /// with whichever empty span sits beside it.
-    fn row_at(&self, off: usize) -> usize {
+    /// M at a galaxy. Dense, spans ascend with equal runs where rows are
+    /// derived, so asking for the last one starting at or before `off`
+    /// would answer with whichever empty span sits beside it.
+    ///
+    /// The span rather than the row, and they are not the same number: a
+    /// span is one of the names actually stored and a row is one of the
+    /// table's, which since version 3 is mostly rows storing nothing. A
+    /// caller that wants to know where a name begins ([`Self::start`]) is
+    /// asking about the span; one that wants to answer with the system is
+    /// asking about the row. Reading the span array at a row's number was
+    /// this table's one crash: over a galaxy's 5.2 M stored names in 200 M
+    /// rows, a sweep that found a hit in the tail of the text indexed the
+    /// span array 26,473,335 spans in and it is 5,257,783 long.
+    fn span_at(&self, off: usize) -> usize {
         let mut lo = 0usize;
         let mut hi = self.stored;
         while lo < hi {
@@ -1401,9 +1487,14 @@ impl Text {
                 hi = mid;
             }
         }
+        lo
+    }
+
+    /// Which row the `at`th stored name belongs to.
+    fn row_of(&self, at: usize) -> usize {
         match self.exception.is_some() {
-            true => self.exceptions().get(lo).map_or(0, |row| *row as usize),
-            false => lo,
+            true => self.exceptions().get(at).map_or(0, |row| *row as usize),
+            false => at,
         }
     }
 
@@ -2342,6 +2433,54 @@ mod tests {
         assert_eq!(named("SOL"), ["SOL"]);
         // And a word nothing holds answers nothing.
         assert!(named("NOWHERE").is_empty());
+    }
+
+    /// The words of a query may come in any order, and one may be wrong
+    ///
+    /// **Which is how a reader holds a name.** A sector they have been to
+    /// and a boxel code off a screenshot, or the two words of a sector the
+    /// wrong way round, or a letter of it mistyped — and a search matching
+    /// a run of bytes answered every one of those with nothing while
+    /// holding two hundred million names spelled that way.
+    ///
+    /// The slack is a word's own, [`crate::procedural::slack`]: three
+    /// letters are matched exactly, because one edit on three reaches a
+    /// quarter of the alphabet and says nothing about which was meant.
+    #[test]
+    fn a_query_is_matched_word_by_word_in_any_order() {
+        let dir = Scratch::new("out-of-order");
+        let entries = vec![
+            entry(1_038_034_644, "PRUE EAEWSY NR-W E1-0", 1.0),
+            entry(96_076_086, "SIDGIO AA-A G1", 2.0),
+            entry(10, "NEW SOL", 3.0),
+        ];
+        published(&dir.0, &entries);
+        let names = Names::open(&dir.0).expect("the table opens");
+        let named = |query: &str| -> Vec<String> {
+            names
+                .matching(query, 25)
+                .into_iter()
+                .map(|entry| entry.name.into_string())
+                .collect()
+        };
+
+        // Both words of a derived name's sector, either way round.
+        assert_eq!(named("PRUE EAEWSY"), ["PRUE EAEWSY NR-W E1-0"]);
+        assert_eq!(named("EAEWSY PRUE"), ["PRUE EAEWSY NR-W E1-0"]);
+        // And a stored name, the same way.
+        assert_eq!(named("SOL NEW"), ["NEW SOL"]);
+        // A word mistyped, where it is long enough to be worth guessing
+        // at: `EAEWSY` is six letters and `SIDGIO` is six.
+        assert_eq!(named("EAEWSX PRUE"), ["PRUE EAEWSY NR-W E1-0"]);
+        assert_eq!(named("SIDGIP"), ["SIDGIO AA-A G1"]);
+        // A prefix is a match, that being what a search is.
+        assert_eq!(named("PRU EAEWSY"), ["PRUE EAEWSY NR-W E1-0"]);
+        // But three letters are matched exactly, so a wrong one answers
+        // nothing rather than a quarter of the alphabet.
+        assert!(named("PRX EAEWSY").is_empty());
+        // And a word nothing holds still answers nothing, however the rest
+        // of the query reads.
+        assert!(named("PRUE NOWHERE").is_empty());
     }
 
     /// One character is not searched, and a name is still resolvable by it
