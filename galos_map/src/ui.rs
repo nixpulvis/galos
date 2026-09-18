@@ -35,6 +35,7 @@ use crate::systems::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Plotted,
     Resolving, SPANS, Standstill, Watch,
 };
+use crate::systems::glow::FieldExposure;
 use crate::systems::info::Panels;
 use crate::systems::labels::ShowBodyNames;
 use crate::systems::labels::{NameLimit, NameRadius};
@@ -766,6 +767,7 @@ pub(crate) struct Settings<'w> {
     color_by: ResMut<'w, ColorBy>,
     population_scale: ResMut<'w, ScalePopulation>,
     star_exposure: ResMut<'w, StarExposure>,
+    field_exposure: ResMut<'w, FieldExposure>,
     star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
     poll: ResMut<'w, Poll>,
@@ -1185,6 +1187,42 @@ pub(crate) fn chrome(
                 "Scale w/ Population",
                 "Size systems by population; hide empty ones",
             );
+            ui.add_space(FIELD_GAP);
+            // How many stops the field behind the marks is lifted by. The
+            // map is a political instrument at one setting and a picture of
+            // where anybody has been at another, and which of those a reader
+            // wants is theirs to say; the roll-off on the packed end goes on
+            // holding the core down either way. The marks are not on this
+            // dial, a drawn system being an object at a set brightness.
+            titled(
+                ui,
+                "Field Exposure (EV)",
+                "How brightly the galaxy behind the marks is drawn",
+            );
+            let mut field_ev = settings.field_exposure.0;
+            fill_width(ui, VALUE_WIDTH);
+            let slider = ui
+                .horizontal(|ui| {
+                    let rail = ui.add(
+                        egui::Slider::new(&mut field_ev, -6.0..=8.0)
+                            .step_by(0.5)
+                            .show_value(false),
+                    );
+                    let typed = value_box(
+                        ui,
+                        egui::DragValue::new(&mut field_ev)
+                            .range(-6.0..=8.0)
+                            .speed(0.1)
+                            .suffix(" EV"),
+                    );
+                    rail | typed
+                })
+                .inner;
+            // Only when it lands somewhere new, so a still slider does not
+            // mark the resource changed every frame.
+            if slider.changed() && settings.field_exposure.0 != field_ev {
+                settings.field_exposure.0 = field_ev;
+            }
         }
         if *settings.view == View::Realistic {
             ui.add_space(FIELD_GAP);

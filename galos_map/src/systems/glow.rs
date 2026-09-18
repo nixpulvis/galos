@@ -90,6 +90,7 @@ use galos_index::inhabited::{
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
+    app.init_resource::<FieldExposure>();
     app.init_resource::<Laid>();
     app.add_systems(Startup, spawn_glow);
     app.add_systems(
@@ -98,6 +99,41 @@ pub fn plugin(app: &mut App) {
             .chain()
             .in_set(MapSet::Present),
     );
+}
+
+/// How many stops the political field is lifted to the display
+///
+/// The one dial over the whole field, and the reason it exists is that how
+/// loud an unresolved galaxy should be is a reading and not a fact: the map
+/// is a political instrument at one setting and a picture of where anybody
+/// has been at another, and neither is wrong. What it scales is the light
+/// the field deposits, both channels together, before the crowding
+/// correction and the ceiling — so opening it lifts the faint half of the
+/// frame and the roll-off goes on holding the packed core down, which is
+/// what makes it usable rather than a way of washing the frame out.
+///
+/// The marks are not on it. A system drawn as itself is an object at a set
+/// brightness ([`mark_light`]), and the two coming apart is exactly what
+/// this module spent a rewrite closing — so the dial moves what stands in
+/// for the systems that are not drawn, and once a region resolves, the
+/// setting stops mattering there.
+#[derive(Resource)]
+pub struct FieldExposure(pub f32);
+
+/// The dial rests at zero: neutral, the tuned look, stops either way from
+/// there. The same rest and the same units the realistic sky's own exposure
+/// is offered at ([`super::spawn::StarExposure`]).
+impl Default for FieldExposure {
+    fn default() -> FieldExposure {
+        FieldExposure(0.)
+    }
+}
+
+impl FieldExposure {
+    /// The linear gain the stops come to: a doubling per stop.
+    pub(crate) fn factor(&self) -> f32 {
+        2f32.powf(self.0)
+    }
 }
 
 /// What the field laid down last frame
@@ -635,6 +671,7 @@ fn build_glow(
     settled: Res<Settled>,
     color_by: Res<ColorBy>,
     gains: Res<Gains>,
+    exposure: Res<FieldExposure>,
     view: Res<View>,
     spyglass: Res<crate::systems::Spyglass>,
     mut laid: ResMut<Laid>,
@@ -642,6 +679,9 @@ fn build_glow(
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Ok(mut mesh3d) = glow.single_mut() else { return };
+    // The dial, as a linear gain on everything the field lays. Read once:
+    // it says nothing about where a splat goes, only how bright it lands.
+    let opened = exposure.factor();
     let mut quads = Quads::default();
     let mut counted = Laid::default();
 
@@ -749,8 +789,9 @@ fn build_glow(
                 && in_reach(at)
             {
                 let systems = empty as f32 * carried;
-                let light =
-                    Vec3::splat(systems * gains.faint * gains.mark * MARK_AREA);
+                let light = Vec3::splat(
+                    systems * gains.faint * gains.mark * MARK_AREA * opened,
+                );
                 if let Some(lit) = quads.deposit(
                     orbit,
                     cot_half_fov,
@@ -791,7 +832,7 @@ fn build_glow(
                     half,
                     at,
                     held.spread().max(finest),
-                    mix * carried * gains.mark * MARK_AREA,
+                    mix * carried * gains.mark * MARK_AREA * opened,
                     systems * MARK_AREA,
                     gains.crowd,
                 ) {
@@ -1364,6 +1405,7 @@ mod exposure {
         app.insert_resource(View::Map);
         app.insert_resource(ColorBy::Allegiance);
         app.init_resource::<Gains>();
+        app.init_resource::<FieldExposure>();
         app.init_resource::<Laid>();
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
