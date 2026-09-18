@@ -1059,9 +1059,13 @@ pub(crate) fn evict_payloads(
     // stamps first, so what goes is what has gone longest without being asked
     // for.
     //
-    // Measured off the marked set, which `MARK_WORTH` is what bounds: the
-    // walk marks a cell only where a worthwhile share of it separates, so the
-    // set is a view's worth of cells rather than the sky.
+    // Measured off the marked set, which `MARK_LEAST` is what bounds: the
+    // walk marks a cell only where it is worth a handful of marks, so the
+    // set is a view's worth of cells rather than the sky. It is a wider set
+    // than the share test it replaced — measured over `.index/full`, 10,343
+    // cells against 2,432 from two thousand light years out — so the
+    // residency this sizes is wider with it, deliberately: reading the thin
+    // cells is what stops a region being drawn a box at a time.
     let budget = planned.0.marks.len().saturating_mul(SLACK);
     let holding = resident.0.len() - freeing.len();
     if holding > budget {

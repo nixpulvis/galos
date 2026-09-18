@@ -88,6 +88,6 @@ pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};
 pub use store::Payload;
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{
-    Index, MARK_SEPARATION_PX, Mode, Needed, STAR_SEPARATION_PX, SplatRef,
-    View, resolvable_count,
+    Index, MARK_LEAST, MARK_SEPARATION_PX, Mode, Needed, STAR_SEPARATION_PX,
+    SplatRef, View, resolvable_count,
 };

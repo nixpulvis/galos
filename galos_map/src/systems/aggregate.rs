@@ -254,8 +254,10 @@ mod tests {
         assert_eq!(empty, 0, "an empty index planned marks");
 
         // The builder publishes systems the map had never heard of. Nothing
-        // touches the camera.
-        let inputs: Vec<galos_index::System> = (1..=4)
+        // touches the camera. Enough of them to be worth reading: the walk
+        // marks a cell once it is worth [`galos_index::MARK_LEAST`] marks,
+        // so four systems are not a plan whatever the camera does.
+        let inputs: Vec<galos_index::System> = (1..=64)
             .map(|id| galos_index::System {
                 id64: id as u64,
                 position: [id as f64, 0., 0.],
