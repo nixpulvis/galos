@@ -244,25 +244,16 @@ const SMALLEST: f32 = 0.75;
 
 /// The side of the Gaussian mask, in texels
 ///
-/// A splat is not a few pixels across. The walk splits a cell once its
-/// contents subtend more than `SPLIT_FULL_PX`, but a *leaf* splats whatever
-/// it subtends, having no children to hand to — so a near leaf lays a
-/// footprint hundreds of pixels wide. Measured over `.galos_index`, the radii
-/// laid in one frame run from the 0.75 px floor to **2,165 px**.
+/// Sixty-four. A splat's footprint runs to thousands of pixels, so the mask
+/// is magnified and bilinear magnification creases at every texel boundary —
+/// which is a real artifact, and for a while it was my answer for the
+/// checker. It was not: raising this sixteenfold moved the reported pitch not
+/// at all. It is back where it was rather than left high on a hypothesis that
+/// did not survive, and the four megabytes with it.
 ///
-/// That is the mask being magnified, and magnifying a bilinear texture puts a
-/// crease at every texel boundary. At sixty-four texels a thousand-pixel quad
-/// spreads one texel over fifteen pixels of screen, and the creases read as a
-/// regular grid over the whole field — reported as a checker, and it was:
-/// screen-aligned, no perspective, on the field and never on the marks, which
-/// are a few pixels wide and so minified instead.
-///
-/// A thousand and twenty-four takes that to about a pixel on the quads that
-/// carry most of the light, for four megabytes uploaded once. It does not
-/// remove the class of artifact — a wide enough splat still magnifies — and
-/// what does is evaluating the profile per fragment instead of sampling it,
-/// which is a shader and is the reason to want one.
-const GLOW_TEXELS: u32 = 1024;
+/// What removes the class of it, if a crease ever does show, is evaluating
+/// the profile per fragment instead of sampling it.
+const GLOW_TEXELS: u32 = 64;
 
 /// The least a splat is spread over, as a share of its cell's own edge
 ///
