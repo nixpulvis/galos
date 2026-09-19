@@ -157,8 +157,11 @@ pub struct Laid {
     /// Quads laid at a cell's stellar centroid, for the systems nobody lives
     /// in.
     pub backdrop: u32,
-    /// Linear light deposited, summed over every channel of every quad.
+    /// Linear light deposited, summed over every channel of every quad,
+    /// after the frame was metered.
     pub light: f32,
+    /// What the meter scaled the frame by to get there; see [`AVERAGE`].
+    pub gain: f32,
     /// The brightest peak any one quad was laid at, in linear light.
     ///
     /// The top of the field: at [`CEILING`] for everything it is a white
@@ -212,8 +215,6 @@ impl Laid {
     /// Count one quad in, off what [`Quads::deposit`] laid.
     fn took(&mut self, lit: Lit) {
         self.light += lit.light;
-        self.peak = self.peak.max(lit.peak);
-        self.clipped += u32::from(lit.peak >= CEILING);
         self.separated += u32::from(lit.separated);
     }
 }
@@ -224,6 +225,7 @@ impl Default for Laid {
             colonies: 0,
             backdrop: 0,
             light: 0.,
+            gain: 1.,
             peak: 0.,
             faintest: 0.,
             typical: 0.,
@@ -467,6 +469,30 @@ const GLOW_TEXELS: u32 = 64;
 /// arithmetic, wherever its cells are the same size.
 const COVERAGE: f64 = 0.5;
 
+/// What the field lays on a pixel of the frame, summed over its channels,
+/// before the dial is touched
+///
+/// **The level the frame is metered to.** How much light the field deposits
+/// is a fact about the view and not about the sky: measured over
+/// `.index/full` on an 800x600 frame, it lays 194,567 units from twenty
+/// light years out and 28,331 with the galaxy seen whole, 2.8 stops apart.
+/// Holding the frame's own average instead is what lets [`FieldExposure`]
+/// mean one thing at every zoom.
+///
+/// Four tenths of a unit over three channels, which is the level both of
+/// the settings the map was being read at came to: the bubble at rest and
+/// the galaxy three stops open.
+const AVERAGE: f32 = 0.44;
+
+/// The most the meter may lift or hold down a frame, as a factor
+///
+/// Sixty-four, eight stops each way. A view with almost nothing in it —
+/// the camera inside one system, a filter admitting a handful — would
+/// otherwise have its handful of splats brought all the way up to a full
+/// frame's worth of light, which is a meter reading an empty room and
+/// deciding the room is bright.
+const METERED: f32 = 64.;
+
 /// Where a splat's deposit stops being laid straight and starts rolling
 /// off, in linear light
 ///
@@ -518,9 +544,17 @@ fn shouldered(peak: Vec3) -> Vec3 {
     if !(top > SHOULDER) {
         return peak;
     }
+    peak * (shouldered_level(top) / top)
+}
+
+/// The same curve on one level, which is what the brightest channel is put
+/// through and what the diagnostics read.
+fn shouldered_level(top: f32) -> f32 {
+    if !(top > SHOULDER) {
+        return top;
+    }
     let room = CEILING - SHOULDER;
-    let rolled = SHOULDER + room * (1. - (-(top - SHOULDER) / room).exp());
-    peak * (rolled / top)
+    SHOULDER + room * (1. - (-(top - SHOULDER) / room).exp())
 }
 
 /// How far past touching a crowd is let alone, as a multiple of `fill`
@@ -616,8 +650,7 @@ pub(crate) fn splat(
         (fill / PACKED).sqrt()
     };
     let crowding = 1. + (crowd - 1.) * pressed;
-    let peak = light / (crowding * area);
-    (radius, shouldered(peak))
+    (radius, light / (crowding * area))
 }
 
 /// What one system is worth, in linear light
@@ -796,12 +829,16 @@ fn build_glow(
     // written on every frame either way: a view that draws no field writes an
     // empty one, where leaving the last frame's standing would keep a political
     // field over the realistic sky.
+    // The pixels the meter below spreads the field over, nothing having
+    // been laid on them where the block bails out.
+    let mut pixels = 0.;
     'lay: {
         if *view != View::Map {
             break 'lay;
         }
         let Ok((orbit, camera)) = camera.single() else { break 'lay };
         let Some(viewport) = camera.logical_viewport_size() else { break 'lay };
+        pixels = viewport.x * viewport.y;
         let cot_half_fov = camera.clip_from_view().y_axis.y;
         let half = viewport * 0.5;
 
@@ -962,6 +999,37 @@ fn build_glow(
         }
     }
 
+    // **What the frame has laid, held to one level whatever the zoom.**
+    // The field's deposit is conserved and the *frame* is not: how much of
+    // the galaxy is in reach, how far each cell's light is spread over the
+    // glass and how much of it the marks have taken all move with the
+    // camera, and what came of that is 2.8 stops of drift. Measured over
+    // `.index/full`, the light laid on an 800x600 frame runs 194,567 units
+    // from twenty light years out against 28,331 with the galaxy seen
+    // whole — so a dial set where the bubble looks right blows the galaxy
+    // out, and one set for the galaxy leaves the bubble black, which is
+    // exactly what the setting was reported as doing.
+    //
+    // So the frame is metered. What it lays is summed, and the whole field
+    // is scaled to put [`AVERAGE`] units on every pixel of the viewport
+    // before the dial is applied at all — so [`FieldExposure`] is stops
+    // away from a level that means the same thing everywhere, rather than
+    // stops away from whatever this view happened to come to.
+    //
+    // What it gives up is that the field no longer says how much light is
+    // *there* in absolute terms: a genuinely empty view is brought up to
+    // the same average a full one is, as an eye does and as every camera
+    // does. What says how much is there is the density of the marks over
+    // it, which is a count and is not metered.
+    let gain = if counted.light > 0. && pixels > 0. {
+        (AVERAGE * pixels / counted.light).clamp(1. / METERED, METERED)
+    } else {
+        1.
+    };
+    quads.expose(gain);
+    counted.light *= gain;
+    counted.gain = gain;
+
     for radius in &quads.radii {
         counted.thinnest = counted.thinnest.min(*radius);
         counted.widest = counted.widest.max(*radius);
@@ -976,9 +1044,16 @@ fn build_glow(
         counted.quarter = at(0.25);
     }
     if !quads.peaks.is_empty() {
+        // The peaks as the frame carries them: metered, then rolled off.
+        for peak in &mut quads.peaks {
+            *peak = shouldered_level(*peak * gain);
+        }
         quads.peaks.sort_unstable_by(f32::total_cmp);
         counted.faintest = quads.peaks[0];
         counted.typical = quads.peaks[(quads.peaks.len() - 1) / 2];
+        counted.peak = quads.peaks[quads.peaks.len() - 1];
+        counted.clipped =
+            quads.peaks.iter().filter(|peak| **peak >= CEILING).count() as u32;
     }
     laid.set_if_neq(counted);
 
@@ -993,11 +1068,10 @@ fn build_glow(
 /// What one quad came to, for [`Laid`]
 #[derive(Clone, Copy)]
 struct Lit {
-    /// The brightest channel it was laid at, in linear light.
-    peak: f32,
-    /// The linear light it actually lays on the framebuffer, summed over its
-    /// three channels — after the crowding and after any clip, so a quad that
-    /// asked for more than [`CEILING`] is counted for what it got.
+    /// The linear light it lays on the framebuffer, summed over its three
+    /// channels, before the frame is metered. What the meter divides into
+    /// [`AVERAGE`], so it has to be what the quad asked for rather than
+    /// what it ends up carrying.
     light: f32,
     /// Whether its systems' marks would cover less than the footprint it was
     /// spread over, which is the resolving end of [`splat`]'s law.
@@ -1031,6 +1105,20 @@ impl Quads {
     /// a splat spans a few pixels at most — so what a centroid off the frame
     /// costs is a few pixels at the very edge.
     #[allow(clippy::too_many_arguments)]
+    /// Meter the frame: scale every quad by `gain`, then roll the top of
+    /// the scale off.
+    ///
+    /// The shoulder is struck here and not inside [`splat`] because it is
+    /// the last word on what a pixel carries, and the meter comes before
+    /// it: rolling off a deposit and then scaling it would put the curve
+    /// somewhere other than at white.
+    fn expose(&mut self, gain: f32) {
+        for color in &mut self.colors {
+            let peak = shouldered(Vec3::new(color[0], color[1], color[2]) * gain);
+            *color = [peak.x, peak.y, peak.z, color[3]];
+        }
+    }
+
     fn deposit(
         &mut self,
         orbit: &OrbitCamera,
@@ -1126,7 +1214,6 @@ impl Quads {
         self.peaks.push(peak.max_element());
         let sigma = radius / REACH;
         Some(Lit {
-            peak: peak.max_element(),
             light: peak.element_sum() * std::f32::consts::TAU * sigma * sigma,
             separated: covered < std::f32::consts::TAU * spread_px * spread_px,
         })
@@ -1668,16 +1755,21 @@ mod exposure {
     fn the_field_is_exposed() {
         let Some(dir) = measured() else { return };
         let mut middling: Vec<f32> = Vec::new();
+        let mut level: Vec<f32> = Vec::new();
         for away in [20., 200., 2_000., 30_000.] {
             let (laid, splats) = laid_at(&dir, away, Set::open());
             middling.push(laid.typical);
+            level.push(laid.light);
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
-                 {:>5} backdrop, peak {:.5}|{:.5}|{:.3}, {:>5} clipped, \
+                 {:>5} backdrop, light {:.0} at gain {:.2}, \
+                 peak {:.5}|{:.5}|{:.3}, {:>5} clipped, \
                  radius {:.2}|{:.2}|{:.2}|{:.2}|{:.2} px, {} floored, \
                  {} separated",
                 laid.colonies,
                 laid.backdrop,
+                laid.light,
+                laid.gain,
                 laid.faintest,
                 laid.typical,
                 laid.peak,
@@ -1733,22 +1825,34 @@ mod exposure {
             );
         }
 
-        // And the fade itself, which is a ratio and not a level: what went
-        // wrong was the field thinning as the camera came in, and how
-        // bright any one splat is depends on how finely the directory is
-        // cut — a 204,466-cell galaxy lays a tenth of what a 4,072-cell one
-        // does per quad and the same total. Under a flat correction the
-        // middling splat came in at a nineteenth of its galaxy-wide value.
-        // Measured now: a sixth over `.galos_index` and a fifth over
-        // `.index/full`, the gap between the two being that a coarse
-        // directory's galaxy-zoom cells are packed enough to sit under the
-        // roll-off.
-        let closest = middling[0];
-        let widest = middling[middling.len() - 1];
+        // And the level itself, which is the whole of why the dial was
+        // unusable: how much light a frame lays is a fact about the view
+        // and not about the sky. Measured over `.index/full` before the
+        // meter, an 800x600 frame laid 194,567 units from twenty light
+        // years out against 28,331 with the galaxy seen whole — 2.8 stops,
+        // so a setting that read well in the bubble blew the galaxy out
+        // and one that read well over the galaxy left the bubble black.
+        // Metered, every one of those frames lays [`AVERAGE`] a pixel and
+        // the dial means one thing everywhere.
+        let low = level.iter().copied().fold(f32::MAX, f32::min);
+        let high = level.iter().copied().fold(0., f32::max);
         assert!(
-            closest * 8. > widest,
-            "the field faded as it was resolved: {closest} against {widest} \
-             with the galaxy seen whole"
+            high < low * 1.01,
+            "the frame's own level moved with the zoom: {level:?}"
+        );
+
+        // A splat is still spread over whatever its cell covers, so the
+        // middling one is far brighter over a galaxy of five-pixel splats
+        // than inside a bubble of thirteen-pixel ones. What must not
+        // happen is for it to fade to nothing: under a flat crowding
+        // correction it came in at a nineteenth of its galaxy-wide value
+        // and one level off black, which is the fade the correction is
+        // spent to stop.
+        let closest = middling[0];
+        assert!(
+            closest > 1e-4,
+            "the field faded as it was resolved: the middling splat is \
+             {closest} from twenty light years out"
         );
     }
 
