@@ -45,6 +45,7 @@ pub mod procedural;
 pub mod region;
 pub mod report;
 pub mod rows;
+pub mod screen;
 pub mod serialization;
 pub mod sidecars;
 pub mod sky;

@@ -30,6 +30,7 @@
 //! same patch whatever is in it, and a floor under that figure drew nothing
 //! at all in the finest cells — which is where the sky is densest.
 
+use galos_index::screen::{Empty, frame_marks, share as share_of, wanted};
 use galos_index::walk::{MERGE_PX, Mode, View};
 use galos_index::{CellId, Index};
 use std::path::{Path, PathBuf};
@@ -263,6 +264,8 @@ struct Tally {
     behind: u64,
     /// Cells the field splats.
     splats: usize,
+    /// Merged marks drawn only because their tile was dark.
+    lit: usize,
 }
 
 /// Walk, read, and lay the mark layer down, once per lens.
@@ -304,20 +307,25 @@ fn frame(
             population += blob.count;
         }
     }
-    let share = (frame_marks() / population.max(1) as f64).min(1.0);
+    let share = share_of(population, frame_marks(view));
 
+    // The tiles of the frame the draw leaves dark, which is the client's
+    // own [`Empty`] and not a second copy of it.
+    let mut lighting = Empty::over(view);
     let mut marks: Vec<Mark> = Vec::new();
-    for blob in &needed.blobs {
+    for (offer, blob) in needed.blobs.iter().enumerate() {
         if !inside(blob.id) {
             continue;
         }
         let count = blob.count;
         if wanted(share * blob.blend, count as usize, blob.id) == 0 {
+            lighting.offered(view, blob.at, count, offer as u32);
             continue;
         }
         tally.blobs += 1;
         tally.behind += count;
         tally.levels[blob.id.level as usize].blobs += 1;
+        lighting.drew(view, blob.at, 1);
         marks.push(Mark { at: blob.at, merged: true });
     }
 
@@ -351,10 +359,22 @@ fn frame(
             }
             tally.drawn += 1;
             tally.levels[id.level as usize].drawn += 1;
+            lighting.drew(view, point.pos, 1);
             marks.push(Mark { at: point.pos, merged: false });
         }
     }
     let read = at.elapsed();
+
+    // And the patches of sky nothing else reached: one merged mark apiece,
+    // which is what says a tile holding something is not a void.
+    for offer in lighting.lit() {
+        let blob = &needed.blobs[offer as usize];
+        tally.lit += 1;
+        tally.blobs += 1;
+        tally.behind += blob.count;
+        tally.levels[blob.id.level as usize].blobs += 1;
+        marks.push(Mark { at: blob.at, merged: true });
+    }
 
     println!("  level   cells      read    points      marks     blobs");
     for level in 0..=20u8 {
@@ -371,41 +391,17 @@ fn frame(
     println!(
         "  walk {walked:>8.2?}  read {read:>8.2?}  share {share:.6}  \
          over {population:>11}  cells read {:>7}  points {:>9}  \
-         marks {:>7}  blobs {:>7} over {:>11}  splats {:>7}",
+         marks {:>7}  blobs {:>7} lit {:>5} over {:>11}  splats {:>7}",
         tally.read,
         tally.points,
         tally.drawn,
         tally.blobs,
+        tally.lit,
         tally.behind,
         tally.splats,
     );
 
     lenses.iter().map(|lens| paint(lens, &marks)).collect()
-}
-
-/// How many marks a 1280x720 frame carries at the merge distance, which is
-/// `galos_map`'s `bounded::frame_marks`.
-fn frame_marks() -> f64 {
-    (WIDE * HIGH) as f64 / (MERGE_PX * MERGE_PX)
-}
-
-/// How many marks a cell of `held` systems draws at `share`, dithered
-/// against its own address so a fraction of a mark is drawn in a fraction
-/// of the cells rather than nowhere.
-///
-/// `galos_map`'s `bounded::wanted`, replicated so this renders exactly what
-/// the client does. Both are a share of *population*: a region with ten
-/// times the systems draws ten times the marks, which is the whole of the
-/// density response and the one thing a share of a cell's screen footprint
-/// cannot say.
-fn wanted(share: f64, held: usize, id: CellId) -> usize {
-    let mut z = id.morton().wrapping_add(u64::from(id.level));
-    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^= z >> 31;
-    let dither = (z >> 40) as f64 / 16_777_216.0;
-    ((share * held as f64 + dither) as usize).min(held)
 }
 
 /// One mark the frame draws.

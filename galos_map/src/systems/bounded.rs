@@ -40,8 +40,9 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
+use galos_index::screen::{Empty, frame_marks, share, wanted};
 use galos_index::{
-    CellId, Inhabited, MERGE_PX, Part, Point, Resident, Stamp,
+    CellId, Inhabited, Part, Point, Resident, Stamp,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -234,82 +235,6 @@ impl Republished {
     fn settled(&mut self, id: CellId) {
         self.0.remove(&id);
     }
-}
-
-/// How many marks the frame itself carries
-///
-/// Marks on a grid of pitch [`MERGE_PX`] fill the viewport, so its area
-/// over the pitch squared is the count — 57,600 on a 1280x720 frame at four
-/// pixels. It is a *total*, not a density: how those marks are spread over
-/// the frame is [`share`]'s to say, and where the sky is densest they land
-/// closer than the pitch and read as a brighter patch, which is what a
-/// dense sky looks like.
-fn frame_marks(view: &galos_index::View) -> f64 {
-    let height = f64::from(view.viewport_height);
-    let width = height * f64::from(view.aspect);
-    width * height / (MERGE_PX * MERGE_PX)
-}
-
-/// What share of the systems in reach the frame draws
-///
-/// **One figure over the whole frame, and it is a share of *population*.**
-/// That is the whole of the density response: every cell draws the same
-/// fraction of what it holds, so a region with ten times the systems draws
-/// ten times the marks and the sky's own structure survives the thinning.
-/// The drawn set is a uniform sample of the galaxy, biased within each cell
-/// toward the brightest.
-///
-/// **Two other rules were tried and both are wrong.** A share of a cell's
-/// *footprint area* — one mark to every patch of screen the cell covers —
-/// answers the same number wherever it is pointed, so the galaxy comes out
-/// at one uniform density and the arms, the core and the voids all read
-/// alike; a floor under that same figure drew nothing at all in the finest
-/// cells, and since the tree is finest where the sky is densest, that is a
-/// hole exactly where the most systems are. Population is the only one of
-/// the three that is monotone in density.
-///
-/// No clamp anywhere in it. A cell draws `share` of its own payload and can
-/// never be asked for more than it holds, which is what the attempt that
-/// drew hard-edged cubes got wrong: it clamped a coarse cell's ask up to
-/// its whole payload while its neighbour served a few per cent.
-fn share(population: u64, capacity: f64) -> f64 {
-    if population == 0 {
-        return 1.;
-    }
-    (capacity / population as f64).min(1.)
-}
-
-/// How many marks a cell of `held` systems draws at `share`, without a
-/// rounding cliff
-///
-/// `share * held` is rarely a whole number, and rounding it down loses
-/// every cell that wants less than one mark — which at a wide zoom is most
-/// of them, and a whole sparse sky with them. Rounding up instead hands
-/// every cell a mark it has not earned, and a wide view holds hundreds of
-/// thousands of cells.
-///
-/// So the fraction is dithered against the cell's own address: a cell that
-/// wants a third of a mark draws one in a third of the places rather than
-/// nowhere or everywhere. Off the address and not off a clock, so the
-/// answer is the same for the same cell at the same zoom and the set moves
-/// by marks arriving and leaving rather than by flickering.
-fn wanted(share: f64, held: usize, id: CellId) -> usize {
-    ((share * held as f64 + dither(id)) as usize).min(held)
-}
-
-/// A cell's own place in `0..1`, for [`wanted`]'s rounding
-///
-/// SplitMix64's finalizer over the address, which is anything but uniform —
-/// a cell id is a level and three grid coordinates, so its low bits are
-/// position — and the top twenty-four bits of the mix, which is all that is
-/// wanted of it.
-fn dither(id: CellId) -> f64 {
-    let mut z = id.morton().wrapping_add(u64::from(id.level));
-    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^= z >> 31;
-    (z >> 40) as f64 / 16_777_216.
 }
 
 /// The merged marks the frame draws, one a cell whose whole contents fall
@@ -878,6 +803,10 @@ pub struct Sampled {
     pub drawn: usize,
     /// Cells drawn as one merged mark apiece.
     pub blobs: usize,
+    /// How many of those are marks lighting a tile the rest of the frame
+    /// left dark, rather than marks the share drew. See
+    /// [`galos_index::screen::Empty`].
+    pub lit: usize,
     /// How many systems those merged marks stand for.
     pub behind: u64,
 }
@@ -1071,6 +1000,10 @@ pub(crate) fn reconcile(
     // payload.
     let population = population(&planned.0);
     let share = share(population, frame_marks(&view));
+    // Which tiles of the frame the pass leaves dark. Filled as the marks
+    // and the merged marks are decided and read out at the end of both;
+    // see [`Empty`].
+    let mut lighting = Empty::over(&view);
     let mut took_all = 0usize;
     let mut behind = 0u64;
 
@@ -1165,6 +1098,12 @@ pub(crate) fn reconcile(
             }
             let address = point.id64 as i64;
             took_all += 1;
+            // Where this mark lands, for [`Empty`]: a tile a read cell
+            // draws into is a tile nothing needs to light. Off the point's
+            // own position and not the cell's, since a cell above the
+            // frontier is wider than a mark by construction and its marks
+            // are spread over the patch of sky it covers.
+            lighting.drew(&view, point.pos, 1);
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would
             // otherwise go on drawing for the frame or two it takes to land,
@@ -1223,14 +1162,29 @@ pub(crate) fn reconcile(
     blobs.0.clear();
     let merged =
         info_span!("merged cells", cells = planned.0.blobs.len()).entered();
-    for blob in &planned.0.blobs {
+    for (offer, blob) in planned.0.blobs.iter().enumerate() {
         if !in_reach(blob.id, orbit, bubble) {
             continue;
         }
         if wanted(share * blob.blend, blob.count as usize, blob.id) == 0 {
+            // Nothing, at the share. Offered to its tile instead: if the
+            // frame draws nothing else there at all, this is what says the
+            // patch of sky is not empty. See [`Empty`].
+            lighting.offered(&view, blob.at, blob.count, offer as u32);
             continue;
         }
         behind += blob.count;
+        lighting.drew(&view, blob.at, 1);
+        blobs.0.push(Blob { at: blob.at, m_min: blob.m_min });
+    }
+    // And the patches of sky the whole frame left dark, one mark apiece.
+    // Bounded by the frame rather than by the tree: at most one to a tile,
+    // which is 900 marks of the 57,600 a 1280x720 frame carries.
+    let mut lit = 0usize;
+    for offer in lighting.lit() {
+        let blob = &planned.0.blobs[offer as usize];
+        behind += blob.count;
+        lit += 1;
         blobs.0.push(Blob { at: blob.at, m_min: blob.m_min });
     }
     drop(merged);
@@ -1240,6 +1194,7 @@ pub(crate) fn reconcile(
         share: share as f32,
         drawn: took_all,
         blobs: blobs.0.len(),
+        lit,
         behind,
     });
 
@@ -1521,93 +1476,11 @@ mod tests {
     }
 
     /// A view of `wide` by `high` pixels, looking down `-z`
-    fn framed(wide: f32, high: f32) -> galos_index::View {
-        galos_index::View {
-            eye: [0.; 3],
-            forward: [0., 0., -1.],
-            up: [0., 1., 0.],
-            fov_y: 0.785,
-            viewport_height: high,
-            aspect: wide / high,
-        }
-    }
-
     /// Where a test system stands: spread around the camera rather than
     /// strung out along one ray from it, as a real sky is.
     fn placed(id: i64) -> [f64; 3] {
         let turn = id as f64 / 8. * std::f64::consts::TAU;
         [10. * turn.cos(), 10. * turn.sin(), 0.]
-    }
-
-    /// The share is of population, so a region with more systems draws more
-    /// marks — the density the sky has, not one the frame imposes
-    ///
-    /// **What this is guarding against is a flat answer.** A share of a
-    /// cell's footprint *area* draws the same number of marks over the same
-    /// patch of screen whatever is in it, so the core, the arms and the
-    /// voids all come out at one density and the galaxy reads as a uniform
-    /// ball. Ten times the systems must draw ten times the marks.
-    #[test]
-    fn the_share_follows_the_population() {
-        let view = framed(1280., 720.);
-        let capacity = frame_marks(&view);
-        assert!(
-            (capacity - 57_600.).abs() < 1.,
-            "a 1280x720 frame carries {capacity} marks at {MERGE_PX} px"
-        );
-
-        // A tenth of the sky in reach can be drawn: a sparse cell of ten
-        // draws one and a dense one of ten thousand draws a thousand.
-        let tenth = share(capacity as u64 * 10, capacity);
-        assert!((tenth - 0.1).abs() < 1e-9, "the share came out at {tenth}");
-        let sparse = CellId::of_point([0., 0., -100.], 8);
-        let dense = CellId::of_point([0., 0., -200.], 8);
-        assert_eq!(wanted(tenth, 10_000, dense), 1_000);
-        assert!(
-            wanted(tenth, 10, sparse) <= 2,
-            "a cell of ten drew {} at a tenth",
-            wanted(tenth, 10, sparse)
-        );
-
-        // Nothing is ever asked for more than it holds, and a frame with
-        // room for everything draws everything.
-        let whole = share(100, capacity);
-        assert_eq!(whole, 1., "a sky the frame can hold was thinned");
-        assert_eq!(wanted(whole, 40, dense), 40, "a cell was over-asked");
-    }
-
-    /// A cell wanting less than one mark draws one in that fraction of the
-    /// places rather than nowhere at all
-    ///
-    /// At a wide zoom the share runs to thousandths and nearly every cell
-    /// wants a fraction of a mark. Rounding those down empties the sparse
-    /// sky outright; rounding them up hands a mark to each of hundreds of
-    /// thousands of cells. Dithered against the cell's own address, the
-    /// count comes out right in aggregate and is the same answer for the
-    /// same cell every frame.
-    #[test]
-    fn a_fraction_of_a_mark_is_dithered_over_the_cells() {
-        let cells: Vec<CellId> = (0..20_000u32)
-            .map(|n| CellId {
-                level: 12,
-                x: n % 40,
-                y: (n / 40) % 25,
-                z: n / 1_000,
-            })
-            .collect();
-        for share in [0.02_f64, 0.25, 0.7] {
-            let drew: usize =
-                cells.iter().map(|&id| wanted(share, 1, id)).sum();
-            let rate = drew as f64 / cells.len() as f64;
-            assert!(
-                (rate / share - 1.).abs() < 0.1,
-                "a share of {share} drew {rate} of the cells"
-            );
-        }
-        // And the same cell answers the same way twice.
-        for &id in cells.iter().take(64) {
-            assert_eq!(wanted(0.3, 7, id), wanted(0.3, 7, id));
-        }
     }
 
     /// The addresses the draw would take, in order, from a budget of `target`
