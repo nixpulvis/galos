@@ -838,11 +838,26 @@ fn build_glow(
         // Asked of each channel at its own centroid, since a cell's colonies
         // and its stars do not sit in the same place: a cell whose colonies
         // are inside the reach draws them even where its stellar centre is
-        // outside. A splat's own footprint still bleeds past the edge by its
-        // spread, which the walk holds to a few pixels by splitting anything
-        // wider — so the boundary is soft by a few pixels and not by a cell.
+        // outside.
+        //
+        // **And the centroid is not the splat.** A splat is a Gaussian four
+        // deviations wide, and a cell wide enough to carry one that is
+        // hundreds of pixels across — measured over `.index/full`, the
+        // widest runs to 2,200 px — paints most of the frame from a centre
+        // well inside the bubble. What the map showed for it was a sphere
+        // of marks standing in a wash that ran out to the corners. So each
+        // splat is also told how much room the reach leaves it, and its
+        // quad is cut to that: the profile inside the bubble is untouched
+        // and the light outside is not drawn, which is what clearing the
+        // view means.
         let in_reach =
             |at: [f64; 3]| spyglass.reaches(orbit.center(), DVec3::from(at));
+        let room = |at: [f64; 3]| {
+            spyglass.clear.then(|| {
+                f64::from(spyglass.radius)
+                    - orbit.center().distance(DVec3::from(at))
+            })
+        };
 
         for splat in &planned.0.splats {
             let Some(cell) = index.0.get(splat.id) else { continue };
@@ -906,6 +921,7 @@ fn build_glow(
                     light,
                     systems * MARK_AREA,
                     gains.crowd * gains.backdrop,
+                    room(at),
                 ) {
                     counted.backdrop += 1;
                     counted.took(lit);
@@ -939,6 +955,7 @@ fn build_glow(
                     mix * carried * gains.mark * MARK_AREA * opened,
                     systems * MARK_AREA,
                     gains.crowd,
+                    room(at),
                 ) {
                     counted.colonies += 1;
                     counted.took(lit);
@@ -1027,6 +1044,10 @@ impl Quads {
         light: Vec3,
         covered: f32,
         crowd: f32,
+        // How far the reach leaves this splat to spread, light years, or
+        // `None` where the spyglass is not clearing and it may spread as
+        // far as it likes. See `build_glow`.
+        room: Option<f64>,
     ) -> Option<Lit> {
         if light.max_element() <= 0.0 {
             return None;
@@ -1053,14 +1074,31 @@ impl Quads {
         }
         let color = [peak.x, peak.y, peak.z, 1.];
 
+        // Cut to the room the reach leaves, the profile inside it standing
+        // as it is: the mask is sampled over the same `radius` and the quad
+        // simply stops early, so what is lost is the tail that would have
+        // been drawn where the view has been cleared.
+        let drawn = match room {
+            Some(room) if room <= 0.0 => return None,
+            Some(room) => {
+                let room_px =
+                    (room * crate::space::LIGHT_YEAR / per_pixel as f64) as f32;
+                radius.min(room_px)
+            }
+            None => radius,
+        };
+        // Where the mask is sampled to, so a cut quad shows the middle of
+        // the profile rather than the whole of it squeezed.
+        let uv = 0.5 * drawn / radius;
+
         let cx = screen.x - half.x;
         let cy = half.y - screen.y;
         let base = self.positions.len() as u32;
         for (dx, dy, u, v) in [
-            (-radius, -radius, 0., 1.),
-            (radius, -radius, 1., 1.),
-            (radius, radius, 1., 0.),
-            (-radius, radius, 0., 0.),
+            (-drawn, -drawn, 0.5 - uv, 0.5 + uv),
+            (drawn, -drawn, 0.5 + uv, 0.5 + uv),
+            (drawn, drawn, 0.5 + uv, 0.5 - uv),
+            (-drawn, drawn, 0.5 - uv, 0.5 - uv),
         ] {
             // A unit further out than a mark, so the symbols composite over
             // the field rather than the field over them.
@@ -1076,7 +1114,9 @@ impl Quads {
             base + 2,
             base + 3,
         ]);
-        self.radii.push(radius);
+        // The radius as *drawn*, so the diagnostics read the footprint the
+        // frame carries and not the one the profile was worked out over.
+        self.radii.push(drawn);
         self.peaks.push(peak.max_element());
         let sigma = radius / REACH;
         Some(Lit {
@@ -1771,6 +1811,17 @@ mod exposure {
             "the field drew past the reach: {} of {} quads",
             held.backdrop,
             open.backdrop
+        );
+        // And no quad reaches out of the bubble. A splat's own footprint is
+        // a cell wide and the widest of them runs to two thousand pixels
+        // unbounded, which is a wash over the whole frame laid from a
+        // centre well inside the reach; cut to the room the reach leaves,
+        // the field ends where the marks do.
+        assert!(
+            held.widest < open.widest / 10.,
+            "a splat spread past the reach: {} px against {} px unbounded",
+            held.widest,
+            open.widest
         );
         assert!(
             held.light < open.light,
