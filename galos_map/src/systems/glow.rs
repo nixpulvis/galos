@@ -100,7 +100,6 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
     app.init_resource::<FieldExposure>();
     app.init_resource::<Laid>();
-    app.init_resource::<Metered>();
     app.add_systems(Startup, spawn_glow);
     app.add_systems(
         Update,
@@ -158,14 +157,11 @@ pub struct Laid {
     /// Quads laid at a cell's stellar centroid, for the systems nobody lives
     /// in.
     pub backdrop: u32,
-    /// Linear light deposited, summed over every channel of every quad,
-    /// after the frame was metered.
+    /// The levels the frame carries, summed over every quad: each one's
+    /// brightest channel after the curve and the dial. Not the light the
+    /// cells deposited — that is four orders of magnitude of range and
+    /// says nothing about what reaches a display.
     pub light: f32,
-    /// What the meter scaled the frame by to get there; see [`AVERAGE`].
-    pub gain: f32,
-    /// Light times peak, summed: the numerator of the light-weighted mean
-    /// level, which is what the meter reads.
-    pub weighted: f32,
     /// The brightest peak any one quad was laid at, in linear light.
     ///
     /// The top of the field: at [`CEILING`] for everything it is a white
@@ -218,8 +214,6 @@ pub struct Laid {
 impl Laid {
     /// Count one quad in, off what [`Quads::deposit`] laid.
     fn took(&mut self, lit: Lit) {
-        self.light += lit.light;
-        self.weighted += lit.light * lit.peak;
         self.separated += u32::from(lit.separated);
     }
 }
@@ -230,8 +224,6 @@ impl Default for Laid {
             colonies: 0,
             backdrop: 0,
             light: 0.,
-            gain: 1.,
-            weighted: 0.,
             peak: 0.,
             faintest: 0.,
             typical: 0.,
@@ -475,69 +467,22 @@ const GLOW_TEXELS: u32 = 64;
 /// arithmetic, wherever its cells are the same size.
 const COVERAGE: f64 = 0.5;
 
-/// What the field lays on a pixel of the frame, summed over its channels,
-/// before the dial is touched
+/// The level the field's own curve leaves alone, in linear light
 ///
-/// **The level the frame is metered to.** How much light the field deposits
-/// is a fact about the view and not about the sky: measured over
-/// `.index/full` on an 800x600 frame, it lays 194,567 units from twenty
-/// light years out and 28,331 with the galaxy seen whole, 2.8 stops apart.
-/// Holding the frame's own average instead is what lets [`FieldExposure`]
-/// mean one thing at every zoom.
+/// **The field is compressed about a pivot, and this is the pivot.** What
+/// a splat lays runs over four orders of magnitude in one frame — measured
+/// over `.index/full`, the middling splat sits at two ten-thousandths of a
+/// unit while the brightest sits at a third of one — and a display carries
+/// two. So the faint half of the field is under the bottom of the scale
+/// and the dense half is over the top of it, and no single gain reaches
+/// both: opening the dial far enough to find the web blows the core out,
+/// which is what the setting was reported as doing at every zoom.
 ///
-/// Four tenths of a unit over three channels, which is the level both of
-/// the settings the map was being read at came to: the bubble at rest and
-/// the galaxy three stops open.
-const AVERAGE: f32 = 0.44;
+/// A twentieth of a unit, which is in the middle of what the field
+/// actually lays rather than at white. Below it the curve lifts and above
+/// it the curve holds down, and at it nothing happens at all.
+const PIVOT: f32 = 0.05;
 
-/// The most the meter may lift or hold a frame down, as a factor
-///
-/// Eight, three stops each way. A view with almost nothing in it — the
-/// camera inside one system, a filter admitting a handful, a zoom that
-/// has taken the galaxy down to a streak across a mostly empty frame —
-/// would otherwise have its few splats brought all the way up to a full
-/// frame's worth of light, which is a meter reading an empty room and
-/// calling the room bright. That is what "it gets bright when you zoom
-/// out a bit too far" was: at eight stops of authority the meter could
-/// multiply a thinning frame by sixty-four.
-///
-/// Three stops is enough for the 2.8 the zooms actually drift by and not
-/// much more, so where the sky really does empty out the frame is allowed
-/// to go dark.
-const METERED: f32 = 8.;
-
-/// How long the meter takes to come to a new reading, in seconds
-///
-/// A quarter of a second. The reading is a fact about the frame, and a
-/// frame changes discontinuously — a cell crosses the reach, a splat
-/// leaves the frustum, the walk hands a level over — so a gain taken
-/// straight off it steps, and a step in the gain is the whole field
-/// flickering at once. Eased toward the reading instead, over about the
-/// time an eye takes, so nothing the meter does is ever seen as an event.
-const ADAPTS: f32 = 0.25;
-
-/// What the meter is holding the field at, eased toward what the frame
-/// asks for
-///
-/// **The field is auto-exposed, and this is the state that makes it one
-/// rather than a per-frame division.** See [`AVERAGE`] for what is
-/// metered and why.
-#[derive(Resource)]
-pub struct Metered(pub f32);
-
-impl Default for Metered {
-    fn default() -> Metered {
-        Metered(1.)
-    }
-}
-
-/// Where a splat's deposit stops being laid straight and starts rolling
-/// off, in linear light
-///
-/// One, which is white. Everything under it is the field as it was and is
-/// untouched: the disc, the arms, the web between them and the whole faint
-/// half of the frame sit three to four orders of magnitude below this.
-const SHOULDER: f32 = 1.0;
 
 /// The hard stop under everything, in linear light
 ///
@@ -547,49 +492,47 @@ const SHOULDER: f32 = 1.0;
 /// runs to five figures. Bloom's downsample chain turns a value that large
 /// into `inf` and then into `NaN`, and a `NaN` in the chain spreads across
 /// the target: measured, it blackened the whole frame, the chrome and the
-/// grid with it. Thirty-two is far above anything the shoulder lets
-/// through and exists only so that arithmetic cannot.
-///
-/// What shapes the top of the scale is [`shouldered_level`], and it is a
-/// curve rather than a ceiling on purpose. An asymptote kills the dial: a
-/// field metered to [`AVERAGE`] and then opened up runs straight into the
-/// bound and every stop past that point does nothing, which is exactly how
-/// the exposure was reported. A power law has no such point — it
-/// compresses without ever stopping — so the dial goes on meaning
-/// something however far it is opened.
+/// grid with it. Thirty-two is far above anything the curve lets through
+/// and exists only so that arithmetic cannot.
 const CEILING: f32 = 32.0;
 
-/// The deposit with the top of the scale rolled off
+/// How hard the field is compressed about its pivot, as an exponent
 ///
-/// Identity under [`SHOULDER`] and compressed above it; see
-/// [`shouldered_level`], which is the curve, and [`CEILING`], which is
-/// only the guard past it.
-fn shouldered(peak: Vec3) -> Vec3 {
+/// A half, which in linear light is: four times the deposit is twice the
+/// level. A straight line in log-log through [`PIVOT`], so it has no knee
+/// anywhere and there is no level at which it starts or stops acting —
+/// the faint end is lifted by as many stops as the bright end is held
+/// down, smoothly, and a splat sitting on the pivot is untouched.
+///
+/// It is a *shape* and not a level. Where the field sits as a whole is
+/// [`FieldExposure`]'s to say, and the dial is spent after the curve so a
+/// stop stays a stop: the curve decides how much of the field fits on a
+/// display at once, and the dial decides where that fits.
+const COMPRESS: f32 = 0.5;
+
+/// A deposit put through the field's curve, hue held
+///
+/// Struck on the brightest channel and applied to all three, so what moves
+/// is the brightness and not the colour. Per channel it is the red of a
+/// red-dominated core that is pressed while the blue is let through, which
+/// is a hue shift with the density, and it is also exactly how a clip
+/// desaturates everything bright to white.
+fn compressed(peak: Vec3) -> Vec3 {
     let top = peak.max_element();
-    if !(top > SHOULDER) {
+    if top <= 0. {
         return peak;
     }
-    peak * (shouldered_level(top) / top)
+    peak * (compressed_level(top) / top)
 }
 
 /// The same curve on one level, which is what the brightest channel is put
 /// through and what the diagnostics read.
-fn shouldered_level(top: f32) -> f32 {
-    if !(top > SHOULDER) {
-        return top;
+fn compressed_level(top: f32) -> f32 {
+    if top <= 0. {
+        return 0.;
     }
-    (SHOULDER * (top / SHOULDER).powf(COMPRESS)).min(CEILING)
+    PIVOT * (top / PIVOT).powf(COMPRESS)
 }
-
-/// How hard the top of the scale is compressed, as an exponent
-///
-/// A half: past white, four times the light is twice the level. It meets
-/// the straight part at the shoulder — there is no step — and it is a
-/// straight line in log-log from there, so a frame that is ten times over
-/// comes out three times over rather than ten, and one that is ten
-/// thousand times over comes out a hundred. Nothing is ever flat, so the
-/// core keeps its gradation and the dial keeps its effect.
-const COMPRESS: f32 = 0.5;
 
 /// How far past touching a crowd is let alone, as a multiple of `fill`
 ///
@@ -844,8 +787,6 @@ fn build_glow(
     exposure: Res<FieldExposure>,
     view: Res<View>,
     spyglass: Res<crate::systems::Spyglass>,
-    time: Res<Time<Real>>,
-    mut metered: ResMut<Metered>,
     mut laid: ResMut<Laid>,
     mut glow: Query<&mut Mesh3d, With<GlowMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -854,12 +795,12 @@ fn build_glow(
     // The dial, as a linear gain on everything the field lays. Read once:
     // it says nothing about where a splat goes, only how bright it lands.
     //
-    // **Spent after the meter and not before it.** The meter divides the
-    // frame's own total into [`AVERAGE`]; a dial spent inside the deposit
-    // is part of that total, so the meter takes it straight back out and
-    // the setting does nothing whatever it is set to. Stops are stops away
-    // from the metered level, which is the only thing they can be stops
-    // away from if they are to mean the same at every zoom.
+    // **Spent after the curve and not before it.** The curve compresses
+    // about a fixed pivot, so a dial spent on the deposit would be
+    // compressed along with it and a stop would buy a fraction of a stop.
+    // Spent after, a stop is a stop, and what the curve settles is how
+    // much of the field's range reaches the display at once rather than
+    // where that range sits.
     let opened = exposure.factor();
     let mut quads = Quads::default();
     let mut counted = Laid::default();
@@ -872,16 +813,12 @@ fn build_glow(
     // written on every frame either way: a view that draws no field writes an
     // empty one, where leaving the last frame's standing would keep a political
     // field over the realistic sky.
-    // The pixels the meter below spreads the field over, nothing having
-    // been laid on them where the block bails out.
-    let mut pixels = 0.;
     'lay: {
         if *view != View::Map {
             break 'lay;
         }
         let Ok((orbit, camera)) = camera.single() else { break 'lay };
         let Some(viewport) = camera.logical_viewport_size() else { break 'lay };
-        pixels = viewport.x * viewport.y;
         let cot_half_fov = camera.clip_from_view().y_axis.y;
         let half = viewport * 0.5;
 
@@ -1042,41 +979,12 @@ fn build_glow(
         }
     }
 
-    // **What the frame has laid, held to one level whatever the zoom.**
-    // The field's deposit is conserved and the *frame* is not: how much of
-    // the galaxy is in reach, how far each cell's light is spread over the
-    // glass and how much of it the marks have taken all move with the
-    // camera, and what came of that is 2.8 stops of drift. Measured over
-    // `.index/full`, the light laid on an 800x600 frame runs 194,567 units
-    // from twenty light years out against 28,331 with the galaxy seen
-    // whole — so a dial set where the bubble looks right blows the galaxy
-    // out, and one set for the galaxy leaves the bubble black, which is
-    // exactly what the setting was reported as doing.
-    //
-    // So the frame is metered. What it lays is summed, and the whole field
-    // is scaled to put [`AVERAGE`] units on every pixel of the viewport
-    // before the dial is applied at all — so [`FieldExposure`] is stops
-    // away from a level that means the same thing everywhere, rather than
-    // stops away from whatever this view happened to come to.
-    //
-    // What it gives up is that the field no longer says how much light is
-    // *there* in absolute terms: a genuinely empty view is brought up to
-    // the same average a full one is, as an eye does and as every camera
-    // does. What says how much is there is the density of the marks over
-    // it, which is a count and is not metered.
-    let asked = if counted.light > 0. && pixels > 0. {
-        (AVERAGE * pixels / counted.light).clamp(1. / METERED, METERED)
-    } else {
-        metered.0
-    };
-    // Eased in the log, so a stop takes the same time to travel whichever
-    // end of the scale it is at, and so the gain cannot overshoot zero.
-    let step = 1. - (-time.delta_secs() / ADAPTS).exp();
-    metered.0 *= (asked / metered.0).powf(step.clamp(0., 1.));
-    let gain = metered.0;
-    quads.expose(gain * opened);
-    counted.light *= gain * opened;
-    counted.gain = gain;
+    // What the frame carries, which is not what the cells deposited: the
+    // range the field lays over is four orders of magnitude and a display
+    // holds two, so it goes through the curve ([`COMPRESS`]) and then the
+    // dial. See `Quads::expose`.
+    quads.expose(opened);
+    counted.light = 0.;
 
     for radius in &quads.radii {
         counted.thinnest = counted.thinnest.min(*radius);
@@ -1092,9 +1000,11 @@ fn build_glow(
         counted.quarter = at(0.25);
     }
     if !quads.peaks.is_empty() {
-        // The peaks as the frame carries them: metered, then rolled off.
+        // The peaks as the frame carries them, through the same curve and
+        // the same dial the quads went through.
         for peak in &mut quads.peaks {
-            *peak = shouldered_level(*peak * gain * opened);
+            *peak = (compressed_level(*peak) * opened).min(CEILING);
+            counted.light += *peak;
         }
         quads.peaks.sort_unstable_by(f32::total_cmp);
         counted.faintest = quads.peaks[0];
@@ -1116,11 +1026,6 @@ fn build_glow(
 /// What one quad came to, for [`Laid`]
 #[derive(Clone, Copy)]
 struct Lit {
-    /// The linear light it lays on the framebuffer, summed over its three
-    /// channels, before the frame is metered.
-    light: f32,
-    /// The brightest channel it was laid at, before the meter.
-    peak: f32,
     /// Whether its systems' marks would cover less than the footprint it was
     /// spread over, which is the resolving end of [`splat`]'s law.
     separated: bool,
@@ -1153,16 +1058,18 @@ impl Quads {
     /// a splat spans a few pixels at most — so what a centroid off the frame
     /// costs is a few pixels at the very edge.
     #[allow(clippy::too_many_arguments)]
-    /// Meter the frame: scale every quad by `gain`, then roll the top of
-    /// the scale off.
+    /// Put every quad through the field's curve and then the dial.
     ///
-    /// The shoulder is struck here and not inside [`splat`] because it is
-    /// the last word on what a pixel carries, and the meter comes before
-    /// it: rolling off a deposit and then scaling it would put the curve
-    /// somewhere other than at white.
-    fn expose(&mut self, gain: f32) {
+    /// The curve is struck here and not inside [`splat`] because it is the
+    /// last word on what a pixel carries: `splat` answers what a cell
+    /// deposits, which is a fact about the cell, and this answers how much
+    /// of that range a display can hold at once, which is a fact about the
+    /// frame. The dial comes after the curve, so a stop stays a stop.
+    fn expose(&mut self, opened: f32) {
         for color in &mut self.colors {
-            let peak = shouldered(Vec3::new(color[0], color[1], color[2]) * gain);
+            let laid = Vec3::new(color[0], color[1], color[2]);
+            let peak =
+                (compressed(laid) * opened).min(Vec3::splat(CEILING));
             *color = [peak.x, peak.y, peak.z, color[3]];
         }
     }
@@ -1260,10 +1167,7 @@ impl Quads {
         ]);
         self.radii.push(radius);
         self.peaks.push(peak.max_element());
-        let sigma = radius / REACH;
         Some(Lit {
-            peak: peak.max_element(),
-            light: peak.element_sum() * std::f32::consts::TAU * sigma * sigma,
             separated: covered < std::f32::consts::TAU * spread_px * spread_px,
         })
     }
@@ -1470,37 +1374,47 @@ mod tests {
         );
     }
 
-    /// The top of the scale compresses and never stops, so the dial goes on
-    /// meaning something however far it is opened
+    /// The curve lifts the faint end, holds the bright end down, and
+    /// leaves the pivot alone — which is the whole of what it is for
     ///
-    /// The reported defect, and the reason the curve is a power law rather
-    /// than an asymptote: a field metered to [`AVERAGE`] and then opened up
-    /// ran into a bound at twice white, and every stop past that point did
-    /// nothing at all. Under white nothing is touched; over it, twice the
-    /// light is always more light, at every level there is.
+    /// The field lays over four orders of magnitude in one frame and a
+    /// display carries two, so no single gain reaches both ends: a dial
+    /// opened far enough to find the web blows the core out. What the
+    /// curve does is bring the two ends toward each other, and what it
+    /// must not do is pick a level — that is the dial's, and it is spent
+    /// after this.
     #[test]
-    fn the_dial_goes_on_meaning_something() {
-        for level in [0.001_f32, 0.1, 0.9] {
-            assert_eq!(
-                shouldered_level(level),
-                level,
-                "the curve bit under white"
-            );
+    fn the_curve_brings_the_ends_together() {
+        assert!(
+            (compressed_level(PIVOT) - PIVOT).abs() < PIVOT * 1e-4,
+            "the pivot moved: {}",
+            compressed_level(PIVOT)
+        );
+
+        // Under the pivot, up. Over it, down. Monotone throughout, so
+        // nothing anywhere is flattened into anything beside it.
+        let faint = PIVOT / 100.;
+        let bright = PIVOT * 100.;
+        assert!(compressed_level(faint) > faint * 5.);
+        assert!(compressed_level(bright) < bright / 5.);
+        let mut last = 0.;
+        for step in 0..64 {
+            let level = compressed_level(1e-5 * 1.5f32.powi(step));
+            assert!(level > last, "the curve turned back at step {step}");
+            last = level;
         }
-        for level in [1_f32, 4., 100., 500.] {
-            let opened = shouldered_level(level * 2.);
-            let was = shouldered_level(level);
-            assert!(
-                opened > was * 1.3,
-                "a stop at {level} moved the level {was} to {opened}"
-            );
-        }
-        // The guard is a long way past anything a frame sits at — ten
-        // stops over white before the curve so much as touches it — and it
-        // is still under everything, which is what keeps a cell floored to
-        // a pixel out of the bloom chain as an `inf`.
-        assert!(shouldered_level(512.) < CEILING);
-        assert!(shouldered_level(1e12) <= CEILING);
+
+        // And the range it leaves: ten thousand to one comes out as a
+        // hundred to one, which is what a display holds.
+        let range = compressed_level(bright) / compressed_level(faint);
+        assert!(
+            (range - 100.).abs() < 1.,
+            "ten thousand to one came out as {range} to one"
+        );
+
+        // The guard is under everything, which is what keeps a cell
+        // floored to one pixel out of the bloom chain as an `inf`.
+        assert!((compressed_level(1e12) * 1e6).min(CEILING) <= CEILING);
     }
 
     /// A crowd is laid as a density, thinning as the footprint it is spread
@@ -1740,14 +1654,7 @@ mod exposure {
         app.init_resource::<Gains>();
         app.init_resource::<FieldExposure>();
         app.init_resource::<Laid>();
-        app.init_resource::<Metered>();
-        // Long enough that the meter comes to its reading in one pass; see
-        // [`ADAPTS`]. A measurement wants the level the frame settles at
-        // and not the quarter second it takes to get there.
-        let mut clock = Time::<Real>::default();
-        clock.advance_by(std::time::Duration::from_secs(4));
-        app.insert_resource(clock);
-        app.insert_resource(Planned(galos_index::Needed {
+            app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks: Vec::new(),
             blobs: Vec::new(),
@@ -1851,15 +1758,13 @@ mod exposure {
             level.push(laid.light);
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
-                 {:>5} backdrop, light {:.0} at gain {:.2}, mean {:.4}, \
+                 {:>5} backdrop, light {:.1}, \
                  peak {:.5}|{:.5}|{:.3}, {:>5} clipped, \
                  radius {:.2}|{:.2}|{:.2}|{:.2}|{:.2} px, {} floored, \
                  {} separated",
                 laid.colonies,
                 laid.backdrop,
                 laid.light,
-                laid.gain,
-                laid.weighted / laid.light.max(1e-9),
                 laid.faintest,
                 laid.typical,
                 laid.peak,
@@ -1915,20 +1820,19 @@ mod exposure {
             );
         }
 
-        // And the level itself, which is the whole of why the dial was
-        // unusable: how much light a frame lays is a fact about the view
-        // and not about the sky. Measured over `.index/full` before the
-        // meter, an 800x600 frame laid 194,567 units from twenty light
-        // years out against 28,331 with the galaxy seen whole — 2.8 stops,
-        // so a setting that read well in the bubble blew the galaxy out
-        // and one that read well over the galaxy left the bubble black.
-        // Metered, every one of those frames lays [`AVERAGE`] a pixel and
-        // the dial means one thing everywhere.
+        // And the range the zooms leave between them, which is what made
+        // the dial unusable: the field's level is a fact about the view,
+        // and it moved 2.8 stops between the bubble and the galaxy seen
+        // whole — so a setting that read well at one end blew the other
+        // out, which is exactly how the exposure was reported. The curve
+        // brings the ends of the *field* together and brings this in with
+        // them, since what drifts is mostly the bright end.
         let low = level.iter().copied().fold(f32::MAX, f32::min);
         let high = level.iter().copied().fold(0., f32::max);
         assert!(
-            high < low * 1.01,
-            "the frame's own level moved with the zoom: {level:?}"
+            high < low * 3.,
+            "the field's level moves more than a stop and a half across \
+             the zooms: {level:?}"
         );
 
         // A splat is still spread over whatever its cell covers, so the
