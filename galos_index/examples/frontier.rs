@@ -311,8 +311,6 @@ fn frame(
         if !inside(blob.id) {
             continue;
         }
-        let Some(cell) = index.get(blob.id) else { continue };
-        let Some(at) = cell.aggregate.count_centroid() else { continue };
         let count = blob.count;
         if wanted(share * blob.blend, count as usize, blob.id) == 0 {
             continue;
@@ -320,7 +318,7 @@ fn frame(
         tally.blobs += 1;
         tally.behind += count;
         tally.levels[blob.id.level as usize].blobs += 1;
-        marks.push(Mark { at, merged: true });
+        marks.push(Mark { at: blob.at, merged: true });
     }
 
     let at = Instant::now();

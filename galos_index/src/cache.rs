@@ -15,6 +15,7 @@ use crate::geometry::CellId;
 use crate::meta::StarKind;
 use crate::walk::Needed;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// One system as the payload carries it: its id, its exact position, the
 /// two photometric fields, and when it was last updated.
@@ -86,13 +87,58 @@ pub struct ResidentCell {
     pub points: Box<[Point]>,
 }
 
+/// A multiply-shift hash over an address, for the one map a frame asks
+/// tens of thousands of times
+///
+/// **SipHash is most of what a lookup costs here.** An address is a level
+/// and three grid coordinates, thirteen bytes of integer that are already
+/// well spread, and the draw asks this map once per marked cell per pass:
+/// measured over `.index/full` at a wide zoom, 77,773 of them a frame.
+/// Measured in `tests/zooming.rs` over the same addresses, SipHash is
+/// 15 ns against 3 for a multiply-shift, which at that count is four
+/// milliseconds a frame against under one.
+///
+/// Fine to be weak. Nothing adversarial reaches this — the keys are the
+/// map's own tree addresses — and the mix below is the same one the
+/// aggregates' own moments are dithered with.
+#[derive(Default)]
+struct Quick(u64);
+
+impl Hasher for Quick {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u8(byte);
+        }
+    }
+
+    fn write_u8(&mut self, byte: u8) {
+        self.write_u64(u64::from(byte));
+    }
+
+    fn write_u32(&mut self, word: u32) {
+        self.write_u64(u64::from(word));
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        let mixed = (self.0 ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = mixed.rotate_left(29);
+    }
+
+    fn finish(&self) -> u64 {
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+}
+
 /// The payloads the client holds, keyed by cell.
 ///
 /// The index of aggregates is always resident and lives beside this; what this
 /// holds is the per-system payloads, which come and go as the view moves.
 #[derive(Clone, Debug, Default)]
 pub struct Resident {
-    cells: HashMap<CellId, ResidentCell>,
+    cells: HashMap<CellId, ResidentCell, BuildHasherDefault<Quick>>,
 }
 
 impl Resident {
@@ -226,7 +272,13 @@ mod tests {
         let needed = Needed {
             mode: Mode::Real,
             marks: vec![],
-            blobs: vec![BlobRef { id: s, count: 1, blend: 1.0 }],
+            blobs: vec![BlobRef {
+                id: s,
+                count: 1,
+                blend: 1.0,
+                at: [0.; 3],
+                m_min: None,
+            }],
             splats: vec![SplatRef { id: s, blend: 1.0 }],
         };
         assert!(cache.missing(&needed).is_empty());

@@ -276,6 +276,20 @@ pub struct BlobRef {
     pub count: u64,
     /// The share of the draw this blob carries, `0.0..=1.0`.
     pub blend: f64,
+    /// Where the mark goes: the count centroid of everything it stands for,
+    /// in light years.
+    pub at: [f64; 3],
+    /// The brightest absolute magnitude under it, which is what the sky's
+    /// cut is taken against.
+    ///
+    /// Carried rather than looked up, as `count` and `at` are. **This is
+    /// what a blob costs.** The draw reads all three of them once a blob a
+    /// frame, and the index they would otherwise be read out of is the
+    /// whole tree — millions of cells, so every read is a cache miss on a
+    /// random address. Measured over `.index/full` at sixty thousand light
+    /// years out, 10,114 drawn blobs cost 7.2 ms a frame that way, which
+    /// was two thirds of the whole reconciliation pass.
+    pub m_min: Option<f32>,
 }
 
 /// What a walk asks for: the cells whose systems draw as discrete marks, the
@@ -690,6 +704,8 @@ impl Index {
                     id: node.id,
                     count: node.count,
                     blend: shown * (1.0 - alpha),
+                    at: node.center,
+                    m_min: node.m_min,
                 });
             }
             if alpha <= 0.0 {

@@ -28,7 +28,6 @@ use crate::camera::OrbitCamera;
 use crate::schedule::MapSet;
 use crate::systems::scale::View;
 use bevy::math::DVec3;
-use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use galos_index::{
     CellId, Inhabited, Mode, Moments, Needed, View as Viewpoint,
@@ -76,7 +75,7 @@ pub struct Planned(pub Needed);
 /// knows the drawn set: the prefix is not a rank range, the filters having
 /// promoted systems out of magnitude order (see `drawn_first`).
 #[derive(Resource, Default)]
-pub struct Drawn(pub HashMap<CellId, Accounted>);
+pub struct Drawn(pub rustc_hash::FxHashMap<CellId, Accounted>);
 
 /// One cell's drawn systems, in the terms the two channels of the field are
 /// laid in

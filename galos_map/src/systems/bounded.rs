@@ -137,6 +137,15 @@ const KEEP: Duration = Duration::from_secs(2);
 /// what that zoom needs — which is what it was before the grace existed.
 const SLACK: usize = 2;
 
+/// How often the held payloads are swept when nothing is moving
+///
+/// A quarter of a second, an eighth of [`KEEP`]. What the sweep decides
+/// turns on a grace measured in seconds, so running it every frame is
+/// sixty answers to a question that changes once; what it costs is a pass
+/// over everything held, which at a wide zoom is a hundred thousand
+/// payloads. See [`evict_payloads`].
+const SWEEPS: Duration = Duration::from_millis(250);
+
 /// Which cells the walk marks, and when each held payload was last wanted
 ///
 /// Two answers with one owner, because the second is only meaningful against
@@ -941,7 +950,6 @@ pub struct Sampled {
 /// still waiting on the budget.
 pub(crate) fn reconcile(
     cameras: Query<(&OrbitCamera, &Camera)>,
-    index: Res<crate::ResidentIndex>,
     resident: Res<ResidentCells>,
     populated: Res<Populated>,
     names: Res<Names>,
@@ -1006,7 +1014,13 @@ pub(crate) fn reconcile(
     // that is already drawn marks its entity ([`EntityHashSet`], bevy's own
     // numbering and a cheap hash) and one that is not goes to the queue,
     // which is one lookup a point rather than two.
-    let existing: HashMap<i64, Entity> = {
+    // Hashed quickly and not securely. This is asked once per point the
+    // pass draws — tens of thousands a frame — and the key is a system
+    // address, which is a bit-packed position. Measured over
+    // `.index/full`, SipHash over it was more than half of what the whole
+    // reconciliation pass cost: 1.31 ms a frame against 0.57 with the
+    // lookup taken out entirely.
+    let existing: rustc_hash::FxHashMap<i64, Entity> = {
         let _zone = info_span!("reconcile setup").entered();
         systems
             .iter()
@@ -1087,14 +1101,25 @@ pub(crate) fn reconcile(
         info_span!("cell prefixes", cells = planned.0.marks.len()).entered();
     for mark in &planned.0.marks {
         let id = mark.id;
+        // **Asked before the payload is looked up.** Most marked cells
+        // draw nothing at a wide zoom — the share is thousandths and a
+        // cell's slice is hundreds — and the lookup is a random probe
+        // into a hundred thousand entries, which is a cache miss and the
+        // most expensive thing in the pass. Off the mark's own slice,
+        // which the walk carried here for exactly this: measured over
+        // `.index/full` at sixty thousand light years out, 77,773 marks
+        // against 10,055 that draw.
+        //
+        // The whole slice and not what has landed, so what is drawn does
+        // not grow as the read arrives: a share struck over the prefix in
+        // hand would ask for less of a cell the moment less of it was
+        // held, and every mark would shift as the payloads came in.
+        let asked = wanted(share, mark.slice as usize, id);
+        if asked == 0 {
+            continue;
+        }
         let Some(cell) = resident.0.cell(id) else { continue };
-        // Off the cell's whole slice and then clamped to what has landed,
-        // so what is drawn does not grow as the read arrives: a share
-        // struck over the prefix in hand would ask for less of a cell the
-        // moment less of it was held, and every mark would shift as the
-        // payloads came in.
-        let target =
-            wanted(share, mark.slice as usize, id).min(cell.points.len());
+        let target = asked.min(cell.points.len());
         if target == 0 {
             continue;
         }
@@ -1190,26 +1215,25 @@ pub(crate) fn reconcile(
         }
     }
     drop(prefixes);
-
     // And the cells the walk merged, which need nothing read. One mark
     // apiece and no more — a blob is a cell whose whole contents fall inside
     // one mark, so one is what it is worth — and it is drawn or not on the
     // same share every read cell is thinned by, so a merged region is no
     // denser or thinner on screen than a read one beside it.
     blobs.0.clear();
+    let merged =
+        info_span!("merged cells", cells = planned.0.blobs.len()).entered();
     for blob in &planned.0.blobs {
         if !in_reach(blob.id, orbit, bubble) {
             continue;
         }
-        let Some(cell) = index.0.get(blob.id) else { continue };
-        let Some(at) = cell.aggregate.count_centroid() else { continue };
-        let count = cell.aggregate.count();
-        if wanted(share * blob.blend, count as usize, blob.id) == 0 {
+        if wanted(share * blob.blend, blob.count as usize, blob.id) == 0 {
             continue;
         }
-        behind += count;
-        blobs.0.push(Blob { at, m_min: cell.aggregate.m_min() });
+        behind += blob.count;
+        blobs.0.push(Blob { at: blob.at, m_min: blob.m_min });
     }
+    drop(merged);
 
     sampled.set_if_neq(Sampled {
         population,
@@ -1305,8 +1329,27 @@ pub(crate) fn evict_payloads(
     mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::refresh::Held>,
     mut keeping: ResMut<Keeping>,
+    mut swept: Local<Option<Instant>>,
 ) {
     let now = time.last_update().unwrap_or_else(|| time.startup());
+    // **Not every frame.** This is a pass over everything the map holds,
+    // which at a wide zoom is a hundred thousand payloads and three
+    // milliseconds — and what it decides is measured against [`KEEP`],
+    // which is two seconds. Running it sixty times inside every one of
+    // those is sixty answers to a question that can only change once.
+    //
+    // Swept on a plan change, since that is what moves a cell in or out
+    // of the wanted set, and on a clock besides, since the grace expires
+    // on its own while nothing at all is happening. A quarter of a second
+    // is an eighth of the grace: the ceiling holds the memory either way,
+    // and what this costs is the freeing running late by a frame or two.
+    let due = swept.is_none_or(|last| {
+        now.saturating_duration_since(last) >= SWEEPS
+    });
+    if !planned.is_changed() && !due {
+        return;
+    }
+    *swept = Some(now);
     let bubble = reach(&spyglass).zip(cameras.single().ok());
 
     // One pass over what is held: stamp what is wanted now, take what has
