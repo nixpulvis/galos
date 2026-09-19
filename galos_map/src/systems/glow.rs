@@ -846,10 +846,8 @@ fn build_glow(
         // widest runs to 2,200 px — paints most of the frame from a centre
         // well inside the bubble. What the map showed for it was a sphere
         // of marks standing in a wash that ran out to the corners. So each
-        // splat is also told how much room the reach leaves it, and its
-        // quad is cut to that: the profile inside the bubble is untouched
-        // and the light outside is not drawn, which is what clearing the
-        // view means.
+        // splat is also told how much room the reach leaves it, and fades
+        // by how much of itself that still holds; see `Quads::deposit`.
         let in_reach =
             |at: [f64; 3]| spyglass.reaches(orbit.center(), DVec3::from(at));
         let room = |at: [f64; 3]| {
@@ -1072,33 +1070,43 @@ impl Quads {
         if !radius.is_finite() || !peak.is_finite() {
             return None;
         }
-        let color = [peak.x, peak.y, peak.z, 1.];
 
-        // Cut to the room the reach leaves, the profile inside it standing
-        // as it is: the mask is sampled over the same `radius` and the quad
-        // simply stops early, so what is lost is the tail that would have
-        // been drawn where the view has been cleared.
-        let drawn = match room {
+        // **Faded to the room the reach leaves, never cut to it.** The quad
+        // is square and the profile inside it is not, so a splat stopped at
+        // the boundary ends on whatever the Gaussian is worth there — which
+        // is most of its peak for anything centred near the edge, laid
+        // along four straight sides. The map drew squares.
+        //
+        // So the whole splat dims instead, by how much of its own footprint
+        // the reach still holds: untouched while it fits inside, fading to
+        // nothing as its centre reaches the edge. It is smooth in position
+        // and smooth in zoom, it has no edge of its own anywhere, and it is
+        // what takes the wash off the frame — a splat two thousand pixels
+        // wide is barely holding any of itself inside a bubble a few
+        // hundred across, whatever its centre is doing.
+        let fade = match room {
             Some(room) if room <= 0.0 => return None,
             Some(room) => {
                 let room_px =
                     (room * crate::space::LIGHT_YEAR / per_pixel as f64) as f32;
-                radius.min(room_px)
+                (room_px / radius.max(f32::MIN_POSITIVE)).clamp(0., 1.)
             }
-            None => radius,
+            None => 1.,
         };
-        // Where the mask is sampled to, so a cut quad shows the middle of
-        // the profile rather than the whole of it squeezed.
-        let uv = 0.5 * drawn / radius;
+        if fade <= 0. {
+            return None;
+        }
+        let peak = peak * fade;
+        let color = [peak.x, peak.y, peak.z, 1.];
 
         let cx = screen.x - half.x;
         let cy = half.y - screen.y;
         let base = self.positions.len() as u32;
         for (dx, dy, u, v) in [
-            (-drawn, -drawn, 0.5 - uv, 0.5 + uv),
-            (drawn, -drawn, 0.5 + uv, 0.5 + uv),
-            (drawn, drawn, 0.5 + uv, 0.5 - uv),
-            (-drawn, drawn, 0.5 - uv, 0.5 - uv),
+            (-radius, -radius, 0., 1.),
+            (radius, -radius, 1., 1.),
+            (radius, radius, 1., 0.),
+            (-radius, radius, 0., 0.),
         ] {
             // A unit further out than a mark, so the symbols composite over
             // the field rather than the field over them.
@@ -1114,9 +1122,7 @@ impl Quads {
             base + 2,
             base + 3,
         ]);
-        // The radius as *drawn*, so the diagnostics read the footprint the
-        // frame carries and not the one the profile was worked out over.
-        self.radii.push(drawn);
+        self.radii.push(radius);
         self.peaks.push(peak.max_element());
         let sigma = radius / REACH;
         Some(Lit {
@@ -1812,11 +1818,12 @@ mod exposure {
             held.backdrop,
             open.backdrop
         );
-        // And no quad reaches out of the bubble. A splat's own footprint is
-        // a cell wide and the widest of them runs to two thousand pixels
+        // And nothing wide is left standing. A splat's own footprint is a
+        // cell wide and the widest of them runs to two thousand pixels
         // unbounded, which is a wash over the whole frame laid from a
-        // centre well inside the reach; cut to the room the reach leaves,
-        // the field ends where the marks do.
+        // centre well inside the reach; faded by how much of itself the
+        // reach holds, a splat that size is gone and the field ends about
+        // where the marks do.
         assert!(
             held.widest < open.widest / 10.,
             "a splat spread past the reach: {} px against {} px unbounded",
