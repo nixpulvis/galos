@@ -467,21 +467,61 @@ const GLOW_TEXELS: u32 = 64;
 /// arithmetic, wherever its cells are the same size.
 const COVERAGE: f64 = 0.5;
 
+/// Where a splat's deposit stops being laid straight and starts rolling
+/// off, in linear light
+///
+/// One, which is white. Everything under it is the field as it was and is
+/// untouched: the disc, the arms, the web between them and the whole faint
+/// half of the frame sit three to four orders of magnitude below this.
+const SHOULDER: f32 = 1.0;
+
 /// The brightest a single splat may peak at, in linear light
 ///
-/// A ceiling and not a scale: the deposit is conserved, so a coarse cell
-/// holding a hundred thousand systems whose footprint has been floored to one
-/// pixel asks for its whole weight in that pixel, and what it asks for runs to
-/// five figures. Bloom's downsample chain turns a value that large into `inf`
-/// and then into `NaN`, and a `NaN` in the chain spreads across the target:
-/// measured, the corrected deposit blackened the entire frame, the chrome and
-/// the grid with it, on a field that had been merely invisible before.
+/// **A shoulder and not a clip.** The deposit is conserved, so a coarse
+/// cell holding a hundred thousand systems whose footprint has been floored
+/// to one pixel asks for its whole weight in that pixel, and what it asks
+/// for runs to five figures. That has to be bounded — bloom's downsample
+/// chain turns a value that large into `inf` and then into `NaN`, and a
+/// `NaN` in the chain spreads across the target, which blackened the whole
+/// frame the one time it happened — and how it is bounded is what the
+/// bubble looks like from far off.
 ///
-/// So the top of the field clips, which is what the densest part of a
-/// luminance field does anyway — the white core over the bubble is this clip —
-/// and thirty-two is high enough that bloom still has several stops of
-/// headroom to spread before it saturates.
-const CEILING: f32 = 8.0;
+/// It was a hard `min` at eight, and the bubble blew out: measured
+/// over `.index/full`, the middling splat peaks at 3.8 units from thirty
+/// thousand light years out, four times white before a second splat is
+/// added to it, so the whole core landed past the display's top with no
+/// gradation left in it and bloom spread that white over everything near
+/// it. Nothing was clipping — the clip was never the problem; laying four
+/// units into a framebuffer that shows one was.
+///
+/// So the top of the scale is a curve. Under [`SHOULDER`] the deposit is
+/// laid as it stands, and above it the excess is compressed toward this
+/// ceiling along `1 - exp(-x)`, which meets the straight part with the same
+/// slope — so there is no knee to see — and never reaches the ceiling at
+/// all. Two, so the core keeps a stop of gradation above white instead of
+/// being one flat sheet of it, and bloom has a stop to spread into rather
+/// than several.
+///
+/// Struck on the brightest channel and applied to all three, so what comes
+/// down is the brightness and not the colour. Per channel it is the red
+/// that survives a red-dominated core being pressed while the blue is let
+/// through, which is a hue shift with the zoom, and it is also exactly how
+/// a clip desaturates everything bright to white.
+const CEILING: f32 = 2.0;
+
+/// The deposit with the top of the scale rolled off
+///
+/// See [`CEILING`]. Identity under [`SHOULDER`], and asymptotic to the
+/// ceiling above it.
+fn shouldered(peak: Vec3) -> Vec3 {
+    let top = peak.max_element();
+    if !(top > SHOULDER) {
+        return peak;
+    }
+    let room = CEILING - SHOULDER;
+    let rolled = SHOULDER + room * (1. - (-(top - SHOULDER) / room).exp());
+    peak * (rolled / top)
+}
 
 /// How far past touching a crowd is let alone, as a multiple of `fill`
 ///
@@ -577,7 +617,7 @@ pub(crate) fn splat(
     };
     let crowding = 1. + (crowd - 1.) * pressed;
     let peak = light / (crowding * area);
-    (radius, peak.min(Vec3::splat(CEILING)))
+    (radius, shouldered(peak))
 }
 
 /// What one system is worth, in linear light
@@ -1268,11 +1308,19 @@ mod tests {
         let systems = 100_000.;
         let covered = systems * MARK_AREA;
         let light = Hue::Cyan.light() * systems * level * MARK_AREA;
-        // Wide enough that even the tighter of the two is under the roll-off.
+        // A spread that puts the crowd exactly at the top of the flat band,
+        // so four times wider is sixteen times the area and still this side
+        // of the touching point, and four times tighter is past [`PACKED`].
         let wide = (covered / (std::f32::consts::TAU * PACKED)).sqrt();
+        // Read an eighth of the light down. The deposit is linear in the
+        // light and neither law turns on it, and an eighth is what keeps
+        // every reading below [`SHOULDER`]: the top of the scale is a
+        // second curve over these two, and a packed crowd at full light is
+        // up against it.
+        let dim = light * 0.125;
 
-        let (tight, close) = splat(light, covered, wide, gains.crowd);
-        let (broad, far) = splat(light, covered, wide * 4., gains.crowd);
+        let (tight, close) = splat(dim, covered, wide, gains.crowd);
+        let (broad, far) = splat(dim, covered, wide * 4., gains.crowd);
         assert_eq!(tight, wide * REACH, "a crowded splat covers its cell");
         assert_eq!(broad, wide * 4. * REACH);
         // Four times the spread is sixteen times the area, and the same
@@ -1285,22 +1333,26 @@ mod tests {
             close.max_element(),
             far.max_element()
         );
-        assert!(
-            far.max_element() < level,
-            "a crowd of systems was laid brighter than one mark: {}",
-            far.max_element()
-        );
 
         // And past the roll-off it stops keeping up with its own density:
         // sixteen times packed together is four times the light, not
         // sixteen.
-        let (_, packed) = splat(light, covered, wide / 4., gains.crowd);
+        let (_, packed) = splat(dim, covered, wide / 4., gains.crowd);
         let steepness = packed.max_element() / close.max_element();
         assert!(
             (steepness - 4.).abs() < 0.2,
             "a packed crowd was not held down: {} against {} is {steepness}",
             packed.max_element(),
             close.max_element()
+        );
+
+        // At the light it is really laid at, a crowd spread over its own
+        // cell is still worth less than one system's mark.
+        let (_, spread) = splat(light, covered, wide * 4., gains.crowd);
+        assert!(
+            spread.max_element() < level,
+            "a crowd of systems was laid brighter than one mark: {}",
+            spread.max_element()
         );
     }
 
