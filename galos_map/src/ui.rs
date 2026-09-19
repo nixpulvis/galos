@@ -1204,14 +1204,14 @@ pub(crate) fn chrome(
             let slider = ui
                 .horizontal(|ui| {
                     let rail = ui.add(
-                        egui::Slider::new(&mut field_ev, -6.0..=8.0)
-                            .step_by(0.5)
+                        egui::Slider::new(&mut field_ev, -8.0..=8.0)
+                            .step_by(0.25)
                             .show_value(false),
                     );
                     let typed = value_box(
                         ui,
                         egui::DragValue::new(&mut field_ev)
-                            .range(-6.0..=8.0)
+                            .range(-8.0..=8.0)
                             .speed(0.1)
                             .suffix(" EV"),
                     );

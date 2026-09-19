@@ -467,6 +467,41 @@ const GLOW_TEXELS: u32 = 64;
 /// arithmetic, wherever its cells are the same size.
 const COVERAGE: f64 = 0.5;
 
+/// How far the reach is from where the dial rests, in light years
+///
+/// **The field's level still tracks the reach, and this is what takes
+/// that out of the dial.** How much light a frame lays is a fact about
+/// the view — a tighter bubble holds fewer systems, but it holds them
+/// over the same glass and it resolves their cells, so the crowding
+/// correction is spent and what is left lands brighter. Read off the map
+/// by hand, the setting that looked right ran three stops from a reach
+/// of 850 light years to one of 15,000: -3, -2 at 1,500, and 0 at
+/// 15,000.
+///
+/// So the field is tilted against the reach and the rest of the dial is
+/// put where the widest of those sat. It is a fixed function of a number
+/// the map already knows, not a reading taken off the frame: nothing
+/// here adapts, nothing lags, and the same reach is the same brightness
+/// every time it comes round.
+const RESTS_AT: f32 = 15_000.;
+
+/// And the closest reach it is read from
+///
+/// The tilt is a fit through three readings and holds only across them.
+/// Past either end it is held: 850 light years is the tightest of them
+/// and nothing under it is taken further, which is also where the field
+/// stops being most of the picture — inside a bubble that small the map
+/// is drawing the systems themselves.
+const TILTS_FROM: f32 = 850.;
+
+/// And how much of a stop the field moves for an octave of reach
+///
+/// Two thirds, fitted to the three settings above through the rest: they
+/// come out at -2.80, -2.25 and 0 against the -3, -2 and 0 asked for,
+/// which is a quarter of a stop at the worst of them and under what the
+/// dial's own half-stop step can express.
+const TILT: f32 = 0.68;
+
 /// The level the field's own curve leaves alone, in linear light
 ///
 /// **The field is compressed about a pivot, and this is the pivot.** What
@@ -488,7 +523,7 @@ const PIVOT: f32 = 0.05;
 ///
 /// **Ten times the backdrop's, because the two channels are not the same
 /// picture.** The lift a pivot gives a faint deposit is the ratio between
-/// the two raised to `1 - COMPRESS`, so a channel with a higher pivot
+/// the two raised to `1 - LIFT`, so a channel with a higher pivot
 /// comes up further — and the colonies need to, because the curve helped
 /// the backdrop more than it helped them. A colonisation line is a handful
 /// of systems laid over a crowd of hundreds of thousands: its splats are
@@ -520,19 +555,33 @@ const COLONY_PIVOT: f32 = 0.5;
 /// and exists only so that arithmetic cannot.
 const CEILING: f32 = 32.0;
 
-/// How hard the field is compressed about its pivot, as an exponent
+/// How hard the faint half of the field is lifted, as an exponent
 ///
-/// A half, which in linear light is: four times the deposit is twice the
-/// level. A straight line in log-log through [`PIVOT`], so it has no knee
-/// anywhere and there is no level at which it starts or stops acting —
-/// the faint end is lifted by as many stops as the bright end is held
-/// down, smoothly, and a splat sitting on the pivot is untouched.
+/// A half, which in linear light is: a quarter of the deposit is half the
+/// level. A straight line in log-log up to [`PIVOT`], so there is no level
+/// under the pivot at which it starts or stops acting.
 ///
 /// It is a *shape* and not a level. Where the field sits as a whole is
 /// [`FieldExposure`]'s to say, and the dial is spent after the curve so a
 /// stop stays a stop: the curve decides how much of the field fits on a
 /// display at once, and the dial decides where that fits.
-const COMPRESS: f32 = 0.5;
+const LIFT: f32 = 0.5;
+
+/// And how hard the bright half is held down
+///
+/// **Harder than the faint half is lifted, which is why there are two.**
+/// One exponent about the pivot ties the two ends together: taking the
+/// core down means bringing the web up by as much, and the two are not
+/// the same problem — the faint end was where the field was invisible and
+/// the bright end is where it blows out. A third rather than a half: nine
+/// times the deposit is twice the level, against three times under one
+/// exponent.
+///
+/// The two meet at the pivot, which both leave exactly where it is, so
+/// the curve is continuous and monotone throughout and nothing anywhere
+/// is flattened into what is beside it. What changes at the pivot is only
+/// how steeply it is rising.
+const PRESS: f32 = 0.33;
 
 /// A deposit put through the field's curve, hue held
 ///
@@ -555,7 +604,8 @@ fn compressed_level(top: f32, pivot: f32) -> f32 {
     if top <= 0. {
         return 0.;
     }
-    pivot * (top / pivot).powf(COMPRESS)
+    let over = top / pivot;
+    pivot * over.powf(if over > 1. { PRESS } else { LIFT })
 }
 
 /// How far past touching a crowd is let alone, as a multiple of `fill`
@@ -826,6 +876,21 @@ fn build_glow(
     // much of the field's range reaches the display at once rather than
     // where that range sits.
     let opened = exposure.factor();
+    // And the tilt, which is the dial's rest moving with the reach rather
+    // than the user moving it; see [`RESTS_AT`].
+    // Held inside the reaches the tilt was read from. Outside them it is
+    // an extrapolation and a steep one: a fit that wants three stops over
+    // four octaves wants seven over ten, and the reach inside a system is
+    // ten octaves under the rest — so the field would go out entirely
+    // where the map is flying between two stars. Below the span it holds
+    // at what the closest reading asked for, and above it at rest, which
+    // is where the map was reported as needing nothing further.
+    let reach = if spyglass.radius > 0. {
+        spyglass.radius.clamp(TILTS_FROM, RESTS_AT)
+    } else {
+        RESTS_AT
+    };
+    let tilted = (reach / RESTS_AT).powf(TILT);
     let mut quads = Quads::default();
     let mut counted = Laid::default();
 
@@ -1007,9 +1072,9 @@ fn build_glow(
 
     // What the frame carries, which is not what the cells deposited: the
     // range the field lays over is four orders of magnitude and a display
-    // holds two, so it goes through the curve ([`COMPRESS`]) and then the
+    // holds two, so it goes through the curve ([`LIFT`], [`PRESS`]) and
     // dial. See `Quads::expose`.
-    quads.expose(opened);
+    quads.expose(opened * tilted);
     counted.light = 0.;
 
     for radius in &quads.radii {
@@ -1032,7 +1097,8 @@ fn build_glow(
             .peaks
             .iter()
             .map(|&(peak, pivot)| {
-                (compressed_level(peak, pivot) * opened).min(CEILING)
+                (compressed_level(peak, pivot) * opened * tilted)
+                    .min(CEILING)
             })
             .collect();
         counted.light = levels.iter().sum();
@@ -1441,13 +1507,18 @@ mod tests {
             last = level;
         }
 
-        // And the range it leaves: ten thousand to one comes out as a
-        // hundred to one, which is what a display holds.
+        // And the range it leaves: ten thousand to one comes out under
+        // fifty to one, which is what a display holds. The bright half is
+        // pressed harder than the faint half is lifted ([`PRESS`] against
+        // [`LIFT`]), so most of that is taken off the top.
         let range =
             compressed_level(bright, PIVOT) / compressed_level(faint, PIVOT);
+        assert!(range < 50., "ten thousand to one came out as {range} to one");
         assert!(
-            (range - 100.).abs() < 1.,
-            "ten thousand to one came out as {range} to one"
+            compressed_level(bright, PIVOT) / PIVOT
+                < PIVOT / compressed_level(faint, PIVOT),
+            "the bright half was not pressed harder than the faint was \
+             lifted"
         );
 
         // A colony's splat comes up further than the crowd's at the same
@@ -1465,6 +1536,34 @@ mod tests {
         // floored to one pixel out of the bloom chain as an `inf`.
         assert!((compressed_level(1e12, PIVOT) * 1e6).min(CEILING) <= CEILING);
 
+    }
+
+    /// The tilt puts the dial's rest where the map was being driven to by
+    /// hand
+    ///
+    /// The field's level tracks the reach, and what that came to is three
+    /// settings read off the map: -3 stops at a reach of 850 light years,
+    /// -2 at 1,500 and 0 at 15,000. Those are the measurement, this is
+    /// the fit through them, and what it buys is a dial that can be left
+    /// alone.
+    #[test]
+    fn the_tilt_is_the_settings_it_was_read_from() {
+        let stops = |reach: f32| (reach / RESTS_AT).powf(TILT).log2();
+        for (reach, asked) in [(850., -3.), (1_500., -2.), (15_000., 0.)] {
+            let got = stops(reach);
+            assert!(
+                (got - asked as f32).abs() < 0.5,
+                "at a reach of {reach} ly the tilt is {got} stops against \
+                 the {asked} the map was being driven to"
+            );
+        }
+        // And it is monotone, so a wider reach is never a darker field.
+        let mut last = f32::MIN;
+        for step in 0..32 {
+            let here = stops(50. * 1.3f32.powi(step));
+            assert!(here > last, "the tilt turned back at step {step}");
+            last = here;
+        }
     }
 
     /// A crowd is laid as a density, thinning as the footprint it is spread
@@ -1694,7 +1793,11 @@ mod exposure {
         // the far case the exposure is judged on.
         app.init_resource::<crate::systems::aggregate::Drawn>();
         app.insert_resource(crate::systems::Spyglass {
-            radius: set.reach.unwrap_or(0.),
+            // What `reach_with_camera` would set from this distance where
+            // the test is not clearing at one of its own: the tilt reads
+            // the reach, so a measurement has to stand where the client
+            // would. See `crate::systems::reach_with_camera`.
+            radius: set.reach.unwrap_or((away * 0.37) as f32),
             clear: set.reach.is_some(),
             lock_camera: false,
             follow_camera: true,
@@ -1801,11 +1904,9 @@ mod exposure {
     fn the_field_is_exposed() {
         let Some(dir) = measured() else { return };
         let mut middling: Vec<f32> = Vec::new();
-        let mut level: Vec<f32> = Vec::new();
         for away in [20., 200., 2_000., 30_000.] {
             let (laid, splats) = laid_at(&dir, away, Set::open());
             middling.push(laid.typical);
-            level.push(laid.light);
             println!(
                 "{away:>8} ly out: {splats:>5} splats, {:>5} colonies, \
                  {:>5} backdrop, light {:.1}, \
@@ -1869,21 +1970,6 @@ mod exposure {
                 laid.thinnest
             );
         }
-
-        // And the range the zooms leave between them, which is what made
-        // the dial unusable: the field's level is a fact about the view,
-        // and it moved 2.8 stops between the bubble and the galaxy seen
-        // whole — so a setting that read well at one end blew the other
-        // out, which is exactly how the exposure was reported. The curve
-        // brings the ends of the *field* together and brings this in with
-        // them, since what drifts is mostly the bright end.
-        let low = level.iter().copied().fold(f32::MAX, f32::min);
-        let high = level.iter().copied().fold(0., f32::max);
-        assert!(
-            high < low * 3.,
-            "the field's level moves more than a stop and a half across \
-             the zooms: {level:?}"
-        );
 
         // A splat is still spread over whatever its cell covers, so the
         // middling one is far brighter over a galaxy of five-pixel splats
