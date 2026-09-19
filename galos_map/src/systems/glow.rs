@@ -478,10 +478,34 @@ const COVERAGE: f64 = 0.5;
 /// both: opening the dial far enough to find the web blows the core out,
 /// which is what the setting was reported as doing at every zoom.
 ///
-/// A twentieth of a unit, which is in the middle of what the field
-/// actually lays rather than at white. Below it the curve lifts and above
-/// it the curve holds down, and at it nothing happens at all.
+/// A twentieth of a unit for the crowd nobody lives in, which is in the
+/// middle of what that channel actually lays rather than at white. Below
+/// it the curve lifts and above it the curve holds down, and at it nothing
+/// happens at all.
 const PIVOT: f32 = 0.05;
+
+/// And the pivot the colonies are compressed about
+///
+/// **Ten times the backdrop's, because the two channels are not the same
+/// picture.** The lift a pivot gives a faint deposit is the ratio between
+/// the two raised to `1 - COMPRESS`, so a channel with a higher pivot
+/// comes up further — and the colonies need to, because the curve helped
+/// the backdrop more than it helped them. A colonisation line is a handful
+/// of systems laid over a crowd of hundreds of thousands: its splats are
+/// already the brighter ones and sit near the top of the curve where it
+/// presses, while the crowd underneath is faint everywhere and sits at the
+/// bottom where it lifts. Compressed about one pivot, the grey came up
+/// under the lines and the lines went faint against it, which is what the
+/// field was reported as doing.
+///
+/// Half a unit: some three times the lift at the level a filament's splats
+/// sit at. Which is a *reading* and not a fact — how loud the colonies
+/// should be against the galaxy behind them is the same question
+/// [`Gains::backdrop`] answers in the other direction — and it is here
+/// rather than in the gains because a gain is spent before the curve and
+/// the curve is not linear, so a ratio set there is not the ratio that
+/// comes out.
+const COLONY_PIVOT: f32 = 0.5;
 
 
 /// The hard stop under everything, in linear light
@@ -517,21 +541,21 @@ const COMPRESS: f32 = 0.5;
 /// red-dominated core that is pressed while the blue is let through, which
 /// is a hue shift with the density, and it is also exactly how a clip
 /// desaturates everything bright to white.
-fn compressed(peak: Vec3) -> Vec3 {
+fn compressed(peak: Vec3, pivot: f32) -> Vec3 {
     let top = peak.max_element();
     if top <= 0. {
         return peak;
     }
-    peak * (compressed_level(top) / top)
+    peak * (compressed_level(top, pivot) / top)
 }
 
 /// The same curve on one level, which is what the brightest channel is put
 /// through and what the diagnostics read.
-fn compressed_level(top: f32) -> f32 {
+fn compressed_level(top: f32, pivot: f32) -> f32 {
     if top <= 0. {
         return 0.;
     }
-    PIVOT * (top / PIVOT).powf(COMPRESS)
+    pivot * (top / pivot).powf(COMPRESS)
 }
 
 /// How far past touching a crowd is let alone, as a multiple of `fill`
@@ -936,6 +960,7 @@ fn build_glow(
                     light,
                     systems * MARK_AREA,
                     gains.crowd * gains.backdrop,
+                    PIVOT,
                     room(at),
                 ) {
                     counted.backdrop += 1;
@@ -970,6 +995,7 @@ fn build_glow(
                     mix * carried * gains.mark * MARK_AREA,
                     systems * MARK_AREA,
                     gains.crowd,
+                    COLONY_PIVOT,
                     room(at),
                 ) {
                     counted.colonies += 1;
@@ -1002,16 +1028,20 @@ fn build_glow(
     if !quads.peaks.is_empty() {
         // The peaks as the frame carries them, through the same curve and
         // the same dial the quads went through.
-        for peak in &mut quads.peaks {
-            *peak = (compressed_level(*peak) * opened).min(CEILING);
-            counted.light += *peak;
-        }
-        quads.peaks.sort_unstable_by(f32::total_cmp);
-        counted.faintest = quads.peaks[0];
-        counted.typical = quads.peaks[(quads.peaks.len() - 1) / 2];
-        counted.peak = quads.peaks[quads.peaks.len() - 1];
+        let mut levels: Vec<f32> = quads
+            .peaks
+            .iter()
+            .map(|&(peak, pivot)| {
+                (compressed_level(peak, pivot) * opened).min(CEILING)
+            })
+            .collect();
+        counted.light = levels.iter().sum();
+        levels.sort_unstable_by(f32::total_cmp);
+        counted.faintest = levels[0];
+        counted.typical = levels[(levels.len() - 1) / 2];
+        counted.peak = levels[levels.len() - 1];
         counted.clipped =
-            quads.peaks.iter().filter(|peak| **peak >= CEILING).count() as u32;
+            levels.iter().filter(|level| **level >= CEILING).count() as u32;
     }
     laid.set_if_neq(counted);
 
@@ -1036,8 +1066,13 @@ struct Lit {
 struct Quads {
     /// Footprint radii laid this frame, for [`Laid`].
     radii: Vec<f32>,
+    /// The pivot each quad's channel is compressed about, one per quad's
+    /// four vertices; see [`COLONY_PIVOT`].
+    pivots: Vec<f32>,
     /// And the peak each was laid at.
-    peaks: Vec<f32>,
+    /// And the peak each was laid at, with the pivot its channel is
+    /// compressed about.
+    peaks: Vec<(f32, f32)>,
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
@@ -1066,10 +1101,10 @@ impl Quads {
     /// of that range a display can hold at once, which is a fact about the
     /// frame. The dial comes after the curve, so a stop stays a stop.
     fn expose(&mut self, opened: f32) {
-        for color in &mut self.colors {
+        for (color, pivot) in self.colors.iter_mut().zip(&self.pivots) {
             let laid = Vec3::new(color[0], color[1], color[2]);
             let peak =
-                (compressed(laid) * opened).min(Vec3::splat(CEILING));
+                (compressed(laid, *pivot) * opened).min(Vec3::splat(CEILING));
             *color = [peak.x, peak.y, peak.z, color[3]];
         }
     }
@@ -1085,6 +1120,7 @@ impl Quads {
         light: Vec3,
         covered: f32,
         crowd: f32,
+        pivot: f32,
         // How far the reach leaves this splat to spread, light years, or
         // `None` where the spyglass is not clearing and it may spread as
         // far as it likes. See `build_glow`.
@@ -1156,6 +1192,7 @@ impl Quads {
             self.positions.push([cx + dx, cy + dy, -2.]);
             self.uvs.push([u, v]);
             self.colors.push(color);
+            self.pivots.push(pivot);
         }
         self.indices.extend_from_slice(&[
             base,
@@ -1166,7 +1203,7 @@ impl Quads {
             base + 3,
         ]);
         self.radii.push(radius);
-        self.peaks.push(peak.max_element());
+        self.peaks.push((peak.max_element(), pivot));
         Some(Lit {
             separated: covered < std::f32::consts::TAU * spread_px * spread_px,
         })
@@ -1386,35 +1423,48 @@ mod tests {
     #[test]
     fn the_curve_brings_the_ends_together() {
         assert!(
-            (compressed_level(PIVOT) - PIVOT).abs() < PIVOT * 1e-4,
+            (compressed_level(PIVOT, PIVOT) - PIVOT).abs() < PIVOT * 1e-4,
             "the pivot moved: {}",
-            compressed_level(PIVOT)
+            compressed_level(PIVOT, PIVOT)
         );
 
         // Under the pivot, up. Over it, down. Monotone throughout, so
         // nothing anywhere is flattened into anything beside it.
         let faint = PIVOT / 100.;
         let bright = PIVOT * 100.;
-        assert!(compressed_level(faint) > faint * 5.);
-        assert!(compressed_level(bright) < bright / 5.);
+        assert!(compressed_level(faint, PIVOT) > faint * 5.);
+        assert!(compressed_level(bright, PIVOT) < bright / 5.);
         let mut last = 0.;
         for step in 0..64 {
-            let level = compressed_level(1e-5 * 1.5f32.powi(step));
+            let level = compressed_level(1e-5 * 1.5f32.powi(step), PIVOT);
             assert!(level > last, "the curve turned back at step {step}");
             last = level;
         }
 
         // And the range it leaves: ten thousand to one comes out as a
         // hundred to one, which is what a display holds.
-        let range = compressed_level(bright) / compressed_level(faint);
+        let range =
+            compressed_level(bright, PIVOT) / compressed_level(faint, PIVOT);
         assert!(
             (range - 100.).abs() < 1.,
             "ten thousand to one came out as {range} to one"
         );
 
+        // A colony's splat comes up further than the crowd's at the same
+        // level, which is what the higher pivot is for: the lines were
+        // going faint against a backdrop the curve had lifted under them.
+        let level = 0.01;
+        let lift = compressed_level(level, COLONY_PIVOT)
+            / compressed_level(level, PIVOT);
+        assert!(
+            lift > 2.,
+            "a colony at {level} came up {lift} times the crowd's"
+        );
+
         // The guard is under everything, which is what keeps a cell
         // floored to one pixel out of the bloom chain as an `inf`.
-        assert!((compressed_level(1e12) * 1e6).min(CEILING) <= CEILING);
+        assert!((compressed_level(1e12, PIVOT) * 1e6).min(CEILING) <= CEILING);
+
     }
 
     /// A crowd is laid as a density, thinning as the footprint it is spread
