@@ -52,11 +52,15 @@ pub fn plugin(app: &mut App) {
     // Ringed in the same pass and the same layer the pointer's own ring is
     // drawn in, and after it, so a merged mark and a system are marked the
     // same way and neither is drawn over the other.
+    // Gated on the index being read, as [`crate::schedule`] gates the
+    // whole `Update` pipeline: this reads the tables that read delivers,
+    // and the egui pass runs from the first frame, before there are any.
     app.add_systems(
         EguiPrimaryContextPass,
         ring_blob
             .after(super::pointing::ring)
-            .before(super::labels::draw_names),
+            .before(super::labels::draw_names)
+            .run_if(in_state(crate::loading::Opening::Drawn)),
     );
 }
 
@@ -80,6 +84,8 @@ fn ring_blob(
     prominent: Res<Prominent>,
     names: Res<Names>,
     populated: Res<Populated>,
+    view: Res<super::scale::View>,
+    scale_population: Res<super::scale::ScalePopulation>,
 ) -> Result {
     let Some(blob) = pointed.0 else { return Ok(()) };
     let Ok((orbit, camera)) = cameras.single() else { return Ok(()) };
@@ -106,8 +112,10 @@ fn ring_blob(
     );
 
     let systems = blob.count;
+    let by_population =
+        super::scale::by_population(&view, &scale_population);
     let said = match prominent
-        .of(blob.id)
+        .of(blob.id, by_population, &populated)
         .map(|point| build_from_point(point, &populated, &names))
     {
         Some(system) => format!("{} · {systems} systems", system.name),
@@ -153,14 +161,44 @@ pub struct PointedBlob(pub Option<Blob>);
 /// pointer rests on it.
 #[derive(Resource, Default)]
 pub struct Prominent {
-    known: FxHashMap<CellId, Option<Point>>,
+    known: FxHashMap<CellId, Vec<Point>>,
     reading: FxHashMap<CellId, Task<Option<Vec<Point>>>>,
 }
 
 impl Prominent {
-    /// The point a cell's mark stands for, where it has been read.
-    pub fn of(&self, id: CellId) -> Option<&Point> {
-        self.known.get(&id).and_then(|held| held.as_ref())
+    /// The point a cell's mark stands for, where it has been read
+    ///
+    /// The head of the prefix while the map is drawing the sky as light:
+    /// the payload is in magnitude order, so the first is the brightest
+    /// thing under the cell.
+    ///
+    /// The busiest of the prefix where marks are drawn by population,
+    /// because there a mark's *size* is how many people live there and the
+    /// biggest is what the eye is aiming at — the same rule
+    /// `bounded::busiest_first` draws them in. Of the cell's own brightest
+    /// and not of its whole subtree: the systems further down live in the
+    /// payloads of cells the walk never asked for, and reading a subtree
+    /// to name one mark is a galaxy read to answer a hover.
+    ///
+    /// Kept as the prefix rather than the choice, so changing what the map
+    /// draws changes the answer without reading anything again.
+    pub fn of(
+        &self,
+        id: CellId,
+        by_population: bool,
+        populated: &Populated,
+    ) -> Option<&Point> {
+        let read = self.known.get(&id)?;
+        if !by_population {
+            return read.first();
+        }
+        read.iter()
+            .max_by_key(|point| {
+                populated
+                    .get(point.id64 as i64)
+                    .map_or(0, |system| system.population)
+            })
+            .or_else(|| read.first())
     }
 }
 
@@ -237,6 +275,10 @@ fn point_at_blobs(
 /// the brightest is its head and [`PREFIX`] is enough to choose the busiest
 /// among the cell's own brightest too. Reading a whole slice to rank it
 /// would be hundreds of systems read to name one.
+///
+/// A cell that reads back nothing is remembered as nothing — an empty
+/// prefix is an answer — so it is asked once rather than every frame the
+/// pointer rests on it.
 fn name_blobs(
     pointed: Res<PointedBlob>,
     transport: Res<Transport>,
@@ -250,15 +292,10 @@ fn name_blobs(
         .filter_map(|(id, task)| {
             block_on(poll_once(task)).map(|read| (*id, read))
         })
-        .map(|(id, read)| {
-            let head = read.and_then(|points| points.into_iter().next());
-            (id, head)
-        })
-        .inspect(|_| {})
         .collect::<Vec<_>>()
         .into_iter()
-        .map(|(id, head)| {
-            prominent.known.insert(id, head);
+        .map(|(id, read)| {
+            prominent.known.insert(id, read.unwrap_or_default());
             id
         })
         .collect();
@@ -302,6 +339,8 @@ fn click_blobs(
     keys: Res<ButtonInput<KeyCode>>,
     populated: Res<Populated>,
     names: Res<Names>,
+    view: Res<super::scale::View>,
+    scale_population: Res<super::scale::ScalePopulation>,
     mut selection: ResMut<Selection>,
 ) {
     if !gesture.on_map() {
@@ -311,7 +350,11 @@ fn click_blobs(
         return;
     }
     let Some(blob) = pointed.0 else { return };
-    let Some(point) = prominent.of(blob.id) else { return };
+    let by_population =
+        super::scale::by_population(&view, &scale_population);
+    let Some(point) = prominent.of(blob.id, by_population, &populated) else {
+        return;
+    };
     // Held down, a modifier gathers rather than replaces, exactly as it
     // does over a drawn system; see `super::spawn::select_on_click`.
     let gathering = keys.any_pressed([
@@ -433,8 +476,12 @@ mod tests {
     #[test]
     fn a_mark_is_named_by_the_head_of_its_cell() {
         let id = CellId::of_point(AHEAD, 8);
+        let empty = Populated::default();
         let mut prominent = Prominent::default();
-        assert!(prominent.of(id).is_none(), "nothing is known unasked");
+        assert!(
+            prominent.of(id, false, &empty).is_none(),
+            "nothing is known unasked",
+        );
 
         let head = Point {
             id64: 7,
@@ -444,7 +491,88 @@ mod tests {
             updated_at: 0,
             kind: StarKind::Unknown,
         };
-        prominent.known.insert(id, Some(head));
-        assert_eq!(prominent.of(id).map(|point| point.id64), Some(7));
+        prominent.known.insert(id, vec![head]);
+        assert_eq!(
+            prominent.of(id, false, &empty).map(|point| point.id64),
+            Some(7),
+        );
+    }
+
+    /// One system of a merged mark's prefix, at `magnitude`.
+    fn point(id64: u64, magnitude: f32) -> Point {
+        Point {
+            id64,
+            pos: [1., 2., 3.],
+            magnitude,
+            temp_bucket: 4,
+            updated_at: 0,
+            kind: StarKind::Unknown,
+        }
+    }
+
+    /// Everyone lives on `busiest`, and nobody anywhere else.
+    fn lived_on(busiest: i64) -> Populated {
+        Populated(std::sync::Arc::new(
+            [(
+                busiest,
+                galos_index::meta::PopulatedSystem {
+                    address: busiest,
+                    name: "Busy".into(),
+                    position: [0.; 3],
+                    population: 40_000,
+                    security: None,
+                    government: None,
+                    allegiance: None,
+                    primary_economy: None,
+                    secondary_economy: None,
+                    factions: Vec::new(),
+                    body_count: None,
+                    non_body_count: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        ))
+    }
+
+    /// While marks are drawn by population, the mark stands for the
+    /// busiest system under it and not the brightest
+    ///
+    /// A mark's *size* is how many people live there in that mode, so the
+    /// biggest is what the eye is aiming at — the same rule the marks
+    /// themselves are drawn in. Off the light, the brightest is what a
+    /// mark says and what it answers with.
+    #[test]
+    fn what_a_mark_stands_for_follows_what_is_drawn() {
+        let id = CellId::of_point(AHEAD, 8);
+        let mut prominent = Prominent::default();
+        // In magnitude order, as a payload is: the brightest heads it.
+        prominent.known.insert(id, vec![point(1, 0.5), point(2, 6.0)]);
+        let populated = lived_on(2);
+
+        assert_eq!(
+            prominent.of(id, false, &populated).map(|point| point.id64),
+            Some(1),
+            "drawing light, a mark is the brightest under it",
+        );
+        assert_eq!(
+            prominent.of(id, true, &populated).map(|point| point.id64),
+            Some(2),
+            "drawing population, a mark is the busiest under it",
+        );
+    }
+
+    /// A cell whose payload read back nothing answers nothing, and is not
+    /// asked again: an empty prefix is an answer.
+    #[test]
+    fn a_mark_over_nothing_readable_is_asked_once() {
+        let id = CellId::of_point(AHEAD, 8);
+        let mut prominent = Prominent::default();
+        prominent.known.insert(id, Vec::new());
+        assert!(prominent.of(id, false, &Populated::default()).is_none());
+        assert!(
+            prominent.known.contains_key(&id),
+            "the answer was forgotten, so it would be asked again",
+        );
     }
 }
