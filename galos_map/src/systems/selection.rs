@@ -650,6 +650,7 @@ fn nothing_clicked(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
+    pointed_blob: Res<super::merged::PointedBlob>,
     mut selection: ResMut<Selection>,
     mut panes: crate::ui::Panes,
 ) {
@@ -660,6 +661,12 @@ fn nothing_clicked(
         return;
     }
     if !pointed_at.is_empty() {
+        return;
+    }
+    // A merged mark is a system too, and clicking one picks it out; see
+    // [`super::merged`]. Nothing is drawn for it that this query can see,
+    // so without this a click on one both selects it and clears it.
+    if pointed_blob.0.is_some() {
         return;
     }
 
@@ -972,6 +979,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<PressOwner>();
+        app.init_resource::<crate::systems::merged::PointedBlob>();
         // Asked to put its panes away by the same click that lets go.
         app.init_resource::<crate::ui::BarFields>();
         app.init_resource::<crate::ui::ClockControl>();
@@ -1084,6 +1092,31 @@ mod tests {
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
         assert!(!holding(&app));
+    }
+
+    /// A click on a merged mark holds on to what it picked out
+    ///
+    /// A blob is a system the map has not drawn — it is a whole subtree
+    /// standing in one mark, and clicking it picks out the system it
+    /// stands for ([`super::super::merged`]). Nothing on the map wears a
+    /// component for one, so without the guard the same click both picks
+    /// a system out and lets go of it.
+    #[test]
+    fn a_click_on_a_merged_mark_does_not_let_go() {
+        let mut app = clicked_on();
+        app.world_mut()
+            .resource_mut::<crate::systems::merged::PointedBlob>()
+            .0 = Some(crate::systems::bounded::Blob {
+            id: galos_index::CellId::ROOT,
+            count: 12,
+            at: [0.; 3],
+            m_min: None,
+        });
+
+        frame(&mut app, false, |buttons| buttons.press(PRIMARY));
+        frame(&mut app, false, |buttons| buttons.release(PRIMARY));
+
+        assert!(holding(&app), "a click on a merged mark let go");
     }
 
     /// Whether the bar has been asked to put its form away

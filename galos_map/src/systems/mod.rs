@@ -34,6 +34,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(scale::plugin);
     app.add_plugins(labels::plugin);
     app.add_plugins(pointing::plugin);
+    app.add_plugins(merged::plugin);
     app.add_plugins(route::plugin);
     app.add_plugins(selection::plugin);
     app.add_plugins(filter::plugin);
@@ -249,6 +250,7 @@ pub(crate) mod flight;
 pub(crate) mod glow;
 pub(crate) mod info;
 pub(crate) mod labels;
+pub(crate) mod merged;
 pub(crate) mod pointing;
 pub(crate) mod roundness;
 pub mod route;

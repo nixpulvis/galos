@@ -101,7 +101,7 @@ const INDICATOR_AIR: f32 = 4.;
 /// would be a dot, and it is the indicator that has to be aimed at. Held in
 /// pixels because that is what aiming is done in, so the target stays the
 /// same size to the hand at every zoom.
-const INDICATOR_MIN_RADIUS: f32 = 9.5;
+pub(crate) const INDICATOR_MIN_RADIUS: f32 = 9.5;
 
 /// The smallest a body's mark may be, as a radius in logical pixels
 ///
@@ -850,16 +850,20 @@ fn hits(
 pub fn point_the_cursor(
     hovered: Res<HoverMap>,
     clickable: Query<(), Or<(With<Indicator>, With<Label>)>>,
+    // A merged mark is clickable and wears no components at all, the map
+    // holding tens of thousands of them as a list; see [`super::merged`].
+    blob: Res<super::merged::PointedBlob>,
     // Whatever the window is showing, which is nothing until this has run
     // once.
     window: Query<(Entity, Option<&CursorIcon>), With<PrimaryWindow>>,
     mut commands: Commands,
 ) {
     let Ok((window, shown)) = window.single() else { return };
-    let over_something = hovered
-        .values()
-        .flat_map(|hits| hits.keys())
-        .any(|entity| clickable.contains(*entity));
+    let over_something = blob.0.is_some()
+        || hovered
+            .values()
+            .flat_map(|hits| hits.keys())
+            .any(|entity| clickable.contains(*entity));
 
     let wanted = if over_something {
         CursorIcon::System(SystemCursorIcon::Pointer)
@@ -1946,6 +1950,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<HoverMap>();
+        app.init_resource::<crate::systems::merged::PointedBlob>();
         app.init_resource::<Sets>();
         app.world_mut().spawn(PrimaryWindow);
         app.add_systems(Update, (point_the_cursor, count_sets).chain());

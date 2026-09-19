@@ -257,11 +257,17 @@ impl Republished {
 ///
 /// Written by [`reconcile`].
 #[derive(Resource, Default)]
-pub(crate) struct Blobs(pub(crate) Vec<Blob>);
+pub struct Blobs(pub(crate) Vec<Blob>);
 
 /// One merged mark: where it stands and what it stands for.
 #[derive(Copy, Clone)]
 pub(crate) struct Blob {
+    /// The cell it stands for, which is what names it: the system a merged
+    /// mark is pointed at is read out of this cell's own payload. See
+    /// [`super::merged`].
+    pub(crate) id: CellId,
+    /// How many systems are under it, for the readout.
+    pub(crate) count: u64,
     /// Its systems' count-weighted centroid, light years: where the mark is
     /// painted, which is where they are and not where the box is.
     pub(crate) at: [f64; 3],
@@ -1175,7 +1181,12 @@ pub(crate) fn reconcile(
         }
         behind += blob.count;
         lighting.drew(&view, blob.at, 1);
-        blobs.0.push(Blob { at: blob.at, m_min: blob.m_min });
+        blobs.0.push(Blob {
+            id: blob.id,
+            count: blob.count,
+            at: blob.at,
+            m_min: blob.m_min,
+        });
     }
     // And the patches of sky the whole frame left dark, one mark apiece.
     // Bounded by the frame rather than by the tree: at most one to a tile,
@@ -1185,7 +1196,12 @@ pub(crate) fn reconcile(
         let blob = &planned.0.blobs[offer as usize];
         behind += blob.count;
         lit += 1;
-        blobs.0.push(Blob { at: blob.at, m_min: blob.m_min });
+        blobs.0.push(Blob {
+            id: blob.id,
+            count: blob.count,
+            at: blob.at,
+            m_min: blob.m_min,
+        });
     }
     drop(merged);
 
