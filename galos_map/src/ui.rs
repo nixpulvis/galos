@@ -1194,6 +1194,15 @@ pub(crate) fn chrome(
             // wants is theirs to say; the roll-off on the packed end goes on
             // holding the core down either way. The marks are not on this
             // dial, a drawn system being an object at a set brightness.
+            //
+            // **Three stops at the top, and the rail spends its length on
+            // what is below.** The field's own level is settled against
+            // the reach now (`glow::TILT`), so the dial is no longer
+            // carrying three stops of that on top of a reading — and read
+            // off the map, three stops over the rest is as bright as the
+            // galaxy is ever wanted. A rail that ran to eight spent more
+            // than half its travel past anything usable, which is a dial
+            // that cannot be set finely where it is actually set.
             titled(
                 ui,
                 "Field Exposure (EV)",
@@ -1204,14 +1213,14 @@ pub(crate) fn chrome(
             let slider = ui
                 .horizontal(|ui| {
                     let rail = ui.add(
-                        egui::Slider::new(&mut field_ev, -8.0..=8.0)
+                        egui::Slider::new(&mut field_ev, -9.0..=3.0)
                             .step_by(0.25)
                             .show_value(false),
                     );
                     let typed = value_box(
                         ui,
                         egui::DragValue::new(&mut field_ev)
-                            .range(-8.0..=8.0)
+                            .range(-9.0..=3.0)
                             .speed(0.1)
                             .suffix(" EV"),
                     );
