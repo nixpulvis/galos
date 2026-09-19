@@ -499,7 +499,7 @@ fn flying_stays_quick() {
         let world = flight.app.world_mut();
         let planned = world.resource::<crate::systems::aggregate::Planned>();
         let marked: rustc_hash::FxHashSet<galos_index::CellId> =
-            planned.0.marks.iter().copied().collect();
+            planned.0.marks.iter().map(|mark| mark.id).collect();
         let resident = world.resource::<ResidentCells>();
         let mut held = 0usize;
         let mut wanted = 0usize;

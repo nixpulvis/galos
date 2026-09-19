@@ -147,6 +147,39 @@ pub struct View {
     pub aspect: f32,
 }
 
+/// The bubble a walk is clamped to: where the spyglass is centred and how
+/// far it reaches, in light years.
+///
+/// **The clamp belongs in the walk and nowhere else.** It was applied
+/// three times over after the fact — once in the fetch, once in the draw
+/// and once in the evictor — and each of those first had to be handed
+/// every cell the walk had marked. Which at a close zoom is the whole
+/// tree: the merge distance in light years shrinks with the camera, so
+/// nothing anywhere merges and every cell in the galaxy is marked.
+/// Measured over `.index/full` from a hundred light years out, the walk
+/// answered **195,524 marks** for a view holding twenty-seven cells, and
+/// the frame spent milliseconds a pass throwing the rest away again.
+///
+/// Cut here, a subtree the bubble does not touch is never descended into
+/// and never answered, so the sets the client works over are the sets it
+/// draws from. Measured to the nearest point of a cell's box, so a cell
+/// straddling the edge is kept and its own points are cut by their own
+/// distance.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Reach {
+    /// What the bubble is centred on: the camera's target.
+    pub center: [f64; 3],
+    /// How far it holds, light years.
+    pub radius: f64,
+}
+
+impl Reach {
+    /// Whether the bubble comes within a cell's box.
+    fn holds(&self, id: CellId) -> bool {
+        id.bounds().distance_to(self.center) <= self.radius
+    }
+}
+
 impl View {
     /// How many pixels one radian of arc covers vertically, the factor that
     /// turns an angular size into a projected one.
@@ -237,6 +270,10 @@ pub struct SplatRef {
 pub struct BlobRef {
     /// The cell whose aggregate is drawn as one mark.
     pub id: CellId,
+    /// How many systems it stands for, which is its whole subtree. Carried
+    /// for the same reason [`MarkRef`] carries its slice: the draw spreads
+    /// its share over this and the alternative is a lookup a blob a frame.
+    pub count: u64,
     /// The share of the draw this blob carries, `0.0..=1.0`.
     pub blend: f64,
 }
@@ -259,10 +296,26 @@ pub struct BlobRef {
 /// it, which is a galaxy of uniform density, and the same figure with a
 /// floor under it drew nothing at all in the finest cells, which is a hole
 /// where the sky is densest.
+/// One cell whose own slice the draw reads, and how many systems that is
+///
+/// The count rides along because every reader of the marks needs it — the
+/// fetch to know how much of the cell to ask for, the draw to know how
+/// much of it to take — and the walk has it in hand while the alternative
+/// is a hash lookup per cell per frame in each of them. Measured over
+/// `.index/full` at a wide zoom, that is sixty thousand lookups a pass
+/// and three passes a frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct MarkRef {
+    /// The cell whose payload is read.
+    pub id: CellId,
+    /// How many systems it owns in its own slice.
+    pub slice: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Needed {
     pub mode: Mode,
-    pub marks: Vec<CellId>,
+    pub marks: Vec<MarkRef>,
     pub blobs: Vec<BlobRef>,
     pub splats: Vec<SplatRef>,
 }
@@ -552,16 +605,22 @@ impl Index {
 
     /// The cells the view needs for a presentation: the marks to draw, the
     /// cells to draw as one merged mark, and the cells to splat as a field.
-    pub fn needed(&self, view: &View, mode: Mode) -> Needed {
+    pub fn needed(
+        &self,
+        view: &View,
+        mode: Mode,
+        within: Option<Reach>,
+    ) -> Needed {
         match mode {
-            Mode::Shell => self.walk_screen(view),
+            Mode::Shell => self.walk_screen(view, within),
             Mode::Real => {
-                let (marks, blobs) = self.frontier(view, STAR_MERGE_PX, true);
+                let (marks, blobs) =
+                    self.frontier(view, STAR_MERGE_PX, true, within);
                 Needed {
                     mode: Mode::Real,
                     marks,
                     blobs,
-                    splats: self.glow_field(view),
+                    splats: self.glow_field(view, within),
                 }
             }
         }
@@ -609,7 +668,8 @@ impl Index {
         view: &View,
         merge_px: f64,
         photometric: bool,
-    ) -> (Vec<CellId>, Vec<BlobRef>) {
+        within: Option<Reach>,
+    ) -> (Vec<MarkRef>, Vec<BlobRef>) {
         let mut marks = Vec::new();
         let mut blobs = Vec::new();
         if self.nodes.is_empty() {
@@ -618,6 +678,9 @@ impl Index {
         let mut stack = vec![(0u32, 1.0f64)];
         while let Some((at, shown)) = stack.pop() {
             let node = &self.nodes[at as usize];
+            if within.is_some_and(|reach| !reach.holds(node.id)) {
+                continue;
+            }
             if photometric && !node_visible(view, node) {
                 continue;
             }
@@ -625,6 +688,7 @@ impl Index {
             if alpha < 1.0 {
                 blobs.push(BlobRef {
                     id: node.id,
+                    count: node.count,
                     blend: shown * (1.0 - alpha),
                 });
             }
@@ -632,7 +696,10 @@ impl Index {
                 continue;
             }
             if node.slice > 0 {
-                marks.push(node.id);
+                marks.push(MarkRef {
+                    id: node.id,
+                    slice: node.slice.min(u64::from(u32::MAX)) as u32,
+                });
             }
             for child in
                 node.first_child..node.first_child + node.children as u32
@@ -671,9 +738,18 @@ impl Index {
     /// descends [`Index::nodes`] rather than the map, and reads each cell's
     /// figures rather than working them out: **23 ms to 1.5 ms**, the same
     /// marks and the same field.
-    pub fn walk_screen(&self, view: &View) -> Needed {
-        let (marks, blobs) = self.frontier(view, MERGE_PX, false);
-        Needed { mode: Mode::Shell, marks, blobs, splats: self.glow(view) }
+    pub fn walk_screen(
+        &self,
+        view: &View,
+        within: Option<Reach>,
+    ) -> Needed {
+        let (marks, blobs) = self.frontier(view, MERGE_PX, false, within);
+        Needed {
+            mode: Mode::Shell,
+            marks,
+            blobs,
+            splats: self.glow(view, within),
+        }
     }
 
     /// The political field: descend while a cell's contents subtend more than
@@ -683,7 +759,7 @@ impl Index {
     /// children by their count, so the two sum to the cell's own weight
     /// throughout the transition and the blends under any point of the sky
     /// sum to one.
-    fn glow(&self, view: &View) -> Vec<SplatRef> {
+    fn glow(&self, view: &View, within: Option<Reach>) -> Vec<SplatRef> {
         let mut splats = Vec::new();
         if self.nodes.is_empty() {
             return splats;
@@ -694,6 +770,9 @@ impl Index {
         let mut stack = vec![(0u32, 1.0f64)];
         while let Some((at, weight)) = stack.pop() {
             let node = &self.nodes[at as usize];
+            if within.is_some_and(|reach| !reach.holds(node.id)) {
+                continue;
+            }
 
             // Only children carrying systems can take the handoff.
             let kids = node.first_child as usize
@@ -739,7 +818,7 @@ impl Index {
     /// opening angle, and splat it once it subtends less: the summed light of
     /// everything below the visibility floor. Full weight each — the Real glow
     /// does not cross-fade levels yet — so a splat carries its whole cell.
-    fn glow_field(&self, view: &View) -> Vec<SplatRef> {
+    fn glow_field(&self, view: &View, within: Option<Reach>) -> Vec<SplatRef> {
         let mut splats = Vec::new();
         if self.nodes.is_empty() {
             return splats;
@@ -747,6 +826,9 @@ impl Index {
         let mut stack = vec![0u32];
         while let Some(at) = stack.pop() {
             let node = &self.nodes[at as usize];
+            if within.is_some_and(|reach| !reach.holds(node.id)) {
+                continue;
+            }
             let d = distance(view.eye, node.id.bounds().center());
             let angle =
                 if d <= 0.0 { f64::INFINITY } else { node.id.edge_ly() / d };
@@ -864,6 +946,12 @@ mod tests {
     /// cells the field drew and not what weight each carried.
     fn splat_ids(needed: &Needed) -> Vec<CellId> {
         needed.splats.iter().map(|s| s.id).collect()
+    }
+
+    /// The cell ids of a plan's marks, the slice each carries being beside
+    /// the point for the tests that only ask which cells were read.
+    fn mark_ids(needed: &Needed) -> Vec<CellId> {
+        needed.marks.iter().map(|mark| mark.id).collect()
     }
 
     /// The cell ids of a plan's merged marks.
@@ -1104,9 +1192,9 @@ mod tests {
     fn close_leaves_draw_as_marks() {
         let (index, _parent, kids) = small_tree(100, 100, 4.0);
         let view = eye_out(CellId::of_point(HERE, 13), 4.0);
-        let needed = index.walk_screen(&view);
-        assert!(needed.marks.contains(&kids[0]));
-        assert!(needed.marks.contains(&kids[1]));
+        let needed = index.walk_screen(&view, None);
+        assert!(mark_ids(&needed).contains(&kids[0]));
+        assert!(mark_ids(&needed).contains(&kids[1]));
         assert!(blob_ids(&needed).is_empty(), "a close leaf merged");
     }
 
@@ -1125,7 +1213,7 @@ mod tests {
         let out =
             contents_extent(root) * lens.pixels_per_radian() / (SPLIT_PX * 0.5);
         let far = eye_out(CellId::ROOT, out);
-        let out = index.walk_screen(&far);
+        let out = index.walk_screen(&far, None);
         assert!(out.marks.is_empty(), "a point-sized galaxy read a payload");
         assert_eq!(blob_ids(&out), vec![CellId::ROOT], "not one merged mark");
         assert_eq!(out.splats.len(), 1, "more than one circle for the galaxy");
@@ -1157,7 +1245,7 @@ mod tests {
         let index = Index::from_cells(cells);
 
         let far = eye_out(id, 60_000.0);
-        let out = index.walk_screen(&far);
+        let out = index.walk_screen(&far, None);
         assert!(out.marks.is_empty(), "a far dense leaf read its payload");
         // The frontier is the *topmost* cell that merges, and every cell on
         // the chain above the leaf holds exactly what it holds, so the whole
@@ -1169,7 +1257,7 @@ mod tests {
         );
 
         let near = eye_out(id, 3.0);
-        assert!(index.walk_screen(&near).marks.contains(&id));
+        assert!(mark_ids(&index.walk_screen(&near, None)).contains(&id));
     }
 
     /// A cell is read while its contents are wider than one mark and merged
@@ -1207,8 +1295,11 @@ mod tests {
 
         // A hundred light years of systems, so up close the cell is a long
         // way past one mark and is read.
-        assert!(index.walk_screen(&eye_out(id, 5.0)).marks.contains(&id));
-        assert!(index.walk_screen(&eye_out(id, 3_000.0)).marks.contains(&id));
+        let reads = |away: f64| {
+            mark_ids(&index.walk_screen(&eye_out(id, away), None)).contains(&id)
+        };
+        assert!(reads(5.0));
+        assert!(reads(3_000.0));
 
         // The distance at which its contents stop covering the merge
         // distance, from the far side of the band. Past it nothing is read
@@ -1216,8 +1307,8 @@ mod tests {
         let lens = eye_out(id, 1.0);
         let span = contents_width(&leaf);
         let out = span * lens.pixels_per_radian() / MERGE_PX;
-        let far = index.walk_screen(&eye_out(id, out * 2.0));
-        assert!(!far.marks.contains(&id), "still reading at one dot");
+        let far = index.walk_screen(&eye_out(id, out * 2.0), None);
+        assert!(!mark_ids(&far).contains(&id), "still reading at one dot");
         assert_eq!(blob_ids(&far), vec![CellId::ROOT], "not one merged mark");
     }
 
@@ -1237,9 +1328,9 @@ mod tests {
             viewport_height: 1080.0,
             aspect: 16.0 / 9.0,
         };
-        let toward = index.walk_screen(&looking([0.0, 0.0, 1.0]));
-        let away = index.walk_screen(&looking([0.0, 0.0, -1.0]));
-        let side = index.walk_screen(&looking([1.0, 0.0, 0.0]));
+        let toward = index.walk_screen(&looking([0.0, 0.0, 1.0]), None);
+        let away = index.walk_screen(&looking([0.0, 0.0, -1.0]), None);
+        let side = index.walk_screen(&looking([1.0, 0.0, 0.0]), None);
         assert_eq!(toward.marks, away.marks, "facing away changed the marks");
         assert_eq!(toward.marks, side.marks, "facing side changed the marks");
     }
@@ -1250,7 +1341,7 @@ mod tests {
     fn closing_in_splits_the_root() {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
         let near = eye_out(CellId::ROOT, 1.0e6);
-        let out = index.walk_screen(&near);
+        let out = index.walk_screen(&near, None);
         assert!(
             !splat_ids(&out).contains(&CellId::ROOT),
             "the root refused to split"
@@ -1272,7 +1363,7 @@ mod tests {
         // A distance that puts the root partway into its band, so root and
         // children both draw rather than one replacing the other outright.
         let view = eye_out(root, 6.0e7);
-        let needed = index.walk_screen(&view);
+        let needed = index.walk_screen(&view, None);
         assert!(needed.splats.len() > 1, "the root did not begin to split");
         let total: f64 = needed.splats.iter().map(|s| s.blend).sum();
         assert!((total - 1.0).abs() < 1e-9, "weight not conserved: {total}");
@@ -1286,8 +1377,8 @@ mod tests {
 
         let (bright, _p, kids) = small_tree(10, 10, -1.0);
         let near = eye_out(parent, 4.0);
-        let seen = bright.needed(&near, Mode::Real);
-        assert!(seen.marks.contains(&kids[0]));
+        let seen = bright.needed(&near, Mode::Real, None);
+        assert!(mark_ids(&seen).contains(&kids[0]));
         // Real also carries the glow beneath the stars.
         assert!(!seen.splats.is_empty());
 
@@ -1295,7 +1386,9 @@ mod tests {
         // cells cannot clear the limit, so the walk never reaches the leaves.
         let (dim, _p, kids) = small_tree(10, 10, 15.0);
         let far = eye_out(parent, 30_000.0);
-        assert!(!dim.needed(&far, Mode::Real).marks.contains(&kids[0]));
+        assert!(
+            !mark_ids(&dim.needed(&far, Mode::Real, None)).contains(&kids[0])
+        );
     }
 
     /// The glow walk refines a cell that fills the view down to its leaves, and
@@ -1307,7 +1400,7 @@ mod tests {
         // Close in, the 16 ly parent subtends far more than half a degree and
         // refines to its leaves, which splat.
         let near = eye_out(CellId::of_point(HERE, 13), 2.0);
-        let close = splat_ids(&index.needed(&near, Mode::Real));
+        let close = splat_ids(&index.needed(&near, Mode::Real, None));
         assert!(close.contains(&kids[0]));
         assert!(close.contains(&kids[1]));
         assert!(!close.contains(&CellId::ROOT));
@@ -1316,7 +1409,7 @@ mod tests {
         // root itself splats.
         let far = eye_out(CellId::ROOT, 20_000_000.0);
         assert!(
-            splat_ids(&index.needed(&far, Mode::Real)).contains(&CellId::ROOT)
+            splat_ids(&index.needed(&far, Mode::Real, None)).contains(&CellId::ROOT)
         );
     }
 
@@ -1326,7 +1419,7 @@ mod tests {
         let index = Index::default();
         let view = eye_out(CellId::ROOT, 1.0);
         for mode in [Mode::Shell, Mode::Real] {
-            let needed = index.needed(&view, mode);
+            let needed = index.needed(&view, mode, None);
             assert!(needed.marks.is_empty());
             assert!(needed.blobs.is_empty());
             assert!(needed.splats.is_empty());
@@ -1458,8 +1551,8 @@ mod merging {
             let cell = sky.index.get(blob.id).expect("a blob names a cell");
             at.push(contents_center(cell));
         }
-        for &id in &needed.marks {
-            at.extend(sky.payload(id).iter().map(|point| point.pos));
+        for mark in &needed.marks {
+            at.extend(sky.payload(mark.id).iter().map(|point| point.pos));
         }
         at
     }
@@ -1468,7 +1561,11 @@ mod merging {
     /// of every read cell's slice.
     fn offered(sky: &Snapshot, needed: &Needed) -> usize {
         needed.blobs.len()
-            + needed.marks.iter().map(|&id| sky.payload(id).len()).sum::<usize>()
+            + needed
+                .marks
+                .iter()
+                .map(|mark| sky.payload(mark.id).len())
+                .sum::<usize>()
     }
 
     /// The nearest drawn mark to a point, in pixels.
@@ -1515,7 +1612,7 @@ mod merging {
 
         // Close enough that the pair is well past the top of the band.
         let near = eye(apart * 869.0 / (MERGE_PX * MERGE_BAND * 4.0));
-        let parted = sky.index.walk_screen(&near);
+        let parted = sky.index.walk_screen(&near, None);
         assert_eq!(gap(&near, at[0], at[1]).round() as u64, 32);
         assert!(parted.blobs.is_empty(), "a resolved pair merged");
         assert_eq!(
@@ -1527,7 +1624,7 @@ mod merging {
 
         // And far enough that it is inside one mark.
         let far = eye(apart * 869.0 / (MERGE_PX * 0.25));
-        let merged = sky.index.walk_screen(&far);
+        let merged = sky.index.walk_screen(&far, None);
         assert!(gap(&far, at[0], at[1]) < MERGE_PX);
         assert!(merged.marks.is_empty(), "a merged pair read a payload");
         assert_eq!(merged.blobs.len(), 1, "a merged pair is not one mark");
@@ -1558,7 +1655,7 @@ mod merging {
         let length = gap(&view, at[0], at[at.len() - 1]);
         assert!((length - 40.0).abs() < 1.0, "the line is {length:.1} px");
 
-        let needed = sky.index.walk_screen(&view);
+        let needed = sky.index.walk_screen(&view, None);
         let marks = drawn(&sky, &needed);
         assert!(
             marks.len() >= (length / MERGE_PX) as usize,
@@ -1589,7 +1686,7 @@ mod merging {
         // The ring 60 px across, so the hole is 30 px of empty sky: seven
         // merge distances of it, far more than any slack in the rule.
         let view = eye(radius * 2.0 * 869.0 / 60.0);
-        let needed = sky.index.walk_screen(&view);
+        let needed = sky.index.walk_screen(&view, None);
         let marks = drawn(&sky, &needed);
         holds_the_shape(&view, &at, &marks);
 
@@ -1621,7 +1718,7 @@ mod merging {
         let sky = sky(&at);
 
         let view = eye(radius * 2.0 * 869.0 / 60.0);
-        let needed = sky.index.walk_screen(&view);
+        let needed = sky.index.walk_screen(&view, None);
         let marks = drawn(&sky, &needed);
         holds_the_shape(&view, &at, &marks);
 
@@ -1671,7 +1768,7 @@ mod merging {
         // Far enough that the clump is inside one mark and the witnesses are
         // hundreds of pixels out from it.
         let view = eye(4.0 * 869.0 / (MERGE_PX * 0.5));
-        let needed = sky.index.walk_screen(&view);
+        let needed = sky.index.walk_screen(&view, None);
         let marks = drawn(&sky, &needed);
         // Nothing in the void: every mark is on a system.
         holds_the_shape(&view, &at, &marks);
@@ -1699,7 +1796,7 @@ mod merging {
     fn a_lone_system_is_never_merged() {
         let sky = sky(&[HERE]);
         for out in [1.0, 1.0e3, 1.0e6] {
-            let needed = sky.index.walk_screen(&eye(out));
+            let needed = sky.index.walk_screen(&eye(out), None);
             assert_eq!(
                 offered(&sky, &needed),
                 1,

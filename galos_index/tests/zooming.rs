@@ -179,7 +179,7 @@ fn zooming_out_stays_quick() {
         let view = looking_in(distance);
 
         let at = Instant::now();
-        let needed = index.needed(&view, Mode::Shell);
+        let needed = index.needed(&view, Mode::Shell, None);
         let walked = at.elapsed();
 
         // What the walk asks the disk for: the half of a zoom that moving
@@ -187,8 +187,8 @@ fn zooming_out_stays_quick() {
         let at = Instant::now();
         let mut points = 0;
         let mut bytes = 0;
-        for &id in &needed.marks {
-            let payload = pollster::block_on(source.payload(id))
+        for mark in &needed.marks {
+            let payload = pollster::block_on(source.payload(mark.id))
                 .expect("a marked cell should read");
             points += payload.len();
             bytes += payload.len() * Point::LEN;

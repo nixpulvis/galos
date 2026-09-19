@@ -132,8 +132,9 @@ pub(crate) fn plan(
     cameras: Query<(&OrbitCamera, &Camera)>,
     index: Res<ResidentIndex>,
     view_mode: Res<View>,
+    spyglass: Res<crate::systems::Spyglass>,
     mut planned: ResMut<Planned>,
-    mut last: Local<Option<(DVec3, Mode, UVec2)>>,
+    mut last: Local<Option<(DVec3, Mode, UVec2, Option<(DVec3, f32)>)>>,
 ) {
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = view(orbit, camera) else { return };
@@ -142,12 +143,24 @@ pub(crate) fn plan(
         View::Realistic => Mode::Real,
     };
     let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
-    let key = (orbit.eye(), mode, size);
+    // The spyglass is a clamp on the walk and not a filter after it: a
+    // subtree the bubble does not touch is never descended into, so the
+    // sets the map works over are the sets it draws from. See
+    // [`galos_index::Reach`], and [`super::bounded::reach`] for why the
+    // clamp is the spyglass's `clear` rather than its radius alone.
+    let bubble = spyglass
+        .clear
+        .then(|| (orbit.center(), spyglass.radius));
+    let key = (orbit.eye(), mode, size, bubble);
     if last.as_ref() == Some(&key) && !index.is_changed() {
         return;
     }
     *last = Some(key);
-    planned.0 = index.0.needed(&view, mode);
+    let within = bubble.map(|(center, radius)| galos_index::Reach {
+        center: center.to_array(),
+        radius: f64::from(radius),
+    });
+    planned.0 = index.0.needed(&view, mode, within);
 }
 
 /// The index's view of where the camera stands, if it has a viewport to see
@@ -240,6 +253,12 @@ mod tests {
 
         let mut app = App::new();
         app.add_systems(Update, plan);
+        app.insert_resource(crate::systems::Spyglass {
+            radius: 0.,
+            clear: false,
+            lock_camera: false,
+            follow_camera: true,
+        });
         app.insert_resource(Planned(Needed {
             mode: Mode::Shell,
             marks: Vec::new(),
@@ -316,6 +335,12 @@ mod tests {
 
         let mut app = App::new();
         app.add_systems(Update, (plan, count.after(plan)));
+        app.insert_resource(crate::systems::Spyglass {
+            radius: 0.,
+            clear: false,
+            lock_camera: false,
+            follow_camera: true,
+        });
         app.insert_resource(Planned(Needed {
             mode: Mode::Shell,
             marks: Vec::new(),

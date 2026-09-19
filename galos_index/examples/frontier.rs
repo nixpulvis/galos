@@ -288,20 +288,20 @@ fn frame(
     let inside = |id: CellId| id.bounds().distance_to(at_ly) <= reach;
 
     let at = Instant::now();
-    let needed = index.needed(view, Mode::Shell);
+    let needed = index.needed(view, Mode::Shell, None);
     let walked = at.elapsed();
     tally.splats = needed.splats.len();
 
     // What the frame is spread over, and the one share struck across it.
     let mut population = 0u64;
-    for &id in &needed.marks {
-        if inside(id) && let Some(cell) = index.get(id) {
-            population += cell.slice_len();
+    for mark in &needed.marks {
+        if inside(mark.id) {
+            population += u64::from(mark.slice);
         }
     }
     for blob in &needed.blobs {
-        if inside(blob.id) && let Some(cell) = index.get(blob.id) {
-            population += cell.aggregate.count();
+        if inside(blob.id) {
+            population += blob.count;
         }
     }
     let share = (frame_marks() / population.max(1) as f64).min(1.0);
@@ -313,7 +313,7 @@ fn frame(
         }
         let Some(cell) = index.get(blob.id) else { continue };
         let Some(at) = cell.aggregate.count_centroid() else { continue };
-        let count = cell.aggregate.count();
+        let count = blob.count;
         if wanted(share * blob.blend, count as usize, blob.id) == 0 {
             continue;
         }
@@ -324,12 +324,12 @@ fn frame(
     }
 
     let at = Instant::now();
-    for &id in &needed.marks {
+    for mark in &needed.marks {
+        let id = mark.id;
         if !inside(id) {
             continue;
         }
-        let Some(cell) = index.get(id) else { continue };
-        let take = wanted(share, cell.slice_len() as usize, id);
+        let take = wanted(share, mark.slice as usize, id);
         if take == 0 {
             continue;
         }

@@ -158,9 +158,9 @@ pub(crate) struct Keeping {
 
 impl Keeping {
     /// Take the plan's marks as the set every reader asks against
-    fn marks(&mut self, marks: &[CellId]) {
+    fn marks(&mut self, marks: &[galos_index::MarkRef]) {
         self.marked.clear();
-        self.marked.extend(marks.iter().copied());
+        self.marked.extend(marks.iter().map(|mark| mark.id));
     }
 
     /// Whether the walk marks this cell
@@ -422,26 +422,33 @@ const READ_LEAST: usize = 16;
 /// answer them.
 pub(crate) fn fetch(
     planned: Res<Planned>,
-    index: Res<crate::ResidentIndex>,
     resident: Res<ResidentCells>,
     transport: Res<Transport>,
-    spyglass: Res<Spyglass>,
     filters: Res<crate::systems::filter::Filters>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
+    // **Only when something it reads has moved.** The scan below is the
+    // one flat cost a still view used to pay for nothing: a pass over
+    // every marked cell, which at a wide zoom is tens of thousands of
+    // them, answering the same empty ask every frame. What it turns on is
+    // the plan, what the map holds and what the filters want, and those
+    // are exactly the three resources here that change.
+    if !planned.is_changed() && !resident.is_changed() && !filters.is_changed()
+    {
+        return;
+    }
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
         return;
     };
-    let bubble = reach(&spyglass);
     let pool = AsyncComputeTaskPool::get();
     let whole = filters.asking();
-    // What the draw will spread over, off the index alone: a cell's slice
-    // is known before a byte of it is read, which is what lets the share be
-    // struck here as well as in [`reconcile`] and lets the two agree.
-    let population = population(&planned.0, &index.0, orbit, bubble);
-    let share = share(population, frame_marks(&view));
+    // What the draw will spread over. Off the plan alone — a mark carries
+    // its own slice — which is what lets the share be struck here as well
+    // as in [`reconcile`] and lets the two agree without either of them
+    // touching the index.
+    let share = share(population(&planned.0), frame_marks(&view));
     // The two halves of the frame's flat cost, measured apart: the set
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
@@ -449,15 +456,15 @@ pub(crate) fn fetch(
     let asking = {
         let _zone = info_span!("missing cells").entered();
         let mut asking = Vec::new();
-        for &id in &planned.0.marks {
-            // Past the clamp, a marks cell beyond the reach is left
-            // unfetched, so a zoom out never loads the far sky the walk
-            // still marks — only its nearer, brighter tail is drawn.
-            if !in_reach(id, orbit, bubble) || tasks.0.contains_key(&id) {
+        for mark in &planned.0.marks {
+            // Past the clamp there is nothing to test for: the walk is
+            // clamped to the reach itself, so a cell it marks is a cell
+            // the bubble touches. See [`galos_index::Reach`].
+            let id = mark.id;
+            if tasks.0.contains_key(&id) {
                 continue;
             }
-            let Some(cell) = index.0.get(id) else { continue };
-            let slice = cell.slice_len() as usize;
+            let slice = mark.slice as usize;
             let want = if whole {
                 slice
             } else {
@@ -512,32 +519,15 @@ pub(crate) fn fetch(
 /// held would rise while the map was still reading and every mark already
 /// drawn would shift under it. A cell's slice length is known from the
 /// index the moment the walk marks it.
-fn population(
-    planned: &galos_index::Needed,
-    index: &galos_index::Index,
-    orbit: &OrbitCamera,
-    bubble: Option<f64>,
-) -> u64 {
-    let mut population = 0u64;
-    for &id in &planned.marks {
-        if in_reach(id, orbit, bubble)
-            && let Some(cell) = index.get(id)
-        {
-            population += cell.slice_len();
-        }
-    }
+fn population(planned: &galos_index::Needed) -> u64 {
+    let slices: u64 =
+        planned.marks.iter().map(|mark| u64::from(mark.slice)).sum();
     // And the sky the merged cells stand for, which is drawn without being
     // read. Counting it holds the share down over a region the frame is
     // already marking, so zooming out past a cell's merge does not brighten
     // what is left.
-    for blob in &planned.blobs {
-        if in_reach(blob.id, orbit, bubble)
-            && let Some(cell) = index.get(blob.id)
-        {
-            population += cell.aggregate.count();
-        }
-    }
-    population
+    let merged: u64 = planned.blobs.iter().map(|blob| blob.count).sum();
+    slices + merged
 }
 
 /// Take the payloads that have arrived into the resident cache
@@ -1060,16 +1050,12 @@ pub(crate) fn reconcile(
     // moves by a frame's worth in a frame.
     let wall = Utc::now();
 
-    // What the frame has to spend, what it is spread over, and what came of
-    // it. Two walks of the marked set rather than one: a share of the
-    // population is a share of every *other* marked cell's too, so the
-    // whole has to be known before any of it is spent. The first walk reads
-    // no payload and asks the filters nothing.
-    let population = {
-        let _zone = info_span!("population", cells = planned.0.marks.len())
-            .entered();
-        population(&planned.0, &index.0, orbit, bubble)
-    };
+    // What the frame has to spend and what it is spread over. A share of
+    // the population is a share of every *other* marked cell's too, so the
+    // whole has to be known before any of it is spent — which is a sum
+    // over the plan's own counts and touches neither the index nor a
+    // payload.
+    let population = population(&planned.0);
     let share = share(population, frame_marks(&view));
     let mut took_all = 0usize;
     let mut behind = 0u64;
@@ -1091,22 +1077,24 @@ pub(crate) fn reconcile(
     // marking what is wanted — the eviction scan reads that — and stops
     // looking for work the frame cannot do.
     let mut offering = true;
+    // Over the plan's marks and not over everything the map holds. The
+    // two differ by whatever [`KEEP`] is still holding onto and by
+    // everything outside the bubble, and at a wide zoom that is twice the
+    // set: measured over `.index/full`, 117,274 payloads held against
+    // 60,229 the plan marks. A held cell the plan does not name draws
+    // nothing, so walking it only to skip it is the pass done twice.
     let prefixes =
-        info_span!("cell prefixes", cells = resident.0.len()).entered();
-    for (id, cell) in resident.0.iter() {
-        if !keeping.marks_it(id) || !in_reach(id, orbit, bubble) {
-            continue;
-        }
+        info_span!("cell prefixes", cells = planned.0.marks.len()).entered();
+    for mark in &planned.0.marks {
+        let id = mark.id;
+        let Some(cell) = resident.0.cell(id) else { continue };
         // Off the cell's whole slice and then clamped to what has landed,
         // so what is drawn does not grow as the read arrives: a share
         // struck over the prefix in hand would ask for less of a cell the
         // moment less of it was held, and every mark would shift as the
         // payloads came in.
-        let slice =
-            index.0.get(id).map_or(cell.points.len(), |held| {
-                held.slice_len() as usize
-            });
-        let target = wanted(share, slice, id).min(cell.points.len());
+        let target =
+            wanted(share, mark.slice as usize, id).min(cell.points.len());
         if target == 0 {
             continue;
         }
@@ -1928,7 +1916,10 @@ mod tests {
                 let points = built.payload(cell.id);
                 if !points.is_empty() {
                     resident.0.insert(cell.id, points.to_vec());
-                    marks.push(cell.id);
+                    marks.push(galos_index::MarkRef {
+                        id: cell.id,
+                        slice: points.len() as u32,
+                    });
                 }
             }
         }
@@ -2361,7 +2352,10 @@ mod tests {
         // Marked as well as held: the walk draws the cells the plan names.
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
-            marks: vec![owner],
+            marks: vec![galos_index::MarkRef {
+                id: owner,
+                slice: built.payload(owner).len() as u32,
+            }],
             blobs: Vec::new(),
             splats: Vec::new(),
         }));

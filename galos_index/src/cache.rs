@@ -140,14 +140,19 @@ impl Resident {
 
     /// What the loader fetches: the needed marks not yet resident.
     pub fn missing(&self, needed: &Needed) -> Vec<CellId> {
-        needed.marks.iter().copied().filter(|&id| !self.contains(id)).collect()
+        needed
+            .marks
+            .iter()
+            .map(|mark| mark.id)
+            .filter(|&id| !self.contains(id))
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::walk::{BlobRef, Mode, SplatRef};
+    use crate::walk::{BlobRef, MarkRef, Mode, SplatRef};
 
     fn point(id: u64) -> Point {
         Point {
@@ -199,7 +204,10 @@ mod tests {
         // b is needed but absent.
         let needed = Needed {
             mode: Mode::Shell,
-            marks: vec![a, b],
+            marks: vec![
+                MarkRef { id: a, slice: 1 },
+                MarkRef { id: b, slice: 1 },
+            ],
             blobs: vec![],
             splats: vec![],
         };
@@ -218,7 +226,7 @@ mod tests {
         let needed = Needed {
             mode: Mode::Real,
             marks: vec![],
-            blobs: vec![BlobRef { id: s, blend: 1.0 }],
+            blobs: vec![BlobRef { id: s, count: 1, blend: 1.0 }],
             splats: vec![SplatRef { id: s, blend: 1.0 }],
         };
         assert!(cache.missing(&needed).is_empty());
