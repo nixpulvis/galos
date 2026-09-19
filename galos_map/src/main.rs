@@ -105,6 +105,8 @@ fn main() {
     app.add_plugins(keys::plugin);
     // After `ui`, whose `lettering` the diagnostics panel is drawn in.
     app.add_plugins(dev::plugin);
+    // Throwaway: the scripted capture, only when GALOS_SHOT names a file.
+    app.add_plugins(shot::plugin);
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());

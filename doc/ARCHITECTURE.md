@@ -413,14 +413,32 @@ first because everything else leans on it.
   needs, and drawing, fetching and eviction are the same predicate read three
   ways — "One predicate, three consumers." `Mode::Shell` is the map's overview;
   `Mode::Real` is the sky, one photometric quantity split at the visibility
-  floor rather than two modes. Constants: `SPLIT_PX` 2.0 and `SPLIT_FULL_PX`
-  4.0 (the cross-fade band a level handoff crosses), `MARK_SEPARATION_PX` 6.7,
-  `STAR_SEPARATION_PX` 2.0, `GLOW_OPENING_ANGLE` half a degree.
-  **The invariant** (`walk.rs:293-312`): both cuts are pure functions of where
-  the eye is — no budget, no frustum, nothing history-dependent — so the same
-  eye position always returns the same view, and nothing bounds how many marks
-  come back. A frame-cost ceiling is a drawing concern and belongs at draw
-  time.
+  floor rather than two modes. Constants: `SPLIT_PX` 0.5 and `SPLIT_FULL_PX`
+  1.0 (the cross-fade band a level handoff crosses, cut at half a pixel of a
+  cell's contents so the field's frontier follows the pixel grid), `MERGE_PX`
+  4.0 with a `MERGE_BAND` of an octave, `STAR_MERGE_PX` 2.0,
+  `GLOW_OPENING_ANGLE` half a degree.
+  **The merge rule** (`Index::frontier`): a cell whose whole contents fall
+  inside one mark is drawn as one — a `BlobRef` off the aggregate, nothing
+  read — and a cell wider than that is descended into and its own slice is
+  read. What a cell is judged on is its contents' *width*, rolled up from
+  its children's centroids (`walk::widen`) rather than the RMS radius: a
+  filament's radius is a third of its length, so a scalar test merged three
+  marks' worth of line into one.
+  **What the frontier does not say is how much of a marked cell is drawn**,
+  and it cannot: the drawn density has to follow the sky's own, and that is
+  a statement about the whole frame. `galos_map`'s `bounded::share` strikes
+  one figure over every marked cell — a share of its *population*, so ten
+  times the systems draw ten times the marks — and `bounded::wanted`
+  dithers the fraction against the cell's address so a cell wanting a third
+  of a mark draws one in a third of the places. Two rules were tried before
+  it and both flattened the galaxy: a share of a cell's screen *footprint*
+  draws the same count over the same patch whatever is in it, and a floor
+  under that figure drew nothing at all in the finest cells, which is where
+  the sky is densest.
+  **The invariant** (`Index::frontier`): the cuts are pure functions of
+  where the eye is — no budget, no frustum, nothing history-dependent — so
+  the same eye position always returns the same view.
 - **The transport.** `source.rs`: an async `Source` trait over cells *and*
   metadata, `FsSource` today and one HTTP implementation later, boxed so a
   client holds `Arc<dyn Source>` and swaps the whole transport at once. `Part`
@@ -583,14 +601,17 @@ Read it in this order. Each step is a prerequisite for the next.
    `ResidentIndex`, `Names` (2.5M entries, with a `fresh` overlay for the live
    feed), `Populated`, `Boosts`, `Factions`. Each field carries the cost
    argument for being resident.
-4. **Where stars come from** — `systems/bounded.rs` and `systems/fetch.rs`.
-   Two mutually exclusive sources. `bounded` walks the index for cells and
-   spawns from their payloads; it is on by default behind `LodFetch`. The older
-   spyglass path queries a sphere and stands down through run conditions while
-   `LodFetch` is set. They join at one queue pair, `PendingSpawns` and
+4. **Where stars come from** — `systems/bounded.rs`. One source: the walk
+   reads the index for the cells a view marks and spawns one entity per
+   system in their payloads, clamped to the spyglass reach when the bound is
+   on (`bounded::reach`). It replaced a spyglass region fetch that read a
+   full-density sphere, which is what exploded on zoom-out. `systems/fetch.rs`
+   keeps what nobody asks about by place: a route's legs and a picked-out
+   system. Everything joins at one queue pair, `PendingSpawns` and
    `PendingEvictions`, and the rest of the map reads a `System` component
-   without caring which source spawned it. `systems/aggregate.rs` holds the one
-   walk both halves read, so they cannot disagree about which cells are which.
+   without caring what put it there. `systems/aggregate.rs` holds the one walk
+   both the marks and the splats read, so the two can never disagree about
+   which cells are which.
 5. **How anything reaches the screen** — `systems/labels.rs`'s header, which is
    the index over the flat-painting design. A mark built at a system's true
    coordinate goes through the clip transform in `f32` at the scale of the

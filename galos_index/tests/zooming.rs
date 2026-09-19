@@ -196,9 +196,10 @@ fn zooming_out_stays_quick() {
         let read = at.elapsed();
         println!(
             "zoom {distance:>7} ly: walk {walked:>10.2?} \
-             marks {:>5} splats {:>5} read {read:>10.2?} \
+             marks {:>6} blobs {:>6} splats {:>6} read {read:>10.2?} \
              points {points:>8} ({} KB)",
             needed.marks.len(),
+            needed.blobs.len(),
             needed.splats.len(),
             bytes / 1024,
         );

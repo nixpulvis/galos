@@ -87,6 +87,18 @@ const MARGIN: f32 = 8.;
 /// columns of counts and nothing that needs the room.
 const WIDTH: f32 = 200.;
 
+/// The two readouts the draw publishes about itself: what the field laid and
+/// what the marks were thinned by.
+///
+/// Bundled because [`diagnostics`] is at Bevy's system-parameter limit, and
+/// these two are read together anyway — the field and the marks being one
+/// picture of the same systems.
+#[derive(bevy::ecs::system::SystemParam)]
+struct Drawing<'w> {
+    glow: Res<'w, crate::systems::glow::Laid>,
+    sampled: Res<'w, crate::systems::bounded::Sampled>,
+}
+
 /// Draw the diagnostics window from what the map holds
 ///
 /// Every count is read live rather than tallied here: the spawned count is the
@@ -105,7 +117,9 @@ fn diagnostics(
     queued_spawns: Res<PendingSpawns>,
     queued_evictions: Res<PendingEvictions>,
     planned: Res<crate::systems::aggregate::Planned>,
-    glow: Res<crate::systems::glow::Laid>,
+    // The field's and the marks' own readouts, bundled: this walk is at
+    // Bevy's parameter limit.
+    drawing: Drawing,
     store: Res<DiagnosticsStore>,
     systems: Query<(), With<System>>,
     camera: Query<&OrbitCamera>,
@@ -131,6 +145,7 @@ fn diagnostics(
         return Ok(());
     }
 
+    let Drawing { ref glow, ref sampled } = drawing;
     let spawned = systems.iter().count();
     let settled = camera.single().map(OrbitCamera::is_settled).unwrap_or(true);
     let fps = store
@@ -474,8 +489,19 @@ fn diagnostics(
                         ui,
                         "marks",
                         &planned.0.marks.len().to_string(),
-                        "Cells drawn as discrete systems — the fetch set once \
-                         spawning is bounded to it.",
+                        "Cells read for discrete systems — the fetch set, \
+                         which is every cell above the merge frontier.",
+                    );
+                    pair(
+                        ui,
+                        "blobs",
+                        &format!(
+                            "{} over {}",
+                            sampled.blobs, sampled.behind
+                        ),
+                        "Cells whose whole contents fall inside one mark and \
+                         are drawn as one, off the resident aggregate with \
+                         nothing fetched.",
                     );
                     pair(
                         ui,
@@ -484,6 +510,19 @@ fn diagnostics(
                         "Cells drawn as one aggregate apiece by the field, \
                          off the resident aggregates and with nothing \
                          fetched.",
+                    );
+                    pair(
+                        ui,
+                        "drawn",
+                        &format!(
+                            "{} at {:.4} of {}",
+                            sampled.drawn, sampled.share, sampled.population
+                        ),
+                        "Marks drawn, the share of the sky's population they \
+                         are, and how many systems that share is struck \
+                         over. Every cell draws the same share of what it \
+                         holds, so the drawn density follows the sky's own \
+                         rather than flattening it.",
                     );
                     pair(
                         ui,

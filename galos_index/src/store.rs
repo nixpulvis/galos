@@ -273,6 +273,33 @@ impl Index {
         };
         Ok(crate::serialization::payload_points(id, &bytes).unwrap_or_default())
     }
+
+    /// The first `limit` systems of a cell's payload, brightest first.
+    ///
+    /// **What a draw asks for is a share of a cell and not the cell.** The
+    /// payload is magnitude-ordered, the map draws the brightest few of it
+    /// (`galos_map`'s `bounded::wanted`), and reading the rest is bytes
+    /// faulted, decoded, held and never looked at: measured over
+    /// `.index/full`, a flight that drew eight thousand marks read 121 M
+    /// points and 5.8 GB to do it.
+    ///
+    /// Mapped rather than read, so the pages behind the rows nobody asked
+    /// for are never touched. A directory written before the columnar
+    /// layout has no head to map and falls back to the whole file, which is
+    /// what it could always do.
+    pub fn read_payload_prefix(
+        dir: &Path,
+        id: CellId,
+        limit: usize,
+    ) -> io::Result<Vec<Point>> {
+        let Some(payload) = Payload::open(dir, id)? else {
+            let mut points = Index::read_payload(dir, id)?;
+            points.truncate(limit);
+            return Ok(points);
+        };
+        let take = limit.min(payload.len());
+        Ok((0..take).map(|at| payload.point_at(at)).collect())
+    }
 }
 
 /// One cell's payload, mapped rather than decoded.
@@ -419,6 +446,23 @@ impl Payload {
             bytes[4],
             u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
         )
+    }
+
+    /// The `at`th system as a drawable point, columns joined.
+    ///
+    /// One row out of five columns, which is the shape a draw wants and the
+    /// shape the layout is deliberately not in: the router reads one column
+    /// of millions of rows, and the map reads every column of a handful.
+    pub fn point_at(&self, at: usize) -> Point {
+        let (magnitude, temp_bucket, updated_at) = self.lit_at(at);
+        Point {
+            id64: self.id64_at(at),
+            pos: self.position_at(at),
+            magnitude,
+            temp_bucket,
+            updated_at,
+            kind: self.kind_at(at),
+        }
     }
 }
 

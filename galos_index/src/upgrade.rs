@@ -137,14 +137,15 @@ pub fn rewrite(
 ) -> io::Result<Rewrote> {
     let index = read_any_version(dir)?;
 
-    // The loose body files first. The sweep below reads the packed shards
-    // and nothing else, so a directory with scans still loose would have
-    // them swept as though nothing had looked at those systems — every one
-    // of them coming out `Unknown` and the column quietly wrong. The pack
-    // is idempotent and is the same one an open runs.
-    crate::pack::pack(dir, stop)?;
-
-    let kinds = Kinds::swept(dir, stop, said)?;
+    // Nothing is read off the scan record until a payload is found that
+    // wants the join. A galaxy's `bodies/` is 150 GB and the sweep of it
+    // is the whole cost of this command — hours — so a directory whose
+    // payloads are already columnar, which is every directory this has
+    // finished with once, must not pay it to answer "already columnar".
+    // The names rewrite below it is the reason that matters: it is
+    // reachable no other way, and it should not be behind a sweep that
+    // rewrites nothing.
+    let mut swept: Option<Kinds> = None;
 
     let mut wrote = Rewrote::default();
     for cell in index.cells() {
@@ -157,6 +158,18 @@ pub fn rewrite(
             wrote.kept += 1;
             continue;
         }
+
+        if swept.is_none() {
+            // The loose body files first. The sweep reads the packed
+            // shards and nothing else, so a directory with scans still
+            // loose would have them swept as though nothing had looked at
+            // those systems — every one of them coming out `Unknown` and
+            // the column quietly wrong. The pack is idempotent and is the
+            // same one an open runs.
+            crate::pack::pack(dir, stop)?;
+            swept = Some(Kinds::swept(dir, stop, said)?);
+        }
+        let kinds = swept.as_ref().expect("the sweep has run");
 
         let mut points = legacy_payload_points(&bytes);
         for point in points.iter_mut() {

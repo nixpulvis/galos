@@ -443,6 +443,23 @@ pub trait Source: Send + Sync {
     /// where the cell owns nothing.
     async fn payload(&self, id: CellId) -> io::Result<Vec<Point>>;
 
+    /// The brightest `limit` of one cell's payload.
+    ///
+    /// What a draw actually wants: a payload is magnitude-ordered and the
+    /// map draws a share of each cell, so the rest is bytes fetched, held
+    /// and never looked at. A transport that cannot answer a range answers
+    /// the whole and the caller is no worse off than before; a file can,
+    /// and does.
+    async fn payload_prefix(
+        &self,
+        id: CellId,
+        limit: usize,
+    ) -> io::Result<Vec<Point>> {
+        let mut points = self.payload(id).await?;
+        points.truncate(limit);
+        Ok(points)
+    }
+
     /// The populated-systems table, held resident for filtering and color.
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>>;
 
@@ -532,6 +549,14 @@ impl Source for FsSource {
 
     async fn payload(&self, id: CellId) -> io::Result<Vec<Point>> {
         Index::read_payload(&self.dir, id)
+    }
+
+    async fn payload_prefix(
+        &self,
+        id: CellId,
+        limit: usize,
+    ) -> io::Result<Vec<Point>> {
+        Index::read_payload_prefix(&self.dir, id, limit)
     }
 
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>> {

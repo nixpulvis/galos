@@ -30,82 +30,81 @@ use crate::geometry::CellId;
 use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
 
-/// The mark limit, in pixels: the smallest a splat draws as more than a point.
-/// A cell whose contents' own spread projects to less than this is one circle;
-/// past it that circle splits into its children, so a region is always drawn
-/// by the deepest level whose marks still separate. Two pixels on a 1080-line
-/// window, and the figure every level handoff in the walk turns on.
-pub const SPLIT_PX: f64 = 2.0;
+/// The field's resolution limit, in pixels: the widest a cell's own contents
+/// may be drawn as one splat.
+///
+/// **Half a pixel of RMS radius, which is about a pixel of cell.** A cell
+/// stands for its systems by a centroid and a radius, so whatever structure
+/// lies inside it is laid down as one blob — and the blob is as wide as the
+/// cell's contents are. At two pixels the frontier cell was four to eight
+/// pixels across once [`SPLIT_FULL_PX`] and the field's own Gaussian reach
+/// were spent on it, and a colonisation filament or an arm's edge came out
+/// as a row of overlapping blobs: blurred across the feature and lumpy
+/// along it, on a lattice whose pitch was the cell. Under half a pixel the
+/// cell it cannot resolve past is the pixel, which is the finest thing the
+/// display can carry, and [`galos_map`]'s field floors its kernel at half a
+/// pixel so neighbours still sum flat.
+///
+/// What it costs is the descent, and the descent is nearly free: the walk
+/// already visits every cell at every zoom inside 25 kly, and the tree runs
+/// out before the criterion does — measured over `.index/full` from 120 kly
+/// out on a 1000-line frame, 131,893 splats at two pixels against 179,388
+/// here, which is the whole of the tree the field can ever splat.
+pub const SPLIT_PX: f64 = 0.5;
 
 /// The top of the split's cross-fade band, an octave above [`SPLIT_PX`]. Across
 /// `SPLIT_PX..SPLIT_FULL_PX` a cell and its children both draw, their weights
 /// summing to one, so the level handoff crosses over rather than popping; above
 /// it the children carry the region alone.
-pub const SPLIT_FULL_PX: f64 = 4.0;
+pub const SPLIT_FULL_PX: f64 = 1.0;
 
-/// Two marks read as two only when their centres are more than this many
-/// pixels apart — a 2 px mark at about 0.25 coverage. A leaf spawns its
-/// systems as individual marks once their mean spacing subtends this, and
-/// stays one splat until then, so a far cell never spawns a square of
-/// overlapping points.
+/// Two marks merge into one when their centres fall within this many pixels
 ///
-/// Eight and a half rather than the 6.7 it was, and the difference is what
-/// pays for [`MARK_LEAST`]. Reading the thin cells adds marks, and the
-/// drawn set is the map's budget, so the separation was opened until the
-/// total came back under where it stood: measured by `galos_map`'s flight
-/// harness over `.index/full`, 37,085 systems drawn at the end of the
-/// flight against 40,579 before, and every leg of it under what it was.
-pub const MARK_SEPARATION_PX: f64 = 8.5;
+/// **The mark's own size plus a margin.** A map mark is drawn at
+/// [`galos_map`]'s `field::SMALLEST` radius, a pixel and a half across, and
+/// two of them closer than about that read as one smudge rather than as two
+/// places. Four pixels is the mark plus a couple of pixels of air, which is
+/// where a pair still reads as a pair.
+///
+/// It is the whole of the marks' level of detail. A cell whose contents all
+/// fall inside one mark is drawn as one aggregate mark
+/// ([`BlobRef`]) instead of being read; a cell wider than that is
+/// descended into, and its own slice is drawn at one mark to every
+/// `MERGE_PX` squared of the footprint it covers. Both halves are the same
+/// statement — *marks that would overlap are drawn as one* — so the drawn
+/// count is set by the screen and never by how the tree happened to fall.
+///
+/// What it replaced was a floor: a cell was read only once it was worth
+/// eight marks at 8.5 px of separation, which is a cell whose contents
+/// subtend 13.6 px, and every finer cell drew nothing at all. The tree is
+/// finest where the sky is densest, so that floor deleted the densest sky —
+/// measured over `.index/full`, at 4 kly 73–89 % of the galactic plane's
+/// systems sat in cells the walk marked nothing for, and the hole it left
+/// widened with every zoom out because the cut is fixed in pixels and so is
+/// a growing physical size.
+pub const MERGE_PX: f64 = 4.0;
 
-/// How many marks a cell must be worth before the map reads it at all,
-/// rather than leaving it to the field
+/// How far above the merge distance a cell is fully split, as a multiple of
+/// it
 ///
-/// **A count, because a share draws boxes.** This asked for an eighth of a
-/// cell's own *slice*, which sounds scale-free and is not: the spacing
-/// that share works out to turns on the cell's slice and its extent, and
-/// both swing wildly between neighbours at the same level, so the test
-/// flipped cell by cell across the sky. Crossing it took a cell from
-/// nothing to an eighth of its slice at once — up to five hundred systems
-/// appearing together inside one box. Measured over `.index/full` from two
-/// thousand light years out: 539 of 38,811 visible cells at level 8 were
-/// read and 395 of 52,698 at level 9, the read ones drawing a median 38 %
-/// of their payload and the top twentieth all of it. That is the cube of
-/// stars reported in an empty sky, and it dissolved as the camera came in
-/// because the neighbours crossed the same threshold.
-///
-/// A count cuts on what is *drawn*, so what a region comes out at no
-/// longer turns on which cell it fell in. Eight is a step nobody can see:
-/// a cell at the cut is one whose systems sit about
-/// [`MARK_SEPARATION_PX`] apart, so eight of them is a patch a few tens of
-/// pixels across rather than a filled box.
-///
-/// The cost is reads, not draws. Read amplification is no longer bounded
-/// by `1/w` but by how many cells clear the floor: measured over
-/// `.index/full`, 9,289 cells and 476 MB of payload resident at the peak
-/// of the flight against 4,393 and 152 MB, for 91 % of the marks and a
-/// median frame of 3.9 ms against 3.8. Eight rather than one — one is the
-/// smoothest cut there is — because the tail is where the reads are: at
-/// one the same flight holds 13,107 cells and 650 MB.
-///
-/// **What makes a floor here affordable is the field.** A cell the map
-/// does not read draws as its aggregate, which is a picture of every
-/// system in it rather than of none, so this trades resolution for reads
-/// and never coverage.
-///
-/// The realistic sky cuts the same question on brightness instead: a star
-/// draws when it clears the visibility limit. This is the map's analogue,
-/// on separation, because a political reading has no magnitude to cut on.
-pub const MARK_LEAST: u64 = 8;
+/// An octave, which is the glow's band ([`SPLIT_PX`]..[`SPLIT_FULL_PX`]) read
+/// at mark scale. Across it a cell's blob and the draw beneath it — its own
+/// slice's marks and its children's blobs — share the weight, the blob taking
+/// `1 - alpha` and everything below it `alpha`, so a level handoff crosses
+/// over rather than popping. A cell's levels are an octave apart in size, so
+/// only one level of the tree is ever mid-fade under any point of the sky.
+pub const MERGE_BAND: f64 = 2.0;
 
-/// The separation the realistic view resolves stars at, in pixels
+/// The merge distance the realistic view resolves stars at, in pixels
 ///
 /// A star is a point the size of the instrument's spread (a pixel or two), so
-/// two of them read apart far closer than two map marks do — [`MARK_SEPARATION_PX`]
-/// is the mark's, this is the point spread's. The realistic view resolves a
+/// two of them read apart far closer than two map marks do — [`MERGE_PX`] is
+/// the mark's, this is the point spread's. The realistic view resolves a
 /// cell's systems down to this, which is why a cluster stays a field of stars
-/// where the map would collapse it to one mark: the limit is the point spread
-/// in [`Mode::Real`] and the smallest stable mark in [`Mode::Shell`].
-pub const STAR_SEPARATION_PX: f64 = 2.0;
+/// where the map would collapse it to one mark: the merge distance is the
+/// point spread in [`Mode::Real`] and the smallest stable mark in
+/// [`Mode::Shell`].
+pub const STAR_MERGE_PX: f64 = 2.0;
 
 /// A cell wider than this on screen is refined for the glow; narrower, it
 /// splats. Half a degree, the "fraction of a degree" the opening-angle test
@@ -226,16 +225,45 @@ pub struct SplatRef {
     pub blend: f64,
 }
 
-/// What a walk asks for: the cells whose systems draw as discrete marks and the
-/// cells that draw as a splat.
+/// One cell drawn as a single aggregate mark: everything it holds falls
+/// inside one mark, so the marks it would draw are drawn as one.
+///
+/// Needs no payload — a blob says how many systems it stands for, how bright
+/// the brightest of them is, and what their temperature and political mixes
+/// are, all off the resident aggregate. `blend` is the cross-level fade in
+/// `0.0..=1.0`, the blob taking `1 - alpha` of the weight while what is
+/// beneath it takes the rest.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BlobRef {
+    /// The cell whose aggregate is drawn as one mark.
+    pub id: CellId,
+    /// The share of the draw this blob carries, `0.0..=1.0`.
+    pub blend: f64,
+}
+
+/// What a walk asks for: the cells whose systems draw as discrete marks, the
+/// cells that draw as one merged mark, and the cells that draw as a splat.
 ///
 /// `marks` is also the fetch set, since a mark is a system from a cell's
-/// payload; `splats` draw from the aggregate alone and need nothing loaded,
-/// each with the weight it lays down so a split conserves the field.
+/// payload; `blobs` and `splats` draw from the aggregates alone and need
+/// nothing loaded, each with the weight it lays down so a split conserves
+/// what it draws.
+///
+/// **How much of a marked cell is drawn is not said here, and cannot be.**
+/// The drawn density has to follow the sky's own — a region with ten times
+/// the systems wants ten times the marks — so what each cell draws is a
+/// share of its *population*, and a share is only meaningful against the
+/// whole frame's. `galos_map`'s `bounded::reconcile` strikes it. A per-cell
+/// answer worked out here was tried twice: as a share of the cell's
+/// footprint area it drew one mark to every patch of screen whatever was in
+/// it, which is a galaxy of uniform density, and the same figure with a
+/// floor under it drew nothing at all in the finest cells, which is a hole
+/// where the sky is densest.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Needed {
     pub mode: Mode,
     pub marks: Vec<CellId>,
+    pub blobs: Vec<BlobRef>,
     pub splats: Vec<SplatRef>,
 }
 
@@ -279,10 +307,18 @@ pub struct Index {
 struct Node {
     /// Where a cell's contents sit: [`contents_center`].
     center: [f64; 3],
-    /// How far they spread: [`contents_extent`].
+    /// How far they spread about that centre: [`contents_extent`], the RMS
+    /// radius the field lays a Gaussian at.
     extent: f64,
-    /// The mean spacing of the cell's own slice: [`slice_spacing`].
-    spacing: f64,
+    /// How wide they are: [`contents_width`], rolled up from the children.
+    ///
+    /// A spread and a width are not the same question and the walk asks
+    /// both. The field wants a standard deviation, which is what a Gaussian
+    /// is laid at; the merge rule wants the *support* — does everything this
+    /// cell holds fall inside one mark — and a distribution's support is
+    /// several times its RMS radius and is not a scalar fact about it at
+    /// all. See [`contents_width`].
+    width: f64,
     /// How many systems the subtree holds.
     count: u64,
     /// How many the cell owns itself.
@@ -309,7 +345,7 @@ impl Node {
         Node {
             center: contents_center(cell),
             extent: contents_extent(cell),
-            spacing: slice_spacing(cell),
+            width: contents_width(cell),
             count: cell.aggregate.count(),
             slice: cell.slice_len(),
             m_min: cell.aggregate.m_min(),
@@ -352,7 +388,44 @@ fn flatten(cells: &HashMap<CellId, Cell>) -> Vec<Node> {
         nodes[at].children = held;
         at += 1;
     }
+    widen(&mut nodes);
     nodes
+}
+
+/// Roll each cell's contents width up from its children, deepest first.
+///
+/// **A cell is as wide as the ball that covers its children.** Taken
+/// pairwise: the gap between two children's centroids plus each one's own
+/// half-width, maximised over every pair — and the pair `(i, i)` is in it,
+/// so a cell is never narrower than its widest child. Eight children is at
+/// most sixty-four gaps a cell, paid once when the index is built and never
+/// in a frame.
+///
+/// What this buys over the scalar estimate [`contents_width`] seeds is
+/// **shape**. A filament running through a cell has its systems in two or
+/// three children with the rest empty, and the gap between those children's
+/// centroids is the filament's own length; the RMS radius of the same
+/// filament is a third of it, so a scalar test merges three marks' worth of
+/// line into one mark and the feature disappears. The children are what the
+/// tree holds of a cell's geometry, and this is the whole of what can be
+/// read off them without storing more.
+///
+/// Breadth-first order puts every child after its parent, so one pass in
+/// reverse has each cell's children already rolled up.
+fn widen(nodes: &mut [Node]) {
+    for at in (0..nodes.len()).rev() {
+        let first = nodes[at].first_child as usize;
+        let kids = first..first + nodes[at].children as usize;
+        let mut width = nodes[at].width;
+        for near in kids.clone() {
+            for far in kids.clone() {
+                let gap = distance(nodes[near].center, nodes[far].center)
+                    + 0.5 * (nodes[near].width + nodes[far].width);
+                width = width.max(gap);
+            }
+        }
+        nodes[at].width = width;
+    }
 }
 
 impl Index {
@@ -477,86 +550,152 @@ impl Index {
         }
     }
 
-    /// The cells the view needs for a presentation: the marks to draw and the
-    /// cells to splat as a field.
+    /// The cells the view needs for a presentation: the marks to draw, the
+    /// cells to draw as one merged mark, and the cells to splat as a field.
     pub fn needed(&self, view: &View, mode: Mode) -> Needed {
         match mode {
             Mode::Shell => self.walk_screen(view),
-            Mode::Real => Needed {
-                mode: Mode::Real,
-                marks: self.discrete_stars(view),
-                splats: self.glow_field(view),
-            },
+            Mode::Real => {
+                let (marks, blobs) = self.frontier(view, STAR_MERGE_PX, true);
+                Needed {
+                    mode: Mode::Real,
+                    marks,
+                    blobs,
+                    splats: self.glow_field(view),
+                }
+            }
         }
     }
 
-    /// The Shell walk: the "One circle, splitting" descent.
+    /// The merge frontier: the anti-chain of cells whose whole contents fall
+    /// inside one mark, and the cells above it whose own slices draw.
+    ///
+    /// **One rule, read twice.** Two marks that would overlap on screen are
+    /// drawn as one, so:
+    ///
+    /// - a cell whose contents are no wider than `merge_px` is one mark —
+    ///   [`BlobRef`], drawn off its aggregate, nothing read;
+    /// - a cell wider than that is descended into, and its own slice draws at
+    ///   one mark to every `merge_px` squared of the footprint it covers —
+    ///   [`MarkRef`], the prefix of its magnitude order.
+    ///
+    /// The two meet: at the frontier a cell's footprint is one mark's worth
+    /// of screen and carries one mark, which is the blob. So the count is
+    /// self-bounding — one mark to every `merge_px` squared per layer of the
+    /// anti-chain — with no budget, no share and no clamp anywhere in it.
+    /// The share machinery this replaced was a global factor a frame's demand
+    /// was divided by, and it could not be continuous across a cell face:
+    /// two neighbours with different demands drew at different densities and
+    /// the index's own boxes showed through.
+    ///
+    /// **Geometry survives by construction.** A cell merges only when
+    /// everything it holds fits inside one mark, so a ring passes through
+    /// many cells each still too wide to merge and comes out a ring; a line
+    /// comes out a line. Hollow and filled stop being distinguishable exactly
+    /// where the whole shape is smaller than a mark, where nothing could have
+    /// told them apart anyway.
+    ///
+    /// **Merging never costs a mark.** A cell holding no more than its
+    /// footprint can show separately is read rather than merged, however
+    /// narrow it is: a lone star in the halo has a contents width of zero and
+    /// would otherwise collapse into an unnamed blob at any distance, when it
+    /// is exactly one mark and the map should draw it as itself.
+    ///
+    /// `photometric` is the sky's cut: a subtree whose brightest star cannot
+    /// clear the eye's limit from here is dropped whole, which is what keeps
+    /// [`Mode::Real`] from drawing the dwarfs the glow already carries.
+    fn frontier(
+        &self,
+        view: &View,
+        merge_px: f64,
+        photometric: bool,
+    ) -> (Vec<CellId>, Vec<BlobRef>) {
+        let mut marks = Vec::new();
+        let mut blobs = Vec::new();
+        if self.nodes.is_empty() {
+            return (marks, blobs);
+        }
+        let mut stack = vec![(0u32, 1.0f64)];
+        while let Some((at, shown)) = stack.pop() {
+            let node = &self.nodes[at as usize];
+            if photometric && !node_visible(view, node) {
+                continue;
+            }
+            let alpha = splitting(view, node, merge_px);
+            if alpha < 1.0 {
+                blobs.push(BlobRef {
+                    id: node.id,
+                    blend: shown * (1.0 - alpha),
+                });
+            }
+            if alpha <= 0.0 {
+                continue;
+            }
+            if node.slice > 0 {
+                marks.push(node.id);
+            }
+            for child in
+                node.first_child..node.first_child + node.children as u32
+            {
+                stack.push((child, shown * alpha));
+            }
+        }
+        (marks, blobs)
+    }
+
+    /// The Shell walk: the merge frontier over the political field.
     ///
     /// One traversal, two cuts, and both are pure functions of where the eye is
     /// — no budget, no frustum, nothing history-dependent — so the same eye
     /// position always returns the same view, whatever path reached it.
     ///
-    /// - **Marks.** A cell's own magnitude slice draws as discrete symbols
-    ///   exactly when its systems separate on screen: their mean spacing
-    ///   subtends more than [`MARK_SEPARATION_PX`]. Additive — every cell from
-    ///   the root down to where separation fails lays its slice down — so the
-    ///   bright systems that coarse slices carry are never lost.
+    /// - **Marks.** [`Index::frontier`] at [`MERGE_PX`]: the cells whose
+    ///   contents fall inside one mark draw as one, and every cell above them
+    ///   lays down as much of its own slice as its footprint can hold apart.
     /// - **Glow.** A cell splats as one aggregate until its contents' spread
     ///   subtends more than [`SPLIT_PX`]; then it splits into its children,
     ///   cross-faded across the band up to [`SPLIT_FULL_PX`] so neither level
     ///   pops. Weight is conserved: the splat blends under any point sum to one.
     ///
-    /// Nothing here bounds how many marks come back. The separation test is the
-    /// only limit, and for a framed view it holds the count near the screen's
-    /// own capacity; a frame-cost ceiling is a drawing concern that belongs at
-    /// draw time, not in a set that must stay a function of position.
+    /// **Two frontiers, one descent, and the field's is the finer of them.**
+    /// The glow cuts at half a pixel of RMS radius and the marks at four
+    /// pixels of contents width, so the field always refines past where the
+    /// marks have merged — which is why the two are worked out in the same
+    /// traversal and why the merged half of it carries on descending.
     ///
     /// **What it costs is the tree, not the marks.** The descent reaches all
     /// 204,466 cells at every zoom inside 25 kly: four fifths of the tree is
-    /// 128–512 Ly cells whose contents subtend far more than the two pixels
+    /// 128–512 Ly cells whose contents subtend far more than the half pixel
     /// the split turns on, so nothing stops short of a leaf and the walk is
-    /// linear in the tree with the marked count riding along. Measured over
-    /// `.index/full` before this walked its own tree: 12,503 marks 100 kly
-    /// out cost 18 ms against 23 ms for 151,619 marks from inside the bubble
-    /// — 131 ns against 114 for each cell *visited*, twelve times the marks
-    /// for a fifth more clock. Which is why it descends [`Index::nodes`]
-    /// rather than the map, and reads each cell's figures rather than working
-    /// them out: **23 ms to 1.5 ms**, the same marks and the same field.
+    /// linear in the tree with the marked count riding along. Which is why it
+    /// descends [`Index::nodes`] rather than the map, and reads each cell's
+    /// figures rather than working them out: **23 ms to 1.5 ms**, the same
+    /// marks and the same field.
     pub fn walk_screen(&self, view: &View) -> Needed {
-        let mut marks = Vec::new();
+        let (marks, blobs) = self.frontier(view, MERGE_PX, false);
+        Needed { mode: Mode::Shell, marks, blobs, splats: self.glow(view) }
+    }
+
+    /// The political field: descend while a cell's contents subtend more than
+    /// [`SPLIT_PX`], splat it once they do not, and cross-fade the handoff.
+    ///
+    /// The parent keeps `1 - alpha` of its weight and hands `alpha` to the
+    /// children by their count, so the two sum to the cell's own weight
+    /// throughout the transition and the blends under any point of the sky
+    /// sum to one.
+    fn glow(&self, view: &View) -> Vec<SplatRef> {
         let mut splats = Vec::new();
         if self.nodes.is_empty() {
-            return Needed { mode: Mode::Shell, marks, splats };
+            return splats;
         }
-
-        // Each entry is a node and the glow weight its ancestors' cross-fades
-        // have handed down, one at the root. Order does not matter — every cell
-        // is judged on its own — so a plain stack stands in for a heap.
+        // Each entry is a node and the weight its ancestors' cross-fades have
+        // handed down, one at the root. Order does not matter — every cell is
+        // judged on its own — so a plain stack stands in for a heap.
         let mut stack = vec![(0u32, 1.0f64)];
         while let Some((at, weight)) = stack.pop() {
             let node = &self.nodes[at as usize];
 
-            // Marks: the cell's payload is wanted once it is worth
-            // [`MARK_LEAST`] marks on screen. How many actually draw is the
-            // resolvable prefix (see resolvable_count), grown per system at
-            // draw time; the walk only says which cells the draw will want.
-            // Under the floor the cell is left to the field, which draws
-            // every system in it rather than the handful a read would have
-            // resolved — and the floor is a count rather than a share of the
-            // cell's own slice so that what a region gets drawn at does not
-            // turn on which cell it fell in.
-            if resolved(
-                node.slice,
-                node.spacing,
-                node.center,
-                view,
-                MARK_SEPARATION_PX,
-            ) >= MARK_LEAST
-            {
-                marks.push(node.id);
-            }
-
-            // Glow: only children carrying systems can take the handoff.
+            // Only children carrying systems can take the handoff.
             let kids = node.first_child as usize
                 ..node.first_child as usize + node.children as usize;
             let total: u64 = self.nodes[kids.clone()]
@@ -572,11 +711,6 @@ impl Index {
                 continue;
             }
 
-            // How far the cell has split into its children for the glow: none
-            // below SPLIT_PX (one circle), all above SPLIT_FULL_PX (children
-            // alone), a cross-fade between. The parent keeps `1 - alpha` of its
-            // weight and hands `alpha` to the children by their count, so the
-            // two sum to the cell's own weight throughout the transition.
             let size =
                 view.projected_px(node.extent, distance(view.eye, node.center));
             let alpha = ((size - SPLIT_PX) / (SPLIT_FULL_PX - SPLIT_PX))
@@ -598,31 +732,7 @@ impl Index {
                 }
             }
         }
-
-        Needed { mode: Mode::Shell, marks, splats }
-    }
-
-    /// The discrete stars of the Real sky: descend where a cell's brightest star
-    /// clears the limit, prune where it cannot, and mark every cell reached.
-    fn discrete_stars(&self, view: &View) -> Vec<CellId> {
-        let mut marks = Vec::new();
-        if self.nodes.is_empty() {
-            return marks;
-        }
-        let mut stack = vec![0u32];
-        while let Some(at) = stack.pop() {
-            let node = &self.nodes[at as usize];
-            if !node_visible(view, node) {
-                continue;
-            }
-            marks.push(node.id);
-            for child in
-                node.first_child..node.first_child + node.children as u32
-            {
-                stack.push(child);
-            }
-        }
-        marks
+        splats
     }
 
     /// The glow under the Real sky: descend while a cell subtends more than the
@@ -689,69 +799,60 @@ fn contents_center(cell: &Cell) -> [f64; 3] {
     cell.aggregate.count_centroid().unwrap_or_else(|| cell.id.bounds().center())
 }
 
-/// The mean spacing of a cell's own magnitude slice, in light years.
+/// How wide a cell's contents are in light years, before its children are
+/// rolled into the answer: the RMS radius read as the span of an even
+/// spread.
 ///
-/// The slice's systems are spaced by the cell's whole [`contents_extent`]
-/// shared among their count, and that spacing decides whether the slice draws
-/// as separate marks: a coarse slice holds a handful of bright systems spread
-/// galaxy-wide and separates from far off, while a leaf's dense slice only
-/// separates up close.
+/// **A spread is not a width, and the merge rule needs the width.** A cell
+/// carries one scalar about how far its systems sit from their centroid, the
+/// RMS radius `r`. For a set spread evenly along anything — a box, a line, a
+/// sheet — the distance between its two furthest members is `2·sqrt(3)·r`:
+/// a uniform segment of length `L` has `r = L/sqrt(12)`, and a uniform cube
+/// of edge `e` has `r = e/2` against a diagonal of `e·sqrt(3)`. So the span
+/// is the radius times [`UNIFORM_SPAN`], and reading the radius itself as a
+/// width understates a cell by three and a half — which is a filament of
+/// three marks merged into one and gone from the picture.
 ///
-/// That figure takes the slice to be spread across the whole extent however
-/// few of it there are, and the build does not enforce it. `tree::assign_slices`
-/// sorts by absolute magnitude alone and gives each system the shallowest cell
-/// on its path with room, so a slice is the brightest of a subtree and not a
-/// sample of its volume. The two coincide in expectation, brightness not
-/// following position within a cell, and they come apart where the subtree is
-/// lumpy: a slice drawn from a cluster on one side of a cell is spaced by that
-/// cluster and spread by the cell, and the prefix reads as a clump. A
-/// spatial-uniformity quota in the build is what would make this hold by
-/// construction rather than on average.
-fn slice_spacing(cell: &Cell) -> f64 {
-    let slice = cell.slice_len().max(1) as f64;
-    contents_extent(cell) / slice.cbrt()
+/// Unfloored, where [`contents_extent`] floors at the mean spacing. The
+/// floor is the field's: a lone system must still splat as something. Here
+/// the honest answer for one system is zero width, and what keeps it drawn
+/// as itself rather than merged into a blob is [`split_to_marks`]'s rule
+/// that a cell holding no more than its footprint can show is never merged.
+///
+/// This is the seed [`widen`] rolls up. Where a cell has children their
+/// centroids say far more about its shape than this does, and the larger of
+/// the two answers stands.
+fn contents_width(cell: &Cell) -> f64 {
+    UNIFORM_SPAN * cell.aggregate.count_extent()
 }
 
-/// How many of a slice separate on screen, given where its systems sit and
-/// how far apart they are: the kernel the screen walk and
-/// [`resolvable_count`] both read, one off a [`Node`]'s figures and the other
-/// off a [`Cell`]'s.
+/// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
+const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
+
+/// How far a cell has split out of its own blob: nothing at the merge
+/// distance, all of it an octave above ([`MERGE_BAND`]), a cross-fade
+/// between.
 ///
-/// The slice's systems sit `spacing` apart across the subtree. Where that
-/// already subtends the mark separation every one draws; where it is finer
-/// the prefix is decimated to the separation — `slice · (projected /
-/// MARK_SEPARATION_PX)^3` — so the drawn systems land one mark apart whatever
-/// the distance. Continuous in distance, so a cell fills in and empties one
-/// system at a time rather than switching on whole and exposing its box.
-fn resolved(
-    slice: u64,
-    spacing: f64,
-    center: [f64; 3],
-    view: &View,
-    separation_px: f64,
-) -> u64 {
-    if slice == 0 {
-        return 0;
+/// The whole of the merge rule, off one figure: `width`, how wide the cell's
+/// contents are on screen. Under the merge distance everything the cell
+/// holds falls inside one mark, so one mark is what it is worth drawing;
+/// over it the cell is descended into and its own slice draws.
+///
+/// **How much of that slice draws is not settled here.** It cannot be: the
+/// drawn density has to follow the sky's, and that is a statement about the
+/// whole frame rather than about one cell. See [`Needed`].
+///
+/// A cell holding one system is never merged, whatever its width — its
+/// contents width is zero, so it would merge at any distance, and merging
+/// one mark into one mark buys nothing while costing the star its name and
+/// its place.
+fn splitting(view: &View, node: &Node, merge_px: f64) -> f64 {
+    if node.count <= 1 {
+        return 1.0;
     }
-    let projected = view.projected_px(spacing, distance(view.eye, center));
-    let fraction = (projected / separation_px).powi(3).min(1.0);
-    ((slice as f64) * fraction).round() as u64
-}
-
-/// How many of a cell's own systems separate on screen: the prefix of its
-/// magnitude-ordered payload worth drawing as discrete marks.
-///
-/// What the draw asks per cell, off the cell itself. The walk asks
-/// [`resolved`] directly, the figures this works out being held in its own
-/// tree already.
-pub fn resolvable_count(cell: &Cell, view: &View, separation_px: f64) -> u64 {
-    resolved(
-        cell.slice_len(),
-        slice_spacing(cell),
-        contents_center(cell),
-        view,
-        separation_px,
-    )
+    let width = view.projected_px(node.width, distance(view.eye, node.center));
+    let full = merge_px * MERGE_BAND;
+    ((width - merge_px) / (full - merge_px)).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -763,6 +864,11 @@ mod tests {
     /// cells the field drew and not what weight each carried.
     fn splat_ids(needed: &Needed) -> Vec<CellId> {
         needed.splats.iter().map(|s| s.id).collect()
+    }
+
+    /// The cell ids of a plan's merged marks.
+    fn blob_ids(needed: &Needed) -> Vec<CellId> {
+        needed.blobs.iter().map(|b| b.id).collect()
     }
 
     /// The view keeps a box ahead of the eye and drops one behind it.
@@ -818,22 +924,97 @@ mod tests {
             | (((child.z & 1) as u8) << 2)
     }
 
-    /// A leaf-or-branch cell with a chosen slice, children, and brightest
-    /// magnitude, its aggregate placed at the cell's own centre.
-    fn cell(id: CellId, slice: u64, child_mask: u8, m_min: f64) -> Cell {
-        let agg = Aggregate::of_system(id.bounds().center(), m_min, 5000.0, 0);
-        Cell { id, rank_lo: 0, rank_hi: slice, child_mask, aggregate: agg }
+    /// What a test cell holds: where its systems sit, how far they spread,
+    /// how many it owns against how many its subtree holds, and what is
+    /// under it.
+    ///
+    /// All six matter to the merge rule, which reads a cell's count, the
+    /// distance to its contents and how wide they are. A cell holding one
+    /// system is one mark and is never merged; a cell whose hundred systems
+    /// are stacked at a point is one mark too, and rightly. A real
+    /// ancestor's centroid is also where its systems are rather than where
+    /// its box is — the level-one cell over the galactic centre has a box
+    /// middle thirty thousand light years off.
+    #[derive(Copy, Clone)]
+    struct Held {
+        /// Where its systems sit.
+        at: [f64; 3],
+        /// How far they spread along x, light years.
+        across: f64,
+        /// How many it owns in its own slice.
+        slice: u64,
+        /// How many its whole subtree holds.
+        count: u64,
+        /// Which octants have children.
+        child_mask: u8,
+        /// The brightest absolute magnitude under it.
+        m_min: f64,
     }
 
-    /// The connected chain of ancestors from ROOT down to `target`, each linking
-    /// to the next with a one-system slice, so a walk starting at ROOT can
-    /// descend to the small cells a test works on.
-    fn chain_to(target: CellId, m_min: f64) -> Vec<Cell> {
+    /// A cell with the aggregate `held` describes.
+    fn holding(id: CellId, held: Held) -> Cell {
+        let last = held.count.max(1) - 1;
+        let step = if last == 0 { 0.0 } else { held.across / last as f64 };
+        let agg = (0..held.count.max(1))
+            .map(|n| {
+                let off = n as f64 * step - held.across / 2.0;
+                Aggregate::of_system(
+                    [held.at[0] + off, held.at[1], held.at[2]],
+                    held.m_min,
+                    5000.0,
+                    0,
+                )
+            })
+            .fold(Aggregate::ZERO, Aggregate::merge);
+        Cell {
+            id,
+            rank_lo: 0,
+            rank_hi: held.slice,
+            child_mask: held.child_mask,
+            aggregate: agg,
+        }
+    }
+
+    /// A one-system cell at its own box's middle: what the field's tests
+    /// want, where a count and a spread are beside the point.
+    fn cell(id: CellId, slice: u64, child_mask: u8, m_min: f64) -> Cell {
+        holding(
+            id,
+            Held {
+                at: id.bounds().center(),
+                across: 0.0,
+                slice,
+                count: 1,
+                child_mask,
+                m_min,
+            },
+        )
+    }
+
+    /// The connected chain of ancestors from ROOT down to `target`, each
+    /// linking to the next with a one-system slice and each standing for the
+    /// `count` systems below it, so a walk starting at ROOT can descend to
+    /// the small cells a test works on.
+    ///
+    /// Their contents are stacked at [`HERE`], which is where everything the
+    /// chain stands for is; how wide they come out is the roll-up's to say,
+    /// off the children.
+    fn chain_to(target: CellId, m_min: f64, count: u64) -> Vec<Cell> {
         (0..target.level)
             .map(|level| {
                 let here = CellId::of_point(HERE, level);
                 let next = CellId::of_point(HERE, level + 1);
-                cell(here, 1, 1 << octant_of(next), m_min)
+                holding(
+                    here,
+                    Held {
+                        at: HERE,
+                        across: 0.0,
+                        slice: 1,
+                        count,
+                        child_mask: 1 << octant_of(next),
+                        m_min,
+                    },
+                )
             })
             .collect()
     }
@@ -841,11 +1022,10 @@ mod tests {
     /// A connected tree: ROOT down to a 16 ly parent at level 13 with its two
     /// low children at level 14.
     ///
-    /// The slice length asked for here is the cell's own, and `cell` leaves the
-    /// aggregate's `count` standing for the whole subtree, so these cells have
-    /// `slice_len != count` — which is what a real cell looks like and is worth
-    /// remembering when reading a spacing: [`slice_spacing`] divides by the
-    /// slice while [`contents_extent`] is measured over the count.
+    /// The slice length asked for here is the cell's own, and the ancestors
+    /// stand for every system beneath them, so these cells have
+    /// `slice_len != count` — which is what a real cell looks like. Each
+    /// cell's systems are spread across its own box, as a real cell's are.
     fn small_tree(
         parent_slice: u64,
         child_slice: u64,
@@ -853,10 +1033,32 @@ mod tests {
     ) -> (Index, CellId, [CellId; 2]) {
         let parent = CellId::of_point(HERE, 13);
         let kids = parent.children();
-        let mut cells = chain_to(parent, m_min);
-        cells.push(cell(parent, parent_slice, 0b0000_0011, m_min));
-        cells.push(cell(kids[0], child_slice, 0, m_min));
-        cells.push(cell(kids[1], child_slice, 0, m_min));
+        let whole = parent_slice + 2 * child_slice;
+        let mut cells = chain_to(parent, m_min, whole);
+        cells.push(holding(
+            parent,
+            Held {
+                at: parent.bounds().center(),
+                across: parent.edge_ly(),
+                slice: parent_slice,
+                count: whole,
+                child_mask: 0b0000_0011,
+                m_min,
+            },
+        ));
+        for kid in [kids[0], kids[1]] {
+            cells.push(holding(
+                kid,
+                Held {
+                    at: kid.bounds().center(),
+                    across: kid.edge_ly(),
+                    slice: child_slice,
+                    count: child_slice,
+                    child_mask: 0,
+                    m_min,
+                },
+            ));
+        }
         (Index::from_cells(cells), parent, [kids[0], kids[1]])
     }
 
@@ -894,9 +1096,10 @@ mod tests {
         assert_eq!(view.projected_px(1.0, 0.0), f64::INFINITY);
     }
 
-    /// Close leaves draw as marks: their slices' systems separate on screen. The
-    /// glow still carries them — a mark is a weightless symbol over the field,
-    /// not a replacement for it — so the leaves splat as well.
+    /// Close leaves draw as marks: their contents are far wider than one mark
+    /// on screen, so nothing about them merges. The glow still carries them —
+    /// a mark is a weightless symbol over the field, not a replacement for it
+    /// — so the leaves splat as well.
     #[test]
     fn close_leaves_draw_as_marks() {
         let (index, _parent, kids) = small_tree(100, 100, 4.0);
@@ -904,16 +1107,27 @@ mod tests {
         let needed = index.walk_screen(&view);
         assert!(needed.marks.contains(&kids[0]));
         assert!(needed.marks.contains(&kids[1]));
+        assert!(blob_ids(&needed).is_empty(), "a close leaf merged");
     }
 
-    /// Far off, the whole tree is one circle at the root and nothing spawns; the
-    /// root carries the full weight since nothing finer draws.
+    /// Far off, the whole tree is one circle at the root and nothing spawns;
+    /// the root carries the full weight since nothing finer draws, and the
+    /// marks it stands for are the one blob it merged into.
+    ///
+    /// How far "far off" is comes off [`SPLIT_PX`] rather than being picked,
+    /// so the test moves with the band: at two pixels a hundred million light
+    /// years was far enough, and at half a pixel it is not.
     #[test]
     fn far_is_one_circle_no_marks() {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
-        let far = eye_out(CellId::ROOT, 1.0e8);
+        let root = index.root().expect("a root");
+        let lens = eye_out(CellId::ROOT, 1.0);
+        let out =
+            contents_extent(root) * lens.pixels_per_radian() / (SPLIT_PX * 0.5);
+        let far = eye_out(CellId::ROOT, out);
         let out = index.walk_screen(&far);
-        assert!(out.marks.is_empty(), "a point-sized galaxy spawned entities");
+        assert!(out.marks.is_empty(), "a point-sized galaxy read a payload");
+        assert_eq!(blob_ids(&out), vec![CellId::ROOT], "not one merged mark");
         assert_eq!(out.splats.len(), 1, "more than one circle for the galaxy");
         assert_eq!(out.splats[0].id, CellId::ROOT);
         assert!((out.splats[0].blend - 1.0).abs() < 1e-9);
@@ -938,13 +1152,17 @@ mod tests {
         }
         let leaf =
             Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
-        let mut cells = chain_to(id, 4.0);
+        let mut cells = chain_to(id, 4.0, 64);
         cells.push(leaf);
         let index = Index::from_cells(cells);
 
         let far = eye_out(id, 60_000.0);
         let out = index.walk_screen(&far);
-        assert!(!out.marks.contains(&id), "a far dense leaf spawned its slice");
+        assert!(out.marks.is_empty(), "a far dense leaf read its payload");
+        // The frontier is the *topmost* cell that merges, and every cell on
+        // the chain above the leaf holds exactly what it holds, so the whole
+        // tree comes out as the root's one mark.
+        assert_eq!(blob_ids(&out), vec![CellId::ROOT], "not one merged mark");
         assert!(
             splat_ids(&out).contains(&id),
             "a far dense leaf was not splatted"
@@ -954,22 +1172,21 @@ mod tests {
         assert!(index.walk_screen(&near).marks.contains(&id));
     }
 
-    /// A cell the map would read whole to draw a mark or two out of is left
-    /// to the field instead.
+    /// A cell is read while its contents are wider than one mark and merged
+    /// once they are not, and where the two meet is its contents' own width
+    /// and nothing else.
     ///
-    /// The mark test used to be "one system separates", which bought a
-    /// payload read of the whole cell for one mark. [`MARK_LEAST`] asks for
-    /// a handful, so between the two there is a band where the cell resolves
-    /// something and is still not worth reading — and in that band it
-    /// splats, so the region is drawn by every system in it rather than by
-    /// the one the read would have resolved.
+    /// The frontier is the whole of the marks' level of detail. How much of
+    /// a read cell is drawn is the frame's to say ([`Needed`]), so what is
+    /// checked here is the cut itself: the distance the cell stops being
+    /// read at is the distance its contents stop covering [`MERGE_PX`].
     #[test]
-    fn a_cell_barely_resolving_is_left_to_the_field() {
+    fn a_cell_is_read_until_it_fits_inside_one_mark() {
         let id = CellId::of_point(HERE, 11);
         let c = id.bounds().center();
         let mut agg = Aggregate::ZERO;
         for i in 0..512u64 {
-            let off = i as f64 * 0.5;
+            let off = i as f64 * 0.2;
             agg = agg.merge(Aggregate::of_system(
                 [c[0] + off, c[1], c[2]],
                 4.0,
@@ -984,75 +1201,24 @@ mod tests {
             child_mask: 0,
             aggregate: agg,
         };
-        let mut cells = chain_to(id, 4.0);
+        let mut cells = chain_to(id, 4.0, 512);
         cells.push(leaf);
         let index = Index::from_cells(cells);
-        let held = index.get(id).copied().expect("the leaf is in the tree");
 
-        // Out where the cell resolves something, but under the floor: the
-        // band the old test admitted and this one refuses.
-        let barely = (60..40_000).step_by(20).find_map(|away| {
-            let view = eye_out(id, away as f64);
-            let count = resolvable_count(&held, &view, MARK_SEPARATION_PX);
-            (count >= 1 && count < MARK_LEAST).then_some(view)
-        });
-        let Some(view) = barely else {
-            panic!("no distance resolves a cell of 512 under the floor");
-        };
+        // A hundred light years of systems, so up close the cell is a long
+        // way past one mark and is read.
+        assert!(index.walk_screen(&eye_out(id, 5.0)).marks.contains(&id));
+        assert!(index.walk_screen(&eye_out(id, 3_000.0)).marks.contains(&id));
 
-        let out = index.walk_screen(&view);
-        assert!(
-            !out.marks.contains(&id),
-            "a cell resolving under the floor was read anyway"
-        );
-        assert!(
-            splat_ids(&out).contains(&id),
-            "a cell left unread was not drawn as a field either"
-        );
-    }
-
-    /// A cell's resolvable prefix is full up close, a decimated fraction at
-    /// range, and nothing once its systems fall below one mark apart — the
-    /// continuous fill that keeps a cell from switching on whole.
-    #[test]
-    fn resolvable_count_shrinks_with_distance() {
-        let id = CellId::of_point(HERE, 11);
-        let c = id.bounds().center();
-        let mut agg = Aggregate::ZERO;
-        for i in 0..512u64 {
-            let off = i as f64 * 0.2;
-            agg = agg.merge(Aggregate::of_system(
-                [c[0] + off, c[1], c[2]],
-                4.0,
-                5000.0,
-                0,
-            ));
-        }
-        let cell = Cell {
-            id,
-            rank_lo: 0,
-            rank_hi: 512,
-            child_mask: 0,
-            aggregate: agg,
-        };
-
-        assert_eq!(
-            resolvable_count(&cell, &eye_out(id, 5.0), MARK_SEPARATION_PX),
-            512,
-            "not full up close"
-        );
-        let mid =
-            resolvable_count(&cell, &eye_out(id, 900.0), MARK_SEPARATION_PX);
-        assert!(mid > 0 && mid < 512, "expected a decimated prefix, got {mid}");
-        assert_eq!(
-            resolvable_count(
-                &cell,
-                &eye_out(id, 5_000_000.0),
-                MARK_SEPARATION_PX
-            ),
-            0,
-            "still drawing when one dot"
-        );
+        // The distance at which its contents stop covering the merge
+        // distance, from the far side of the band. Past it nothing is read
+        // and the tree comes out as one merged mark.
+        let lens = eye_out(id, 1.0);
+        let span = contents_width(&leaf);
+        let out = span * lens.pixels_per_radian() / MERGE_PX;
+        let far = index.walk_screen(&eye_out(id, out * 2.0));
+        assert!(!far.marks.contains(&id), "still reading at one dot");
+        assert_eq!(blob_ids(&far), vec![CellId::ROOT], "not one merged mark");
     }
 
     /// Residency reads position, never direction: the walk returns the same
@@ -1162,6 +1328,7 @@ mod tests {
         for mode in [Mode::Shell, Mode::Real] {
             let needed = index.needed(&view, mode);
             assert!(needed.marks.is_empty());
+            assert!(needed.blobs.is_empty());
             assert!(needed.splats.is_empty());
         }
     }
@@ -1195,5 +1362,353 @@ mod tests {
         let mut none = 0;
         index.each_near([1.0e9, 1.0e9, 1.0e9], 1.0, |_| none += 1);
         assert_eq!(none, 0);
+    }
+}
+
+/// The merge rule over hand-placed skies.
+///
+/// The failure this replaced passed a full battery of per-axis profile
+/// measurements, because a profile averages a bright box and a dark box into
+/// a reasonable number. So these are not profiles: each stands a shape up —
+/// a pair, a line, a ring, a disc, a clump in a void — and checks the drawn
+/// set against the systems themselves, both ways round.
+///
+/// - **Coverage**: every system is within one merge distance of something
+///   drawn. Nothing is dropped from the picture.
+/// - **Fidelity**: everything drawn is within one merge distance of some
+///   system. The geometry is not changed — a ring does not fill in and a
+///   line does not thicken.
+///
+/// Both together are the design's own statement: *reduce marks, do not
+/// change the geometry*.
+#[cfg(test)]
+mod merging {
+    use super::*;
+    use crate::meta::StarKind;
+    use crate::tree::{BuildParams, Snapshot, System};
+
+    /// Where the test skies are hung: the galactic centre, so the cells a
+    /// build makes are the ones a real sky would land in.
+    const HERE: [f64; 3] = [0.0, 900.0, 24400.0];
+
+    /// A sky of hand-placed systems, built as the galaxy is.
+    ///
+    /// One system a cell and one a slice, so the tree is as deep as the
+    /// positions allow and a cell's own slice is a small share of its
+    /// subtree — which is the shape of the real tree, where a slice is 512
+    /// against a subtree of millions. At the defaults a handful of systems
+    /// is one leaf and there is no frontier to test.
+    fn sky(at: &[[f64; 3]]) -> Snapshot {
+        let systems: Vec<System> = at
+            .iter()
+            .enumerate()
+            .map(|(n, position)| System {
+                id64: n as u64 + 1,
+                position: *position,
+                absolute_magnitude: 4.0,
+                temperature: 5000.0,
+                age_bucket: 0,
+                updated_at: 0,
+                kind: StarKind::Unknown,
+            })
+            .collect();
+        Snapshot::build(
+            &systems,
+            &BuildParams { internal_slice: 1, leaf_cap: 1 },
+        )
+    }
+
+    /// An eye `out_ly` from `HERE`, looking at it down a 1280x720 frame.
+    fn eye(out_ly: f64) -> View {
+        View {
+            eye: [HERE[0], HERE[1], HERE[2] - out_ly],
+            forward: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            fov_y: std::f32::consts::FRAC_PI_4,
+            viewport_height: 720.0,
+            aspect: 16.0 / 9.0,
+        }
+    }
+
+    /// How far apart two points fall on screen, in pixels: the angle between
+    /// them from the eye, times pixels per radian.
+    fn gap(view: &View, a: [f64; 3], b: [f64; 3]) -> f64 {
+        let to = |p: [f64; 3]| {
+            let v =
+                [p[0] - view.eye[0], p[1] - view.eye[1], p[2] - view.eye[2]];
+            let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+            [v[0] / len, v[1] / len, v[2] / len]
+        };
+        let (u, v) = (to(a), to(b));
+        let dot = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]).clamp(-1.0, 1.0);
+        dot.acos() * view.pixels_per_radian()
+    }
+
+    /// Where every mark the plan offers lands: a blob at its cell's own
+    /// centroid, and a read cell's whole slice at the systems themselves.
+    ///
+    /// The whole slice, because how much of it a frame draws is the frame's
+    /// to say and is a share of every *other* marked cell's — see
+    /// [`Needed`]. What the frontier settles, and what these tests are
+    /// about, is which cells are read at all and which stand in for
+    /// themselves.
+    fn drawn(sky: &Snapshot, needed: &Needed) -> Vec<[f64; 3]> {
+        let mut at = Vec::new();
+        for blob in &needed.blobs {
+            let cell = sky.index.get(blob.id).expect("a blob names a cell");
+            at.push(contents_center(cell));
+        }
+        for &id in &needed.marks {
+            at.extend(sky.payload(id).iter().map(|point| point.pos));
+        }
+        at
+    }
+
+    /// How many marks the plan offers: one a merged cell, and one a system
+    /// of every read cell's slice.
+    fn offered(sky: &Snapshot, needed: &Needed) -> usize {
+        needed.blobs.len()
+            + needed.marks.iter().map(|&id| sky.payload(id).len()).sum::<usize>()
+    }
+
+    /// The nearest drawn mark to a point, in pixels.
+    fn nearest(view: &View, at: &[[f64; 3]], to: [f64; 3]) -> f64 {
+        at.iter().map(|&p| gap(view, p, to)).fold(f64::MAX, f64::min)
+    }
+
+    /// Every system is drawn or stood for, and nothing is drawn where no
+    /// system is: the whole of "reduce marks, do not change the geometry".
+    ///
+    /// The slack is the merge distance itself. A merged mark stands where
+    /// its systems' centroid is, and they are all inside one mark of it, so
+    /// neither direction can be out by more than that.
+    fn holds_the_shape(view: &View, systems: &[[f64; 3]], at: &[[f64; 3]]) {
+        for &system in systems {
+            let off = nearest(view, at, system);
+            assert!(
+                off <= MERGE_PX,
+                "a system {off:.1} px from anything drawn: nothing stands \
+                 for it"
+            );
+        }
+        for &mark in at {
+            let off = nearest(view, systems, mark);
+            assert!(
+                off <= MERGE_PX,
+                "a mark {off:.1} px from any system: the draw invented \
+                 geometry"
+            );
+        }
+    }
+
+    /// Two systems merge into one mark when they close to within the merge
+    /// distance and part into two when they open past it — crossed in both
+    /// directions, off one sky and two distances.
+    #[test]
+    fn a_pair_merges_and_parts() {
+        let apart = 2.0;
+        let at = [
+            [HERE[0] - apart / 2.0, HERE[1], HERE[2]],
+            [HERE[0] + apart / 2.0, HERE[1], HERE[2]],
+        ];
+        let sky = sky(&at);
+
+        // Close enough that the pair is well past the top of the band.
+        let near = eye(apart * 869.0 / (MERGE_PX * MERGE_BAND * 4.0));
+        let parted = sky.index.walk_screen(&near);
+        assert_eq!(gap(&near, at[0], at[1]).round() as u64, 32);
+        assert!(parted.blobs.is_empty(), "a resolved pair merged");
+        assert_eq!(
+            offered(&sky, &parted),
+            2,
+            "a resolved pair did not draw two marks"
+        );
+        holds_the_shape(&near, &at, &drawn(&sky, &parted));
+
+        // And far enough that it is inside one mark.
+        let far = eye(apart * 869.0 / (MERGE_PX * 0.25));
+        let merged = sky.index.walk_screen(&far);
+        assert!(gap(&far, at[0], at[1]) < MERGE_PX);
+        assert!(merged.marks.is_empty(), "a merged pair read a payload");
+        assert_eq!(merged.blobs.len(), 1, "a merged pair is not one mark");
+        holds_the_shape(&far, &at, &drawn(&sky, &merged));
+    }
+
+    /// A line is drawn as a line: as many marks as it is merge distances
+    /// long, laid along it, and never collapsed into one.
+    ///
+    /// **The scalar-radius bug, caught.** A cell's RMS radius is a third of
+    /// the length of a filament it holds, so judging the merge on the radius
+    /// merges three marks' worth of line into one and the feature leaves the
+    /// map. The measure is a width rolled up from the children
+    /// ([`widen`]), and this is what says so.
+    #[test]
+    fn a_line_stays_a_line() {
+        let span = 40.0;
+        let at: Vec<[f64; 3]> = (0..41)
+            .map(|n| {
+                let t = n as f64 / 40.0 - 0.5;
+                [HERE[0] + t * span, HERE[1], HERE[2]]
+            })
+            .collect();
+        let sky = sky(&at);
+
+        // Far enough out that the line is 40 px long: ten marks' worth.
+        let view = eye(span * 869.0 / 40.0);
+        let length = gap(&view, at[0], at[at.len() - 1]);
+        assert!((length - 40.0).abs() < 1.0, "the line is {length:.1} px");
+
+        let needed = sky.index.walk_screen(&view);
+        let marks = drawn(&sky, &needed);
+        assert!(
+            marks.len() >= (length / MERGE_PX) as usize,
+            "a {length:.0} px line came out as {} marks, under the {} a \
+             merge distance apart would give",
+            marks.len(),
+            (length / MERGE_PX) as usize
+        );
+        holds_the_shape(&view, &at, &marks);
+    }
+
+    /// A ring keeps its hole: nothing is drawn in the middle of it.
+    #[test]
+    fn a_ring_keeps_its_hole() {
+        let radius = 30.0;
+        let at: Vec<[f64; 3]> = (0..64)
+            .map(|n| {
+                let turn = n as f64 / 64.0 * std::f64::consts::TAU;
+                [
+                    HERE[0] + radius * turn.cos(),
+                    HERE[1] + radius * turn.sin(),
+                    HERE[2],
+                ]
+            })
+            .collect();
+        let sky = sky(&at);
+
+        // The ring 60 px across, so the hole is 30 px of empty sky: seven
+        // merge distances of it, far more than any slack in the rule.
+        let view = eye(radius * 2.0 * 869.0 / 60.0);
+        let needed = sky.index.walk_screen(&view);
+        let marks = drawn(&sky, &needed);
+        holds_the_shape(&view, &at, &marks);
+
+        let middle = nearest(&view, &marks, HERE);
+        assert!(
+            middle > MERGE_PX * 2.0,
+            "a mark {middle:.1} px from the centre of a ring 30 px across: \
+             the hole filled in"
+        );
+    }
+
+    /// A filled disc stays filled: its middle is drawn, not just its rim.
+    #[test]
+    fn a_disc_stays_filled() {
+        let radius = 30.0;
+        let mut at = Vec::new();
+        for ring in 0..6 {
+            let r = radius * ring as f64 / 5.0;
+            let count = if ring == 0 { 1 } else { ring * 12 };
+            for n in 0..count {
+                let turn = n as f64 / count as f64 * std::f64::consts::TAU;
+                at.push([
+                    HERE[0] + r * turn.cos(),
+                    HERE[1] + r * turn.sin(),
+                    HERE[2],
+                ]);
+            }
+        }
+        let sky = sky(&at);
+
+        let view = eye(radius * 2.0 * 869.0 / 60.0);
+        let needed = sky.index.walk_screen(&view);
+        let marks = drawn(&sky, &needed);
+        holds_the_shape(&view, &at, &marks);
+
+        let middle = nearest(&view, &marks, HERE);
+        assert!(
+            middle <= MERGE_PX,
+            "nothing within {middle:.1} px of the middle of a filled disc"
+        );
+    }
+
+    /// A clump inside a void stays a clump: the cell that holds it merges,
+    /// nothing is ever drawn in the emptiness around it, and what is drawn
+    /// over the clump is fewer marks than it holds systems.
+    ///
+    /// **Not one mark, and the gap is the tree's own.** The clump's cell
+    /// merges into one blob, but every cell *above* it owns a slice of its
+    /// subtree's brightest — and a subtree that is a clump in a void has all
+    /// its brightest in the clump, wherever the owning cell's box reaches.
+    /// Those are real systems at real places, drawn individually and
+    /// selectable, which is what "every area shows its largest marks" asks
+    /// for; what the tree cannot say is that they land inside a blob one
+    /// mark wide, because a cell knows where its *subtree* sits and not
+    /// where its own slice does. A per-cell occupancy grid is what would
+    /// close it.
+    #[test]
+    fn a_clump_in_a_void_does_not_spill() {
+        let mut at = Vec::new();
+        for n in 0..64 {
+            let turn = n as f64 / 64.0 * std::f64::consts::TAU;
+            at.push([
+                HERE[0] + 2.0 * turn.cos(),
+                HERE[1] + 2.0 * turn.sin(),
+                HERE[2] + (n % 5) as f64 * 0.5,
+            ]);
+        }
+        // Four witnesses out in the void, 400 ly off, so the tree's cells
+        // above the clump are enormous beside it.
+        for corner in [[1.0, 1.0], [-1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]] {
+            at.push([
+                HERE[0] + corner[0] * 400.0,
+                HERE[1] + corner[1] * 400.0,
+                HERE[2],
+            ]);
+        }
+        let sky = sky(&at);
+
+        // Far enough that the clump is inside one mark and the witnesses are
+        // hundreds of pixels out from it.
+        let view = eye(4.0 * 869.0 / (MERGE_PX * 0.5));
+        let needed = sky.index.walk_screen(&view);
+        let marks = drawn(&sky, &needed);
+        // Nothing in the void: every mark is on a system.
+        holds_the_shape(&view, &at, &marks);
+
+        let over = |at: &[[f64; 3]]| {
+            at.iter().filter(|&&p| gap(&view, p, HERE) <= MERGE_PX).count()
+        };
+        assert!(
+            over(&marks) < over(&at),
+            "a clump of {} systems inside one mark drew {} of them",
+            over(&at),
+            over(&marks)
+        );
+        let merged = needed.blobs.iter().any(|blob| {
+            let cell = sky.index.get(blob.id).expect("a blob names a cell");
+            gap(&view, contents_center(cell), HERE) <= MERGE_PX
+        });
+        assert!(merged, "nothing merged over the clump");
+    }
+
+    /// A lone system is drawn as itself however far off it is: its contents
+    /// width is zero, so it merges at any distance, and merging one mark
+    /// into one mark buys nothing while costing its name and its place.
+    #[test]
+    fn a_lone_system_is_never_merged() {
+        let sky = sky(&[HERE]);
+        for out in [1.0, 1.0e3, 1.0e6] {
+            let needed = sky.index.walk_screen(&eye(out));
+            assert_eq!(
+                offered(&sky, &needed),
+                1,
+                "a lone system was not drawn from {out} ly out"
+            );
+            assert!(
+                needed.blobs.is_empty(),
+                "a lone system merged into a blob from {out} ly out"
+            );
+        }
     }
 }

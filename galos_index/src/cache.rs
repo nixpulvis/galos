@@ -147,7 +147,7 @@ impl Resident {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::walk::{Mode, SplatRef};
+    use crate::walk::{BlobRef, Mode, SplatRef};
 
     fn point(id: u64) -> Point {
         Point {
@@ -197,22 +197,28 @@ mod tests {
         cache.insert(a, vec![point(1)]); // needed and resident
         cache.insert(c, vec![point(3)]); // resident but not needed
         // b is needed but absent.
-        let needed =
-            Needed { mode: Mode::Shell, marks: vec![a, b], splats: vec![] };
+        let needed = Needed {
+            mode: Mode::Shell,
+            marks: vec![a, b],
+            blobs: vec![],
+            splats: vec![],
+        };
 
         assert_eq!(ids(cache.missing(&needed)), ids(vec![b]));
     }
 
-    /// A splat cell wants no payload, so one is never fetched for it: a
-    /// cell's aggregate stands for its whole subtree.
+    /// A cell the field or a merged mark draws wants no payload, so one is
+    /// never fetched for it: a cell's aggregate stands for its whole
+    /// subtree.
     #[test]
-    fn a_splat_only_cell_is_never_fetched() {
+    fn an_aggregate_only_cell_is_never_fetched() {
         let s = at(2, 1);
         let mut cache = Resident::default();
         cache.insert(s, vec![point(1)]);
         let needed = Needed {
             mode: Mode::Real,
             marks: vec![],
+            blobs: vec![BlobRef { id: s, blend: 1.0 }],
             splats: vec![SplatRef { id: s, blend: 1.0 }],
         };
         assert!(cache.missing(&needed).is_empty());

@@ -31,7 +31,7 @@ use crate::systems::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::systems::scale::{ScalePopulation, View, by_population};
 use crate::systems::spawn::{PendingSpawns, build_system, system_at};
 use crate::systems::{PendingEvictions, Spyglass, System};
-use crate::{Names, Populated, ResidentIndex, Transport};
+use crate::{Names, Populated, Transport};
 use bevy::ecs::entity::EntityHashSet;
 use bevy::ecs::system::SystemParam;
 use bevy::log::tracing::Instrument;
@@ -41,8 +41,7 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
 use galos_index::{
-    CellId, Inhabited, MARK_SEPARATION_PX, Part, Point, Resident,
-    STAR_SEPARATION_PX, Stamp, resolvable_count,
+    CellId, Inhabited, MERGE_PX, Part, Point, Resident, Stamp,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -56,6 +55,8 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<PointOrders>();
     app.init_resource::<Republished>();
     app.init_resource::<Keeping>();
+    app.init_resource::<Sampled>();
+    app.init_resource::<Blobs>();
 
     app.add_systems(Update, fetch.in_set(MapSet::Fetch));
     // Arrived payloads land in the cache; the draw reads them from there.
@@ -91,6 +92,12 @@ pub fn plugin(app: &mut App) {
 /// `clear`: to bound the view is to clear away what the reach does not hold.
 fn reach(spyglass: &Spyglass) -> Option<f64> {
     spyglass.clear.then_some(spyglass.radius as f64)
+}
+
+/// Whether the clamp still reaches a cell, the bound being off where there
+/// is none
+fn in_reach(id: CellId, orbit: &OrbitCamera, bubble: Option<f64>) -> bool {
+    bubble.is_none_or(|radius| cell_in_reach(id, orbit.center(), radius))
 }
 
 /// Whether a cell's box comes within `radius` of `center`, measured to its
@@ -130,20 +137,20 @@ const KEEP: Duration = Duration::from_secs(2);
 /// what that zoom needs — which is what it was before the grace existed.
 const SLACK: usize = 2;
 
-/// Which cells the walk wants, and when each held payload was last wanted
+/// Which cells the walk marks, and when each held payload was last wanted
 ///
 /// Two answers with one owner, because the second is only meaningful against
 /// the first. The marked set is a `Vec` on [`Planned`] and every reader of it
-/// asks the same question — *is this cell marked* — so it is kept here as a
-/// set and rebuilt only when the plan moves ([`fetch`]), rather than walked
-/// or rebuilt by each of the three systems that ask.
+/// asks the same question — *how much of this cell is drawn* — so it is kept
+/// here as a map and rebuilt only when the plan moves ([`fetch`]), rather
+/// than walked or rebuilt by each of the three systems that ask.
 ///
 /// The stamps are what [`KEEP`] is measured from. A cell wanted this frame is
 /// stamped with this frame; one nobody has asked for keeps the stamp of the
 /// last frame that did, and is freed once that is [`KEEP`] old.
 #[derive(Resource, Default)]
 pub(crate) struct Keeping {
-    /// The marked set as a set, rebuilt when [`Planned`] moves
+    /// The marked set, rebuilt when [`Planned`] moves
     marked: FxHashSet<CellId>,
     /// When each held payload was last wanted
     seen: FxHashMap<CellId, Instant>,
@@ -220,6 +227,115 @@ impl Republished {
     }
 }
 
+/// How many marks the frame itself carries
+///
+/// Marks on a grid of pitch [`MERGE_PX`] fill the viewport, so its area
+/// over the pitch squared is the count — 57,600 on a 1280x720 frame at four
+/// pixels. It is a *total*, not a density: how those marks are spread over
+/// the frame is [`share`]'s to say, and where the sky is densest they land
+/// closer than the pitch and read as a brighter patch, which is what a
+/// dense sky looks like.
+fn frame_marks(view: &galos_index::View) -> f64 {
+    let height = f64::from(view.viewport_height);
+    let width = height * f64::from(view.aspect);
+    width * height / (MERGE_PX * MERGE_PX)
+}
+
+/// What share of the systems in reach the frame draws
+///
+/// **One figure over the whole frame, and it is a share of *population*.**
+/// That is the whole of the density response: every cell draws the same
+/// fraction of what it holds, so a region with ten times the systems draws
+/// ten times the marks and the sky's own structure survives the thinning.
+/// The drawn set is a uniform sample of the galaxy, biased within each cell
+/// toward the brightest.
+///
+/// **Two other rules were tried and both are wrong.** A share of a cell's
+/// *footprint area* — one mark to every patch of screen the cell covers —
+/// answers the same number wherever it is pointed, so the galaxy comes out
+/// at one uniform density and the arms, the core and the voids all read
+/// alike; a floor under that same figure drew nothing at all in the finest
+/// cells, and since the tree is finest where the sky is densest, that is a
+/// hole exactly where the most systems are. Population is the only one of
+/// the three that is monotone in density.
+///
+/// No clamp anywhere in it. A cell draws `share` of its own payload and can
+/// never be asked for more than it holds, which is what the attempt that
+/// drew hard-edged cubes got wrong: it clamped a coarse cell's ask up to
+/// its whole payload while its neighbour served a few per cent.
+fn share(population: u64, capacity: f64) -> f64 {
+    if population == 0 {
+        return 1.;
+    }
+    (capacity / population as f64).min(1.)
+}
+
+/// How many marks a cell of `held` systems draws at `share`, without a
+/// rounding cliff
+///
+/// `share * held` is rarely a whole number, and rounding it down loses
+/// every cell that wants less than one mark — which at a wide zoom is most
+/// of them, and a whole sparse sky with them. Rounding up instead hands
+/// every cell a mark it has not earned, and a wide view holds hundreds of
+/// thousands of cells.
+///
+/// So the fraction is dithered against the cell's own address: a cell that
+/// wants a third of a mark draws one in a third of the places rather than
+/// nowhere or everywhere. Off the address and not off a clock, so the
+/// answer is the same for the same cell at the same zoom and the set moves
+/// by marks arriving and leaving rather than by flickering.
+fn wanted(share: f64, held: usize, id: CellId) -> usize {
+    ((share * held as f64 + dither(id)) as usize).min(held)
+}
+
+/// A cell's own place in `0..1`, for [`wanted`]'s rounding
+///
+/// SplitMix64's finalizer over the address, which is anything but uniform —
+/// a cell id is a level and three grid coordinates, so its low bits are
+/// position — and the top twenty-four bits of the mix, which is all that is
+/// wanted of it.
+fn dither(id: CellId) -> f64 {
+    let mut z = id.morton().wrapping_add(u64::from(id.level));
+    z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    (z >> 40) as f64 / 16_777_216.
+}
+
+/// The merged marks the frame draws, one a cell whose whole contents fall
+/// inside a mark
+///
+/// **Not entities, and that is the point.** A blob stands for a subtree
+/// rather than for a system: it has no name, no bodies, no route and
+/// nothing to select in the sense a star has, and at galaxy scale there
+/// are tens of thousands of them. Spawning that many would pay a
+/// transform, a visibility and a picking test apiece for a set that is
+/// rewritten whenever the eye moves. So they are a list, laid into
+/// [`super::field`]'s one mesh beside the stars.
+///
+/// **Drawn as a mark and no larger.** A blob is one mark because everything
+/// it holds falls inside one, not because it is worth more than one: a mark
+/// drawn wider for standing over more systems would say the density with
+/// size, and the density is what the *number* of marks says. It is thinned
+/// on the same [`share`] every read cell is, so a merged region comes out
+/// no denser or thinner than a read one beside it.
+///
+/// Written by [`reconcile`].
+#[derive(Resource, Default)]
+pub(crate) struct Blobs(pub(crate) Vec<Blob>);
+
+/// One merged mark: where it stands and what it stands for.
+#[derive(Copy, Clone)]
+pub(crate) struct Blob {
+    /// Its systems' count-weighted centroid, light years: where the mark is
+    /// painted, which is where they are and not where the box is.
+    pub(crate) at: [f64; 3],
+    /// The brightest absolute magnitude under it, or [`None`] where the
+    /// cell carries no photometry.
+    pub(crate) m_min: Option<f32>,
+}
+
 /// What the draw has worked out about the resident payloads: the orders a
 /// cell's points are drawn in, which cells have been published again since it
 /// last looked, and which cells the walk marks.
@@ -238,6 +354,10 @@ pub(crate) struct Worked<'w> {
     /// What each marked cell's marks account for, which the field subtracts
     /// from the aggregate it lays down so the two never draw one system twice.
     drawn: ResMut<'w, crate::systems::aggregate::Drawn>,
+    /// What the frame's marks came to, for the panel to read.
+    sampled: ResMut<'w, Sampled>,
+    /// The merged marks the frame draws, which the merge above settles.
+    blobs: ResMut<'w, Blobs>,
 }
 
 /// The payload reads in flight, one per marks cell not yet resident or asked
@@ -269,44 +389,95 @@ impl BoundedTasks {
     }
 }
 
-/// Ask for the payloads of the marks cells the map does not hold yet
+/// How much more of a cell is read than the share asks for
 ///
-/// Only the cells not already resident or already on the wire, so a still view
-/// whose marks are all held asks for nothing and a zoom asks only for the
-/// annulus it newly reaches. Run every frame rather than on a plan change: a
-/// still camera whose plan has not moved may yet have marks nobody has asked
-/// for — the map opening on one, or a payload freed and wanted again.
+/// A share moves with the camera, and a cell already held at exactly what
+/// the last frame wanted is one re-read the moment the frame wants one
+/// more. So a read takes a few times the ask and a floor besides, and a
+/// cell is asked for again only once the share has grown past what it
+/// holds. Four and sixteen: an octave and a half of zoom before a re-read,
+/// and sixteen points is under a kilobyte.
+const READ_SLACK: usize = 4;
+const READ_LEAST: usize = 16;
+
+/// Ask for the payloads of the marks cells the map does not hold enough of
+///
+/// **A prefix and not the payload.** A cell's payload is magnitude-ordered
+/// and the draw takes a share of it ([`wanted`]), so the rest is bytes
+/// faulted, held and never looked at: measured over `.index/full`, one
+/// flight held 121 M points and 5.8 GB to draw eight thousand marks, and
+/// the fill-in after every camera move was the map waiting on them. What is
+/// asked for here is what the draw will take, with [`READ_SLACK`] to spare.
+///
+/// Only the cells not already held deep enough or already on the wire, so a
+/// still view whose marks are all held asks for nothing and a zoom asks
+/// only for the annulus it newly reaches, plus whatever the growing share
+/// has outgrown. Run every frame rather than on a plan change: a still
+/// camera whose plan has not moved may yet have marks nobody has asked for
+/// — the map opening on one, or a payload freed and wanted again.
+///
+/// Where a filter is asked the whole cell is read instead. The filters
+/// promote systems out of magnitude order — a faction is a handful of
+/// systems anywhere in a payload — so a prefix is the one thing that cannot
+/// answer them.
 pub(crate) fn fetch(
     planned: Res<Planned>,
+    index: Res<crate::ResidentIndex>,
     resident: Res<ResidentCells>,
     transport: Res<Transport>,
     spyglass: Res<Spyglass>,
-    cameras: Query<&OrbitCamera>,
+    filters: Res<crate::systems::filter::Filters>,
+    cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
-    let bubble = reach(&spyglass).zip(cameras.single().ok());
+    let Ok((orbit, camera)) = cameras.single() else { return };
+    let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
+        return;
+    };
+    let bubble = reach(&spyglass);
     let pool = AsyncComputeTaskPool::get();
+    let whole = filters.asking();
+    // What the draw will spread over, off the index alone: a cell's slice
+    // is known before a byte of it is read, which is what lets the share be
+    // struck here as well as in [`reconcile`] and lets the two agree.
+    let population = population(&planned.0, &index.0, orbit, bubble);
+    let share = share(population, frame_marks(&view));
     // The two halves of the frame's flat cost, measured apart: the set
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
     // what a capture has to be able to see.
     let asking = {
         let _zone = info_span!("missing cells").entered();
-        resident.0.missing(&planned.0)
+        let mut asking = Vec::new();
+        for &id in &planned.0.marks {
+            // Past the clamp, a marks cell beyond the reach is left
+            // unfetched, so a zoom out never loads the far sky the walk
+            // still marks — only its nearer, brighter tail is drawn.
+            if !in_reach(id, orbit, bubble) || tasks.0.contains_key(&id) {
+                continue;
+            }
+            let Some(cell) = index.0.get(id) else { continue };
+            let slice = cell.slice_len() as usize;
+            let want = if whole {
+                slice
+            } else {
+                (wanted(share, slice, id) * READ_SLACK)
+                    .max(READ_LEAST)
+                    .min(slice)
+            };
+            if want == 0 {
+                continue;
+            }
+            let held = resident.0.cell(id).map_or(0, |held| held.points.len());
+            if held >= want {
+                continue;
+            }
+            asking.push((id, want));
+        }
+        asking
     };
     let _zone = info_span!("cell tasks", missing = asking.len()).entered();
-    for id in asking {
-        // Past the clamp, a marks cell beyond the reach is left unfetched, so a
-        // zoom out never loads the far sky the walk still marks — only its
-        // nearer, brighter tail is drawn.
-        if let Some((radius, camera)) = bubble
-            && !cell_in_reach(id, camera.center(), radius)
-        {
-            continue;
-        }
-        if tasks.0.contains_key(&id) {
-            continue;
-        }
+    for (id, want) in asking {
         let source = transport.0.clone();
         tasks.0.insert(
             id,
@@ -318,7 +489,7 @@ pub(crate) fn fetch(
                     // contents the map does not have.
                     let stamp =
                         source.stamp(Part::Cell(id)).await.ok().flatten();
-                    Ok((source.payload(id).await?, stamp))
+                    Ok((source.payload_prefix(id, want).await?, stamp))
                 }
                 // One zone per cell, named with it. At info with the rest: the
                 // walk is the map's live payload path, so a capture that left
@@ -331,6 +502,42 @@ pub(crate) fn fetch(
             ),
         );
     }
+}
+
+/// How many systems the marked sky holds, off the index and not off what
+/// has landed
+///
+/// The share has to be the same figure in [`fetch`] and in [`reconcile`],
+/// and it must not move as payloads arrive: a share struck over what is
+/// held would rise while the map was still reading and every mark already
+/// drawn would shift under it. A cell's slice length is known from the
+/// index the moment the walk marks it.
+fn population(
+    planned: &galos_index::Needed,
+    index: &galos_index::Index,
+    orbit: &OrbitCamera,
+    bubble: Option<f64>,
+) -> u64 {
+    let mut population = 0u64;
+    for &id in &planned.marks {
+        if in_reach(id, orbit, bubble)
+            && let Some(cell) = index.get(id)
+        {
+            population += cell.slice_len();
+        }
+    }
+    // And the sky the merged cells stand for, which is drawn without being
+    // read. Counting it holds the share down over a region the frame is
+    // already marking, so zooming out past a cell's merge does not brighten
+    // what is left.
+    for blob in &planned.blobs {
+        if in_reach(blob.id, orbit, bubble)
+            && let Some(cell) = index.get(blob.id)
+        {
+            population += cell.aggregate.count();
+        }
+    }
+    population
 }
 
 /// Take the payloads that have arrived into the resident cache
@@ -648,23 +855,64 @@ fn busiest_first<'a>(
         .map(|&index| index as usize)
 }
 
-/// Draw each resident cell's resolvable prefix, admitted systems first, grown
-/// and shed per system as the camera moves
+/// What the frame's marks came to, for the diagnostics panel
 ///
-/// A cell's payload is magnitude-ordered, and [`resolvable_count`] says how many
-/// of its systems separate on screen from where the eye stands. Drawing that
-/// many — and only that many — is what lets a cell fill in and empty one system
-/// at a time rather than switching on whole: a single system is drawn wherever
-/// it is resolvable, so the index's cell boundaries stop showing through.
+/// The marks' counterpart to [`super::glow::Laid`]: what the frontier asked
+/// of every marked, resident, in-reach cell, how much of it the map has and
+/// drew, and how many merged marks stand over the rest of the sky.
 ///
-/// *Which* of them fill that count is the filters' to say. The count is a
-/// budget of marks the screen can tell apart, worked out from the slice's own
-/// density and not from which systems are chosen, so spending it on what the
-/// filters admit draws exactly as many marks as before, no closer together.
-/// Taking the brightest of the payload instead spends the budget on whatever
-/// happens to be bright: a faction is a handful of systems in a cell of
-/// thousands, so a filter on one used to draw nothing at all from most cells
-/// while the marks the screen could carry went unused.
+/// There is no share here and there is nothing to divide by. The walk's ask
+/// is already one mark to every [`galos_index::MERGE_PX`] squared of the cell
+/// covers, so what bounds the frame is the frame's own area and not a factor
+/// struck across every cell — see [`galos_index::Index::walk_screen`]. What
+/// this reports is therefore a fact about the view rather than a dial: if
+/// `drawn` runs far under `wanted` the payloads have not landed, not that
+/// the frame refused them.
+#[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
+pub struct Sampled {
+    /// Systems the frame is spread over: every marked, resident, in-reach
+    /// cell's payload, plus what the merged cells stand for.
+    pub population: u64,
+    /// The share of them the frame draws.
+    pub share: f32,
+    /// Marks actually taken out of the payloads.
+    pub drawn: usize,
+    /// Cells drawn as one merged mark apiece.
+    pub blobs: usize,
+    /// How many systems those merged marks stand for.
+    pub behind: u64,
+}
+
+/// Draw the prefix of every marked cell the frontier asks for, admitted
+/// systems first, grown and shed per system as the camera moves
+///
+/// **The walk says how many, and there is nothing to divide.** A cell's
+/// payload is magnitude-ordered and [`galos_index::MarkRef::wanted`] is how
+/// many of it the cell's footprint holds apart at [`galos_index::MERGE_PX`]
+/// to every merge distance squared of the patch of screen the cell's
+/// contents cover. Drawing that many, and only that many, is what lets a
+/// cell fill in and empty one system at a time rather than switching on
+/// whole, and what keeps two neighbours at the same density however
+/// differently their boxes fell.
+///
+/// What the sky *under* those marks comes to is the walk's too: everything
+/// finer than one mark is merged into [`galos_index::BlobRef`]s, drawn by
+/// [`super::field`] off the aggregates with no payload at all. So this pass
+/// no longer has an overrun to spend. It used to: the per-cell rule bounds a
+/// cell and not a frame, the marked prefixes of a wide view came to tens of
+/// times what a frame could show, and every cell was thinned by one global
+/// `fair_share` with each system holding a fixed place in it and the share
+/// carried across cell faces to keep the density from stepping. All of that
+/// is gone with the floor that made it necessary.
+///
+/// *Which* systems fill the count is the filters' to say. The count is a
+/// budget of marks the screen can tell apart, worked out from the cell's own
+/// footprint and not from which systems are chosen, so spending it on what
+/// the filters admit draws exactly as many marks as before, no closer
+/// together. Taking the brightest of the payload instead spends the budget
+/// on whatever happens to be bright: a faction is a handful of systems in a
+/// cell of thousands, so a filter on one used to draw nothing at all from
+/// most cells while the marks the screen could carry went unused.
 ///
 /// So the order is: what the filters admit, brightest first, and then — only
 /// where [`super::filter::DimTo`] still draws the excluded — the rest,
@@ -681,7 +929,7 @@ fn busiest_first<'a>(
 /// magnitude order within each half. Nothing reads it as a prefix today.
 /// Whoever writes the residual splat must subtract the aggregate of the
 /// systems actually drawn — `Aggregate::remove` over exactly these points —
-/// and not a rank range off [`resolvable_count`], or the glow will double the
+/// and not a rank range off the walk's ask, or the glow will double the
 /// light of every system the filters promoted into the budget.
 ///
 /// The prefix is pushed to the shared spawn queue, which builds only the
@@ -703,7 +951,7 @@ fn busiest_first<'a>(
 /// still waiting on the budget.
 pub(crate) fn reconcile(
     cameras: Query<(&OrbitCamera, &Camera)>,
-    index: Res<ResidentIndex>,
+    index: Res<crate::ResidentIndex>,
     resident: Res<ResidentCells>,
     populated: Res<Populated>,
     names: Res<Names>,
@@ -729,14 +977,22 @@ pub(crate) fn reconcile(
         ref mut keeping,
         ref planned,
         ref mut drawn,
+        ref mut sampled,
+        ref mut blobs,
     } = worked;
     // Afresh each pass. A cell that has stopped being marked, been evicted or
     // fallen outside the bubble accounts for nothing now, and an account left
     // standing would go on subtracting marks that are no longer drawn — a hole
     // in the field exactly where the map has stopped drawing anything at all.
     drawn.0.clear();
-    // The marked set as a set, for this pass and for the evictor after it.
-    // Rebuilt only where the plan has moved, which a still camera never does.
+    // What the frontier asks of each cell, for this pass and for the evictor
+    // after it. Rebuilt only where the plan has moved, which a still camera
+    // never does.
+    //
+    // The merge distance the ask was worked out at is the walk's: a mark's
+    // own width in [`galos_index::Mode::Shell`] and the point spread in
+    // [`galos_index::Mode::Real`], which is why a cluster stays a field of
+    // stars in the sky where the map would collapse it to one mark.
     if planned.is_changed() {
         let _zone = info_span!("marked set").entered();
         keeping.marks(&planned.0.marks);
@@ -745,13 +1001,6 @@ pub(crate) fn reconcile(
     // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
     // the LOD is untouched inside it, only the far tail is shed.
     let bubble = reach(&spyglass);
-    // The realistic view resolves stars down to the point spread, far finer
-    // than the map's marks, so a cluster stays a field of stars rather than
-    // collapsing to its brightest few. See [`STAR_SEPARATION_PX`].
-    let separation = match *view_mode {
-        View::Map => MARK_SEPARATION_PX,
-        View::Realistic => STAR_SEPARATION_PX,
-    };
 
     // The three phases of the pass, each its own zone: what it gathers about
     // what is already drawn, the walk of every resident cell, and the scan
@@ -811,18 +1060,28 @@ pub(crate) fn reconcile(
     // moves by a frame's worth in a frame.
     let wall = Utc::now();
 
-    // The resolvable prefix of every marked cell the map holds: the systems
-    // close enough to separate. Build only the ones not already drawn; note
-    // every one wanted.
-    //
-    // Marked, not merely held. A payload outlives the marking by [`KEEP`] now
-    // (see [`evict_payloads`]), and drawing one the walk has stopped marking
-    // would put the far, faint sky the walk just shed back on the map — the
-    // level of detail comes from the marks and nowhere else.
-    let mut wanted: EntityHashSet = EntityHashSet::default();
+    // What the frame has to spend, what it is spread over, and what came of
+    // it. Two walks of the marked set rather than one: a share of the
+    // population is a share of every *other* marked cell's too, so the
+    // whole has to be known before any of it is spent. The first walk reads
+    // no payload and asks the filters nothing.
+    let population = {
+        let _zone = info_span!("population", cells = planned.0.marks.len())
+            .entered();
+        population(&planned.0, &index.0, orbit, bubble)
+    };
+    let share = share(population, frame_marks(&view));
+    let mut took_all = 0usize;
+    let mut behind = 0u64;
+
+    // Marked, not merely held. A payload outlives the marking by [`KEEP`]
+    // now (see [`evict_payloads`]), and drawing one the walk has stopped
+    // marking would put the far, faint sky the walk just shed back on the
+    // map — the level of detail comes from the marks and nowhere else.
+    let mut wanted_by: EntityHashSet = EntityHashSet::default();
     // One buffer for every cell's take rather than one allocation apiece:
     // a wide view walks thousands of cells a frame, and the indices taken are
-    // a budget's worth each.
+    // a share's worth each.
     let mut taken: Vec<usize> = Vec::new();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
@@ -835,20 +1094,25 @@ pub(crate) fn reconcile(
     let prefixes =
         info_span!("cell prefixes", cells = resident.0.len()).entered();
     for (id, cell) in resident.0.iter() {
-        if !keeping.marks_it(id) {
+        if !keeping.marks_it(id) || !in_reach(id, orbit, bubble) {
             continue;
         }
-        let Some(indexed) = index.0.get(id) else { continue };
-        if let Some(radius) = bubble
-            && !cell_in_reach(id, orbit.center(), radius)
-        {
+        // Off the cell's whole slice and then clamped to what has landed,
+        // so what is drawn does not grow as the read arrives: a share
+        // struck over the prefix in hand would ask for less of a cell the
+        // moment less of it was held, and every mark would shift as the
+        // payloads came in.
+        let slice =
+            index.0.get(id).map_or(cell.points.len(), |held| {
+                held.slice_len() as usize
+            });
+        let target = wanted(share, slice, id).min(cell.points.len());
+        if target == 0 {
             continue;
         }
-        // Whether this cell's payload is the one the drawn systems were built
-        // from, or a later one; see [`Republished`].
+        // Whether this cell's payload is the one the drawn systems were
+        // built from, or a later one; see [`Republished`].
         let refreshed = republished.holds(id);
-        let target = (resolvable_count(indexed, &view, separation) as usize)
-            .min(cell.points.len());
         orders.walk(
             id,
             &cell.points,
@@ -860,8 +1124,8 @@ pub(crate) fn reconcile(
         );
         let admits = orders.admits(id);
         // Taken rather than walked lazily, since the two orders are different
-        // iterators and what follows is the same for both. A budget's worth of
-        // indices, which is a few tens.
+        // iterators and what follows is the same for both. A share's worth of
+        // indices, which is a few.
         taken.clear();
         if by_population {
             taken.extend(
@@ -887,6 +1151,7 @@ pub(crate) fn reconcile(
                 continue;
             }
             let address = point.id64 as i64;
+            took_all += 1;
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would
             // otherwise go on drawing for the frame or two it takes to land,
@@ -909,16 +1174,13 @@ pub(crate) fn reconcile(
             );
             // Already drawn is already answered, except out of a cell that
             // has just been published again: then the system on the map was
-            // built from the payload this one replaced, and what it says about
-            // the moment, the magnitude and the politics is what the index
-            // said last time. Queued either way, and `spawn_systems` replaces
-            // it in place.
+            // built from the payload this one replaced, and what it says
+            // about the moment, the magnitude and the politics is what the
+            // index said last time. Queued either way, and `spawn_systems`
+            // replaces it in place.
             match existing.get(&address) {
                 Some(&entity) => {
-                    wanted.insert(entity);
-                    // A republished cell's systems were built from the payload
-                    // this one replaced, so they are offered again even though
-                    // they are drawn, and `spawn_systems` writes over them.
+                    wanted_by.insert(entity);
                     if refreshed && offering {
                         offering = pending.offer(address, id, index as u32);
                     }
@@ -941,6 +1203,34 @@ pub(crate) fn reconcile(
     }
     drop(prefixes);
 
+    // And the cells the walk merged, which need nothing read. One mark
+    // apiece and no more — a blob is a cell whose whole contents fall inside
+    // one mark, so one is what it is worth — and it is drawn or not on the
+    // same share every read cell is thinned by, so a merged region is no
+    // denser or thinner on screen than a read one beside it.
+    blobs.0.clear();
+    for blob in &planned.0.blobs {
+        if !in_reach(blob.id, orbit, bubble) {
+            continue;
+        }
+        let Some(cell) = index.0.get(blob.id) else { continue };
+        let Some(at) = cell.aggregate.count_centroid() else { continue };
+        let count = cell.aggregate.count();
+        if wanted(share * blob.blend, count as usize, blob.id) == 0 {
+            continue;
+        }
+        behind += count;
+        blobs.0.push(Blob { at, m_min: cell.aggregate.m_min() });
+    }
+
+    sampled.set_if_neq(Sampled {
+        population,
+        share: share as f32,
+        drawn: took_all,
+        blobs: blobs.0.len(),
+        behind,
+    });
+
     // The route's own stops, which no cell prefix answers for. They lie
     // wherever the route goes rather than near the camera, so from far enough
     // out to see the whole of a route most of them fall outside every prefix
@@ -960,7 +1250,7 @@ pub(crate) fn reconcile(
     for &address in &routed {
         match existing.get(&address) {
             Some(&entity) => {
-                wanted.insert(entity);
+                wanted_by.insert(entity);
             }
             None => {
                 if let Some(system) = system_at(address, &populated, &names) {
@@ -974,7 +1264,7 @@ pub(crate) fn reconcile(
     // recedes, the systems of a cell whose payload has been freed, and —
     // clearing — whatever fell outside the bubble above. Written whole, so a
     // system the walk has taken back is not still down for eviction.
-    let _zone = info_span!("evict scan", wanted = wanted.len()).entered();
+    let _zone = info_span!("evict scan", wanted = wanted_by.len()).entered();
     evictions.0 = systems
         .iter()
         .filter(|(entity, system, hop)| {
@@ -990,7 +1280,7 @@ pub(crate) fn reconcile(
             // detail moving, not systems flickering on the threshold — and
             // the frames it took to hold the extra systems cost 23% of the
             // frame at the median.
-            !wanted.contains(entity)
+            !wanted_by.contains(entity)
         })
         .map(|(entity, ..)| entity)
         .collect();
@@ -1196,6 +1486,96 @@ mod tests {
             temp_bucket: 0,
             updated_at: 0,
             kind: galos_index::StarKind::G,
+        }
+    }
+
+    /// A view of `wide` by `high` pixels, looking down `-z`
+    fn framed(wide: f32, high: f32) -> galos_index::View {
+        galos_index::View {
+            eye: [0.; 3],
+            forward: [0., 0., -1.],
+            up: [0., 1., 0.],
+            fov_y: 0.785,
+            viewport_height: high,
+            aspect: wide / high,
+        }
+    }
+
+    /// Where a test system stands: spread around the camera rather than
+    /// strung out along one ray from it, as a real sky is.
+    fn placed(id: i64) -> [f64; 3] {
+        let turn = id as f64 / 8. * std::f64::consts::TAU;
+        [10. * turn.cos(), 10. * turn.sin(), 0.]
+    }
+
+    /// The share is of population, so a region with more systems draws more
+    /// marks — the density the sky has, not one the frame imposes
+    ///
+    /// **What this is guarding against is a flat answer.** A share of a
+    /// cell's footprint *area* draws the same number of marks over the same
+    /// patch of screen whatever is in it, so the core, the arms and the
+    /// voids all come out at one density and the galaxy reads as a uniform
+    /// ball. Ten times the systems must draw ten times the marks.
+    #[test]
+    fn the_share_follows_the_population() {
+        let view = framed(1280., 720.);
+        let capacity = frame_marks(&view);
+        assert!(
+            (capacity - 57_600.).abs() < 1.,
+            "a 1280x720 frame carries {capacity} marks at {MERGE_PX} px"
+        );
+
+        // A tenth of the sky in reach can be drawn: a sparse cell of ten
+        // draws one and a dense one of ten thousand draws a thousand.
+        let tenth = share(capacity as u64 * 10, capacity);
+        assert!((tenth - 0.1).abs() < 1e-9, "the share came out at {tenth}");
+        let sparse = CellId::of_point([0., 0., -100.], 8);
+        let dense = CellId::of_point([0., 0., -200.], 8);
+        assert_eq!(wanted(tenth, 10_000, dense), 1_000);
+        assert!(
+            wanted(tenth, 10, sparse) <= 2,
+            "a cell of ten drew {} at a tenth",
+            wanted(tenth, 10, sparse)
+        );
+
+        // Nothing is ever asked for more than it holds, and a frame with
+        // room for everything draws everything.
+        let whole = share(100, capacity);
+        assert_eq!(whole, 1., "a sky the frame can hold was thinned");
+        assert_eq!(wanted(whole, 40, dense), 40, "a cell was over-asked");
+    }
+
+    /// A cell wanting less than one mark draws one in that fraction of the
+    /// places rather than nowhere at all
+    ///
+    /// At a wide zoom the share runs to thousandths and nearly every cell
+    /// wants a fraction of a mark. Rounding those down empties the sparse
+    /// sky outright; rounding them up hands a mark to each of hundreds of
+    /// thousands of cells. Dithered against the cell's own address, the
+    /// count comes out right in aggregate and is the same answer for the
+    /// same cell every frame.
+    #[test]
+    fn a_fraction_of_a_mark_is_dithered_over_the_cells() {
+        let cells: Vec<CellId> = (0..20_000u32)
+            .map(|n| CellId {
+                level: 12,
+                x: n % 40,
+                y: (n / 40) % 25,
+                z: n / 1_000,
+            })
+            .collect();
+        for share in [0.02_f64, 0.25, 0.7] {
+            let drew: usize =
+                cells.iter().map(|&id| wanted(share, 1, id)).sum();
+            let rate = drew as f64 / cells.len() as f64;
+            assert!(
+                (rate / share - 1.).abs() < 0.1,
+                "a share of {share} drew {rate} of the cells"
+            );
+        }
+        // And the same cell answers the same way twice.
+        for &id in cells.iter().take(64) {
+            assert_eq!(wanted(0.3, 7, id), wanted(0.3, 7, id));
         }
     }
 
@@ -1509,8 +1889,10 @@ mod tests {
         app.init_resource::<PointOrders>();
         app.init_resource::<Republished>();
         app.init_resource::<Keeping>();
+        app.init_resource::<Sampled>();
+            app.init_resource::<Blobs>();
         app.init_resource::<crate::systems::aggregate::Drawn>();
-        app.insert_resource(ResidentIndex(galos_index::Index::default()));
+        app.insert_resource(crate::ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
@@ -1524,6 +1906,7 @@ mod tests {
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks: Vec::new(),
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
         app.world_mut()
@@ -1552,6 +1935,7 @@ mod tests {
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks,
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
     }
@@ -1714,7 +2098,7 @@ mod tests {
         let inputs: Vec<galos_index::System> = (1..=5)
             .map(|id| galos_index::System {
                 id64: id as u64,
-                position: [id as f64, 0., 0.],
+                position: placed(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
@@ -1725,7 +2109,7 @@ mod tests {
         let built = Snapshot::build(&inputs, &BuildParams::default());
 
         let mut app = walking();
-        app.insert_resource(ResidentIndex(built.index.clone()));
+        app.insert_resource(crate::ResidentIndex(built.index.clone()));
         holding(&mut app, &built);
         app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([(
             held,
@@ -1746,7 +2130,7 @@ mod tests {
         )]))));
         for address in 1..=5 {
             let mut drawn = system(address);
-            drawn.position = [address as f64, 0., 0.];
+            drawn.position = placed(address);
             app.world_mut().spawn(drawn);
         }
 
@@ -1805,7 +2189,7 @@ mod tests {
         let inputs: Vec<galos_index::System> = (1..=5)
             .map(|id| galos_index::System {
                 id64: id as u64,
-                position: [id as f64, 0., 0.],
+                position: placed(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
@@ -1816,7 +2200,7 @@ mod tests {
         let built = Snapshot::build(&inputs, &BuildParams::default());
 
         let mut app = walking();
-        app.insert_resource(ResidentIndex(built.index.clone()));
+        app.insert_resource(crate::ResidentIndex(built.index.clone()));
         holding(&mut app, &built);
         // Two of the five have anybody in them: a world and a hamlet.
         let peopled = |address: i64, population: u64| {
@@ -1883,7 +2267,7 @@ mod tests {
         let inputs: Vec<galos_index::System> = (1..=4)
             .map(|id| galos_index::System {
                 id64: id as u64,
-                position: [id as f64, 0., 0.],
+                position: placed(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
@@ -1894,7 +2278,7 @@ mod tests {
         let built = Snapshot::build(&inputs, &BuildParams::default());
 
         let mut app = walking();
-        app.insert_resource(ResidentIndex(built.index.clone()));
+        app.insert_resource(crate::ResidentIndex(built.index.clone()));
         holding(&mut app, &built);
         // Everybody lives somewhere, so the population order holds them all.
         let peopled = |address: i64| {
@@ -1952,7 +2336,7 @@ mod tests {
 
         let at = |id: u64, when: u32| galos_index::System {
             id64: id,
-            position: [id as f64, 0., 0.],
+            position: placed(id as i64),
             absolute_magnitude: id as f64,
             temperature: 5000.,
             age_bucket: 0,
@@ -1969,7 +2353,7 @@ mod tests {
             .expect("some cell owns the system");
 
         let mut app = walking();
-        app.insert_resource(ResidentIndex(built.index.clone()));
+        app.insert_resource(crate::ResidentIndex(built.index.clone()));
         app.world_mut()
             .resource_mut::<ResidentCells>()
             .0
@@ -1978,6 +2362,7 @@ mod tests {
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks: vec![owner],
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
         // Drawn already, as it would be a frame after the first read.

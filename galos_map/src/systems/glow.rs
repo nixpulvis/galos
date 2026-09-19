@@ -54,14 +54,22 @@
 //! the intensity, and nothing here forecloses it — the deposited quantity is
 //! the same either way.
 //!
-//! **Every splat is small by construction**, which is what makes one
-//! isotropic Gaussian enough. A cell splits once its contents subtend
-//! [`galos_index::walk`]'s `SPLIT_FULL_PX`, so a cell drawn as a splat spans
-//! at most a few pixels and a filament is carried by a chain of them rather
-//! than by one elongated blob. It also bounds the cost of a centroid that has
-//! left the frame: the field is drawn off projected centres, so a splat whose
-//! centre goes behind the camera drops, and what drops is a blob of a few
-//! pixels at the very edge.
+//! **Every splat is a pixel or two by construction**, which is what makes
+//! one isotropic Gaussian enough. A cell hands its light to its children
+//! once its contents subtend [`galos_index::walk::SPLIT_PX`] — half a pixel,
+//! so the frontier follows the pixel grid down as far as the tree goes — and
+//! a filament is carried by a chain of pixel-wide splats rather than by one
+//! elongated blob. It also bounds the cost of a centroid that has left the
+//! frame: the field is drawn off projected centres, so a splat whose centre
+//! goes behind the camera drops, and what drops is a blob of a pixel or two
+//! at the very edge.
+//!
+//! **How tight is the frame's to say, not the data's.** A cell knows where
+//! its systems are to its own edge and no better, so a splat is spread over
+//! half its cell ([`COVERAGE`]) — the width at which neighbours sum flat —
+//! and never under half a pixel ([`FINEST`]), which is all a display can
+//! carry. Between them the field is as sharp as the frame allows wherever
+//! the tree has depth, and an honest wash where it has not.
 //!
 //! Drawn on [`FIELD_LAYER`] beside [`super::field`]'s marks, under them: the
 //! quads sit a unit further from the origin camera so the symbols composite
@@ -175,8 +183,9 @@ pub struct Laid {
     pub faintest: f32,
     pub typical: f32,
     /// The smallest, median-ish and largest footprint radius laid, in pixels,
-    /// and how many were floored at [`SMALLEST`] — what says whether the field
-    /// is a set of overlapping distributions or a lattice of points.
+    /// and how many were laid on [`FINEST`], the pixel floor — what says
+    /// whether the field is resolving structure or has run out of frame to
+    /// resolve it on.
     pub thinnest: f32,
     pub tenth: f32,
     pub quarter: f32,
@@ -340,17 +349,17 @@ impl Default for Gains {
 /// [`gaussian_mask`] subtracts takes even that to nothing.
 const REACH: f32 = 4.0;
 
-/// The smallest a splat is drawn at, as a radius in pixels
+/// The radius a system's own mark is painted at, in pixels
 ///
-/// A cell tighter than this still lands its whole weight, in one pixel rather
-/// than in none: the peak is worked out from the radius actually drawn, so
-/// flooring the radius spreads the light without losing any of it.
+/// [`super::field::SMALLEST`] itself and not a second copy of the figure: it
+/// is what one system's light fills out where the map floors a mark, which is
+/// what [`splat`] measures a cell's footprint against through [`MARK_AREA`].
 ///
-/// [`super::field::SMALLEST`] itself and not a second copy of the figure,
-/// because the two are now one statement and not two that happen to agree: a
-/// mark is drawn at this radius out where the map floors it, so this is the
-/// area one system's light fills, which is what [`splat`] measures a cell's
-/// own footprint against.
+/// Not the floor a *splat* is laid at; that is [`FINEST`]. The two were one
+/// constant, and flooring a splat's whole quad at a 0.75 px radius put its
+/// kernel at 0.19 px of sigma — a fifth of a pixel, which is not a
+/// distribution but a hard dot, and a lattice of them is the beading the
+/// field was reported for.
 const SMALLEST: f32 = super::field::SMALLEST;
 
 /// The pixels one system's mark covers, at the floor it is drawn at
@@ -361,6 +370,52 @@ const SMALLEST: f32 = super::field::SMALLEST;
 /// would cover if they were: `count · MARK_AREA` against the footprint's own
 /// area. See [`splat`].
 const MARK_AREA: f32 = std::f32::consts::PI * SMALLEST * SMALLEST;
+
+/// The finest a splat is laid, as a standard deviation in pixels
+///
+/// **Half a pixel, because the display is the field's own resolution
+/// limit.** Light laid tighter than the pixel grid cannot be seen as
+/// structure; it can only alias, and a lattice of sub-pixel spikes reads as
+/// stipple and crawls as the camera moves. Half a pixel is the widest kernel
+/// that costs no sharpness a pixel could have shown, and the tightest that
+/// still sums flat across neighbours about a pixel apart: the ripple over a
+/// lattice of pitch `d` goes as `2 exp(-2 pi^2 sigma^2 / d^2)`, 1.4 % at
+/// `sigma = d/2`.
+///
+/// It is the last word under [`COVERAGE`], which says what a cell may claim
+/// of *itself*; this says what a frame can show. With
+/// [`galos_index::walk`]'s split at half a pixel of cell the two meet: the
+/// frontier's cells are about a pixel apart, their own floors land just
+/// under this, and the field comes out as tight as the frame allows and
+/// still continuous.
+const FINEST: f32 = 0.5;
+
+/// What a cell's own spread is worth as a screen sigma: one over the square
+/// root of three
+///
+/// **A cell reports a radius in three dimensions and the field draws in
+/// two.** [`galos_index::Moments::rms_radius`] is the RMS *distance* of a
+/// cell's systems from their centroid, so for an isotropic cloud it is
+/// `sqrt(3)` times the deviation along any one axis — and one axis is what a
+/// screen Gaussian's sigma is. Laid as the radius it stands at, every splat
+/// came out 73 % too wide and spread its light over three times the area it
+/// owned, which is the blur the field was reported for, and the same factor
+/// then read three times too little `fill` and pressed a crowd as though it
+/// were a scatter.
+///
+/// Isotropy is the only assumption a centroid and one radius can carry, and
+/// it is the unbiased one: averaged over orientations, the variance a cloud
+/// projects onto any axis is a third of the trace of its own, whatever shape
+/// it is. A filament seen along its length is drawn wider than it is and
+/// seen across it narrower; per-axis moments are what would tell the two
+/// apart, and a cell carries none.
+///
+/// Applied to the *measured* spread alone, and never to [`COVERAGE`]. That
+/// is a share of a cell's edge and already a per-axis figure, so flattening
+/// it a second time would spread a lone cell over a third less than its own
+/// box — which stippled the sparse half of the disc into a lattice of dots
+/// when it was tried.
+const FLATTENED: f64 = 1. / 1.732_050_807_568_877_2;
 
 /// The side of the Gaussian mask, in texels
 ///
@@ -375,37 +430,42 @@ const MARK_AREA: f32 = std::f32::consts::PI * SMALLEST * SMALLEST;
 /// the profile per fragment instead of sampling it.
 const GLOW_TEXELS: u32 = 64;
 
-/// The least a backdrop splat is spread over, as a share of its cell's edge
+/// The least a splat is spread over, as a share of its cell's edge
 ///
 /// **A cell cannot assert structure finer than itself.** Its moments say
 /// where its systems sit and how far they spread, but the finest thing it
 /// stands for is the box, and laying its light down tighter than that
 /// claims a precision the tree does not have.
 ///
-/// It is also what stops the field stippling. Neighbouring splats sit about
-/// a cell edge apart, and Gaussians on a lattice of pitch `d` only sum flat
-/// once `sigma` is a fair share of it — the ripple goes as
+/// **A half, because that is what sums flat.** Neighbouring splats sit
+/// about a cell edge apart, and Gaussians on a lattice of pitch `d` only
+/// sum flat once `sigma` is half of it: the ripple goes as
 /// `2 exp(-2 pi^2 sigma^2 / d^2)`, 1.4 % at `sigma = d/2`, 34 % at `d/3`
-/// and total at `d/5`. Measured over `.galos_index` before this floor, a
-/// quarter of the splats at galaxy zoom were laid at 7 px or less against a
-/// pitch near 13, and the field came out as a regular grid of bright cores
-/// with dark seams between — reported as a checker three times, and neither
-/// the exposure nor the mask was ever what put it there.
+/// and total at `d/5`. A box taken as evenly filled deviates by
+/// `edge / sqrt(12)`, three tenths of it, and three tenths is exactly where
+/// the ripple is a third — so a lattice of cells laid at their own honest
+/// width stipples, which is what it did: at three tenths, with the split
+/// band brought down to half a pixel, the sparse half of the disc came out
+/// as a regular grid of dots. Half a cell over-spreads a splat by the same
+/// third it costs to be rid of them.
 ///
-/// **Three tenths, down from a half, and what it buys is the lines.** A
-/// half spreads every splat over twice its cell, which over a built galaxy
-/// is what made a colonisation filament a band of haze rather than a line:
-/// the cells along it are fine — `.index/full` carries 204,466 of them, and
-/// the ones the field draws the bubble with are a few pixels across — so
-/// what was drawing the fuzz was this floor and not the data. At three
-/// tenths the same frame resolves the strands apart, and the ripple that
-/// buys it lands as a slight lumpiness in the galaxy's disc rather than as
-/// a lattice: the cells are a pitch apart only where they are the same
-/// size, and a real tree is never that regular.
+/// **What buys the resolution is the split and not this.** Three tenths was
+/// reached when a splatted cell's contents spanned two to four pixels, where
+/// the floor was the only lever on how tight a filament could be drawn and
+/// this one had to carry it. With [`galos_index::walk::SPLIT_PX`] cutting at
+/// half a pixel the frontier's cells are about a pixel across, so half of
+/// one is half a pixel — [`FINEST`], the display's own limit — and the floor
+/// costs nothing where the tree has depth to give. Where it has not, in the
+/// thinly visited outer disc whose leaves are hundreds of light years wide,
+/// this is what keeps the field a field: a wash over the cell, which is all
+/// the map knows.
 ///
-/// The backdrop's, and only the backdrop's: the colonies are a chain and
-/// not a fog, and need more overlap to read as one thing. See [`CHAIN`].
-const COVERAGE: f64 = 0.3;
+/// One figure for both channels. The colonies were given a half of their own
+/// while the backdrop kept three tenths, on the reasoning that a filament is
+/// a line of cells with nothing beside it to fill the gaps and needs the
+/// overlap more than a fog does. It does — and so does the fog, for the same
+/// arithmetic, wherever its cells are the same size.
+const COVERAGE: f64 = 0.5;
 
 /// The brightest a single splat may peak at, in linear light
 ///
@@ -442,25 +502,6 @@ const CEILING: f32 = 8.0;
 /// instead — where it started — took the disc to a sixth and the web with
 /// it.
 const PACKED: f32 = 32.0;
-
-/// The least a *colony* splat is spread over, as a share of its cell's edge
-///
-/// **A chain needs more overlap than a fog does.** [`COVERAGE`] is three
-/// tenths because the backdrop fills space: every cell carries stars, they
-/// tile the sky in three dimensions, and along any line of sight dozens of
-/// them overlap, so each one may be laid tight and the sum still comes out
-/// smooth — which is what let the galaxy's own web resolve.
-///
-/// The colonies do not fill space. A colonisation filament is a *line* of
-/// cells with nothing beside it, so consecutive splats sit exactly one cell
-/// apart with nothing else to fill the gap between them, and Gaussians on a
-/// lattice of pitch `d` only sum flat once `sigma` is about half of it: at
-/// three tenths the ripple is a third and the filament came out as a string
-/// of beads, reported as such. A half, so the light reaches the next
-/// centroid along and a line reads as a line — fuzzy across it, which is
-/// honest, a cell being all the map knows about where inside it the
-/// colonies sit.
-const CHAIN: f64 = 0.5;
 
 /// How a splat is laid: the radius it is drawn at, and the light it peaks at
 ///
@@ -521,8 +562,8 @@ pub(crate) fn splat(
     spread: f32,
     crowd: f32,
 ) -> (f32, Vec3) {
-    let radius = (spread * REACH).max(SMALLEST);
-    let sigma = radius / REACH;
+    let sigma = spread.max(FINEST);
+    let radius = sigma * REACH;
     let area = std::f32::consts::TAU * sigma * sigma;
     // Off the radius actually drawn, so a cell floored to a point is read as
     // the crowd it is rather than as a scatter over an area it was not given.
@@ -803,8 +844,8 @@ fn build_glow(
             let empty = count.saturating_sub(peopled).saturating_sub(
                 taken.count.saturating_sub(taken.inhabited.count()),
             );
-            // The finest the backdrop may claim of this cell, in light
-            // years; the colonies have a floor of their own ([`CHAIN`]).
+            // The finest either channel may claim of this cell, in light
+            // years, and the same figure for both ([`COVERAGE`]).
             let finest = cell.id.edge_ly() * COVERAGE;
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
@@ -821,7 +862,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    mass.rms_radius().max(finest),
+                    (mass.rms_radius() * FLATTENED).max(finest),
                     light,
                     systems * MARK_AREA,
                     gains.crowd * gains.backdrop,
@@ -854,7 +895,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    held.spread().max(cell.id.edge_ly() * CHAIN),
+                    (held.spread() * FLATTENED).max(finest),
                     mix * carried * gains.mark * MARK_AREA * opened,
                     systems * MARK_AREA,
                     gains.crowd,
@@ -869,7 +910,7 @@ fn build_glow(
     for radius in &quads.radii {
         counted.thinnest = counted.thinnest.min(*radius);
         counted.widest = counted.widest.max(*radius);
-        counted.floored += u32::from(*radius <= SMALLEST + 1e-3);
+        counted.floored += u32::from(*radius <= FINEST * REACH + 1e-3);
     }
     if !quads.radii.is_empty() {
         quads.radii.sort_unstable_by(f32::total_cmp);
@@ -955,9 +996,11 @@ impl Quads {
         let away = crate::space::metres(orbit.eye_from(position)).length();
         let per_pixel =
             world_per_pixel(cot_half_fov, viewport.y, (away as f32).max(1.));
-        // The spread is an RMS radius in light years; the pixel scale is in
-        // metres, which is the one conversion the map makes and the only place
-        // a light year is spoken to the grid.
+        // The spread comes in as a per-axis deviation in light years, the
+        // caller having flattened its cell's own RMS radius ([`FLATTENED`])
+        // and floored it on the cell. The pixel scale is in metres, which is
+        // the one conversion the map makes and the only place a light year is
+        // spoken to the grid.
         let spread_px =
             (spread * crate::space::LIGHT_YEAR / per_pixel as f64) as f32;
         if !spread_px.is_finite() {
@@ -1284,7 +1327,7 @@ mod tests {
                 );
                 assert_eq!(
                     radius,
-                    (spread * REACH).max(SMALLEST),
+                    spread.max(FINEST) * REACH,
                     "{systems} systems over {spread} px were not laid over \
                      their cell"
                 );
@@ -1433,6 +1476,7 @@ mod exposure {
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks: Vec::new(),
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
 
@@ -1573,16 +1617,21 @@ mod exposure {
                  quads clipped",
                 laid.clipped
             );
-            // No splat laid as a point. A cell's light is spread over the
-            // cell at least ([`COVERAGE`]), so the footprints reach their
-            // neighbours and the field sums flat instead of stippling a
-            // lattice of cores with dark seams between — and so that nothing
-            // the field draws is tight enough to read as a system somebody
-            // could click on.
-            assert_eq!(
-                laid.floored, 0,
-                "{} splats at {away} ly were laid on the point floor",
-                laid.floored
+            // The field resolves to the frame and not to the split. A
+            // splat's kernel is its cell's own spread ([`FLATTENED`]),
+            // floored on half the cell ([`COVERAGE`]) and then on half a
+            // pixel ([`FINEST`]) — and with [`galos_index::walk::SPLIT_PX`]
+            // cutting at half a pixel of contents, the last of those three
+            // is what catches a frontier cell wherever the tree has depth
+            // to give. So some of every frame is laid on the pixel floor,
+            // and a frame with none is one whose splats are all wider than
+            // the display can show: the two-to-four-pixel band this used to
+            // cut at laid not one splat on it at any zoom.
+            assert!(
+                laid.floored > 0,
+                "nothing at {away} ly was laid at the frame's own resolution: \
+                 thinnest radius {} px",
+                laid.thinnest
             );
         }
 

@@ -35,6 +35,7 @@ pub mod refresh;
 pub(crate) mod ruled;
 pub mod schedule;
 pub mod search;
+pub mod shot;
 pub mod space;
 pub mod systems;
 #[cfg(test)]

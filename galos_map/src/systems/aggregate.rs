@@ -38,6 +38,7 @@ pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
         mode: Mode::Shell,
         marks: Vec::new(),
+        blobs: Vec::new(),
         splats: Vec::new(),
     }));
     app.init_resource::<Drawn>();
@@ -242,6 +243,7 @@ mod tests {
         app.insert_resource(Planned(Needed {
             mode: Mode::Shell,
             marks: Vec::new(),
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
         app.insert_resource(View::Map);
@@ -317,6 +319,7 @@ mod tests {
         app.insert_resource(Planned(Needed {
             mode: Mode::Shell,
             marks: Vec::new(),
+            blobs: Vec::new(),
             splats: Vec::new(),
         }));
         app.insert_resource(View::Map);

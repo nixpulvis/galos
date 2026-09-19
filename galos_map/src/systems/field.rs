@@ -357,6 +357,7 @@ pub(crate) fn build_field(
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     gains: Res<crate::systems::glow::Gains>,
+    blobs: Res<crate::systems::bounded::Blobs>,
     mut field: Query<&mut Mesh3d, With<FieldMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -452,6 +453,74 @@ pub(crate) fn build_field(
 
         // Pixel-centred, y up, one unit to a pixel: the frame the origin camera
         // reads. A metre in front of it, clear of its near plane.
+        let cx = at.x - half.x;
+        let cy = half.y - at.y;
+        let base = positions.len() as u32;
+        for (dx, dy, u, v) in [
+            (-radius, -radius, 0., 1.),
+            (radius, -radius, 1., 1.),
+            (radius, radius, 1., 0.),
+            (-radius, radius, 0., 0.),
+        ] {
+            positions.push([cx + dx, cy + dy, -1.]);
+            uvs.push([u, v]);
+            colors.push(color);
+        }
+        indices.extend_from_slice(&[
+            base,
+            base + 1,
+            base + 2,
+            base,
+            base + 2,
+            base + 3,
+        ]);
+    }
+
+    // And the merged marks, which stand for a cell's whole contents rather
+    // than for a system. No shell, no name and no payload: they are laid
+    // straight off the aggregates the walk merged, in the same mesh and at
+    // the same time, because they are marks and the merge already settled
+    // which of the two holds each patch of sky.
+    //
+    // Drawn as a mark and not as something else: the same [`SMALLEST`]
+    // radius and the same light as a system's own. A blob is one mark
+    // because everything it holds falls inside one, not because it is worth
+    // more than one, and a mark drawn wider for standing over more systems
+    // would say the density with size — which is the one thing the map must
+    // say with *how many marks there are*. The crowd behind it is
+    // [`super::glow`]'s to draw.
+    for blob in &blobs.0 {
+        let position = DVec3::from(blob.at);
+        let Some(at) = screen_position(orbit, cot_half_fov, viewport, position)
+        else {
+            continue;
+        };
+        let radius = SMALLEST;
+        let color = match *view {
+            View::Map => {
+                let level = crate::systems::glow::mark_light(
+                    crate::systems::spawn::Hue::Grey,
+                    false,
+                    &gains,
+                );
+                let c = crate::systems::spawn::Hue::Grey.light() * level;
+                [c.x, c.y, c.z, 1.]
+            }
+            View::Realistic => {
+                let Some(m_min) = blob.m_min else { continue };
+                let apparent = Magnitude(f64::from(m_min))
+                    .apparent(Distance::light_years(
+                        orbit.eye().distance(position),
+                    ))
+                    .0;
+                let e = photometric_emissive(
+                    0,
+                    mag_step(apparent),
+                    exposure.factor(),
+                );
+                [e.red, e.green, e.blue, 1.]
+            }
+        };
         let cx = at.x - half.x;
         let cy = half.y - at.y;
         let base = positions.len() as u32;

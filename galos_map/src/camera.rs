@@ -860,6 +860,19 @@ impl OrbitCamera {
             travel.to += by;
         }
     }
+
+    /// Throwaway: hold the capture harness edge-on at `at`, `back` light
+    /// years off, with no smoothing left to settle.
+    pub(crate) fn holds(&mut self, at: DVec3, back: f32) {
+        self.center = at - self.origin;
+        self.target_center = self.center;
+        self.radius = back;
+        self.target_radius = back;
+        self.pitch = 0.;
+        self.target_pitch = 0.;
+        self.yaw = 0.;
+        self.target_yaw = 0.;
+    }
 }
 
 /// Standing the camera somewhere outright, which only a test does

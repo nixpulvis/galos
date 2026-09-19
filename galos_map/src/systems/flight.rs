@@ -211,6 +211,7 @@ impl Flight {
             galos_index::Needed {
                 mode: galos_index::Mode::Shell,
                 marks: Vec::new(),
+                blobs: Vec::new(),
                 splats: Vec::new(),
             },
         ));
@@ -220,6 +221,8 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Republished>();
         app.init_resource::<crate::systems::aggregate::Drawn>();
         app.init_resource::<crate::systems::bounded::Keeping>();
+        app.init_resource::<crate::systems::bounded::Sampled>();
+        app.init_resource::<crate::systems::bounded::Blobs>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
@@ -494,40 +497,30 @@ fn flying_stays_quick() {
     // nothing.
     {
         let world = flight.app.world_mut();
-        let mut cameras =
-            world.query::<(&crate::camera::OrbitCamera, &Camera)>();
-        let seen = cameras.iter(world).next().and_then(|(orbit, camera)| {
-            crate::systems::aggregate::view(orbit, camera)
-        });
-        if let Some(view) = seen {
-            let index = world.resource::<ResidentIndex>();
-            let resident = world.resource::<ResidentCells>();
-            let mut held = 0usize;
-            let mut wanted = 0usize;
-            let mut deepest = (0usize, 0usize);
-            for (id, cell) in resident.0.iter() {
-                let Some(indexed) = index.0.get(id) else { continue };
-                let target = (galos_index::resolvable_count(
-                    indexed,
-                    &view,
-                    galos_index::MARK_SEPARATION_PX,
-                ) as usize)
-                    .min(cell.points.len());
-                held += cell.points.len();
-                wanted += target;
-                if cell.points.len() > deepest.0 {
-                    deepest = (cell.points.len(), target);
-                }
+        let planned = world.resource::<crate::systems::aggregate::Planned>();
+        let marked: rustc_hash::FxHashSet<galos_index::CellId> =
+            planned.0.marks.iter().copied().collect();
+        let resident = world.resource::<ResidentCells>();
+        let mut held = 0usize;
+        let mut wanted = 0usize;
+        let mut deepest = (0usize, 0usize);
+        for (id, cell) in resident.0.iter() {
+            let target =
+                if marked.contains(&id) { cell.points.len() } else { 0 };
+            held += cell.points.len();
+            wanted += target;
+            if cell.points.len() > deepest.0 {
+                deepest = (cell.points.len(), target);
             }
-            println!(
-                "\nread amplification at the stop: {held} points held, \
-                 {wanted} inside a prefix the draw would take ({:.0}× over)\
-                 \n  deepest cell: {} points, {} of them drawable",
-                held as f64 / wanted.max(1) as f64,
-                deepest.0,
-                deepest.1,
-            );
         }
+        println!(
+            "\nread amplification at the stop: {held} points held, \
+             {wanted} inside a prefix the draw would take ({:.0}× over)\
+             \n  deepest cell: {} points, {} of them drawable",
+            held as f64 / wanted.max(1) as f64,
+            deepest.0,
+            deepest.1,
+        );
     }
 
     println!(
