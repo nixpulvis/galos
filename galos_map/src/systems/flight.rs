@@ -397,6 +397,65 @@ impl Flight {
     }
 }
 
+/// Reading the sky as populations draws the busiest systems in view
+///
+/// **Every cell of the plan answers with its whole subtree's people, and
+/// the marked cells nest**: the root, every cell down to the frontier,
+/// each drawing its own marks. So without taking each system once the
+/// same busiest handful is offered over and over and nothing further
+/// down is ever reached. Reported as `ALPHA CENTAURI` vanishing when the
+/// scale was turned on — a hundred thousand people four light years from
+/// the camera — while the pass spent 2,496 marks where the ordinary sky
+/// spent 2,562.
+#[test]
+fn the_populated_sky_draws_the_busiest_in_view() {
+    let Some(dir) = measured() else { return };
+    let mut flight = Flight::over(&dir);
+    flight.app.insert_resource(ScalePopulation(true));
+    let back = 200f32;
+    for _ in 0..SETTLE {
+        flight.frame(DVec3::ZERO, back);
+    }
+
+    // Everyone living within a few light years of the camera, off the
+    // same table the draw takes from. Close in the share is generous and
+    // the cells are fine, so there is no thinning left to excuse a miss:
+    // whoever is here is drawn.
+    let world = flight.app.world_mut();
+    let near: Vec<(u64, i64)> = world
+        .resource::<Populated>()
+        .0
+        .values()
+        .filter(|system| {
+            DVec3::new(
+                f64::from(system.position[0]),
+                f64::from(system.position[1]),
+                f64::from(system.position[2]),
+            )
+            .length()
+                <= 25.
+        })
+        .map(|system| (system.population, system.address))
+        .collect();
+    assert!(near.len() > 5, "nobody lives within 25 ly of Sol: {near:?}");
+
+    let mut systems = world.query::<&System>();
+    let drawn: HashSet<i64> =
+        systems.iter(world).map(|system| system.address).collect();
+    let missing: Vec<(u64, i64)> = near
+        .iter()
+        .filter(|(_, address)| !drawn.contains(address))
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} of the {} inhabited systems within 25 ly went undrawn from \
+         {back:.0} ly out: {missing:?}",
+        missing.len(),
+        near.len(),
+    );
+}
+
 /// The same view draws the same sky, however the eye got there
 ///
 /// **A view is a question about where the camera stands, and the answer

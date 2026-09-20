@@ -1100,6 +1100,45 @@ pub(crate) fn reconcile(
     // it.
     let from_the_table =
         by_population && !filtering.filters.asking_a_span();
+    // And what it is spread over, where it draws the people. A share of
+    // the *systems* in view is the wrong denominator for a mode that
+    // draws none but the inhabited: it is thousandths where the people
+    // are tens, so a cell holding twenty colonies was asked for one and
+    // the other nineteen went undrawn — measured over `.index/full` from
+    // two hundred light years out, 31 of the 165 inhabited systems
+    // within twenty-five light years of the camera, `ALPHA CENTAURI`
+    // among them.
+    //
+    // Counted over the table rather than over the plan, because the
+    // plan's cells nest: every cell from the root to the frontier holds
+    // its whole subtree's people, and summing those counts the same
+    // colony a dozen times. 148,199 rows and a distance apiece, on the
+    // frames the plan moves.
+    let people_in_reach = |orbit: &OrbitCamera, bubble: Option<f64>| {
+        populated
+            .0
+            .values()
+            .filter(|system| {
+                bubble.is_none_or(|radius| {
+                    orbit.center().distance(DVec3::new(
+                        f64::from(system.position[0]),
+                        f64::from(system.position[1]),
+                        f64::from(system.position[2]),
+                    )) <= radius
+                })
+            })
+            .count() as u64
+    };
+    let people_share = match from_the_table {
+        false => 0.,
+        true => {
+            let _zone = info_span!("people in reach").entered();
+            crate::systems::bounded::share(
+                people_in_reach(orbit, bubble),
+                frame_marks(&view),
+            )
+        }
+    };
     // Which patches of sky the frame leaves dark, and the one mark each
     // of them lights. A pass of its own over the plan, before anything is
     // drawn, because the question is about the frame as a whole: a tile is
@@ -1166,6 +1205,22 @@ pub(crate) fn reconcile(
     // magnitude-ordered payload and the resident peopled table — answer
     // in different terms and everything after this is the same for both.
     let mut taken: Vec<(i64, [f64; 3], Option<u32>)> = Vec::new();
+    // Which of the populated the pass has already taken
+    //
+    // **A cell answers with its whole subtree's people, and the marked
+    // cells nest.** Every cell from the root down to the frontier draws
+    // its own marks, so without this each of them offers the same
+    // busiest few over again: the budget goes on one handful drawn five
+    // times and nothing deeper is ever reached. Measured over
+    // `.index/full` from two hundred light years out, `ALPHA CENTAURI` —
+    // a hundred thousand people, four light years from the camera — was
+    // not drawn at all, while the pass spent 2,496 marks where the
+    // ordinary sky spent 2,562.
+    //
+    // Taken once, and the deeper cells fill in behind the shallower: a
+    // cell takes the busiest of its people the pass has not reached yet,
+    // which over the nest comes to the busiest first and then down.
+    let mut took_people: FxHashSet<i64> = FxHashSet::default();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`super::spawn::PendingSpawns`].
@@ -1202,8 +1257,17 @@ pub(crate) fn reconcile(
         // brightest it holds, which is the head of its payload. See
         // [`Empty`] — and the payload is in hand for it, every marked cell
         // in reach being read to [`READ_LEAST`] whatever its share.
-        let asked = wanted(share, mark.slice as usize, id)
-            .max(usize::from(is_lit(offer as u32)));
+        // A share of the people where the people are what is drawn, and
+        // a share of the cell's own slice otherwise.
+        let asked = match from_the_table {
+            true => wanted(
+                people_share,
+                populated_cells.of(id).len(),
+                id,
+            ),
+            false => wanted(share, mark.slice as usize, id),
+        }
+        .max(usize::from(is_lit(offer as u32)));
         if asked == 0 {
             continue;
         }
@@ -1227,11 +1291,15 @@ pub(crate) fn reconcile(
             if people.is_empty() {
                 continue;
             }
-            for &address in
+            let fresh: Vec<i64> =
                 populated_first(people, &asked_for, &populated, wall, fill)
+                    .filter(|address| !took_people.contains(address))
                     .take(asked)
-            {
+                    .copied()
+                    .collect();
+            for address in fresh {
                 let Some(system) = populated.get(address) else { continue };
+                took_people.insert(address);
                 taken.push((
                     address,
                     [
