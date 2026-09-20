@@ -40,7 +40,9 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
-use galos_index::screen::{Crowded, Empty, frame_marks, share, wanted};
+use galos_index::screen::{
+    Crowded, Empty, crowded_marks, frame_marks, share, wanted,
+};
 use galos_index::{CellId, Inhabited, Part, Point, Resident, Stamp};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -789,52 +791,66 @@ fn drawn_first<'a>(
 
 /// What a populated choice was made against
 ///
-/// Remade when any of this moves, and on a still view none of it does.
-/// The eye is in it twice over: the lattice sizes its cells by how far
-/// off the galaxy is and bins its lines of sight about where the eye
-/// stands, so travelling changes the answer where turning does not. See
-/// [`Crowded`].
+/// Remade when any of this moves, and neither a still view nor a turning
+/// one moves any of it. The centre is in it twice over: the lattice
+/// sizes its cells by how far off the galaxy is and bins its lines of
+/// sight about that point, so travelling changes the answer where
+/// turning does not. The plan is *not* in it — which cells are marked
+/// decides only what each mark is booked against. See [`Crowded::about`]
+/// and [`book_populated`].
 #[derive(Default, PartialEq)]
 pub(crate) struct Against {
     filters: u32,
-    marks: usize,
     bubble: u64,
-    eye: [u64; 3],
+    about: [u64; 3],
     pitch: u64,
 }
 
-/// What the populated draw settles on: every mark it will make, with the
-/// cell to account it against
+/// What the population scale is drawing, and what it was settled
+/// against: kept between frames, since nothing a frame does changes it.
+#[derive(Default)]
+pub(crate) struct Chosen {
+    against: Against,
+    /// Every mark the mode will make, with the deepest cell of the tree
+    /// that holds it.
+    chosen: Vec<(i64, [f64; 3], CellId)>,
+    /// And the cell of the plan each is accounted against.
+    booked: Vec<(CellId, i64, [f64; 3])>,
+}
+
+/// What the populated draw settles on: every mark it will make
 ///
-/// **Once a plan, and not once a frame.** What this answers turns on the
-/// plan, the filters and where the eye stands — and on a still view none
-/// of those move, while the answer is tens of thousands of systems
-/// weighed against a lattice. Measured over `.index/full` with the reach
-/// at five hundred light years, doing it per frame cost **69 ms of every
-/// settled frame**; what a frame owes is only to mark what is drawn as
-/// wanted and offer what is missing.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the plan's marks, the two tables it reads, the filters and \
-              where the eye stands"
-)]
+/// **Once a view, and not once a frame.** What this answers turns on
+/// the filters and on where the view is centred — not on the plan, and
+/// not on which way the camera is pointed, the lattice being reckoned
+/// about the centre (see [`Crowded::about`]). On a still view none of
+/// it moves, and on a turning one none of it moves either, while the
+/// answer itself is a hundred and fifty thousand systems weighed
+/// against a lattice: measured over `.index/full` with the reach at
+/// five hundred light years, doing that per frame cost **69 ms of every
+/// settled frame**.
+///
+/// The cell each mark is booked against is *not* settled here, that one
+/// being a question about the plan; see [`book_populated`].
 fn choose_populated(
-    marked: &FxHashSet<CellId>,
     cells: &super::populated::PopulatedOrder,
     populated: &Populated,
     filters: &Prepared<'_>,
     now: DateTime<Utc>,
     fill: bool,
     view: &galos_index::View,
-    orbit: &OrbitCamera,
+    about: DVec3,
     bubble: Option<f64>,
-) -> Vec<(CellId, i64, [f64; 3])> {
+) -> Vec<(i64, [f64; 3], CellId)> {
     let _zone = info_span!("choosing the populated").entered();
     let mut chosen = Vec::new();
-    // One mark to a mark's worth of sky and three to a line of sight;
-    // see [`Crowded`].
-    let mut crowded = Crowded::over(view);
-    let ceiling = frame_marks(view) as usize;
+    // One mark to a mark's worth of sky, wherever in the galaxy that
+    // sky stands; see [`Crowded::about`].
+    let mut crowded = Crowded::about(view, about.to_array());
+    // And no more of them than the frame can carry and still be read;
+    // see [`crowded_marks`]. Spent busiest first, which is the order
+    // the table is in.
+    let ceiling = crowded_marks(view) as usize;
 
     // **One pass over the galaxy's own order, busiest first.** Asked
     // cell by cell this walked the same systems once per cell on their
@@ -851,7 +867,7 @@ fn choose_populated(
         // The bubble before the lattice, a system the frame will not
         // draw being one that must not claim sky and leave it empty.
         if bubble.is_some_and(|radius| {
-            orbit.center().distance(DVec3::from(stands.at)) > radius
+            about.distance(DVec3::from(stands.at)) > radius
         }) {
             continue;
         }
@@ -874,24 +890,36 @@ fn choose_populated(
         if !crowded.claim(stands.at) {
             continue;
         }
-        // Booked against the deepest cell of the plan that holds it, so
-        // the field subtracts this mark from the light it lays for that
-        // cell. Walked up from the deepest cell the tree has, which is
-        // at most a dozen steps and only for what is drawn.
-        let mut id = stands.deepest;
-        let cell = loop {
-            if marked.contains(&id) {
-                break Some(id);
-            }
-            match id.parent() {
-                Some(up) => id = up,
-                None => break None,
-            }
-        };
-        let Some(cell) = cell else { continue };
-        chosen.push((cell, stands.address, stands.at));
+        chosen.push((stands.address, stands.at, stands.deepest));
     }
     chosen
+}
+
+/// Which cell each chosen mark is accounted against
+///
+/// A mark has to be booked against a cell the plan marks: the field
+/// subtracts what a cell has drawn from the light it lays for that cell,
+/// so a mark nobody accounts for is a mark drawn twice. Walked up from
+/// the deepest cell the tree has for it, which is at most a dozen steps
+/// and only for what is drawn — cheap enough to redo whenever the plan
+/// moves, which is what it turns on, where the choice itself is not.
+fn book_populated(
+    chosen: &[(i64, [f64; 3], CellId)],
+    marked: &FxHashSet<CellId>,
+) -> Vec<(CellId, i64, [f64; 3])> {
+    let _zone = info_span!("booking the populated").entered();
+    chosen
+        .iter()
+        .filter_map(|&(address, at, deepest)| {
+            let mut id = deepest;
+            loop {
+                if marked.contains(&id) {
+                    break Some((id, address, at));
+                }
+                id = id.parent()?;
+            }
+        })
+        .collect()
 }
 
 /// The order a cell's points are drawn in while the map is reading the sky as
@@ -1049,7 +1077,7 @@ pub(crate) fn reconcile(
     mut evictions: ResMut<PendingEvictions>,
     // What the population scale settled on, and what it was settled
     // against; see [`choose_populated`].
-    mut choice: Local<(Against, Vec<(CellId, i64, [f64; 3])>)>,
+    mut choice: Local<Chosen>,
 ) {
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = crate::systems::aggregate::view(orbit, camera) else {
@@ -1432,28 +1460,33 @@ pub(crate) fn reconcile(
     if from_the_table {
         let key = Against {
             filters: filtering.filters.revision(),
-            marks: planned.0.marks.len(),
             bubble: bubble.unwrap_or(f64::INFINITY).to_bits(),
-            eye: view.eye.map(f64::to_bits),
+            about: orbit.center().to_array().map(f64::to_bits),
             pitch: view.pixels_per_radian().to_bits(),
         };
-        if choice.0 != key || planned.is_changed() {
-            choice.0 = key;
-            choice.1 = choose_populated(
-                keeping.marked(),
+        let afresh = choice.against != key;
+        if afresh {
+            choice.against = key;
+            choice.chosen = choose_populated(
                 populated_order,
                 &populated,
                 &asked_for,
                 wall,
                 fill,
                 &view,
-                orbit,
+                orbit.center(),
                 bubble,
             );
         }
+        // And which cell each is booked against, which is the one thing
+        // here the plan decides.
+        if afresh || planned.is_changed() {
+            choice.booked = book_populated(&choice.chosen, keeping.marked());
+        }
         let _zone =
-            info_span!("the populated drawn", marks = choice.1.len()).entered();
-        for &(id, address, at) in &choice.1 {
+            info_span!("the populated drawn", marks = choice.booked.len())
+                .entered();
+        for &(id, address, at) in &choice.booked {
             took_all += 1;
             drawn.0.entry(id).or_default().took(
                 at,

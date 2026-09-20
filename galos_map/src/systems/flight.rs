@@ -309,6 +309,13 @@ impl Flight {
     /// a task pool: what is being measured is the per-frame work, and a read
     /// that lands two frames late would move it to whichever frame caught it.
     fn frame(&mut self, at: DVec3, back: f32) -> Frame {
+        self.turned(at, back, 0.)
+    }
+
+    /// The same, with the eye carried `turn` radians round the orbit —
+    /// which is what dragging does, and what no amount of standing
+    /// still measures.
+    fn turned(&mut self, at: DVec3, back: f32, turn: f64) -> Frame {
         {
             let world = self.app.world_mut();
             world.resource_mut::<Time<Real>>().advance_by(FRAME);
@@ -320,7 +327,13 @@ impl Flight {
                 // The eye is a field the camera's own system writes, not
                 // something the radius implies, so a flight that only set the
                 // radius left the plan's key — and the walk — where it was.
-                camera.stands_at(at + DVec3::new(0., 0., back as f64));
+                camera.stands_at(
+                    at + DVec3::new(
+                        f64::from(back) * turn.sin(),
+                        0.,
+                        f64::from(back) * turn.cos(),
+                    ),
+                );
             }
         }
 
@@ -430,11 +443,12 @@ fn the_populated_sky_draws_what_stands_alone() {
     let (orbit, camera) = cameras.single(world).expect("a camera");
     let view = crate::systems::aggregate::view(orbit, camera)
         .expect("the camera can see");
+    let about = orbit.center().to_array();
 
     // What the frame drew, by the patch of screen each mark holds.
     let mut systems = world.query::<&System>();
     let drawn: Vec<&System> = systems.iter(world).collect();
-    let mut held = galos_index::screen::Crowded::over(&view);
+    let mut held = galos_index::screen::Crowded::about(&view, about);
     for system in &drawn {
         held.claim(system.position);
     }
@@ -482,6 +496,66 @@ fn the_populated_sky_draws_what_stands_alone() {
     );
 }
 
+/// Turning the view does not reshuffle the populated sky
+///
+/// **Reported as flicker while dragging.** The picture was never still
+/// under rotation: marks winked out and others took their place for as
+/// long as the hand was moving, and settling the camera settled the
+/// picture on something slightly different each time.
+///
+/// The cause was the lattice that thins the marks being reckoned *from
+/// the eye*. An orbit is not a turn — the eye swings a full radius
+/// through the galaxy — so every distance and every line of sight from
+/// it changed continuously as the hand dragged, and with them which
+/// marks were merged away. Nothing about what the reader is looking at
+/// changed. It is reckoned about the point the view turns on instead,
+/// and sized by how far back the eye stands, neither of which an orbit
+/// moves. See [`galos_index::screen::Crowded::about`].
+///
+/// A quarter turn at a time, all the way round, each held long enough
+/// to settle: the drawn sky must come back the same set of systems it
+/// started as, not merely the same number of them.
+#[test]
+fn turning_the_view_does_not_reshuffle_the_populated_sky() {
+    let Some(dir) = measured() else { return };
+    let mut flight = Flight::over(&dir);
+    flight.app.insert_resource(ScalePopulation(true));
+    {
+        let mut glass =
+            flight.app.world_mut().resource_mut::<crate::systems::Spyglass>();
+        glass.radius = 200.;
+        glass.clear = true;
+        glass.follow_camera = false;
+    }
+    let drawn = |flight: &mut Flight| -> HashSet<i64> {
+        let world = flight.app.world_mut();
+        let mut systems = world.query::<&System>();
+        systems.iter(world).map(|system| system.address).collect()
+    };
+
+    for _ in 0..SETTLE {
+        flight.frame(DVec3::ZERO, 540.);
+    }
+    let first = drawn(&mut flight);
+    assert!(!first.is_empty(), "nothing was drawn, so nothing is tested");
+
+    for step in 1..=4 {
+        let turn = f64::from(step) * std::f64::consts::FRAC_PI_2;
+        for _ in 0..SETTLE {
+            flight.turned(DVec3::ZERO, 540., turn);
+        }
+        let now = drawn(&mut flight);
+        let gone = first.difference(&now).count();
+        let new = now.difference(&first).count();
+        assert!(
+            gone == 0 && new == 0,
+            "a quarter turn ({step} of 4) changed the drawn sky: \
+             {gone} of {} gone and {new} arrived",
+            first.len(),
+        );
+    }
+}
+
 /// A still view of the populated sky costs nothing to hold
 ///
 /// **What a mode draws is settled by the plan, not by the frame.** The
@@ -492,51 +566,57 @@ fn the_populated_sky_draws_what_stands_alone() {
 /// second on a view nobody was moving. Reported as the mode being slow
 /// to load.
 ///
-/// Two costs, and the test holds both. A settled frame owes only to mark
-/// what is drawn as wanted, which is 1.5 ms; the frame the plan moves
-/// owes the choice itself, which is 11.5 ms and not the 76 ms it was
-/// when each of the plan's 831 cells rescanned its own subtree — nested
-/// cells walking the same systems over and over, 1,559,152 entries read
-/// to choose 25,744 marks. See [`super::bounded::choose_populated`].
+/// Two costs, and the test holds both at each of the two reaches the
+/// picture is judged at. A settled frame owes only to mark what is
+/// drawn as wanted, which is 0.59 ms at five hundred light years; the
+/// frame the plan moves owes the choice itself, 4.1 ms, and not the
+/// 76 ms it was when each of the plan's 831 cells rescanned its own
+/// subtree — nested cells walking the same systems over and over,
+/// 1,559,152 entries read to choose 25,744 marks. See
+/// [`super::bounded::choose_populated`].
 #[test]
 fn the_populated_sky_settles_cheap() {
     let Some(dir) = measured() else { return };
-    let radius = 500f32;
-    let mut flight = Flight::over(&dir);
-    flight.app.insert_resource(ScalePopulation(true));
-    {
-        let mut glass =
-            flight.app.world_mut().resource_mut::<crate::systems::Spyglass>();
-        glass.radius = radius;
-        glass.clear = true;
-        glass.follow_camera = false;
+    for radius in [100f32, 500.] {
+        let mut flight = Flight::over(&dir);
+        flight.app.insert_resource(ScalePopulation(true));
+        {
+            let mut glass = flight
+                .app
+                .world_mut()
+                .resource_mut::<crate::systems::Spyglass>();
+            glass.radius = radius;
+            glass.clear = true;
+            glass.follow_camera = false;
+        }
+        let mut frames = Vec::new();
+        for _ in 0..SETTLE {
+            frames.push(flight.frame(DVec3::ZERO, radius * 2.7).whole());
+        }
+        let worst = frames.iter().max().copied().unwrap_or_default();
+        let settled = frames.last().copied().unwrap_or_default();
+        let drawn = {
+            let world = flight.app.world_mut();
+            let mut systems = world.query::<&System>();
+            systems.iter(world).count()
+        };
+        println!(
+            "  {radius} ly: {drawn} populated drawn, worst frame \
+             {worst:.2?}, settled {settled:.2?}",
+        );
+        // Roomy against the 0.59 ms and 4.1 ms measured, the point
+        // being the order of magnitude: a settled frame must not be
+        // paying for the choice, and the frame that does must stay
+        // inside a stutter.
+        assert!(
+            settled < Duration::from_millis(8),
+            "a still populated view costs {settled:.2?} a frame",
+        );
+        assert!(
+            worst < Duration::from_millis(40),
+            "the frame the plan moves costs {worst:.2?}",
+        );
     }
-    let mut frames = Vec::new();
-    for _ in 0..SETTLE {
-        frames.push(flight.frame(DVec3::ZERO, radius * 2.7).whole());
-    }
-    let worst = frames.iter().max().copied().unwrap_or_default();
-    let settled = frames.last().copied().unwrap_or_default();
-    let drawn = {
-        let world = flight.app.world_mut();
-        let mut systems = world.query::<&System>();
-        systems.iter(world).count()
-    };
-    println!(
-        "  {drawn} populated drawn, worst frame {worst:.2?}, \
-         settled {settled:.2?}",
-    );
-    // Roomy against the 1.5 ms and 11.5 ms measured, the point being the
-    // order of magnitude: a settled frame must not be paying for the
-    // choice, and the frame that does must stay inside a stutter.
-    assert!(
-        settled < Duration::from_millis(8),
-        "a still populated view costs {settled:.2?} a frame",
-    );
-    assert!(
-        worst < Duration::from_millis(40),
-        "the frame the plan moves costs {worst:.2?}",
-    );
 }
 
 /// The same view draws the same sky, however the eye got there

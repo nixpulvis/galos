@@ -18,7 +18,7 @@
 use crate::cache::Quick;
 use crate::geometry::CellId;
 use crate::walk::{MERGE_PX, View};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 
 /// How many marks the frame itself carries
@@ -28,6 +28,37 @@ use std::hash::BuildHasherDefault;
 pub fn frame_marks(view: &View) -> f64 {
     let [width, height] = frame(view);
     width * height / (MERGE_PX * MERGE_PX)
+}
+
+/// How many marks a crowded sky may fill the frame with
+///
+/// **A mark to a patch of sky keeps a picture honest; it does not keep
+/// it readable.** One mark to every [`MERGE_PX`] squared of frame is
+/// the most that can be drawn without marks landing on one another,
+/// and a view down the length of a populated bubble wants every one of
+/// them: measured over `.index/full` at a reach of five hundred light
+/// years, the populated sky asked for more marks than the frame has
+/// patches and filled solid — the picture reported as too dense.
+///
+/// So the densest views are given a share of the frame rather than the
+/// whole of it, and what fills that share is the busiest first, which
+/// is what the mode is *for*. Measured over `.index/full` on an
+/// 800×600 frame, whose whole is 30,000 marks:
+///
+/// | share | 100 ly, of 8,113 | 500 ly, of 116,511 |
+/// |---|---|---|
+/// | all | 8,016 | 30,000, the frame full |
+/// | a half | 8,016 | 15,000 |
+/// | **a third** | **8,016** | **10,000** |
+/// | a quarter | 7,500, clipped | 7,500 |
+///
+/// A third: it costs the sparse view nothing at all — a hundred light
+/// years wants 8,016 marks and is drawn whole — and halves the crowded
+/// one. A quarter starts clipping views that were never the problem,
+/// which is the line this must not cross: thinning is for the sky that
+/// is too full to read, and a sky that reads well is left alone.
+pub fn crowded_marks(view: &View) -> f64 {
+    frame_marks(view) / 3.0
 }
 
 /// The frame in whole pixels
@@ -190,145 +221,97 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 #[derive(Default)]
 pub struct Crowded {
     taken: HashSet<u64, BuildHasherDefault<Quick>>,
-    /// How many marks stand along each mark-wide line of sight.
-    stacked: HashMap<u64, u8, BuildHasherDefault<Quick>>,
-    /// The angle one mark subtends, in radians: what a mark's width is
-    /// worth out at whatever distance a system stands.
-    pitch: f64,
-    eye: [f64; 3],
+    /// How wide a cell of the lattice is, in light years: what one
+    /// mark's patch of screen is worth of galaxy out where the view is
+    /// looking, rounded to an octave.
+    spacing: f64,
 }
 
 impl Crowded {
-    /// A lattice as fine as a mark is wide, seen from where `view` stands.
-    pub fn over(view: &View) -> Crowded {
+    /// A lattice as coarse as a mark's patch of sky, reckoned about the
+    /// point the view turns on
+    ///
+    /// **Nothing here is measured from the eye, and that is the whole
+    /// of the rotation flicker.** An orbit is not a turn: the eye
+    /// swings a full radius through the galaxy, so every distance and
+    /// every line of sight from it changes as the hand drags. A lattice
+    /// reckoned from there reshuffles the whole time, and the marks it
+    /// drops keep changing — which is what was reported, and what no
+    /// amount of world-anchoring the *axes* could fix, the anchor
+    /// itself having been the moving thing.
+    ///
+    /// So a system's place in the lattice is settled by where it stands
+    /// relative to the centre of the view and by how far back the eye
+    /// is, and by nothing else. Orbiting changes neither, so orbiting
+    /// changes nothing: the same marks survive all the way round, and
+    /// the choice can be kept across the drag instead of made again
+    /// sixty times a second.
+    ///
+    /// One spacing for the whole view, rather than a patch sized at
+    /// each system's own distance: how far off a thing is decides how
+    /// big its patch is, and measuring that from the eye is the very
+    /// thing that swings. The eye's distance to the centre stands in
+    /// for it — exact in the middle of the view and out by the depth
+    /// of the bubble at its edges, which a lattice that only has to be
+    /// about a mark wide can afford.
+    pub fn about(view: &View, about: [f64; 3]) -> Crowded {
+        let back = [0usize, 1, 2]
+            .iter()
+            .map(|&axis| {
+                let it = about[axis] - view.eye[axis];
+                it * it
+            })
+            .sum::<f64>()
+            .sqrt();
+        // How far back, to the octave — and the octave is taken of
+        // the *distance* rather than of the spacing it gives. A nudge
+        // of the camera must not shift every boundary in the sky by a
+        // hair and reshuffle what survives, so the lattice holds still
+        // through an octave of zoom and doubles between them, which is
+        // a change the reader makes on purpose. Rounding the spacing
+        // itself would do the same job and cost the width its dial:
+        // every setting inside an octave would land on one lattice.
+        let out = back.max(f64::MIN_POSITIVE).log2().round().exp2();
         Crowded {
             taken: HashSet::default(),
-            stacked: HashMap::default(),
-            pitch: MERGE_PX / view.pixels_per_radian(),
-            eye: view.eye,
+            spacing: out * MERGE_PX / view.pixels_per_radian(),
         }
     }
 
     /// Whether a mark at `at` is the first to want that patch of *sky*.
     ///
-    /// **In the galaxy, not on the frame.** Two things were wrong with
-    /// ruling the screen. It turns with the camera, so its boundaries
-    /// sweep the sky as the eye rotates and the drawn set churns for as
-    /// long as you are turning. And it has no depth: two systems in line
-    /// with one another merge however far apart they stand, so a volume
-    /// of sky reads as a mosaic laid on a sphere.
+    /// **In the galaxy, not on the frame, and in three dimensions.** A
+    /// screen grid turns with the camera, so its boundaries sweep the
+    /// sky and the drawn set churns for as long as the eye is turning;
+    /// and it has no depth, so two systems in line with one another
+    /// merge however far apart they stand and a volume of sky reads as
+    /// a mosaic laid on a sphere.
     ///
-    /// So the lattice is in world coordinates, and only its *spacing*
-    /// comes from the view: a mark is `pitch` radians across, which out
-    /// at a distance `d` is `d · pitch` of galaxy, so that is the size of
-    /// a cell there. Two systems merge when they are within a mark of
-    /// each other **as the galaxy has them** — which is the same
-    /// question the merge frontier asks of a cell's contents, asked of
-    /// two systems.
+    /// A cube of galaxy has neither fault. It is squared to the
+    /// world's axes and sized at what one mark's patch of screen is
+    /// worth out where the view is looking, so two systems merge when
+    /// they are within about a mark of each other *as the galaxy has
+    /// them* — which is the question the merge frontier asks of a
+    /// cell's contents, asked of two systems. Depth is kept: two
+    /// systems a thousand light years apart are two marks however
+    /// exactly one stands behind the other.
     ///
-    /// Squared to the world's axes and rounded to a power of two, so
-    /// neighbours at a similar distance rule the same lattice rather
-    /// than each carrying one of its own. A shell's worth of sky shares
-    /// a spacing and the spacing doubles every octave of distance.
-    ///
-    /// Turning the eye moves none of this. Travelling moves it slowly,
-    /// through the distance alone, and must: a mark is only so wide, and
-    /// what it covers of the galaxy depends on how far off that galaxy
-    /// is.
+    /// Depth is also what fills the picture in, and the cube is what
+    /// holds it down: through a bubble five hundred light years deep
+    /// there is a great deal of galaxy along every line of sight, and
+    /// one mark to a cube of it is what keeps that from washing out.
+    /// Measured over `.index/full` at that reach, 116,511 populated
+    /// systems come to 13,015 marks.
     pub fn claim(&mut self, at: [f64; 3]) -> bool {
-        let from =
-            [at[0] - self.eye[0], at[1] - self.eye[1], at[2] - self.eye[2]];
-        let away =
-            (from[0] * from[0] + from[1] * from[1] + from[2] * from[2]).sqrt();
-        if !away.is_finite() || away <= 0.0 {
-            // The eye is standing on it, and nothing merges with it.
-            return true;
-        }
-        // One mark's worth of galaxy out there, to the octave.
-        let spacing = (away * self.pitch).max(f64::MIN_POSITIVE);
-        let octave = spacing.log2().round();
-        let spacing = octave.exp2();
-        let cell = |it: f64| (it / spacing).floor() as i64;
-        let mixed = [octave as i64, cell(at[0]), cell(at[1]), cell(at[2])]
+        let cell = |it: f64| (it / self.spacing).floor() as i64;
+        let mixed = [cell(at[0]), cell(at[1]), cell(at[2])]
             .iter()
             .fold(0xcbf2_9ce4_8422_2325u64, |key, &part| {
                 (key ^ part as u64).wrapping_mul(0x100_0000_01b3)
             });
-        if !self.taken.insert(mixed) {
-            return false;
-        }
-
-        // And the other half of it: how many marks are already stacked
-        // along this line of sight.
-        //
-        // **A lattice in the galaxy keeps depth, and depth is what
-        // stacks.** Two systems a thousand light years apart are two
-        // marks however close together they land, which is right —
-        // and through a bubble a thousand light years deep it is dozens
-        // of them to a line of sight, all landing in the same few
-        // pixels. Measured over `.index/full` with the reach at five
-        // hundred light years, 66,114 marks of the 116,511 systems in
-        // it, which is a sheet.
-        //
-        // So a line of sight carries [`STACKED`] marks and no more. The
-        // direction is binned on a cube about the eye, its faces ruled
-        // at the angle one mark subtends and squared to the *world's*
-        // axes — so this turns with nothing either, and what it costs is
-        // the same cube-map third toward a face's corners.
-        let (face, major) = [0usize, 1, 2].iter().fold(
-            (0usize, 0.0f64),
-            |(face, major), &axis| match from[axis].abs() > major {
-                true => (axis, from[axis].abs()),
-                false => (face, major),
-            },
-        );
-        let (u, v) = match face {
-            0 => (from[1], from[2]),
-            1 => (from[2], from[0]),
-            _ => (from[0], from[1]),
-        };
-        let ruled = |it: f64| (it / major / self.pitch).floor() as i64 as u64;
-        let ray = (face as u64) << 62
-            | u64::from(from[face] > 0.0) << 61
-            | (ruled(u) & 0x3fff_ffff) << 30
-            | (ruled(v) & 0x3fff_ffff);
-        let along = self.stacked.entry(ray).or_default();
-        if *along >= STACKED {
-            return false;
-        }
-        *along += 1;
-        true
+        self.taken.insert(mixed)
     }
 }
-
-/// How many marks one mark-wide line of sight carries
-///
-/// **One is a mosaic and none is a sheet.** At one, a volume of sky
-/// collapses onto a sphere: whatever stands behind a mark is merged into
-/// it however far behind it stands, and turning the eye re-tiles the
-/// picture. With no cap at all the depth of a bubble stacks dozens of
-/// marks into the same few pixels and the middle of it fills solid.
-///
-/// Three, measured over `.index/full` at the two reaches the picture was
-/// judged at — a hundred light years, which reads well and must not
-/// change, and five hundred, which was filling solid:
-///
-/// | stacked | 100 ly, of 8,113 | 500 ly, of 116,511 |
-/// |---|---|---|
-/// | 1 | 5,727 | 10,713 |
-/// | **2** | **7,391** | **18,965** |
-/// | 3 | 7,822 | 25,744 |
-/// | 4 | 7,936 | 31,473 |
-/// | none | 7,970 | 66,114 |
-///
-/// Two, on the picture: three was judged still a little dense at the
-/// far reach and two takes a further quarter off it, for 5% of the near
-/// view — which is the one that was already right, and still keeps 91%
-/// of it. One is where the trade turns: it would cost the near view a
-/// quarter of itself to save a further fifth of the far, and the whole
-/// point of a lattice in the galaxy is that a system standing alone is
-/// drawn.
-const STACKED: u8 = 2;
 
 /// One tile of the screen: what landed on it, and the best thing there is
 /// to light it with if nothing did.
@@ -566,38 +549,50 @@ mod tests {
     /// Marks merge by where they stand in the galaxy, not by where they
     /// land on the frame
     ///
-    /// Two things a screen grid gets wrong, and this holds against
-    /// both. It turns with the camera, so its boundaries sweep the sky
-    /// and the drawn set churns while the eye rotates. And it has no
-    /// depth: two systems in line with one another merge however far
-    /// apart they stand, so a volume reads as a mosaic on a sphere.
+    /// Three things a screen grid gets wrong, and this holds against
+    /// all of them. It turns with the camera, so its boundaries sweep
+    /// the sky and the drawn set churns while the eye rotates. It has
+    /// no depth: two systems in line with one another merge however far
+    /// apart they stand, so a volume reads as a mosaic on a sphere. And
+    /// an orbit is not a turn — the eye swings a full radius through
+    /// the galaxy — so a lattice reckoned from the eye reshuffles for
+    /// as long as the hand is dragging, which is the flicker this was
+    /// reported for. It is reckoned about the centre instead.
     #[test]
     fn marks_merge_where_they_stand() {
-        // A sky of a thousand, spread over a few degrees at a thousand
-        // light years: close enough together that most of them collide.
+        // A sky of a thousand at a thousand light years, and a deep
+        // one: a bubble four hundred light years through, which is
+        // what the map is asked to draw and what tells an eye-reckoned
+        // lattice from a centre-reckoned one — through that depth the
+        // distance from the eye to a given system swings by a third as
+        // the eye goes round, and the distance from the centre does
+        // not swing at all.
         let sky: Vec<[f64; 3]> = (0..1_000)
             .map(|n| {
                 let turn = f64::from(n) * 0.61;
                 let out = 3. + f64::from(n % 37);
-                [out * turn.cos(), out * turn.sin(), 1_000.]
+                let deep = 800. + f64::from(n % 41) * 10.;
+                [out * turn.cos(), out * turn.sin(), deep]
             })
             .collect();
 
         let claimed = |view: &View, sky: &[[f64; 3]]| -> Vec<bool> {
-            let mut crowded = Crowded::over(view);
+            let mut crowded = Crowded::about(view, [0., 0., 1_000.]);
             sky.iter().map(|&at| crowded.claim(at)).collect()
         };
 
-        let looking = |up: [f64; 3], forward: [f64; 3]| View {
-            eye: [0.0; 3],
+        let looking = |eye: [f64; 3], up: [f64; 3], forward: [f64; 3]| View {
+            eye,
             forward,
             up,
             fov_y: std::f32::consts::FRAC_PI_4,
             viewport_height: 720.0,
             aspect: 16.0 / 9.0,
         };
+        let back =
+            |up: [f64; 3], forward: [f64; 3]| looking([0.0; 3], up, forward);
 
-        let straight = claimed(&looking([0., 1., 0.], [0., 0., 1.]), &sky);
+        let straight = claimed(&back([0., 1., 0.], [0., 0., 1.]), &sky);
         assert!(
             straight.iter().filter(|it| **it).count() < sky.len(),
             "nothing collided, so nothing is being tested",
@@ -606,58 +601,85 @@ mod tests {
         // differently, merges the same marks.
         assert_eq!(
             straight,
-            claimed(&looking([1., 1., 0.], [0., 0., 1.]), &sky),
+            claimed(&back([1., 1., 0.], [0., 0., 1.]), &sky),
             "a roll changed which marks were merged",
         );
         assert_eq!(
             straight,
-            claimed(&looking([0., 1., 0.], [0.3, 0.1, 1.]), &sky),
+            claimed(&back([0., 1., 0.], [0.3, 0.1, 1.]), &sky),
             "turning the eye changed which marks were merged",
         );
+        // And orbited: the eye carried a quarter turn round what it is
+        // looking at, and then right round to the far side of it,
+        // which is what dragging does and what the flicker was. The
+        // same distance back, so the same lattice.
+        for (eye, forward) in [
+            ([1_000., 0., 1_000.], [-1., 0., 0.]),
+            ([0., 0., 2_000.], [0., 0., -1.]),
+        ] {
+            assert_eq!(
+                straight,
+                claimed(&looking(eye, [0., 1., 0.], forward), &sky),
+                "orbiting the eye to {eye:?} changed which marks merged",
+            );
+        }
 
         // Depth tells two systems apart, however exactly one stands
         // behind the other: a mark is a mark's width of galaxy, and a
         // hundred light years is many marks at this distance.
-        let inline = vec![[0., 0., 1_000.], [0., 0., 1_100.]];
+        let view = back([0., 1., 0.], [0., 0., 1.]);
+        let inline = vec![[0., 0., 900.], [0., 0., 1_100.]];
         assert_eq!(
-            claimed(&looking([0., 1., 0.], [0., 0., 1.]), &inline),
+            claimed(&view, &inline),
             vec![true, true],
             "one system was merged into another standing in front of it",
         );
-        // And two a mark apart at that distance are one.
-        let view = looking([0., 1., 0.], [0., 0., 1.]);
-        let mark = 1_000. * MERGE_PX / view.pixels_per_radian();
-        let touching = vec![[0., 0., 1_000.], [mark / 8., 0., 1_000.]];
+        // And two within a mark's patch of one another at that distance
+        // are one.
+        let patch = 1_000. * MERGE_PX / view.pixels_per_radian();
+        let touching = vec![[0., 0., 1_000.], [patch / 8., 0., 1_000.]];
         assert_eq!(
             claimed(&view, &touching),
             vec![true, false],
-            "two marks within a mark of each other were both drawn",
+            "two marks within one patch of each other were both drawn",
         );
 
-        // A line of sight carries a few marks and not a crowd: strung
-        // out behind one another, [`STACKED`] of them are drawn and the
-        // rest are what the sheet would have been made of. Stated
-        // against the cap rather than against a count, the cap being a
-        // dial the picture turns.
-        let deep = usize::from(STACKED) + 2;
+        // Depth is kept and depth is also capped, by the cube
+        // itself: systems strung out behind one another are separate
+        // marks until they fall inside one cell of the lattice, and
+        // then they are one.
         let strung: Vec<[f64; 3]> =
-            (0..deep).map(|n| [0., 0., 1_000. + n as f64 * 100.]).collect();
-        let mut wanted = vec![false; deep];
-        wanted[..usize::from(STACKED)].fill(true);
+            (0..4).map(|n| [0., 0., 1_000. + f64::from(n) * 200.]).collect();
         assert_eq!(
             claimed(&view, &strung),
-            wanted,
-            "a line of sight did not carry {STACKED} marks",
+            vec![true, true, true, true],
+            "systems two hundred light years apart were merged",
+        );
+        let piled: Vec<[f64; 3]> =
+            (0..4).map(|n| [0., 0., 1_000. + f64::from(n) * 0.01]).collect();
+        assert_eq!(
+            claimed(&view, &piled),
+            vec![true, false, false, false],
+            "a pile inside one patch drew more than one mark",
         );
 
-        // Travelling changes it, and must: what a mark covers of the
-        // galaxy depends on how far off the galaxy is.
-        let moved = View { eye: [0., 0., 900.], ..view };
-        assert_ne!(
-            straight,
-            claimed(&moved, &sky),
-            "travelling changed nothing"
-        );
+        // Travelling changes nothing either, which is more than was
+        // asked for and worth holding: the lattice is ruled on the
+        // world's own axes and sized by how far back the eye is, so
+        // nudging the view along leaves every boundary where it was
+        // and the same marks survive.
+        let mut nudged = Crowded::about(&view, [30., 0., 1_010.]);
+        let alongside: Vec<bool> =
+            sky.iter().map(|&at| nudged.claim(at)).collect();
+        assert_eq!(straight, alongside, "a nudge reshuffled the sky");
+
+        // Zooming does change it, and must: what a mark covers of the
+        // galaxy depends on how far off the galaxy is, and the spacing
+        // doubles every octave of that.
+        let far = looking([0., 0., -7_000.], [0., 1., 0.], [0., 0., 1.]);
+        let mut out = Crowded::about(&far, [0., 0., 1_000.]);
+        let further: Vec<bool> = sky.iter().map(|&at| out.claim(at)).collect();
+        assert_ne!(straight, further, "an octave of zoom changed nothing");
     }
 
     /// A view a thousand light years back from the origin, looking at it.
