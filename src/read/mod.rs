@@ -6,18 +6,18 @@
 //! on its side: rows in Postgres, or a `galos_index` directory a client
 //! draws from with no server at all.
 //!
-//! **Here rather than in a binary because there are two of them.**
-//! `galos-index ingest` and `galos-db ingest` read the same publishers into
-//! different sinks; the reading is the same sentence either way, and the
-//! only thing that differs is what [`collect`] is handed to fan into. That
-//! was one program with a `--db`/`--index` pair of flags and the dozen
-//! refusals it took to say which combinations meant anything; it is two
-//! programs and no flags now.
+//! **Here rather than in `bin/` because there are two sinks.**
+//! `galos index ingest` and `galos db ingest` read the same publishers
+//! into different sinks; the reading is the same sentence either way, and
+//! the only thing that differs is what [`collect`] is handed to fan into.
+//! That was one program with a `--db`/`--index` pair of flags and the
+//! dozen refusals it took to say which combinations meant anything; it is
+//! two groups of verbs and no flags now.
 //!
 //! ```text
 //! eddn ────────┐
-//! journal=PATH ┼─> events ─┬─> galos-db     (Postgres, per message)
-//! edsm=PATH ───┘           └─> galos-index  (cell tree + tables, on a beat)
+//! journal=PATH ┼─> events ─┬─> galos db     (Postgres, per message)
+//! edsm=PATH ───┘           └─> galos index  (cell tree + tables, on a beat)
 //! ```
 //!
 //! Events are the live input to both. A database is what an index is
@@ -82,9 +82,9 @@ pub struct Options {
     pub sphere: Option<u32>,
     /// One process's share of a file, from `--shard`.
     pub shard: Option<Shard>,
-    /// What this tool calls itself in a spool's `cursors/` directory. One
-    /// name per consumer, so the two tools keep their own places in the
-    /// same spool and neither can move the other's.
+    /// What the reader calls itself in a spool's `cursors/` directory. One
+    /// name per consumer, so the two verb groups keep their own places in
+    /// the same spool and neither can move the other's.
     pub consumer: &'static str,
 }
 
@@ -96,8 +96,8 @@ pub struct Options {
 /// rather than naming one, and each is refused where the run reads no
 /// source it could qualify — a feed's address given to a run that reads a
 /// dump, a commander named over EDDN. Two copies of those rules drift: a
-/// tenth source, or one more flag, and the two tools disagree about what
-/// a command line means.
+/// tenth source, or one more flag, and the two verb groups disagree about
+/// what a command line means.
 ///
 /// Raw rather than an [`Options`], because a refusal has to tell "unset"
 /// from "set to the value that happens to be the default" — `--stall 0`
@@ -124,8 +124,8 @@ impl Qualifiers<'_> {
         self.sources.iter().any(|source| source.follows(watching))
     }
 
-    /// What the sources are handed, with `consumer` as this tool's name in
-    /// a spool.
+    /// What the sources are handed, with `consumer` as the reader's name
+    /// in a spool.
     ///
     /// `--stall` is the only one that is not a copy, because three states
     /// are spelled with two: nothing said is the default window, `0` is a

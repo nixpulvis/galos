@@ -1068,7 +1068,7 @@ pub struct Held {
 
 /// Weigh a directory's body shards, writing nothing.
 ///
-/// What `galos-index verify` reports, and what `galos-index sweep
+/// What `galos index verify` reports, and what `galos index sweep
 /// --bodies` says before it is asked to act. One read of each shard's
 /// index and one walk of its data file's extents — a second over a
 /// galaxy — and nothing decoded at all.
@@ -1139,7 +1139,7 @@ pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Held> {
 ///
 /// So the reclaim is asked for rather than waited on: by
 /// [`Build::finish`](crate::cold::Build::finish) once its index file
-/// stands, and by `galos-index sweep --bodies` for a directory nothing is
+/// stands, and by `galos index sweep --bodies` for a directory nothing is
 /// about to build. [`held`] weighs what this would do without doing any of
 /// it, which is what that command reports before it is asked to act.
 ///

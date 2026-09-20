@@ -70,7 +70,7 @@ async fn run() {
     // `Source::bodies`, which is the road a click takes: the index
     // searched, the offset seeked, the MessagePack decoded. A compaction
     // that put an offset wrong is a decode failure here and nowhere else,
-    // so a directory swept by `galos-index sweep-bodies` is checked by
+    // so a directory swept by `galos index sweep --bodies` is checked by
     // running this over it.
     let held = galos_index::pack::addresses(Path::new(&dir))
         .expect("the pack lists its systems");

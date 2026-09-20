@@ -1,58 +1,74 @@
-//! Everything done to the galaxy database.
+//! Everything done to the galaxy database: `galos db`.
 //!
 //! ```sh
-//! galos-db status                                 # what it is, how current
-//! galos-db migrate                                # bring the schema forward
-//! galos-db ingest --from journal=~/Saved\ Games/… # a commander's own logs
-//! galos-db ingest --from eddn --watch             # follow the feed
-//! galos-db ingest --from spansh=galaxy.json --bulk --shard 0/8
-//! galos-db verify                                 # what is wrong in here
-//! galos-db catalog hygdata_v41.csv                # a survey from Earth
-//! galos-db stats                                  # what the galaxy holds
+//! galos db status                                 # what it is, how current
+//! galos db migrate                                # bring the schema forward
+//! galos db ingest --from journal=~/Saved\ Games/… # a commander's own logs
+//! galos db ingest --from eddn --watch             # follow the feed
+//! galos db ingest --from spansh=galaxy.json --bulk --shard 0/8
+//! galos db verify                                 # what is wrong in here
+//! galos db catalog hygdata_v41.csv                # a survey from Earth
+//! galos db stats                                  # what the galaxy holds
 //! ```
 //!
-//! ## Why this is not one program with two flags
+//! ## Why this is a verb group and not a pair of flags
 //!
 //! There are two stores and they are not two settings of one store. A
 //! database keeps stations, markets, signals and factions — everything a
 //! question is asked *about* — and an index keeps the sky: the cell tree a
 //! map draws and the bodies inside a system. One reading feeds both, which
-//! is why the reading is shared rather than the tool ([`galos::read`]); each
-//! sink then takes what it is for and says in its own impl what it does with
-//! the rest. A pair of flags choosing between them was never choosing
-//! between two outputs of one job, it was two jobs sharing a command line,
-//! and most of what either one was given had to be refused for the other.
-//! The machine settles it in any case: an index is served out of a directory
-//! with no server at all, so a machine that builds one has no Postgres on
-//! it, no `DATABASE_URL`, and — the `db` feature being off there — no client
-//! compiled in. A tool that opened a pool in order to write a directory
-//! would have made it need one.
+//! is why the reading is shared rather than copied per sink
+//! ([`galos::read`]); each sink then takes what it is for and says in its
+//! own impl what it does with the rest. A pair of flags choosing between
+//! them was never choosing between two outputs of one job, it was two jobs
+//! sharing a command line, and most of what either one was given had to be
+//! refused for the other. So they are two groups of verbs under one
+//! command, and what each verb writes is in its name rather than in a flag
+//! beside it. The machine settles the rest: an index is served out of a
+//! directory with no server at all, so a machine that builds one has no
+//! Postgres on it, no `DATABASE_URL`, and — the `db` feature being off
+//! there — no client compiled in and none of this group to ask for.
 //!
-//! The connection is read from `DATABASE_URL`, as every other tool here
+//! The connection is read from `DATABASE_URL`, as everything else here
 //! reads it, and [`status`] says out loud which database that came to.
 
-use clap::{Parser, Subcommand};
-use galos::bar;
+use clap::Subcommand;
 use galos_catalog::hyg;
 // `HEARD` is what `RUST_LOG` falls back to, and it is this crate's `sqlx`
 // that writes the one line it silences.
 use galos_db::{Database, HEARD};
-use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 mod ingest;
 
 /// Work with the galaxy database.
-#[derive(Parser)]
-#[command(name = "galos-db", version, about)]
-struct Cli {
+#[derive(clap::Args)]
+pub struct Cli {
     #[command(subcommand)]
-    command: Command,
+    pub(super) command: Command,
+}
+
+impl Cli {
+    /// What `RUST_LOG` falls back to for the verb named here.
+    ///
+    /// [`HEARD`] for all but one. `verify`'s ancestry check is a hash
+    /// anti-join over every `parent_ids` element — 1.35 s on a 3.4 M-system
+    /// database, measured at the server's default 4 MB `work_mem` — which
+    /// trips `sqlx`'s one-second slow-statement alert and prints the whole
+    /// statement above the report. The query is slow *on purpose*: it is
+    /// what the verb is. An alert about the one thing the operator asked
+    /// for is noise, and noise directly above the answer. `RUST_LOG` still
+    /// overrides this, which is how to see it.
+    pub fn heard(&self) -> String {
+        match self.command {
+            Command::Verify => format!("{HEARD},sqlx::query=error"),
+            _ => HEARD.to_string(),
+        }
+    }
 }
 
 #[derive(Subcommand)]
-enum Command {
+pub(super) enum Command {
     /// Say which database this is, how current it is and what it holds.
     ///
     /// Row counts come from the planner's statistics rather than from
@@ -108,66 +124,17 @@ enum Command {
     Stats,
 }
 
-#[async_std::main]
-async fn main() -> ExitCode {
-    let cli = Cli::parse();
-
-    // Nothing a crate traces goes anywhere until something is listening for
-    // it, dependencies included. `RUST_LOG` picks what to hear, and [`HEARD`]
-    // without it, which is info and above less the one `~/.pgpass` line
-    // every pool opens with.
-    tracing_subscriber::fmt()
-        // Above whatever bars are drawing, so they keep the bottom lines
-        // and the log does not land on top of them. An ingest of a dump
-        // draws one per source.
-        .with_writer(bar::Log)
-        // Color is for a terminal. Redirected, it would be escape codes
-        // around every line of the log.
-        .with_ansi(stderr().is_terminal())
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| heard(&cli.command).into()),
-        )
-        .init();
-
-    match run(cli.command).await {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::FAILURE,
-        Err(said) => {
-            eprintln!("{said}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-/// What `RUST_LOG` falls back to for this verb.
-///
-/// [`HEARD`] for all but one. `verify`'s ancestry check is a hash
-/// anti-join over every `parent_ids` element — 1.35 s on a 3.4 M-system
-/// database, measured at the server's default 4 MB `work_mem` — which
-/// trips `sqlx`'s one-second slow-statement alert and prints the whole
-/// statement above the report. The query is slow *on purpose*: it is what
-/// the verb is. An alert about the one thing the operator asked for is
-/// noise, and noise directly above the answer. `RUST_LOG` still overrides
-/// this, which is how to see it.
-fn heard(command: &Command) -> String {
-    match command {
-        Command::Verify => format!("{HEARD},sqlx::query=error"),
-        _ => HEARD.to_string(),
-    }
-}
-
-/// Answer one verb.
+/// Answer one `galos db` verb.
 ///
 /// Three outcomes rather than two. `Err` is a run that could not be made —
 /// a refused command line, a pool that would not open — and is printed by
-/// [`main`]; `Ok(false)` is a run that was made, said everything it had to
-/// say, and did not like the answer, which is [`verify`]'s unsound database
-/// and an ingest whose source failed under it. Both leave 1, and the
-/// difference between them is whether anything was reported before the exit
-/// code.
-async fn run(command: Command) -> Result<bool, String> {
-    match command {
+/// the caller; `Ok(false)` is a run that was made, said everything it had
+/// to say, and did not like the answer, which is [`verify`]'s unsound
+/// database and an ingest whose source failed under it. Both leave 1, and
+/// the difference between them is whether anything was reported before the
+/// exit code.
+pub async fn run(cli: Cli) -> Result<bool, String> {
+    match cli.command {
         Command::Status => status().await,
         Command::Ingest(it) => ingest::run(it).await,
         Command::Migrate => migrate().await,
@@ -229,7 +196,7 @@ async fn migrate() -> Result<bool, String> {
 /// Count what is wrong with the database, and leave by the answer.
 ///
 /// 1 where it is unsound and 0 where it is not, so a cron line is
-/// `galos-db verify || …`. What counts as unsound is
+/// `galos db verify || …`. What counts as unsound is
 /// [`galos_db::report::Verified::is_sound`] and is decided there rather
 /// than here: telling damage from a backlog is a judgement about the
 /// schema — a system nobody has sent coordinates for yet is a galaxy that

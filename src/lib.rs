@@ -1,12 +1,11 @@
 //! # Architecture
 //!
-//! The library behind three binaries: `galos-index` (`bin/index/`) and
-//! `galos-db` (`bin/db/`), which are the two stores and every way of
-//! filling one, and `galos`, the query CLI (`bin/galos/`). What they share
-//! lives here: the [`read`] path the publishers come in through, the
-//! [`sink`]s they are written out through, the [`bar`] progress is
-//! reported on, and the [`Shard`] and [`Shutdown`] that divide and end a
-//! run.
+//! The library behind one binary, `galos` (`bin/galos/`): the `index` and
+//! `db` verb groups, which are the two stores and every way of filling
+//! one, and `search` and `route`, the queries. What they share lives here:
+//! the [`read`] path the publishers come in through, the [`sink`]s they
+//! are written out through, the [`bar`] progress is reported on, and the
+//! [`Shard`] and [`Shutdown`] that divide and end a run.
 //!
 //! The formats and the stores are in the crates it depends on:
 //!
@@ -20,10 +19,10 @@
 //!
 //! ## The `db` feature
 //!
-//! On by default, and off is the point: `galos-index` writes and serves a
+//! On by default, and off is the point: `galos index` writes and serves a
 //! directory, and with the feature off nothing in the build has `sqlx`,
 //! `dotenv` or a `DATABASE_URL` in it. That is not a packaging detail —
-//! it is what lets the index tool run on a machine with no Postgres
+//! it is what lets those verbs run on a machine with no Postgres
 //! installed, which is the arrangement the whole index format exists for.
 //!
 //! Two things in the seam used to name a database and now do not:
@@ -67,7 +66,7 @@
 //!
 //! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
-//! ### `galos-index <status|ingest|build|migrate|verify|sweep|pack|diff|sectors> …`
+//! ### `galos index <status|ingest|build|migrate|verify|sweep|pack|diff|sectors> …`
 //!
 //! Everything that is done to an index directory. `ingest --from SOURCE`
 //! follows or reads a publisher into it; `build --from database` derives
@@ -75,16 +74,16 @@
 //! that is already there. `--from` repeats, and `--from eddn` subscribes
 //! to its ZMQ service until the run is asked to stop.
 //!
-//! ### `galos-db <status|ingest|migrate|verify|catalog|stats> …`
+//! ### `galos db <status|ingest|migrate|verify|catalog|stats> …`
 //!
 //! The same shape over Postgres, with `ingest --from SOURCE` reading the
 //! same publishers through the same [`read`] path into the other sink.
 //!
-//! Both write paths are here rather than in a binary: [`sink`] is the seam
+//! Both write paths are here rather than in `bin/`: [`sink`] is the seam
 //! the sources write through and it is what an integration test has to be
 //! able to reach, and [`read`] is the sources themselves, which the two
-//! tools share entire. What lives in `bin/` is the command line and the
-//! supervisor that joins the halves of a run.
+//! verb groups share entire. What lives in `bin/` is the command line and
+//! the supervisor that joins the halves of a run.
 
 pub mod bar;
 pub mod read;
@@ -94,14 +93,3 @@ pub mod sink;
 
 pub use shard::Shard;
 pub use shutdown::Shutdown;
-
-/// A `galos` query subcommand.
-///
-/// The query CLI's own seam, which has always taken a database because
-/// querying is what it does. Behind the `db` feature with everything else
-/// that names one.
-#[cfg(feature = "db")]
-pub trait Run {
-    // TODO: Reture Error
-    fn run(&self, db: &galos_db::Database);
-}

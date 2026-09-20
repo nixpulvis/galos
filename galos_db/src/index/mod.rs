@@ -321,7 +321,7 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
             reads = galos_index::INDEX_VERSION,
             dir = %dir.display(),
             "the directory's payloads are of another layout; run \
-             `galos-index upgrade` over it",
+             `galos index migrate` over it",
         );
         return Ok(());
     }
@@ -916,8 +916,8 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
         return None;
     }
     let rebuild = format!(
-        "\n  galos-index status {dir}\n  \
-         galos-index build --from database --dir {dir} --rebuild",
+        "\n  galos index status {dir}\n  \
+         galos index build --from database --dir {dir} --rebuild",
         dir = dir.display(),
     );
     let checkpoint = match Checkpoint::read(path) {

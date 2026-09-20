@@ -112,19 +112,21 @@ pub struct Ingest {
     sphere: Option<u32>,
 }
 
-/// What this tool calls itself in a spool's `cursors/` directory.
+/// What these verbs call themselves in a spool's `cursors/` directory.
 ///
-/// One name per consumer, because the two tools read the same recorded
-/// feed: this one following it into Postgres and the index tool following
-/// it into a tree are two readers at two places in one directory, and
-/// either writing the other's cursor would skip whatever the other had not
-/// read yet.
+/// One name per consumer, because both verb groups read the same recorded
+/// feed: this one following it into Postgres and `galos index ingest`
+/// following it into a tree are two readers at two places in one
+/// directory, and either writing the other's cursor would skip whatever
+/// the other had not read yet. The name outlives the two binaries it was
+/// coined for: changing it would abandon every cursor already written
+/// under it.
 const CONSUMER: &str = "galos-db";
 
 impl Ingest {
     /// The per-source flags, as [`read::Qualifiers`] reads them.
     ///
-    /// Both tools' `ingest` takes these same eight flags, and both the
+    /// Both groups' `ingest` takes these same eight flags, and both the
     /// rules about them and the folding of them into a
     /// [`read::Options`] are written once, in `galos::read` — two copies
     /// drift, and what they would drift about is what a command line
@@ -166,7 +168,7 @@ pub async fn run(cli: Ingest) -> Result<bool, String> {
     let shutdown = Shutdown::new();
     shutdown::on_interrupt(shutdown.clone());
 
-    let db = crate::open(cli.bulk).await?;
+    let db = super::open(cli.bulk).await?;
 
     let options = cli.qualifiers().options(CONSUMER);
     let mut reading = Vec::with_capacity(cli.from.len());
@@ -199,19 +201,24 @@ mod tests {
     ///
     /// Through the whole command line rather than through [`Ingest`]
     /// alone, which cannot parse itself: it is a `clap::Args`, and what
-    /// turns argv into one is the verb it hangs off.
+    /// turns argv into one is the verb it hangs off — two levels of verb
+    /// now, `galos db ingest`, which is exactly what this should be
+    /// asking.
     fn cli(said: &[&str]) -> Ingest {
         match parsed(said).expect("these flags should parse") {
-            crate::Command::Ingest(it) => it,
+            crate::db::Command::Ingest(it) => it,
             _ => unreachable!("the verb is `ingest`"),
         }
     }
 
-    /// What `galos-db ingest` makes of these flags, refusals and all.
-    fn parsed(said: &[&str]) -> Result<crate::Command, clap::Error> {
-        let mut argv = vec!["galos-db", "ingest"];
+    /// What `galos db ingest` makes of these flags, refusals and all.
+    fn parsed(said: &[&str]) -> Result<crate::db::Command, clap::Error> {
+        let mut argv = vec!["galos", "db", "ingest"];
         argv.extend_from_slice(said);
-        crate::Cli::try_parse_from(argv).map(|cli| cli.command)
+        crate::Cli::try_parse_from(argv).map(|cli| match cli.command {
+            crate::Command::Db(db) => db.command,
+            _ => unreachable!("the group is `db`"),
+        })
     }
 
     /// The shared rules are reached from this verb's flags

@@ -145,7 +145,7 @@ pub struct Swept {
 /// those forward is [`reshard_cells`]'s work, and this must not stand in
 /// for it by deleting them.
 ///
-/// `apply` false counts and removes nothing, which is what `galos-index
+/// `apply` false counts and removes nothing, which is what `galos index
 /// sweep` reports before it is asked to act.
 pub fn sweep_payloads(
     dir: &Path,
@@ -343,7 +343,7 @@ impl Index {
                 Some(found) if found != INDEX_VERSION => format!(
                     "index format version {found}, this build reads \
                      {INDEX_VERSION}: the payloads changed layout, so run \
-                     `galos-index upgrade` over the directory"
+                     `galos index migrate` over the directory"
                 ),
                 _ => "not an index file".to_string(),
             };
@@ -828,7 +828,7 @@ mod tests {
             "the version met is not named: {said}"
         );
         assert!(
-            said.contains("galos-index upgrade"),
+            said.contains("galos index migrate"),
             "the remedy is not named: {said}",
         );
     }

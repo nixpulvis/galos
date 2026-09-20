@@ -1,5 +1,5 @@
 use async_std::task;
-use galos::Run;
+use clap::Args;
 use galos_db::{
     systems::{nav::ModuleClass, System},
     Database,
@@ -8,30 +8,30 @@ use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use prettytable::{format, Table};
 use std::time::Duration;
-use structopt::StructOpt;
 
 #[allow(dead_code)]
-#[derive(StructOpt, Debug)]
+#[derive(Args, Debug)]
 pub struct Cli {
     // #[structopt(parse(lalrpop(Route)))]
     pub start: String,
     pub end: String,
 
-    #[structopt(default_value = "7.5", short = "r", long)]
+    #[arg(default_value_t = 7.5, short = 'r', long)]
     pub range: f64,
-    #[structopt(default_value = "25", short = "m", long)]
+    #[arg(default_value_t = 25.0, short = 'm', long)]
     pub total_mass: f64,
-    #[structopt(default_value = "48", short = "o", long)]
+    #[arg(default_value_t = 48.0, short = 'o', long)]
     pub optimized_mass: f64,
 
-    #[structopt(default_value = "2", short = "s", long)]
+    #[arg(default_value_t = 2, short = 's', long)]
     pub size: u8,
-    #[structopt(default_value = "E", short = "c", long)]
+    #[arg(default_value = "E", short = 'c', long)]
     pub class: ModuleClass,
 }
 
-impl Run for Cli {
-    fn run(&self, db: &Database) {
+impl Cli {
+    /// Plot the route, printing what it found.
+    pub fn run(&self, db: &Database) {
         let spinner = ProgressBar::new_spinner();
         spinner.enable_steady_tick(Duration::from_millis(100));
         spinner.set_message("Finding systems...");

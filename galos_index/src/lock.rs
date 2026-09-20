@@ -6,8 +6,9 @@
 //! galaxies into it — each writing a cell tree the other's metadata does not
 //! describe — and neither notices, since neither reads what the other wrote.
 //! Nothing stopped that, and it is an easy mistake to make two ways:
-//! `galos-index ingest --dir DIR` run twice in two terminals, or a `build`
-//! into the directory a `sweep`, `pack` or `migrate` is already rewriting.
+//! `galos index ingest --dir DIR` run twice in two terminals, or a `galos
+//! index build` into the directory a `sweep`, `pack` or `migrate` is already
+//! rewriting.
 //!
 //! So a builder takes `<dir>.lock` for as long as it holds the directory. The
 //! file sits *beside* the directory rather than inside it: the directory is
@@ -26,7 +27,7 @@
 //! gone. That is the right default: a lock that cleared itself on a guess
 //! would clear itself exactly when a long build was still running and slow to
 //! answer. Check the pid the refusal names, and if nothing is running under
-//! it, run again with `--force-lock` — global to `galos-index`, so it goes
+//! it, run again with `--force-lock` — global to `galos`, so it goes
 //! with whichever verb was refused — which is [`Lock::force`].
 
 use std::fs::OpenOptions;

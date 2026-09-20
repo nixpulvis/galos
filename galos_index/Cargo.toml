@@ -47,7 +47,8 @@ pollster = "0.3"
 # parsed through `elite_journal` exactly as a reader hands them over.
 serde_json = "1"
 
-# No command line here, and no `cli` feature to gate one. `galos-index` is a
-# binary of the root crate (`bin/index/`), where the readers and the sinks it
-# fills a directory through already were — this crate is the format and the
-# reader, which the map and the server link and neither wants clap in.
+# No command line here, and no `cli` feature to gate one. `galos index` is a
+# verb group of the root crate's binary (`bin/galos/index/`), where the
+# readers and the sinks it fills a directory through already were — this
+# crate is the format and the reader, which the map and the server link and
+# neither wants clap in.

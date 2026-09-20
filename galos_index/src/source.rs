@@ -191,7 +191,7 @@ pub struct Migrated {
     /// read it and a manual upgrade is what is wanted
     ///
     /// Nothing was done in that case: see [`migrate`]. The caller's job is
-    /// to *say so*, naming `galos-index upgrade`, rather than to carry on
+    /// to *say so*, naming `galos index migrate`, rather than to carry on
     /// and let the refusal fall out of the first cell anybody asks for.
     pub upgrade: Option<u16>,
 }
@@ -311,7 +311,7 @@ pub fn migrate(
     // refusal would surface later, out of whatever first asked for a cell,
     // as a failed open with no remedy attached. A layout this build does
     // not read is not something an open can fix: it is hours of re-encoding
-    // and a sweep of the scan record, which is `galos-index upgrade`.
+    // and a sweep of the scan record, which is `galos index migrate`.
     if let Some(found) = crate::store::stale(dir) {
         return Ok(Migrated {
             bodies: crate::pack::Packed { moved: 0, finished: true },
@@ -895,7 +895,7 @@ mod tests {
     /// shards and folds chunks — so it would run happily over payloads of
     /// another layout and leave the refusal to fall out of the first cell
     /// anybody asked for, as a failed open with no remedy attached. The
-    /// remedy is hours of re-encoding (`galos-index upgrade`) and not
+    /// remedy is hours of re-encoding (`galos index migrate`) and not
     /// something an open can do, so the migration's job here is to name the
     /// version it met and touch nothing.
     #[test]

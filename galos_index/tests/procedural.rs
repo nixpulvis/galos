@@ -15,7 +15,7 @@
 //!
 //! ## Measured 2026-09-17 over `.index/full`
 //!
-//! 200,071,629 names, the dictionary `galos-index sectors` learned from the
+//! 200,071,629 names, the dictionary `galos index sectors` learned from the
 //! same directory:
 //!
 //! | | rows | |

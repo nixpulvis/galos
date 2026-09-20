@@ -155,9 +155,9 @@ fn spool(said: String) -> Result<Source, String> {
 /// What a run calls itself in a spool's `cursors/` directory, where it
 /// did not say.
 ///
-/// One name per consumer, so `galos-db` and `galos-index` keep their own
+/// One name per consumer, so the `db` and `index` verbs keep their own
 /// places in the same spool and neither can move the other's — which is
-/// why the tools pass their own and this is only the fallback for a
+/// why each group passes its own and this is only the fallback for a
 /// caller that is neither.
 pub const CONSUMER: &str = "galos";
 

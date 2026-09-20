@@ -104,7 +104,7 @@ impl std::fmt::Display for MetaReport {
 /// The metadata tables, held open across a watch, and the highest faction id
 /// read so far.
 ///
-/// The tables are [`Sidecars`], shared with `galos-index ingest`'s
+/// The tables are [`Sidecars`], shared with `galos index ingest`'s
 /// event-sourced half. What is this crate's is where a row comes from and
 /// that a row which has stopped qualifying is *withdrawn*: it re-reads
 /// `population > 0` off the row, so it can tell a system that has emptied

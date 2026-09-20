@@ -9,8 +9,8 @@
 //! # Why the macro and not the directory
 //!
 //! [`sqlx::migrate!`] reads `./migrations` at compile time and bakes the
-//! statements into the binary, so a `galos-db` copied to a server migrates
-//! that server without the source tree beside it.
+//! statements into the binary, so a `galos` copied to a server runs `db
+//! migrate` against it without the source tree beside it.
 //! [`sqlx::migrate::Migrator::new`], which `testing` uses, reads the
 //! directory at run time — right for a test that runs out of the
 //! workspace, wrong for a tool that does not.

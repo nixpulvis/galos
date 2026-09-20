@@ -1,7 +1,7 @@
 //! Bringing a built directory up to the format this build reads.
 //!
 //! One place for the migrations an operator runs on purpose, rather than one
-//! command per format change: `galos-index upgrade` is what
+//! command per format change: `galos index migrate` is what
 //! [`crate::store::Index::read`]'s refusal names, and what it does is
 //! whatever the directory turns out to need. Today that is the payloads,
 //! which became columns; the next thing lands here beside it rather than as
@@ -60,7 +60,7 @@ pub struct Rewrote {
     ///
     /// [`crate::source::place_boosts`] is a step of an open rather than of
     /// a build, and an open over a stale directory does nothing at all —
-    /// [`crate::source::migrate`] says `upgrade` and returns, having
+    /// [`crate::source::migrate`] sets `upgrade` and returns, having
     /// touched nothing. So a directory brought forward by this command
     /// alone would still hold a two-field table, and anything reading it
     /// without opening the galaxy first — the map's own perf guard did —
@@ -428,8 +428,8 @@ mod tests {
     /// asks for the boosts without opening the galaxy first gets a decode
     /// error rather than a jet cone. Which is how it was found: the map's
     /// perf guard reported `invalid length 2, expected struct SystemBoost
-    /// with 3 elements` over a directory `upgrade` had just said it had
-    /// finished with.
+    /// with 3 elements` over a directory `galos index migrate` had just
+    /// said it had finished with.
     #[test]
     fn a_rewrite_places_the_supercharge_table() {
         /// The row as it was published before it carried a place.

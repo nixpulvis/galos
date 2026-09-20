@@ -1,12 +1,11 @@
 use async_std::task;
-use galos::Run;
+use clap::Args;
 use galos_db::{bodies::Body, factions::Faction, systems::System, Database};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
-use structopt::StructOpt;
 
 #[allow(dead_code)]
-#[derive(StructOpt, Debug)]
+#[derive(Args, Debug)]
 pub struct Cli {
     /// Systems:
     ///     *Sol
@@ -18,19 +17,29 @@ pub struct Cli {
     ///     *Sol@    Stars named Sol and their factions
     ///     *@newp   Stars with newp factions (not null)
 
-    #[structopt(short = "s", long = "systems", name = "SYSTEM(s)")]
+    /// One of these two is required and they are mutually exclusive,
+    /// which clap says for itself: the pair used to fall through to a
+    /// hand-printed help page, and printing usage is what a parser is
+    /// for.
+    #[arg(
+        short = 's',
+        long = "systems",
+        value_name = "SYSTEM(s)",
+        required_unless_present = "faction_like",
+        conflicts_with = "faction_like"
+    )]
     pub system_like: Option<String>,
 
-    #[structopt(short = "f", long = "factions", name = "FACTION(s)")]
+    #[arg(short = 'f', long = "factions", value_name = "FACTION(s)")]
     pub faction_like: Option<String>,
 
-    #[structopt(short = "d", long = "diameter")]
+    #[arg(short = 'd', long)]
     pub diameter: Option<f64>,
 
-    #[structopt(short = "r", long = "radius")]
+    #[arg(short = 'r', long)]
     pub radius: Option<f64>,
 
-    #[structopt(short = "c", long = "count")]
+    #[arg(short = 'c', long)]
     pub count: bool,
 
     /// The index directory the names are searched in.
@@ -40,7 +49,7 @@ pub struct Cli {
     /// there at all, so `ILIKE` would answer for the exceptions and call
     /// it the galaxy. The published names table holds every name, stored
     /// or spelled, and searches it in microseconds.
-    #[structopt(short = "i", long = "index", default_value = ".galos_index")]
+    #[arg(short = 'i', long = "index", default_value = ".galos_index")]
     pub index: String,
     // #[structopt(short = "f", long = "filter", parse(from_filter_string))]
     // pub filters: Vec<String>,
@@ -49,8 +58,9 @@ pub struct Cli {
     // We don't want full SQL obviously.
 }
 
-impl Run for Cli {
-    fn run(&self, db: &Database) {
+impl Cli {
+    /// Answer the search, printing what it found.
+    pub fn run(&self, db: &Database) {
         let spinner = ProgressBar::new_spinner();
         spinner.set_style(
             ProgressStyle::default_spinner()
@@ -133,10 +143,12 @@ impl Run for Cli {
                     }
                 }
 
-                (Some(_), Some(_)) | (None, None) => {
-                    // XXX: Why is -r being printed after the next shell prompt?!
-                    Cli::clap().print_help().expect("issue printing help")
-                }
+                // Refused as the command line is parsed: exactly one of
+                // the two is required, and `conflicts_with` forbids the
+                // pair. See the fields above.
+                (Some(_), Some(_)) | (None, None) => unreachable!(
+                    "clap requires exactly one of --systems and --factions"
+                ),
             }
         });
     }
@@ -158,7 +170,7 @@ fn matched(dir: &str, query: &str) -> Result<Vec<i64>, String> {
         .map_err(|err| format!("reading the names table at {dir}: {err}"))?;
     if names.is_empty() {
         return Err(format!(
-            "{dir} publishes no names; build one with `galos-index build \
+            "{dir} publishes no names; build one with `galos index build \
              --from database --dir {dir}`"
         ));
     }

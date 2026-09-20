@@ -27,7 +27,7 @@
 //! was written before this saw it — and the worker answers a nonzero count
 //! by discarding what it buffered and running another round, which reads it
 //! back. See [`crate::read::derive::buffered`], and note that only
-//! `galos-index ingest --catch-up` has rounds to recover a drop with.
+//! `galos index ingest --catch-up` has rounds to recover a drop with.
 //!
 //! Once the worker is live there is no next round to recover a drop, so a
 //! full channel is waited on instead. That is backpressure onto the source:

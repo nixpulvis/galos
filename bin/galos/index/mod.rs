@@ -1,22 +1,23 @@
-//! Everything that is done to a galaxy index directory.
+//! Everything that is done to a galaxy index directory: `galos index`.
 //!
 //! ```sh
-//! galos-index status .index/full
-//! galos-index ingest --from eddn --dir .index/full        # keep it current
-//! galos-index build --from spansh=galaxy.json --dir .index/full
-//! galos-index build --from database --watch 5             # from the rows
-//! galos-index verify .index/full --bodies
-//! galos-index sweep .index/full --bodies --apply
-//! galos-index diff .index/from_dump .index/from_db
+//! galos index status .index/full
+//! galos index ingest --from eddn --dir .index/full        # keep it current
+//! galos index build --from spansh=galaxy.json --dir .index/full
+//! galos index build --from database --watch 5             # from the rows
+//! galos index verify .index/full --bodies
+//! galos index sweep .index/full --bodies --apply
+//! galos index diff .index/from_dump .index/from_db
 //! ```
 //!
-//! **Database-free, and that is the point.** Build it with
+//! **Database-free, and that is the point.** Build `galos` with
 //! `--no-default-features` and there is no `sqlx`, no `dotenv` and no
-//! `DATABASE_URL` anywhere in it: an index is a file format a client draws
-//! from with no server at all, so the tool that fills and repairs one runs
-//! on a machine with no Postgres installed. `build --from database` is the
-//! one verb that needs the `db` feature, and it is the one verb that is
-//! about the other store.
+//! `DATABASE_URL` anywhere in it — these verbs are all that is left, and
+//! they are enough: an index is a file format a client draws from with no
+//! server at all, so filling and repairing one runs on a machine with no
+//! Postgres installed. `build --from database` and `ingest --catch-up`
+//! are the two things here that need the `db` feature, and they are the
+//! two that are about the other store.
 //!
 //! `ingest` and `build` are both "fill this directory", and which one to
 //! reach for is a question about *memory*, not about taste. `ingest` holds
@@ -40,7 +41,7 @@
 //! silent terminal is not a run anybody can judge. Ctrl-C is answered
 //! between shards; a second one kills.
 
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use galos_index::geometry::MAX_LEVEL;
 use galos_index::{
     source, store, Bodies, Cell, Index, NameEntry, PopulatedSystem, Published,
@@ -50,29 +51,21 @@ use serde::de::DeserializeOwned;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod fill;
 
 /// Fill, inspect and repair a galaxy index directory.
-#[derive(Parser)]
-#[command(name = "galos-index", version, about)]
-struct Cli {
+#[derive(clap::Args)]
+pub struct Cli {
     #[command(subcommand)]
-    command: Command,
-    /// Clear a lock left behind by a builder that was killed, and take it.
-    ///
-    /// The refusal names the pid holding the directory. Check it first: a
-    /// lock cleared while its builder is merely slow to answer is two
-    /// writers over one directory, which is what the lock is for.
-    #[arg(long, global = true)]
-    force_lock: bool,
+    pub(super) command: Command,
 }
 
 #[derive(Subcommand)]
-enum Command {
+pub(super) enum Command {
     /// Summarise a built index directory: its shape and the galaxy's summed light.
     Status {
         /// The index directory to read.
@@ -185,34 +178,13 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
     std::process::exit(code)
 }
 
-/// What `RUST_LOG` falls back to.
+/// Answer one `galos index` verb.
 ///
-/// Plain `info`, there being no chatty dependency to silence: the one
-/// crate that needed naming was `sqlx`, and a build of this tool need not
-/// contain it. `galos_db::HEARD` is what the database tool uses, and it
-/// names its own.
-const HEARD: &str = "info";
-
-#[async_std::main]
-async fn main() -> ExitCode {
-    // The reporting verbs print; `ingest` and `build` trace, and so does
-    // everything they call. Nothing a crate traces goes anywhere until
-    // something is listening for it.
-    tracing_subscriber::fmt()
-        // Above whatever bars are drawing, so they keep the bottom lines
-        // and the log does not land on top of them.
-        .with_writer(galos::bar::Log)
-        // Color is for a terminal. Redirected, it would be escape codes
-        // around every line of the log.
-        .with_ansi(std::io::stderr().is_terminal())
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| HEARD.into()),
-        )
-        .init();
-
-    let cli = Cli::parse();
-    let forced = cli.force_lock;
+/// `forced` is the top-level `--force-lock`: it is asked once, above every
+/// verb group, because clearing a lock a killed builder left behind is a
+/// judgement about the *directory* rather than about the verb that met the
+/// refusal.
+pub async fn run(cli: Cli, forced: bool) -> ExitCode {
     match cli.command {
         // The two that fill a directory install their own handler: they
         // have a publish and a resume point to close out, and what asks
@@ -390,7 +362,7 @@ fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
     );
     if weighed.loose > 0 {
         println!(
-            "{} body files are still loose; `galos-index pack` moves them",
+            "{} body files are still loose; `galos index pack` moves them",
             weighed.loose,
         );
     }
@@ -560,7 +532,7 @@ fn verify(dir: &Path, bodies: bool) {
     if holes > 0 {
         println!(
             "\n{holes} cells the tree names have no payload: that is systems \
-             the index says are there and cannot serve. `galos-index build` \
+             the index says are there and cannot serve. `galos index build` \
              is the repair.",
         );
         std::process::exit(1);

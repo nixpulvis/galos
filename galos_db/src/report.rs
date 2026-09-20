@@ -189,7 +189,7 @@ impl fmt::Display for Status {
                 return writeln!(
                     f,
                     "no migrations on record: this database has no schema \
-                     yet. `galos-db migrate` puts one in."
+                     yet. `galos db migrate` puts one in."
                 )
             }
         }

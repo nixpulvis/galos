@@ -36,8 +36,8 @@
 //!
 //! Without a database there is nothing to catch up from, so the sink opens
 //! on whatever the directory already holds and goes live immediately. That
-//! is every run of `galos-index ingest` but the one that passes
-//! `--catch-up`, and it is the only thing in the index tool that reads
+//! is every run of `galos index ingest` but the one that passes
+//! `--catch-up`, and it is the only thing in the `index` verbs that reads
 //! Postgres at all — behind the `db` feature with everything else that
 //! does.
 
@@ -207,7 +207,7 @@ impl Derive {
     /// Bring the directory level with the database, where the run asked
     /// for it, and answer the clock its cursor is read off.
     ///
-    /// The rounds of the handoff, and the one place the index tool reads
+    /// The rounds of the handoff, and the one place the `index` verbs read
     /// Postgres. Nothing to be level with is [`None`] and no clock: the
     /// resume point of a directory derived from records carries no cursor,
     /// which is what makes `galos_db::index` rebuild rather than resume
@@ -398,7 +398,7 @@ impl Derive {
 
 /// The index brought level with the database, with no events in it at all.
 ///
-/// The `galos-index build --from database` run: a rebuild, a repair of one
+/// The `galos index build --from database` run: a rebuild, a repair of one
 /// part with `--only`, or a follower of the rows with `--watch`.
 ///
 /// A build cut short is a run that did what it was asked and wrote nothing:

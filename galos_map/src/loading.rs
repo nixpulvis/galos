@@ -334,7 +334,7 @@ fn stood_up(
         warn!(
             "{dir} has cells but no metadata sidecars; systems will be \
              uncolored and unnamed. Rebuild the index with `cargo run \
-             --bin galos-index -- build --from database --dir {dir}`."
+             --bin galos -- index build --from database --dir {dir}`."
         );
     }
 
@@ -349,10 +349,10 @@ fn stood_up(
             "{dir} publishes no supercharge table this can read, so routes \
              for a supercharging drive cannot be plotted. A table written \
              before its rows carried the place they sit at reads as absent \
-             and wants bringing forward, which any `galos-index` run over \
+             and wants bringing forward, which any `galos index` run over \
              the directory does on the way past. An index built from the \
-             database takes a fresh one from `cargo run --bin galos-index \
-             -- build --from database --dir {dir} --only boosts`; one \
+             database takes a fresh one from `cargo run --bin galos -- \
+             index build --from database --dir {dir} --only boosts`; one \
              written from a feed or a journal writes its own on the next \
              publish."
         );

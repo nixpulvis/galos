@@ -131,8 +131,8 @@ const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 /// Every version is read by this build: a v1 or v2 generation has a dense
 /// `span.bin` and no `exception.bin`, which [`Text`] answers off the other
 /// branch, and one before v4 has a `pos.bin` this simply does not map. So a
-/// directory migrates whenever something rewrites its base (`galos-index
-/// fold-names`) rather than on a deadline.
+/// directory migrates whenever something rewrites its base (`galos index
+/// migrate`) rather than on a deadline.
 const VERSION: u16 = 4;
 
 /// The versions this build reads.

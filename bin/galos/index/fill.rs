@@ -32,11 +32,12 @@ use std::process::ExitCode;
 use std::time::Duration;
 use tracing::error;
 
-/// What this tool calls itself in a spool's `cursors/` directory.
+/// What these verbs call themselves in a spool's `cursors/` directory.
 ///
-/// Its own name, so an index following a recorded feed and a database
+/// Their own name, so an index following a recorded feed and a database
 /// following the same one keep separate places in it and neither can move
-/// the other's.
+/// the other's. The name outlives the two binaries it was coined for:
+/// changing it would abandon every cursor already written under it.
 const CONSUMER: &str = "galos-index";
 
 /// The heading the flags of a run that never ends are listed under.
@@ -54,7 +55,7 @@ pub struct Ingest {
     /// Repeatable; each is read once.
     ///
     /// A spool is a recorded feed — see `eddn record`. It is followed
-    /// from this tool's own cursor unless it is told otherwise:
+    /// from these verbs' own cursor unless it is told otherwise:
     /// `spool=DIR,from=earliest` replays what is held, and
     /// `spool=DIR,since=2026-09-19T12:00:00Z` starts at an hour.
     ///
@@ -103,7 +104,7 @@ pub struct Ingest {
     /// not one of the database's — a directory built from a dump, or from
     /// the feed, whose systems it has no other way to carry forward. That
     /// replaces every system it publishes, so it is refused unless it is
-    /// asked for here. `galos-index status DIR` says what wrote the one
+    /// asked for here. `galos index status DIR` says what wrote the one
     /// you have.
     #[cfg(feature = "db")]
     #[arg(long, requires = "catch_up")]
@@ -234,7 +235,7 @@ pub struct Build {
 /// offering a source it cannot read.
 #[derive(Clone, Debug)]
 enum Whence {
-    /// The rows, which is `galos-db`'s store read back out.
+    /// The rows, which is `galos db`'s store read back out.
     #[cfg(feature = "db")]
     Database,
     /// A publisher, of which one has a build of its own: `spansh=PATH`.
@@ -531,9 +532,9 @@ fn held(dir: &Path, forced: bool) -> Result<galos_index::Lock, String> {
 
 /// The per-source flags, as [`galos::read::Qualifiers`] reads them.
 ///
-/// Both tools' `ingest` takes these same eight flags and the rules about
+/// Both groups' `ingest` takes these same eight flags and the rules about
 /// them are written once, over there. What is here is the one rule that is
-/// this tool's own.
+/// these verbs' own.
 fn qualifying(it: &Ingest) -> Qualifiers<'_> {
     Qualifiers {
         sources: &it.from,
@@ -636,33 +637,40 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    /// The flags of an ingest, as the command line would have parsed them.
+    /// The flags of an ingest, as the command line would have parsed
+    /// them.
     ///
-    /// Through a wrapper rather than `Ingest::try_parse_from`: `Args` is
-    /// not a parser on its own, and what is under test is the flags as the
-    /// verb actually receives them.
-    #[derive(Parser)]
-    struct Ingesting {
-        #[command(flatten)]
-        it: Ingest,
-    }
-
+    /// Through the whole command line — `galos index ingest …` — rather
+    /// than through [`Ingest`] alone, which cannot parse itself: it is a
+    /// `clap::Args`, and what turns argv into one is the two verbs it
+    /// hangs off. Parsing a wrapper struct instead would test the flags
+    /// and not the wiring, which is the half that can silently break.
     fn ingesting(said: &[&str]) -> Ingest {
-        let mut argv = vec!["galos-index"];
-        argv.extend_from_slice(said);
-        Ingesting::try_parse_from(argv).expect("these flags should parse").it
-    }
-
-    #[derive(Parser)]
-    struct Building {
-        #[command(flatten)]
-        it: Build,
+        match verb(&["ingest"], said) {
+            crate::index::Command::Ingest(it) => it,
+            _ => unreachable!("the verb is `ingest`"),
+        }
     }
 
     fn building(said: &[&str]) -> Build {
-        let mut argv = vec!["galos-index"];
+        match verb(&["build"], said) {
+            crate::index::Command::Build(it) => it,
+            _ => unreachable!("the verb is `build`"),
+        }
+    }
+
+    /// What `galos index <verb>` makes of these flags.
+    fn verb(verb: &[&str], said: &[&str]) -> crate::index::Command {
+        let mut argv = vec!["galos", "index"];
+        argv.extend_from_slice(verb);
         argv.extend_from_slice(said);
-        Building::try_parse_from(argv).expect("these flags should parse").it
+        match crate::Cli::try_parse_from(argv)
+            .expect("these flags should parse")
+            .command
+        {
+            crate::Command::Index(index) => index.command,
+            _ => unreachable!("the group is `index`"),
+        }
     }
 
     /// Naming nothing builds the whole index
@@ -835,8 +843,7 @@ mod tests {
         ));
         #[cfg(not(feature = "db"))]
         assert!(
-            Building::try_parse_from(["galos-index", "--from", "database"])
-                .is_err(),
+            Building::try_parse_from(["galos", "--from", "database"]).is_err(),
             "a build with no database in it should refuse the word",
         );
     }

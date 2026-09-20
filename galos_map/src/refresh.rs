@@ -3,7 +3,7 @@
 //! Everything the map draws from is read once and then held: the cell
 //! aggregates the walk plans on, the payloads of the cells in view, and the
 //! tables a name, a color and a size come out of. A feed rewrites all of it
-//! underneath — `galos-index build --from database --watch` republishes
+//! underneath — `galos index build --from database --watch` republishes
 //! every few seconds — and nothing here re-read any of it. The one way a
 //! republished cell reached the map was to be evicted and fetched again,
 //! which is what zooming out until the walk stops marking it and coming

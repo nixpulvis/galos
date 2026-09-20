@@ -234,7 +234,7 @@ impl Galaxy {
     ///
     /// Which events name a system, and what each of them says about it, is
     /// [`SystemReport::of`]'s answer rather than this function's — the same
-    /// answer `galos-db ingest`'s write path gets, which is what stops the two
+    /// answer `galos db ingest`'s write path gets, which is what stops the two
     /// derivations from disagreeing about which systems exist. What is left
     /// here is the three things a report does not carry: a route's several
     /// systems, the things scanned inside one, and who is flying.

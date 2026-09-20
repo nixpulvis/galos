@@ -7,42 +7,25 @@ rust-version.workspace = true
 
 default-run = "galos"
 
-# The query CLI, which is Postgres by definition: it answers questions no
-# index holds the columns for.
+# One binary: `galos index …` and `galos db …` are the two stores, `galos
+# search`/`route` the questions. Built `--no-default-features` it is the
+# index group alone, with no database client in it — see `bin/galos/main.rs`.
 [[bin]]
 name = "galos"
 path = "bin/galos/main.rs"
-required-features = ["db"]
-
-# Everything done to an index directory, buildable with no database in the
-# tree at all — `--no-default-features`. That is the point of the feature:
-# an index is served with no server, so its tool is built with no client.
-[[bin]]
-name = "galos-index"
-path = "bin/index/main.rs"
-
-# Everything done to the database.
-[[bin]]
-name = "galos-db"
-path = "bin/db/main.rs"
-required-features = ["db"]
 
 [features]
-# Postgres. On by default, because two of the three binaries are about a
-# database; off is how `galos-index` is built for a machine that has none,
-# and the build then contains no `sqlx`, no `dotenv` and no
-# `DATABASE_URL`.
+# Postgres. On by default, because most of what this does is about a
+# database; off is how the binary is built for a machine that has none, and
+# it then contains no `sqlx`, no `dotenv` and no `DATABASE_URL` — just the
+# `index` verbs, which is everything a directory needs.
 default = ["db"]
 db = ["dep:galos_db", "dep:galos_catalog"]
 
 [dependencies]
-# `attributes` is `#[async_std::main]`, which both store tools are. It
-# arrived transitively through `galos_db` before the `db` feature could be
-# turned off under it.
+# `attributes` is `#[async_std::main]`. It arrived transitively through
+# `galos_db` before the `db` feature could be turned off under it.
 async-std = { version = "1", features = ["attributes"] }
-# `structopt` is `galos`, the query CLI, which has not been moved. Every
-# command line written since is clap 4 derive.
-structopt = "0.3"
 clap = { version = "4", features = ["derive"] }
 itertools = "0.14"
 indicatif = "0.17"
@@ -52,10 +35,10 @@ eddn = { path = "./eddn" }
 edsm = { path = "./edsm" }
 # Spansh's galaxy dumps, read a line at a time.
 spansh = { path = "./spansh" }
-# Optional, which is the `db` feature: with it off, `galos-index` is built
-# without a database client in it. See the crate header.
+# Optional, which is the `db` feature: with it off the binary is built
+# without a database client in it. See `bin/galos/main.rs`.
 galos_db = { path = "./galos_db", optional = true }
-# The HYG catalog reader, for `galos-db catalog`. Optional with the database
+# The HYG catalog reader, for `galos db catalog`. Optional with the database
 # rather than beside it: what the verb does with what it reads is a query,
 # so a build with no database in it has nothing to compare a survey against.
 # Default features off, the same as `galos_db` takes it: the tree bridge and
@@ -84,8 +67,8 @@ async-trait = "0.1"
 async-channel = "2"
 # Ctrl-C has to end in a last publish, a whole-directory `finish()` and a
 # resume point rather than in a killed process, which is a handler rather
-# than the default action. Both store tools install it, and `galos-index`'s
-# one-pass verbs read the same flag between shards.
+# than the default action. Both store groups install it, and the `index`
+# group's one-pass verbs read the same flag between shards.
 ctrlc = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
