@@ -289,8 +289,8 @@ pub(crate) struct Blob {
 #[derive(SystemParam)]
 pub(crate) struct Worked<'w> {
     /// Who lives in each cell, which is what the population scale draws
-    /// from; see [`super::peopled::Peopled`].
-    peopled: Res<'w, super::peopled::Peopled>,
+    /// from; see [`super::populated::PopulatedCells`].
+    populated_cells: Res<'w, super::populated::PopulatedCells>,
     /// What each merged mark stands for and what the filters leave of it;
     /// see [`super::merged::Standing`].
     standing: Res<'w, super::merged::Standing>,
@@ -396,7 +396,7 @@ pub(crate) fn fetch(
     }
     // **Nothing at all while the sky is read as populations.** That mode
     // draws the systems anybody lives in and takes them from the resident
-    // table ([`super::peopled::Peopled`]), so a payload answers nothing it
+    // table ([`super::populated::PopulatedCells`]), so a payload answers nothing it
     // asks — and a payload read for nothing is the whole galaxy faulted in
     // to draw a few hundred marks. What is already held is left to
     // [`evict_payloads`] to let go of on its own grace.
@@ -696,7 +696,7 @@ impl PointOrders {
     /// the order. What it answers is who lives in this cell, off the
     /// payload — and off the payload it can only answer about the prefix
     /// that has landed, which is why the population scale reads
-    /// [`super::peopled::Peopled`] instead and this is left to the one
+    /// [`super::populated::PopulatedCells`] instead and this is left to the one
     /// case that cannot: a span, which only a payload point carries a
     /// moment for.
     fn peopled(&self, id: CellId) -> &[u32] {
@@ -787,7 +787,7 @@ fn drawn_first<'a>(
 /// The order a cell's *people* are drawn in: what the filters admit first,
 /// then the rest to fill what is left
 ///
-/// The list is already busiest first — [`super::peopled::Peopled`] sorts
+/// The list is already busiest first — [`super::populated::PopulatedCells`] sorts
 /// it once, at startup — so this only weighs the filters over it, for the
 /// reason [`busiest_first`] does: the excluded are the space the admitted
 /// are read against, and a cell that spent its budget on excluded systems
@@ -799,7 +799,7 @@ fn drawn_first<'a>(
 /// [`Filter::Recency`] has nothing to say about — which is why
 /// [`reconcile`] falls back to the payload while one is asked. See
 /// [`Filters::timed`].
-fn peopled_first<'a>(
+fn populated_first<'a>(
     people: &'a [i64],
     filters: &'a Prepared<'_>,
     populated: &'a Populated,
@@ -984,7 +984,7 @@ pub(crate) fn reconcile(
         return;
     };
     let Worked {
-        ref peopled,
+        ref populated_cells,
         ref standing,
         ref mut orders,
         ref mut republished,
@@ -1091,14 +1091,14 @@ pub(crate) fn reconcile(
     // the systems anybody lives in, and every one of those is resident in
     // full — so the cell's own people answer, exactly and the same however
     // the eye arrived, where a payload prefix answers with the busiest of
-    // whatever happened to land. See [`super::peopled::Peopled`].
+    // whatever happened to land. See [`super::populated::PopulatedCells`].
     //
     // Unless a span is asked. A moment is a fact only a payload point
     // carries, so a system taken off the peopled table is one a span can
     // say nothing about; while one is on the map this falls back to the
     // payload, hysteresis and all. A moment per populated row would close
     // it.
-    let from_the_peopled =
+    let from_the_table =
         by_population && !filtering.filters.asking_a_span();
     // Which patches of sky the frame leaves dark, and the one mark each
     // of them lights. A pass of its own over the plan, before anything is
@@ -1216,19 +1216,19 @@ pub(crate) fn reconcile(
         // built from, or a later one; see [`Republished`]. Nothing to
         // settle where no payload was read.
         let mut refreshed = false;
-        if from_the_peopled {
+        if from_the_table {
             // **Off the resident table and not off a payload.** This mode
             // draws the systems anybody lives in, and every one of those
             // is resident in full; a payload prefix holds one in
             // forty-four of them, scattered, so the busiest of a prefix is
             // not the busiest of the cell. See
-            // [`super::peopled::Peopled`].
-            let people = peopled.of(id);
+            // [`super::populated::PopulatedCells`].
+            let people = populated_cells.of(id);
             if people.is_empty() {
                 continue;
             }
             for &address in
-                peopled_first(people, &asked_for, &populated, wall, fill)
+                populated_first(people, &asked_for, &populated, wall, fill)
                     .take(asked)
             {
                 let Some(system) = populated.get(address) else { continue };
@@ -1383,32 +1383,37 @@ pub(crate) fn reconcile(
         if !in_reach(blob.id, orbit, bubble) {
             continue;
         }
-        let drawn = wanted(share * blob.blend, blob.count as usize, blob.id)
+        // What it stands for is the weighing's to say: its whole subtree
+        // ordinarily, and only the systems anybody lives in where the sky
+        // is read as populations. A merged mark over a cell nobody lives
+        // in stands for nothing in that mode and is not drawn.
+        let (light, admitted, stands_for) = standing
+            .of(offer)
+            .unwrap_or((Vec3::splat(f32::NAN), 1., blob.count));
+        let drawn = wanted(share * blob.blend, stands_for as usize, blob.id)
             > 0
             || is_lit((planned.0.marks.len() + offer) as u32);
-        if !drawn {
+        if !drawn || stands_for == 0 {
             continue;
         }
-        // What it stands for, and what the filters make of it: the share
-        // of its systems they admit, spent exactly as those systems' own
-        // marks would spend it. A cell with three of ten thousand admitted
-        // would draw three marks at full and 9,997 at the dim if it split,
-        // so the one mark it is drawn as is worth their average — which
-        // leaves it at the dim, without ever claiming the cell is empty.
-        // See [`super::merged::Standing`].
-        let (light, share) =
-            standing.of(offer).unwrap_or((Vec3::splat(f32::NAN), 1.));
+        // What the filters make of it: the share of its systems they
+        // admit, spent exactly as those systems' own marks would spend
+        // it. A cell with three of ten thousand admitted would draw three
+        // marks at full and 9,997 at the dim if it split, so the one mark
+        // it is drawn as is worth their average — which leaves it at the
+        // dim, without ever claiming the cell is empty. See
+        // [`super::merged::Standing`].
         let dim = match fill {
             true => filtering.dim.opacity(),
             // Below the dim an excluded system is not drawn at all, so
             // neither is the share of a mark that stands for one.
             false => 0.,
         };
-        let fade = share + (1. - share) * dim;
+        let fade = admitted + (1. - admitted) * dim;
         if fade <= 0. {
             continue;
         }
-        behind += blob.count;
+        behind += stands_for;
         blobs.0.push(Blob {
             light,
             fade,
@@ -2014,10 +2019,10 @@ mod tests {
         let mut app = App::new();
         // The peopled table gathered ahead of the draw, as the map
         // gathers it: what the population scale draws comes from there
-        // and not from a payload. See [`super::peopled`].
+        // and not from a payload. See [`super::populated`].
         app.add_systems(
             Update,
-            (crate::systems::peopled::gather, reconcile).chain(),
+            (crate::systems::populated::gather, reconcile).chain(),
         );
         app.init_resource::<PendingEvictions>();
         app.init_resource::<PendingSpawns>();
@@ -2033,7 +2038,7 @@ mod tests {
         app.init_resource::<Sampled>();
         app.init_resource::<Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
-        app.init_resource::<crate::systems::peopled::Peopled>();
+        app.init_resource::<crate::systems::populated::PopulatedCells>();
         app.init_resource::<crate::systems::aggregate::Drawn>();
         app.insert_resource(crate::ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
@@ -2500,7 +2505,7 @@ mod tests {
 
         let standing = |app: &mut App, share: f32| {
             app.insert_resource(crate::systems::merged::Standing::weighed(
-                vec![(Vec3::splat(0.25), share)],
+                vec![(Vec3::splat(0.25), share, 4_000)],
             ));
         };
 

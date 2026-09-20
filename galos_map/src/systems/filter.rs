@@ -1066,7 +1066,7 @@ impl Filters {
     /// resident tables: a moment is published per *payload point* and the
     /// populated table carries none. What turns on it is where the
     /// population scale reads its systems from; see
-    /// [`super::peopled::Peopled`].
+    /// [`super::populated::PopulatedCells`].
     pub(crate) fn asking_a_span(&self) -> bool {
         self.asked
             .iter()

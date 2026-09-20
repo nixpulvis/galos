@@ -35,7 +35,7 @@ use rustc_hash::FxHashMap;
 use std::ops::Range;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Peopled>();
+    app.init_resource::<PopulatedCells>();
     // Before anything draws from it, and only when the tables it is built
     // from arrive — which is once, at startup.
     app.add_systems(
@@ -62,14 +62,14 @@ pub fn plugin(app: &mut App) {
 /// equal, so the order is the same answer every time rather than whatever
 /// the sort happened to do.
 #[derive(Resource, Default)]
-pub struct Peopled {
+pub struct PopulatedCells {
     /// Addresses, a cell's own run at a time.
     lived: Vec<i64>,
     /// Where each cell's run sits in it.
     runs: FxHashMap<CellId, Range<u32>>,
 }
 
-impl Peopled {
+impl PopulatedCells {
     /// The systems this cell's subtree holds that anybody lives in,
     /// busiest first.
     ///
@@ -100,12 +100,12 @@ impl Peopled {
 pub(crate) fn gather(
     index: Res<ResidentIndex>,
     populated: Res<Populated>,
-    mut peopled: ResMut<Peopled>,
+    mut cells: ResMut<PopulatedCells>,
 ) {
     if !index.is_changed() && !populated.is_changed() {
         return;
     }
-    let _zone = info_span!("gathering the peopled").entered();
+    let _zone = info_span!("gathering the populated").entered();
 
     // Gathered per cell and then flattened, since a system is met once per
     // cell of its path and the paths interleave. The population rides
@@ -147,7 +147,7 @@ pub(crate) fn gather(
         systems = lived.len(),
         "gathered who lives where",
     );
-    *peopled = Peopled { lived, runs };
+    *cells = PopulatedCells { lived, runs };
 }
 
 #[cfg(test)]
@@ -201,7 +201,7 @@ mod tests {
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<Peopled>();
+        app.init_resource::<PopulatedCells>();
         app.insert_resource(ResidentIndex(built.index.clone()));
         app.insert_resource(Populated(Arc::new(
             rows.into_iter()
@@ -225,25 +225,25 @@ mod tests {
             lived_in(2, [1., 0., 0.], 40_000),
             lived_in(3, [2., 0., 0.], 9_000),
         ]);
-        let peopled = app.world().resource::<Peopled>();
+        let held = app.world().resource::<PopulatedCells>();
 
         // The root holds all three, busiest first.
-        assert_eq!(peopled.of(CellId::ROOT), &[2, 3, 1]);
+        assert_eq!(held.of(CellId::ROOT), &[2, 3, 1]);
         // And every one of them is in the deepest cell that holds it.
         for (address, at) in
             [(1i64, [0., 0., 0.]), (2, [1., 0., 0.]), (3, [2., 0., 0.])]
         {
             let deepest = CellId::of_point(at, 13);
-            let mut held = false;
+            let mut found = false;
             let mut id = deepest;
             loop {
-                held |= peopled.of(id).contains(&address);
+                found |= held.of(id).contains(&address);
                 match id.parent() {
                     Some(up) => id = up,
                     None => break,
                 }
             }
-            assert!(held, "nothing holds {address}");
+            assert!(found, "nothing holds {address}");
         }
     }
 
@@ -255,8 +255,8 @@ mod tests {
             lived_in(1, [0., 0., 0.], 0),
             lived_in(2, [1., 0., 0.], 7),
         ]);
-        let peopled = app.world().resource::<Peopled>();
-        assert_eq!(peopled.of(CellId::ROOT), &[2]);
+        let held = app.world().resource::<PopulatedCells>();
+        assert_eq!(held.of(CellId::ROOT), &[2]);
     }
 
     /// Nothing is gathered twice when the tables have not moved: it is a
@@ -264,10 +264,10 @@ mod tests {
     #[test]
     fn it_is_gathered_once() {
         let mut app = gathered(vec![lived_in(1, [0., 0., 0.], 5)]);
-        let before = app.world().resource::<Peopled>().cells();
+        let before = app.world().resource::<PopulatedCells>().cells();
         app.update();
         app.update();
-        let after = app.world().resource::<Peopled>();
+        let after = app.world().resource::<PopulatedCells>();
         assert_eq!(after.cells(), before);
         assert_eq!(after.of(CellId::ROOT), &[1], "gathered twice over");
     }

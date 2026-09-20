@@ -471,6 +471,40 @@ mod tests {
         );
     }
 
+    /// A merged mark stands for the systems the mode draws, and for
+    /// nothing where the mode draws none of what it holds
+    ///
+    /// Reported as a lattice of grey fills over sky whose own systems
+    /// were not being drawn: reading the sky as populations draws the
+    /// systems anybody lives in, and a merged mark went on standing for
+    /// its whole subtree — one grey mark a cell, which is a grid.
+    #[test]
+    fn a_merged_mark_stands_for_what_the_mode_draws() {
+        use crate::systems::spawn::{ColorBy, Hue};
+        let gains = super::super::glow::Gains::default();
+        let empty = galos_index::Inhabited::ZERO;
+
+        // A cell of ten thousand systems with eight colonies in it.
+        let held = inhabited(8);
+        let crowd = average_mark(Some(&held), 10_000, ColorBy::Allegiance,
+            &gains);
+        let people = average_mark(Some(&held), 8, ColorBy::Allegiance, &gains);
+        assert!(
+            people.length() > crowd.length() * 2.,
+            "the colonies were drowned in a crowd the mode does not draw: \
+             {people:?} against {crowd:?}",
+        );
+
+        // And a cell nobody lives in stands for nothing at all in that
+        // mode, where ordinarily it stands for its whole subtree.
+        let grey = Hue::Grey.light()
+            * super::super::glow::mark_light(Hue::Grey, false, &gains);
+        let alone = average_mark(Some(&empty), 10_000, ColorBy::Allegiance,
+            &gains);
+        assert!((alone - grey).length() < 1e-9, "{alone:?}");
+        assert_eq!(empty.count(), 0, "nothing to stand for");
+    }
+
     /// A merged mark standing `at`, of a cell at `level`.
     fn blob(at: [f64; 3], level: u8) -> Blob {
         Blob {
@@ -713,17 +747,26 @@ struct Mark {
     /// What share of what it stands for the filters admit, `0.0..=1.0`;
     /// see [`super::filter::Filters::admitted_share`].
     share: f32,
+    /// How many systems it stands for, which is what it is thinned
+    /// against — the whole subtree ordinarily, and only the systems
+    /// anybody lives in while the sky is read as populations, that mode
+    /// drawing none of the rest.
+    stands_for: u64,
 }
 
 impl Standing {
     /// Weighed by hand, for a test that is checking what the draw does with
     /// the share rather than how it was reached.
     #[cfg(test)]
-    pub(crate) fn weighed(marks: Vec<(Vec3, f32)>) -> Standing {
+    pub(crate) fn weighed(marks: Vec<(Vec3, f32, u64)>) -> Standing {
         Standing {
             marks: marks
                 .into_iter()
-                .map(|(light, share)| Mark { light, share })
+                .map(|(light, share, stands_for)| Mark {
+                    light,
+                    share,
+                    stands_for,
+                })
                 .collect(),
             revision: 0,
         }
@@ -736,8 +779,10 @@ impl Standing {
     /// lands on: the draw takes the mark whole and grey for that one frame
     /// rather than dropping it, a mark blinking out for a frame as the eye
     /// moves being worse than a mark a frame behind on its colour.
-    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, f32)> {
-        self.marks.get(offer).map(|mark| (mark.light, mark.share))
+    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, f32, u64)> {
+        self.marks
+            .get(offer)
+            .map(|mark| (mark.light, mark.share, mark.stands_for))
     }
 }
 
@@ -755,6 +800,8 @@ pub(crate) fn weigh_blobs(
     names: Res<Names>,
     filtering: super::filter::Filtering,
     color_by: Res<crate::systems::spawn::ColorBy>,
+    view: Res<super::scale::View>,
+    scale_population: Res<super::scale::ScalePopulation>,
     gains: Res<super::glow::Gains>,
     mut standing: ResMut<Standing>,
     mut named: ResMut<Named>,
@@ -762,6 +809,8 @@ pub(crate) fn weigh_blobs(
     let revision = filtering.filters.revision();
     let moved = planned.is_changed()
         || settled.is_changed()
+        || view.is_changed()
+        || scale_population.is_changed()
         || color_by.is_changed()
         || gains.is_changed()
         || revision != standing.revision;
@@ -778,20 +827,30 @@ pub(crate) fn weigh_blobs(
         );
     }
 
+    // What a merged mark stands for. Ordinarily its whole subtree; while
+    // the sky is read as populations, only the systems anybody lives in —
+    // that mode draws none of the others, so a merged mark that went on
+    // standing for the crowd was a grey mark over a sky whose own systems
+    // are not drawn. Reported as a lattice of grey fills where the mode
+    // had drawn nothing but colonies.
+    let peopled_only = super::scale::by_population(&view, &scale_population);
     standing.revision = revision;
     standing.marks.clear();
-    standing.marks.extend(planned.0.blobs.iter().map(|blob| Mark {
-        light: average_mark(
-            settled.0.get(blob.id),
-            blob.count,
-            *color_by,
-            &gains,
-        ),
-        share: filtering.filters.admitted_share(
-            &blob.aged,
-            named.held(blob.id).whole(),
-            blob.count,
-        ),
+    standing.marks.extend(planned.0.blobs.iter().map(|blob| {
+        let held = settled.0.get(blob.id);
+        let stands_for = match peopled_only {
+            true => held.map_or(0, galos_index::Inhabited::count),
+            false => blob.count,
+        };
+        Mark {
+            light: average_mark(held, stands_for, *color_by, &gains),
+            share: filtering.filters.admitted_share(
+                &blob.aged,
+                named.held(blob.id).whole(),
+                stands_for,
+            ),
+            stands_for,
+        }
     }));
 }
 

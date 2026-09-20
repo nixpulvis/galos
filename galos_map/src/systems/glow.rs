@@ -2038,7 +2038,7 @@ mod exposure {
     /// for one must not be either. Reported as the galaxy keeping its grey
     /// while the marks over it were only the colonies.
     #[test]
-    fn the_peopled_sky_lays_no_backdrop() {
+    fn the_populated_sky_lays_no_backdrop() {
         let Some(dir) = measured() else { return };
         let (whole, _) = laid_at(&dir, 30_000., Set::open());
         assert!(whole.backdrop > 0, "the ordinary sky laid no backdrop");

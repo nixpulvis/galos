@@ -241,7 +241,7 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
         app.init_resource::<crate::systems::merged::Named>();
-        app.init_resource::<crate::systems::peopled::Peopled>();
+        app.init_resource::<crate::systems::populated::PopulatedCells>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
@@ -275,8 +275,8 @@ impl Flight {
         let collect = world.register_system(crate::systems::bounded::collect);
         // Who lives where, gathered once as the map gathers it at
         // startup: the population scale draws out of this and not out of
-        // a payload. See [`crate::systems::peopled`].
-        let gather = world.register_system(crate::systems::peopled::gather);
+        // a payload. See [`crate::systems::populated`].
+        let gather = world.register_system(crate::systems::populated::gather);
         world.run_system(gather).expect("the peopled table gathers");
         let weigh = world.register_system(crate::systems::merged::weigh_blobs);
         let reconcile =
@@ -412,7 +412,7 @@ impl Flight {
 /// read as a magnitude-ordered prefix sized for the mark count — so the
 /// busiest of the prefix was not the busiest of the cell, and which
 /// prefix was resident depended on where the camera had been. It reads
-/// the resident table instead; see [`super::peopled::Peopled`].
+/// the resident table instead; see [`super::populated::PopulatedCells`].
 ///
 /// Both modes, because the answer has to hold in each, and settled rather
 /// than merely visited: the map fills in behind a moving eye, so what a
