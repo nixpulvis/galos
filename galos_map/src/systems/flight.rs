@@ -240,6 +240,7 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Sampled>();
         app.init_resource::<crate::systems::bounded::Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
+        app.init_resource::<crate::systems::merged::Named>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();

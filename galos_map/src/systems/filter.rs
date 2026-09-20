@@ -997,54 +997,67 @@ impl Filters {
         picked.unwrap_or(true)
     }
 
-    /// Whether these filters admit anything a merged mark stands for
+    /// What share of what a merged mark stands for these filters admit
     ///
-    /// **The same question [`Self::admits`] asks of a system, asked of a
-    /// whole subtree** — which is all a merged mark is. A blob has no
-    /// payload and stands for thousands of systems, so it cannot be asked
-    /// about any one of them; what it can answer is whether *something*
-    /// under it is admitted, and that is the honest verdict for a mark that
-    /// stands for the lot.
+    /// **A merged mark cannot be admitted or excluded, and answering as if
+    /// it could is a lie either way.** A blob standing over ten thousand
+    /// systems with three the filters want is not "excluded" — dimmed, it
+    /// says there is nothing there — and it is not admitted either. Split,
+    /// that cell draws three marks at full and 9,997 at the dim, so the one
+    /// mark it is drawn as is worth their average, and what settles the
+    /// average is the *share*. The same figure scales the light the field
+    /// lays down in the mark's place, because `mark_light` is one figure
+    /// for both and a filter that reached only half the picture would
+    /// appear to take effect as the cells resolved.
     ///
-    /// Two facts answer it, neither of them a lookup. `newest` is the
-    /// newest Recency bucket anything under the cell falls in
-    /// ([`galos_index::Aggregate::newest_age`]), which settles a span to
-    /// the day where a drawn system is settled to the second. `holds` is
-    /// whether the cell contains an address any of the picking filters
-    /// names, worked out once a revision from the tree's own descent; see
-    /// [`super::merged::PickedCells`].
+    /// The share is exact for everything but one case, off what the cell
+    /// itself holds:
     ///
-    /// The same shape as [`Self::admits`]: a span must pass, the pickers
-    /// are taken together, and a span asked on its own admits whatever it
-    /// reaches.
+    /// - a **span** is a prefix of the Recency buckets, so the count is a
+    ///   prefix sum of the cell's own histogram — to the day, and to the
+    ///   day the *index was built*, which is where its buckets were cut;
+    /// - a **faction**, a **route** and a **hand-picked set** name
+    ///   addresses, and the systems they name are counted per cell as the
+    ///   cells holding them are gathered ([`super::merged::Named`]);
+    /// - **both at once** has no joint answer — no cell knows how many of
+    ///   its faction members are also recent — so the smaller of the two
+    ///   shares is taken. That is an upper bound on the truth and is said
+    ///   here rather than hidden: the alternative bound, inclusion and
+    ///   exclusion from below, is zero for every cell a filter does not
+    ///   nearly fill, which would black out the galaxy to say nothing.
     ///
-    /// No clock, where [`Self::admits`] takes one. A payload carries the
-    /// second a system was written and is compared against now; a cell
-    /// carries the bucket it fell in **when the index was built**, so the
-    /// axis a merged mark is weighed on is as old as the directory. A
-    /// day-old index reads "the last day" as "the day before it was
-    /// built", which is a day of slack on an axis whose narrowest bucket is
-    /// a day wide, and the only alternative is a column of moments per
-    /// cell.
-    pub(crate) fn admits_merged(&self, newest: u8, holds: bool) -> bool {
-        let mut picked = None;
+    /// `named` is how many of the cell's systems the picking filters name
+    /// and `count` how many it holds. Nothing asked is a share of one,
+    /// which is what leaves an unfiltered map exactly as it was.
+    pub(crate) fn admitted_share(
+        &self,
+        aged: &[u32; galos_index::aggregate::AGE_BUCKETS],
+        named: u32,
+        count: u64,
+    ) -> f32 {
+        if count == 0 {
+            return 1.;
+        }
+        let whole = count as f32;
+        let mut share = 1.0f32;
+        let mut picking = false;
         for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 Filter::Recency { span, .. } => {
-                    // Days, because the aggregate counts days. A span
-                    // shorter than one is bucket zero either way: the cell
-                    // says "something here was written today" and the
-                    // payload says which second.
-                    let days = span.num_days().max(0);
-                    if u32::from(newest) > galos_index::derive::age_bucket(days)
-                    {
-                        return false;
-                    }
+                    let last = galos_index::derive::age_bucket(
+                        span.num_days().max(0),
+                    ) as usize;
+                    let fresh: u32 =
+                        aged.iter().take(last + 1).copied().sum();
+                    share = share.min(fresh as f32 / whole);
                 }
-                _ => *picked.get_or_insert(false) |= holds,
+                _ => picking = true,
             }
         }
-        picked.unwrap_or(true)
+        match picking {
+            true => share.min(named as f32 / whole),
+            false => share,
+        }
     }
 
     /// The filters that pick systems out by address, which is every kind
@@ -1663,54 +1676,65 @@ mod tests {
         system
     }
 
-    /// A merged mark is weighed on what its whole subtree can say
+    /// A merged mark is weighed on the share of itself the filters admit
     ///
-    /// A blob has no payload and stands for thousands of systems, so the
-    /// question is whether *anything* under it is admitted. Two facts
-    /// answer it and neither is a lookup: the newest Recency bucket the
-    /// cell holds anything in, and whether the cell contains an address a
-    /// picking filter names.
+    /// A blob has no payload and stands for thousands of systems, so it
+    /// cannot be admitted or excluded — asked either way it lies. What it
+    /// can answer is *how much* of itself is admitted, and that is what the
+    /// mark is drawn at: the average of what its systems' own marks would
+    /// come to.
     #[test]
-    fn a_merged_mark_is_admitted_by_what_it_holds() {
-        // Nothing asked admits every merged mark, as it admits every system.
-        let filters = Filters::default();
-        assert!(filters.admits_merged(7, false));
+    fn a_merged_mark_is_weighed_by_the_share_it_admits() {
+        const BUCKETS: usize = galos_index::aggregate::AGE_BUCKETS;
+        // A cell of a thousand systems: a hundred written today, the rest
+        // a year stale. `AGE_EDGES` puts today in bucket 0 and a year in
+        // bucket 4.
+        let mut aged = [0u32; BUCKETS];
+        aged[0] = 100;
+        aged[4] = 900;
 
-        // A span is answered off the cell's own age column. `AGE_EDGES`
-        // puts a day at bucket 1 and a week at bucket 2, so a fortnight
-        // reaches bucket 2 and a cell whose freshest system is a year old
-        // — bucket 4 — is out.
+        // Nothing asked takes the whole of every mark, which is what leaves
+        // an unfiltered map exactly as it was.
+        let filters = Filters::default();
+        assert_eq!(filters.admitted_share(&aged, 0, 1_000), 1.);
+
+        // A span takes the share its buckets hold — a tenth here, not "all
+        // of it" for holding something recent and not "none of it" for
+        // holding something stale.
         let mut span = Filters::default();
         span.add(Filter::Recency {
             label: "A fortnight".into(),
             span: Duration::days(14),
         });
-        assert!(span.admits_merged(0, false), "a cell written today");
-        assert!(span.admits_merged(2, false), "a cell written this week");
-        assert!(!span.admits_merged(4, false), "a cell a year stale");
-        assert!(
-            !span.admits_merged(galos_index::aggregate::AGE_BUCKETS as u8, false),
-            "a cell holding nothing at all",
-        );
+        assert_eq!(span.admitted_share(&aged, 0, 1_000), 0.1);
+        let stale = {
+            let mut aged = [0u32; BUCKETS];
+            aged[4] = 1_000;
+            aged
+        };
+        assert_eq!(span.admitted_share(&stale, 0, 1_000), 0.);
 
-        // A picking filter is answered by whether the cell holds one of the
-        // systems it names, and nothing else about the cell matters.
+        // A picking filter takes the share it names, counted per cell.
         let mut picked = Filters::default();
         picked.add(faction(7));
-        assert!(picked.admits_merged(7, true), "a cell holding a member");
-        assert!(!picked.admits_merged(0, false), "a cell holding none");
+        assert_eq!(picked.admitted_share(&aged, 250, 1_000), 0.25);
+        assert_eq!(picked.admitted_share(&aged, 0, 1_000), 0.);
+        assert_eq!(picked.admitted_share(&aged, 1_000, 1_000), 1.);
 
-        // Both asked: the span must pass and the picker must find
-        // something, exactly as a system is weighed.
+        // Both at once: no cell knows how many of its faction members are
+        // also recent, so the smaller share is taken and said to be the
+        // bound it is.
         let mut both = Filters::default();
         both.add(faction(7));
         both.add(Filter::Recency {
             label: "A fortnight".into(),
             span: Duration::days(14),
         });
-        assert!(both.admits_merged(0, true));
-        assert!(!both.admits_merged(4, true), "a stale cell passed a span");
-        assert!(!both.admits_merged(0, false), "a cell with no member passed");
+        assert_eq!(both.admitted_share(&aged, 250, 1_000), 0.1);
+        assert_eq!(both.admitted_share(&aged, 20, 1_000), 0.02);
+
+        // A cell holding nothing is nothing to weigh.
+        assert_eq!(span.admitted_share(&[0; BUCKETS], 0, 0), 1.);
     }
 
     /// Only the filters that name systems are gathered into cells; a span

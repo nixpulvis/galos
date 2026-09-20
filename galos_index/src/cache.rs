@@ -277,7 +277,7 @@ mod tests {
                 count: 1,
                 blend: 1.0,
                 at: [0.; 3],
-                newest: 0,
+                aged: [1; crate::aggregate::AGE_BUCKETS],
                 m_min: None,
             }],
             splats: vec![SplatRef { id: s, blend: 1.0 }],

@@ -875,6 +875,8 @@ fn build_glow(
     drawn: Res<crate::systems::aggregate::Drawn>,
     index: Res<ResidentIndex>,
     settled: Res<Settled>,
+    named: Res<crate::systems::merged::Named>,
+    filtering: crate::systems::filter::Filtering,
     color_by: Res<ColorBy>,
     gains: Res<Gains>,
     exposure: Res<FieldExposure>,
@@ -1052,6 +1054,40 @@ fn build_glow(
             let covered = |spread: f64| {
                 (cell.id.edge_ly() * COVERAGE).min(spread * UNIFORM_SPAN)
             };
+            // What the filters leave of each channel. The same share a
+            // merged mark is drawn at ([`super::merged`]) and spent the
+            // same way: the admitted part of a cell at full and the rest
+            // at the dim, which is what its systems' own marks would come
+            // to if every one of them were drawn. Nothing asked is a share
+            // of one and leaves the field exactly as it was.
+            //
+            // Per channel, because the two stand for different halves of a
+            // cell: a faction names none but populated systems, so the
+            // colonies keep their share of the light while the grey
+            // backdrop — which holds no member of it at all — falls to the
+            // dim. One figure for both would keep the backdrop lit for
+            // systems the filter could never admit.
+            //
+            // **The field has to answer the filters or the picture changes
+            // as it resolves.** [`mark_light`] is one figure for a mark and
+            // for the light laid down in its place, so a filter that
+            // reached the marks and not the field would appear to take
+            // effect only where the camera had come in far enough to draw
+            // the systems themselves.
+            let held_named = named.held(splat.id);
+            let aged = cell.aggregate.aged();
+            let backdrop_share = filtering.filters.admitted_share(
+                aged,
+                held_named.alone,
+                count.saturating_sub(peopled),
+            );
+            let colony_share = filtering
+                .filters
+                .admitted_share(aged, held_named.peopled, peopled);
+            let spent = |share: f32| {
+                share + (1. - share) * filtering.dim.opacity()
+            };
+
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
                 && let Some(at) = mass.centroid()
@@ -1073,6 +1109,7 @@ fn build_glow(
                     systems * MARK_AREA,
                     gains.crowd * gains.backdrop,
                     PIVOT,
+                    spent(backdrop_share),
                     room(at),
                 ) {
                     counted.backdrop += 1;
@@ -1108,6 +1145,7 @@ fn build_glow(
                     systems * MARK_AREA,
                     gains.crowd,
                     COLONY_PIVOT,
+                    spent(colony_share),
                     room(at),
                 ) {
                     counted.colonies += 1;
@@ -1143,8 +1181,8 @@ fn build_glow(
         let mut levels: Vec<f32> = quads
             .peaks
             .iter()
-            .map(|&(peak, pivot)| {
-                (compressed_level(peak, pivot) * opened * tilted)
+            .map(|&(peak, pivot, fade)| {
+                (compressed_level(peak, pivot) * opened * tilted * fade)
                     .min(CEILING)
             })
             .collect();
@@ -1182,10 +1220,15 @@ struct Quads {
     /// The pivot each quad's channel is compressed about, one per quad's
     /// four vertices; see [`COLONY_PIVOT`].
     pivots: Vec<f32>,
-    /// And the peak each was laid at.
+    /// What the filters leave of each vertex, spent after the curve; see
+    /// [`Quads::expose`]. Not the reach's own fade, which is a fact about
+    /// where a splat stands and is spent on the deposit.
+    fades: Vec<f32>,
     /// And the peak each was laid at, with the pivot its channel is
-    /// compressed about.
-    peaks: Vec<(f32, f32)>,
+    /// compressed about and what the filters leave of it — the three
+    /// things between a deposit and what reaches the display, so a
+    /// diagnostic reads the same light the frame carries.
+    peaks: Vec<(f32, f32, f32)>,
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colors: Vec<[f32; 4]>,
@@ -1213,11 +1256,21 @@ impl Quads {
     /// deposits, which is a fact about the cell, and this answers how much
     /// of that range a display can hold at once, which is a fact about the
     /// frame. The dial comes after the curve, so a stop stays a stop.
+    /// The dial comes after the curve, so a stop stays a stop — and the
+    /// filters' share comes after it for the same reason. A share spent on
+    /// the deposit is compressed along with it: measured over
+    /// `.index/full` at thirty thousand light years, a filter admitting
+    /// nothing at all took the field's peak from 0.798 to 0.303, a
+    /// *thirty-eighth* of a stop's worth of dimming where the same filter
+    /// takes a mark to the dim's own three per cent. The two halves of the
+    /// picture are one light ([`mark_light`]) and have to dim together.
     fn expose(&mut self, opened: f32) {
-        for (color, pivot) in self.colors.iter_mut().zip(&self.pivots) {
+        for ((color, pivot), fade) in
+            self.colors.iter_mut().zip(&self.pivots).zip(&self.fades)
+        {
             let laid = Vec3::new(color[0], color[1], color[2]);
-            let peak =
-                (compressed(laid, *pivot) * opened).min(Vec3::splat(CEILING));
+            let peak = (compressed(laid, *pivot) * opened * fade)
+                .min(Vec3::splat(CEILING));
             *color = [peak.x, peak.y, peak.z, color[3]];
         }
     }
@@ -1234,6 +1287,14 @@ impl Quads {
         covered: f32,
         crowd: f32,
         pivot: f32,
+        // What the filters leave of this splat, `0.0..=1.0`. Carried to
+        // [`Quads::expose`] rather than spent here: a share spent before
+        // the curve is compressed by it, and what the cell deposits is a
+        // fact about the cell that a filter does not change. It moves no
+        // systems, so it must move neither the radius nor the crowding —
+        // which is also why it is not `fade` below, the room the reach
+        // leaves, that being a fact about where the splat *is*.
+        admitted: f32,
         // How far the reach leaves this splat to spread, light years, or
         // `None` where the spyglass is not clearing and it may spread as
         // far as it likes. See `build_glow`.
@@ -1306,6 +1367,7 @@ impl Quads {
             self.uvs.push([u, v]);
             self.colors.push(color);
             self.pivots.push(pivot);
+            self.fades.push(admitted);
         }
         self.indices.extend_from_slice(&[
             base,
@@ -1316,7 +1378,8 @@ impl Quads {
             base + 3,
         ]);
         self.radii.push(radius);
-        self.peaks.push((peak.max_element(), pivot));
+        self.peaks.push((peak.max_element(), pivot, admitted));
+
         Some(Lit {
             separated: covered < std::f32::consts::TAU * spread_px * spread_px,
         })
@@ -1803,18 +1866,25 @@ mod exposure {
     /// How the map is set up for a measurement: how wide the spyglass is
     /// clearing at, and whether the marks have already accounted for every
     /// system the field would otherwise draw.
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct Set {
         /// The spyglass radius in light years, or [`None`] for not clearing.
         reach: Option<f32>,
         /// Whether every splatted cell is taken as drawn in full.
         accounted: bool,
+        /// A filter to put on the map before the field is laid.
+        asked: Option<crate::systems::filter::Filter>,
     }
 
     impl Set {
         /// The far case the exposure is judged on: no boundary, nothing drawn.
         fn open() -> Set {
-            Set { reach: None, accounted: false }
+            Set { reach: None, accounted: false, asked: None }
+        }
+
+        /// The same, with a filter on the map.
+        fn asking(filter: crate::systems::filter::Filter) -> Set {
+            Set { asked: Some(filter), ..Set::open() }
         }
     }
 
@@ -1886,6 +1956,17 @@ mod exposure {
             Projection::Perspective(PerspectiveProjection::default()),
             crate::systems::tests::seeing(),
         ));
+        // What the filters leave of each channel, and the cells holding
+        // what they name — empty here, so a filter that names systems
+        // names none of these.
+        app.init_resource::<crate::systems::merged::Named>();
+        app.init_resource::<crate::systems::filter::DimTo>();
+        let mut filters = crate::systems::filter::Filters::default();
+        if let Some(asked) = set.asked.clone() {
+            filters.add(asked);
+        }
+        app.insert_resource(filters);
+
         let world = app.world_mut();
         let plan = world.register_system(crate::systems::aggregate::plan);
         let build = world.register_system(build_glow);
@@ -1923,6 +2004,76 @@ mod exposure {
         world.run_system(build).expect("the field builds");
         let planned = world.resource::<Planned>().0.splats.len();
         (*world.resource::<Laid>(), planned)
+    }
+
+    /// A filter reaches the field, and takes a share of it rather than all
+    /// or none
+    ///
+    /// **The field has to answer the filters or the picture changes as it
+    /// resolves.** [`mark_light`] is one figure for a mark and for the
+    /// light laid down in a system's place, so a filter that reached the
+    /// marks and not the field would appear to take effect only where the
+    /// camera had come in far enough to draw the systems themselves — and
+    /// at galaxy scale that is nowhere.
+    ///
+    /// A faction nobody is in names no system in any cell, so every
+    /// channel falls to what the dim leaves of it: the field goes faint
+    /// rather than dark, which is what says the sky is still there and is
+    /// not what was asked for. To the dim's own share, too — spent after
+    /// the curve, so it dims the field as far as it dims a mark rather
+    /// than being compressed along with everything else.
+    #[test]
+    fn a_filter_takes_its_share_of_the_field() {
+        let Some(dir) = measured() else { return };
+        let (whole, splats) = laid_at(&dir, 30_000., Set::open());
+        assert!(splats > 0, "nothing was planned to lay");
+        assert!(whole.peak > 0., "the field laid nothing unfiltered");
+
+        let (filtered, _) = laid_at(
+            &dir,
+            30_000.,
+            Set::asking(crate::systems::filter::Filter::Faction {
+                id: -1,
+                name: "Nobody".into(),
+            }),
+        );
+        // Still laid — every quad is deposited, at the dim's own share.
+        assert_eq!(
+            filtered.backdrop, whole.backdrop,
+            "a filter dropped the field instead of dimming it",
+        );
+        assert!(
+            filtered.peak < whole.peak,
+            "a filter left the field at full: {} against {}",
+            filtered.peak,
+            whole.peak,
+        );
+        assert!(
+            filtered.peak > 0.,
+            "a filter put the field out altogether: {}",
+            filtered.peak,
+        );
+        // As far down as the dim takes a mark, which is what makes the two
+        // halves of the picture one. Within a tenth: the curve is struck
+        // per quad on its own peak, so the brightest quad before and after
+        // need not be the same one.
+        let dim = app_dim();
+        let want = whole.peak * dim;
+        assert!(
+            (filtered.peak - want).abs() <= want * 0.1 + 1e-6,
+            "the field dimmed to {} where a mark dims to {want}",
+            filtered.peak,
+        );
+        println!(
+            "  unfiltered peak {:.4e}, a faction nobody is in {:.4e}",
+            whole.peak, filtered.peak,
+        );
+    }
+
+    /// What the dim leaves of an excluded mark, which is what it must leave
+    /// of the field standing in for one.
+    fn app_dim() -> f32 {
+        crate::systems::filter::DimTo::default().opacity()
     }
 
     /// The field is exposed at every zoom: it lays both channels down, and
@@ -2046,7 +2197,7 @@ mod exposure {
         let Some(dir) = measured() else { return };
         let (whole, splats) = laid_at(&dir, 2_000., Set::open());
         let (residual, same) =
-            laid_at(&dir, 2_000., Set { reach: None, accounted: true });
+            laid_at(&dir, 2_000., Set { accounted: true, ..Set::open() });
 
         assert_eq!(splats, same, "the plan moved between the two");
         assert!(
@@ -2080,7 +2231,7 @@ mod exposure {
         let Some(dir) = measured() else { return };
         let (open, splats) = laid_at(&dir, 30_000., Set::open());
         let (held, _) =
-            laid_at(&dir, 30_000., Set { reach: Some(200.), accounted: false });
+            laid_at(&dir, 30_000., Set { reach: Some(200.), ..Set::open() });
 
         println!(
             "{splats} splats: {} + {} quads unbounded, {} + {} inside 200 ly \

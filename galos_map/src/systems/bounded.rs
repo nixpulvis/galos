@@ -1229,19 +1229,25 @@ pub(crate) fn reconcile(
         if !drawn {
             continue;
         }
-        // What it stands for and what the filters make of it. Excluded is
-        // dimmed where an excluded system would be dimmed and dropped
-        // where one would be dropped, the merged mark answering the
-        // filters exactly as the marks it replaces do; see
-        // [`super::merged::Standing`].
-        let (light, admitted) = standing
-            .of(offer)
-            .unwrap_or((Vec3::splat(f32::NAN), true));
-        let fade = match admitted {
-            true => 1.,
-            false if fill => filtering.dim.opacity(),
-            false => continue,
+        // What it stands for, and what the filters make of it: the share
+        // of its systems they admit, spent exactly as those systems' own
+        // marks would spend it. A cell with three of ten thousand admitted
+        // would draw three marks at full and 9,997 at the dim if it split,
+        // so the one mark it is drawn as is worth their average — which
+        // leaves it at the dim, without ever claiming the cell is empty.
+        // See [`super::merged::Standing`].
+        let (light, share) =
+            standing.of(offer).unwrap_or((Vec3::splat(f32::NAN), 1.));
+        let dim = match fill {
+            true => filtering.dim.opacity(),
+            // Below the dim an excluded system is not drawn at all, so
+            // neither is the share of a mark that stands for one.
+            false => 0.,
         };
+        let fade = share + (1. - share) * dim;
+        if fade <= 0. {
+            continue;
+        }
         behind += blob.count;
         blobs.0.push(Blob {
             light,
@@ -2315,14 +2321,14 @@ mod tests {
             count: 4_000,
             blend: 1.,
             at: id.bounds().center(),
-            newest: 0,
+            aged: [500; galos_index::aggregate::AGE_BUCKETS],
             m_min: Some(2.),
         };
         let held = CellId::of_point([0., 0., 0.], 6);
 
-        let standing = |app: &mut App, admitted: bool| {
+        let standing = |app: &mut App, share: f32| {
             app.insert_resource(crate::systems::merged::Standing::weighed(
-                vec![(Vec3::splat(0.25), admitted)],
+                vec![(Vec3::splat(0.25), share)],
             ));
         };
 
@@ -2339,27 +2345,50 @@ mod tests {
             .add(Filter::Faction { id: 9_999, name: "Nobody".into() });
         app.insert_resource(DimTo(0.5));
 
-        standing(&mut app, true);
+        // Wholly admitted: drawn whole.
+        standing(&mut app, 1.);
         app.update();
         let drawn = &app.world().resource::<Blobs>().0;
         assert_eq!(drawn.len(), 1, "an admitted merged mark was not drawn");
         assert_eq!(drawn[0].fade, 1., "an admitted mark was dimmed");
 
-        standing(&mut app, false);
+        // Nothing admitted: the dim, and not gone — the cell still holds
+        // systems and a mark that vanished would say it did not.
+        let dim = app.world().resource::<DimTo>().opacity();
+        standing(&mut app, 0.);
         app.update();
         let drawn = &app.world().resource::<Blobs>().0;
         assert_eq!(drawn.len(), 1, "an excluded mark should still be drawn");
-        let dim = app.world().resource::<DimTo>().opacity();
         assert_eq!(drawn[0].fade, dim, "an excluded mark was not dimmed");
 
-        // And below the dim it goes, as an excluded system does.
+        // And a share between the two lands between them, which is the
+        // average of the marks it stands for: a tenth of them at full and
+        // nine tenths at the dim.
+        standing(&mut app, 0.1);
+        app.update();
+        let drawn = &app.world().resource::<Blobs>().0;
+        let want = 0.1 + 0.9 * dim;
+        assert!(
+            (drawn[0].fade - want).abs() < 1e-6,
+            "a tenth admitted drew at {} against {want}",
+            drawn[0].fade,
+        );
+
+        // Below the dim, what is excluded is not drawn at all, so a mark
+        // with nothing admitted goes with it.
         app.insert_resource(DimTo(0.));
-        standing(&mut app, false);
+        standing(&mut app, 0.);
         app.update();
         assert!(
             app.world().resource::<Blobs>().0.is_empty(),
             "an excluded merged mark was drawn below the dim",
         );
+        // But a mark with a share of itself admitted stays, at that share.
+        standing(&mut app, 0.25);
+        app.update();
+        let drawn = &app.world().resource::<Blobs>().0;
+        assert_eq!(drawn.len(), 1, "a partly admitted mark was dropped");
+        assert_eq!(drawn[0].fade, 0.25);
     }
 
     /// A cell published again rebuilds the systems already drawn out of it

@@ -43,6 +43,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<PointedBlob>();
     app.init_resource::<Prominent>();
     app.init_resource::<Standing>();
+    app.init_resource::<Named>();
     // Before the draw reads it, and in the phase that builds the drawn set:
     // what a merged mark stands for is settled per plan, not per frame.
     app.add_systems(
@@ -693,33 +694,34 @@ struct Mark {
     /// The average of the marks it stands for, in linear light: already
     /// premultiplied, as a system's own mark colour is.
     light: Vec3,
-    /// Whether the filters admit anything under it.
-    admitted: bool,
+    /// What share of what it stands for the filters admit, `0.0..=1.0`;
+    /// see [`super::filter::Filters::admitted_share`].
+    share: f32,
 }
 
 impl Standing {
     /// Weighed by hand, for a test that is checking what the draw does with
-    /// the verdict rather than how it was reached.
+    /// the share rather than how it was reached.
     #[cfg(test)]
-    pub(crate) fn weighed(marks: Vec<(Vec3, bool)>) -> Standing {
+    pub(crate) fn weighed(marks: Vec<(Vec3, f32)>) -> Standing {
         Standing {
             marks: marks
                 .into_iter()
-                .map(|(light, admitted)| Mark { light, admitted })
+                .map(|(light, share)| Mark { light, share })
                 .collect(),
             revision: 0,
         }
     }
 
-    /// The light the plan's `offer`th merged mark is painted at, and whether
-    /// the filters admit anything under it
+    /// The light the plan's `offer`th merged mark is painted at, and what
+    /// share of what it stands for the filters admit
     ///
     /// Nothing where it has not been weighed, which is the frame a plan
-    /// lands on: the draw takes the mark as admitted and grey for that one
-    /// frame rather than dropping it, a mark blinking out for a frame as
-    /// the eye moves being worse than a mark a frame behind on its colour.
-    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, bool)> {
-        self.marks.get(offer).map(|mark| (mark.light, mark.admitted))
+    /// lands on: the draw takes the mark whole and grey for that one frame
+    /// rather than dropping it, a mark blinking out for a frame as the eye
+    /// moves being worse than a mark a frame behind on its colour.
+    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, f32)> {
+        self.marks.get(offer).map(|mark| (mark.light, mark.share))
     }
 }
 
@@ -739,7 +741,7 @@ pub(crate) fn weigh_blobs(
     color_by: Res<crate::systems::spawn::ColorBy>,
     gains: Res<super::glow::Gains>,
     mut standing: ResMut<Standing>,
-    mut picked: Local<PickedCells>,
+    mut named: ResMut<Named>,
 ) {
     let revision = filtering.filters.revision();
     let moved = planned.is_changed()
@@ -750,8 +752,8 @@ pub(crate) fn weigh_blobs(
     if !moved {
         return;
     }
-    if picked.revision != revision {
-        picked.rebuild(
+    if named.revision != revision {
+        named.rebuild(
             revision,
             &filtering.filters,
             &index.0,
@@ -760,7 +762,6 @@ pub(crate) fn weigh_blobs(
         );
     }
 
-    let asking = filtering.filters.asking();
     standing.revision = revision;
     standing.marks.clear();
     standing.marks.extend(planned.0.blobs.iter().map(|blob| Mark {
@@ -770,14 +771,16 @@ pub(crate) fn weigh_blobs(
             *color_by,
             &gains,
         ),
-        admitted: !asking
-            || filtering
-                .filters
-                .admits_merged(blob.newest, picked.holds(blob.id)),
+        share: filtering.filters.admitted_share(
+            &blob.aged,
+            named.held(blob.id).whole(),
+            blob.count,
+        ),
     }));
 }
 
-/// The cells that hold a system the picking filters name
+/// How many of a cell's systems the picking filters name, and how many of
+/// those anybody lives in
 ///
 /// **A faction, a route and a hand-picked set each name a set of
 /// addresses**, and every one of those addresses sits in a known place, so
@@ -790,13 +793,36 @@ pub(crate) fn weigh_blobs(
 /// few thousand descents of a dozen steps; the alternative is a set of
 /// addresses no merged mark could ever be weighed against, which is what
 /// the map did.
-#[derive(Default)]
-pub struct PickedCells {
-    cells: rustc_hash::FxHashSet<CellId>,
+#[derive(Resource, Default)]
+pub struct Named {
+    cells: rustc_hash::FxHashMap<CellId, Held>,
     revision: u32,
 }
 
-impl PickedCells {
+/// What a cell holds of what the filters name: the systems anybody lives
+/// in, and the rest
+///
+/// Split, because the field's two channels stand for different halves of a
+/// cell. A faction names none but populated systems, so the colony channel
+/// keeps its share of the light while the grey backdrop — which holds no
+/// faction member at all — falls to the dim. Answered together, the
+/// backdrop would keep light for systems no such filter could ever admit.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Named systems somebody lives in.
+    pub peopled: u32,
+    /// Named systems nobody does.
+    pub alone: u32,
+}
+
+impl Held {
+    /// Named either way, which is what a merged mark stands over.
+    pub fn whole(self) -> u32 {
+        self.peopled + self.alone
+    }
+}
+
+impl Named {
     fn rebuild(
         &mut self,
         revision: u32,
@@ -808,9 +834,14 @@ impl PickedCells {
         let _zone = info_span!("picked cells").entered();
         self.revision = revision;
         self.cells.clear();
-        let mut hold = |at: [f64; 3]| {
+        let cells = &mut self.cells;
+        let mut hold = |at: [f64; 3], peopled: bool| {
             index.descend(at, |id| {
-                self.cells.insert(id);
+                let held = cells.entry(id).or_default();
+                match peopled {
+                    true => held.peopled += 1,
+                    false => held.alone += 1,
+                }
             });
         };
         for filter in filters.picking() {
@@ -818,38 +849,44 @@ impl PickedCells {
                 super::filter::Filter::Faction { id, .. } => {
                     for system in populated.0.values() {
                         if system.factions.contains(&id) {
-                            hold([
-                                f64::from(system.position[0]),
-                                f64::from(system.position[1]),
-                                f64::from(system.position[2]),
-                            ]);
+                            hold(
+                                [
+                                    f64::from(system.position[0]),
+                                    f64::from(system.position[1]),
+                                    f64::from(system.position[2]),
+                                ],
+                                true,
+                            );
                         }
                     }
                 }
                 super::filter::Filter::Route { systems, .. }
                 | super::filter::Filter::Systems { systems, .. } => {
                     for &address in systems {
-                        let at = match populated.get(address) {
-                            Some(known) => [
-                                f64::from(known.position[0]),
-                                f64::from(known.position[1]),
-                                f64::from(known.position[2]),
-                            ],
-                            None => names.placed(address).into(),
+                        let (at, peopled) = match populated.get(address) {
+                            Some(known) => (
+                                [
+                                    f64::from(known.position[0]),
+                                    f64::from(known.position[1]),
+                                    f64::from(known.position[2]),
+                                ],
+                                known.population > 0,
+                            ),
+                            None => (names.placed(address).into(), false),
                         };
-                        hold(at);
+                        hold(at, peopled);
                     }
                 }
                 // Answered off the aggregate's own age column instead; see
-                // [`super::filter::Filters::admits_merged`].
+                // [`super::filter::Filters::admitted_share`].
                 super::filter::Filter::Recency { .. } => {}
             }
         }
     }
 
-    /// Whether this cell holds anything the picking filters name.
-    fn holds(&self, id: CellId) -> bool {
-        self.cells.contains(&id)
+    /// What this cell holds of what the picking filters name.
+    pub fn held(&self, id: CellId) -> Held {
+        self.cells.get(&id).copied().unwrap_or_default()
     }
 }
 

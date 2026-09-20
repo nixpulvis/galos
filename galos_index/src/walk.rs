@@ -25,7 +25,7 @@
 //! server: it plans on the aggregates alone, and what a slow fetch costs is
 //! detail, never presence.
 
-use crate::aggregate::Cell;
+use crate::aggregate::{AGE_BUCKETS, Cell};
 use crate::geometry::CellId;
 use galos_photometry::{Distance, Magnitude};
 use std::collections::HashMap;
@@ -279,9 +279,16 @@ pub struct BlobRef {
     /// Where the mark goes: the count centroid of everything it stands for,
     /// in light years.
     pub at: [f64; 3],
-    /// The newest Recency bucket anything under it falls in, which is what
-    /// a span is answered against: [`Aggregate::newest_age`].
-    pub newest: u8,
+    /// How many systems under it fall in each Recency bucket, which is what
+    /// a span is answered against: [`crate::Aggregate::aged`].
+    ///
+    /// The histogram and not merely its lowest bucket, because what a
+    /// filter is owed is not "is anything here recent" but *how much of
+    /// this mark is* — a merged mark stands for thousands of systems and
+    /// is drawn at what their own marks would come to. Eight `u32`s a
+    /// blob, which at the twenty thousand a wide view holds is 640 kB of a
+    /// plan that is rebuilt only when the eye moves.
+    pub aged: [u32; AGE_BUCKETS],
     /// The brightest absolute magnitude under it, which is what the sky's
     /// cut is taken against.
     ///
@@ -404,9 +411,9 @@ struct Node {
     slice: u64,
     /// The brightest absolute magnitude in the subtree, for the sky's cut.
     m_min: Option<f32>,
-    /// The newest Recency bucket the subtree holds anything in, so a span
-    /// can be asked of a merged mark: [`Aggregate::newest_age`].
-    newest: u8,
+    /// How many systems the subtree holds in each Recency bucket, so a span
+    /// can be asked of a merged mark.
+    aged: [u32; AGE_BUCKETS],
     /// The cell's address, which is what a walk answers with.
     id: CellId,
     /// Where this node's children begin. They are contiguous, so a walk
@@ -431,7 +438,7 @@ impl Node {
             count: cell.aggregate.count(),
             slice: cell.slice_len(),
             m_min: cell.aggregate.m_min(),
-            newest: cell.aggregate.newest_age(),
+            aged: *cell.aggregate.aged(),
             id: cell.id,
             first_child: 0,
             children: 0,
@@ -721,7 +728,7 @@ impl Index {
                     count: node.count,
                     blend: shown * (1.0 - alpha),
                     at: node.center,
-                    newest: node.newest,
+                    aged: node.aged,
                     m_min: node.m_min,
                 });
             }
