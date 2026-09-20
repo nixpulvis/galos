@@ -288,6 +288,12 @@ pub(crate) struct Blob {
 /// system-parameter slots, that walk being at the limit.
 #[derive(SystemParam)]
 pub(crate) struct Worked<'w> {
+    /// Who lives in each cell, which is what the population scale draws
+    /// from; see [`super::peopled::Peopled`].
+    peopled: Res<'w, super::peopled::Peopled>,
+    /// What each merged mark stands for and what the filters leave of it;
+    /// see [`super::merged::Standing`].
+    standing: Res<'w, super::merged::Standing>,
     orders: ResMut<'w, PointOrders>,
     republished: ResMut<'w, Republished>,
     /// The marked set, which this pass is the one to take from the plan: it
@@ -369,6 +375,8 @@ pub(crate) fn fetch(
     resident: Res<ResidentCells>,
     transport: Res<Transport>,
     filters: Res<crate::systems::filter::Filters>,
+    view_mode: Res<View>,
+    scale_population: Res<ScalePopulation>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
@@ -378,7 +386,25 @@ pub(crate) fn fetch(
     // them, answering the same empty ask every frame. What it turns on is
     // the plan, what the map holds and what the filters want, and those
     // are exactly the three resources here that change.
-    if !planned.is_changed() && !resident.is_changed() && !filters.is_changed()
+    if !planned.is_changed()
+        && !resident.is_changed()
+        && !filters.is_changed()
+        && !view_mode.is_changed()
+        && !scale_population.is_changed()
+    {
+        return;
+    }
+    // **Nothing at all while the sky is read as populations.** That mode
+    // draws the systems anybody lives in and takes them from the resident
+    // table ([`super::peopled::Peopled`]), so a payload answers nothing it
+    // asks — and a payload read for nothing is the whole galaxy faulted in
+    // to draw a few hundred marks. What is already held is left to
+    // [`evict_payloads`] to let go of on its own grace.
+    //
+    // Unless a span is asked, a moment being a payload's to carry; see
+    // [`Filters::asking_a_span`] and [`reconcile`].
+    if crate::systems::scale::by_population(&view_mode, &scale_population)
+        && !filters.asking_a_span()
     {
         return;
     }
@@ -665,7 +691,15 @@ impl PointOrders {
     }
 
     /// The indices of a cell's points anybody lives in, busiest first
-    fn busiest(&self, id: CellId) -> &[u32] {
+    ///
+    /// A *set* with an order over it, which is why it is not called after
+    /// the order. What it answers is who lives in this cell, off the
+    /// payload — and off the payload it can only answer about the prefix
+    /// that has landed, which is why the population scale reads
+    /// [`super::peopled::Peopled`] instead and this is left to the one
+    /// case that cannot: a span, which only a payload point carries a
+    /// moment for.
+    fn peopled(&self, id: CellId) -> &[u32] {
         self.peopled.get(&id).map_or(&[], Vec::as_slice)
     }
 
@@ -748,6 +782,47 @@ fn drawn_first<'a>(
     } else {
         0
     }))
+}
+
+/// The order a cell's *people* are drawn in: what the filters admit first,
+/// then the rest to fill what is left
+///
+/// The list is already busiest first — [`super::peopled::Peopled`] sorts
+/// it once, at startup — so this only weighs the filters over it, for the
+/// reason [`busiest_first`] does: the excluded are the space the admitted
+/// are read against, and a cell that spent its budget on excluded systems
+/// because they happen to be the busiest would draw the background and
+/// leave the thing asked for off the map.
+///
+/// A span is not among the filters that can reach here. The populated
+/// table carries no moment, so a system drawn out of it is one
+/// [`Filter::Recency`] has nothing to say about — which is why
+/// [`reconcile`] falls back to the payload while one is asked. See
+/// [`Filters::timed`].
+fn peopled_first<'a>(
+    people: &'a [i64],
+    filters: &'a Prepared<'_>,
+    populated: &'a Populated,
+    now: DateTime<Utc>,
+    fill: bool,
+) -> impl Iterator<Item = &'a i64> + 'a {
+    let admitted = move |address: &&i64| {
+        !filters.asking()
+            || filters.admits(
+                &Candidate {
+                    address: **address,
+                    factions: populated
+                        .get(**address)
+                        .map(|system| system.factions.as_slice())
+                        .unwrap_or(&[]),
+                    updated_at: None,
+                },
+                now,
+            )
+    };
+    let lead = people.iter().filter(admitted);
+    let rest = people.iter().filter(move |address| !admitted(address));
+    lead.chain(rest.take(if fill { people.len() } else { 0 }))
 }
 
 /// The order a cell's points are drawn in while the map is reading the sky as
@@ -897,7 +972,6 @@ pub(crate) fn reconcile(
     view_mode: Res<View>,
     selection: Res<crate::systems::selection::Selection>,
     filtering: Filtering,
-    standing: Res<crate::systems::merged::Standing>,
     cut: Res<Cut>,
     scale_population: Res<ScalePopulation>,
     mut worked: Worked,
@@ -910,6 +984,8 @@ pub(crate) fn reconcile(
         return;
     };
     let Worked {
+        ref peopled,
+        ref standing,
         ref mut orders,
         ref mut republished,
         ref mut keeping,
@@ -1011,6 +1087,19 @@ pub(crate) fn reconcile(
     // payload.
     let population = population(&planned.0);
     let share = share(population, frame_marks(&view));
+    // Where this pass takes its systems from. Drawing by population draws
+    // the systems anybody lives in, and every one of those is resident in
+    // full — so the cell's own people answer, exactly and the same however
+    // the eye arrived, where a payload prefix answers with the busiest of
+    // whatever happened to land. See [`super::peopled::Peopled`].
+    //
+    // Unless a span is asked. A moment is a fact only a payload point
+    // carries, so a system taken off the peopled table is one a span can
+    // say nothing about; while one is on the map this falls back to the
+    // payload, hysteresis and all. A moment per populated row would close
+    // it.
+    let from_the_peopled =
+        by_population && !filtering.filters.asking_a_span();
     // Which patches of sky the frame leaves dark, and the one mark each
     // of them lights. A pass of its own over the plan, before anything is
     // drawn, because the question is about the frame as a whole: a tile is
@@ -1072,7 +1161,11 @@ pub(crate) fn reconcile(
     // One buffer for every cell's take rather than one allocation apiece:
     // a wide view walks thousands of cells a frame, and the indices taken are
     // a share's worth each.
-    let mut taken: Vec<usize> = Vec::new();
+    // What a cell draws: an address, where it stands, and the payload
+    // index where a payload is what named it. The two sources — a cell's
+    // magnitude-ordered payload and the resident peopled table — answer
+    // in different terms and everything after this is the same for both.
+    let mut taken: Vec<(i64, [f64; 3], Option<u32>)> = Vec::new();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`super::spawn::PendingSpawns`].
@@ -1114,35 +1207,73 @@ pub(crate) fn reconcile(
         if asked == 0 {
             continue;
         }
-        let Some(cell) = resident.0.cell(id) else { continue };
-        let target = asked.min(cell.points.len());
-        if target == 0 {
-            continue;
-        }
-        // Whether this cell's payload is the one the drawn systems were
-        // built from, or a later one; see [`Republished`].
-        let refreshed = republished.holds(id);
-        orders.walk(
-            id,
-            &cell.points,
-            &asked_for,
-            &populated,
-            wall,
-            by_population,
-            &mut verdicts,
-        );
-        let admits = orders.admits(id);
-        // Taken rather than walked lazily, since the two orders are different
-        // iterators and what follows is the same for both. A share's worth of
-        // indices, which is a few.
+        // Taken rather than walked lazily, since the two sources are
+        // different iterators and what follows is the same for both: an
+        // address, where it stands, and the payload index where there is
+        // one. A share's worth apiece, which is a few.
         taken.clear();
-        if by_population {
-            taken.extend(
-                busiest_first(orders.busiest(id), admits, asking, fill)
-                    .take(target),
-            );
+        // Whether this cell's payload is the one the drawn systems were
+        // built from, or a later one; see [`Republished`]. Nothing to
+        // settle where no payload was read.
+        let mut refreshed = false;
+        if from_the_peopled {
+            // **Off the resident table and not off a payload.** This mode
+            // draws the systems anybody lives in, and every one of those
+            // is resident in full; a payload prefix holds one in
+            // forty-four of them, scattered, so the busiest of a prefix is
+            // not the busiest of the cell. See
+            // [`super::peopled::Peopled`].
+            let people = peopled.of(id);
+            if people.is_empty() {
+                continue;
+            }
+            for &address in
+                peopled_first(people, &asked_for, &populated, wall, fill)
+                    .take(asked)
+            {
+                let Some(system) = populated.get(address) else { continue };
+                taken.push((
+                    address,
+                    [
+                        f64::from(system.position[0]),
+                        f64::from(system.position[1]),
+                        f64::from(system.position[2]),
+                    ],
+                    None,
+                ));
+            }
         } else {
-            taken.extend(drawn_first(&cell.points, admits, fill).take(target));
+            let Some(cell) = resident.0.cell(id) else { continue };
+            let target = asked.min(cell.points.len());
+            if target == 0 {
+                continue;
+            }
+            refreshed = republished.holds(id);
+            orders.walk(
+                id,
+                &cell.points,
+                &asked_for,
+                &populated,
+                wall,
+                by_population,
+                &mut verdicts,
+            );
+            let admits = orders.admits(id);
+            let order: Vec<usize> = if by_population {
+                busiest_first(orders.peopled(id), admits, asking, fill)
+                    .take(target)
+                    .collect()
+            } else {
+                drawn_first(&cell.points, admits, fill).take(target).collect()
+            };
+            for index in order {
+                let point = &cell.points[index];
+                taken.push((
+                    point.id64 as i64,
+                    point.pos,
+                    Some(index as u32),
+                ));
+            }
         }
         // What this cell's marks account for, so [`super::glow`] can lay the
         // rest of it down and not the whole. Built here because here is the
@@ -1150,16 +1281,14 @@ pub(crate) fn reconcile(
         // filters having promoted systems out of magnitude order, and it is
         // cut again per point by the bubble just below.
         let mut took = Accounted::default();
-        for &index in &taken {
-            let point = &cell.points[index];
+        for &(address, pos, index) in &taken {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
-                && orbit.center().distance(DVec3::from(point.pos)) > radius
+                && orbit.center().distance(DVec3::from(pos)) > radius
             {
                 continue;
             }
-            let address = point.id64 as i64;
             took_all += 1;
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would
@@ -1168,13 +1297,13 @@ pub(crate) fn reconcile(
             // flash. Accounting for it now hands the light over on the frame
             // the walk decides, and the spawn catches up under it.
             took.took(
-                point.pos,
+                pos,
                 populated
                     .get(address)
                     .filter(|system| system.population > 0)
                     .map(|system| {
                         Inhabited::of_system(
-                            point.pos,
+                            pos,
                             system.allegiance,
                             system.government,
                             system.security,
@@ -1187,20 +1316,51 @@ pub(crate) fn reconcile(
             // about the moment, the magnitude and the politics is what the
             // index said last time. Queued either way, and `spawn_systems`
             // replaces it in place.
+            // Which point of which cell where a payload named it: most of
+            // what a walk offers is never drawn, and building it to queue
+            // it is a name and a political join thrown away. See
+            // [`super::spawn::Waiting`].
+            //
+            // A system off the peopled table has no payload point to
+            // name and is built here instead — the path a route's own
+            // stops take. It costs what it costs because the set is
+            // small: the whole galaxy holds 148,199 systems anybody lives
+            // in, and a frame in this mode draws tens.
+            //
+            // Built from the row and not through `system_at`, which
+            // refuses a system the names table has no row for. A name is
+            // one thing a system may be missing and being drawn is
+            // another: the payload path names an unnamed system by its
+            // address ([`build_system`]) and draws it, and a mode that
+            // silently dropped the same system would be a hole in the
+            // sky wherever the two tables disagree.
+            let queue = |pending: &mut PendingSpawns| match index {
+                Some(index) => pending.offer(address, id, index),
+                None => {
+                    let raw = RawSystem {
+                        address,
+                        position: pos,
+                        magnitude: None,
+                        temp_bucket: None,
+                        // A moment is a payload's to carry; see
+                        // [`Filters::asking_a_span`].
+                        updated_at: None,
+                    };
+                    let system = build_system(&raw, &populated, &names);
+                    pending.push(system, false, true, now);
+                    true
+                }
+            };
             match existing.get(&address) {
                 Some(&entity) => {
                     wanted_by.insert(entity);
                     if refreshed && offering {
-                        offering = pending.offer(address, id, index as u32);
+                        offering = queue(&mut pending);
                     }
                 }
-                // Which point of which cell, not the system built out of
-                // it: most of what a walk offers is never drawn, and
-                // building it to queue it is a name and a political join
-                // thrown away. See [`super::spawn::Waiting`].
                 None => {
                     if offering {
-                        offering = pending.offer(address, id, index as u32);
+                        offering = queue(&mut pending);
                     }
                 }
             }
@@ -1852,7 +2012,13 @@ mod tests {
     /// of every prefix and only what is spared survives
     fn walking() -> App {
         let mut app = App::new();
-        app.add_systems(Update, reconcile);
+        // The peopled table gathered ahead of the draw, as the map
+        // gathers it: what the population scale draws comes from there
+        // and not from a payload. See [`super::peopled`].
+        app.add_systems(
+            Update,
+            (crate::systems::peopled::gather, reconcile).chain(),
+        );
         app.init_resource::<PendingEvictions>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<ResidentCells>();
@@ -1867,6 +2033,7 @@ mod tests {
         app.init_resource::<Sampled>();
         app.init_resource::<Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
+        app.init_resource::<crate::systems::peopled::Peopled>();
         app.init_resource::<crate::systems::aggregate::Drawn>();
         app.insert_resource(crate::ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
@@ -2189,7 +2356,12 @@ mod tests {
                 PopulatedSystem {
                     address,
                     name: format!("Home {address}").into(),
-                    position: [address as f32, 0., 0.],
+                    // Where the tree put it. The populated table's own
+                    // place is what the population scale draws a mark at
+                    // — the same place `system_at` builds one at — so a
+                    // fixture that disagrees with its index is testing
+                    // two galaxies.
+                    position: placed(address).map(|it| it as f32),
                     population,
                     security: None,
                     government: None,

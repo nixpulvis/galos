@@ -30,6 +30,13 @@ use std::path::{Path, PathBuf};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    /// Clear a lock left behind by a builder that was killed, and take it.
+    ///
+    /// The refusal names the pid holding the directory. Check it first: a
+    /// lock cleared while its builder is merely slow to answer is two
+    /// writers over one directory, which is what the lock is for.
+    #[arg(long, global = true)]
+    force_lock: bool,
 }
 
 #[derive(Subcommand)]
@@ -69,6 +76,16 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
         /// Delete them. Without this the orphans are only counted.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Reclaim the body shards' dead records, which a re-import leaves one
+    /// of for every system it rewrote.
+    SweepBodies {
+        /// The index directory to compact.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+        /// Rewrite them. Without this the dead bytes are only weighed.
         #[arg(long)]
         apply: bool,
     },
@@ -117,15 +134,20 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
 }
 
 fn main() {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let forced = cli.force_lock;
+    match cli.command {
         Command::Info { dir } => info(&dir),
         Command::Diff { a, b, bodies, detail, limit } => {
             diff(&a, &b, Compare { bodies, detail, limit })
         }
-        Command::Pack { dir } => pack(&dir),
-        Command::Sweep { dir, apply } => sweep(&dir, apply),
-        Command::FoldNames { dir } => fold_names(&dir),
-        Command::Upgrade { dir } => upgrade(&dir),
+        Command::Pack { dir } => pack(&dir, forced),
+        Command::Sweep { dir, apply } => sweep(&dir, apply, forced),
+        Command::SweepBodies { dir, apply } => {
+            sweep_bodies(&dir, apply, forced)
+        }
+        Command::FoldNames { dir } => fold_names(&dir, forced),
+        Command::Upgrade { dir } => upgrade(&dir, forced),
         Command::Sectors { dir, out, force } => {
             sectors(&dir, out.as_deref(), force)
         }
@@ -145,8 +167,8 @@ fn main() {
 /// run once the new index file stands — so this is for the directories
 /// rebuilt before it did, and for looking before acting. Reporting is the
 /// default because deleting from a served directory on a typo is not.
-fn sweep(dir: &Path, apply: bool) {
-    let lock = held(dir);
+fn sweep(dir: &Path, apply: bool, forced: bool) {
+    let lock = held(dir, forced);
     let index = match galos_index::Index::read(dir) {
         Ok(index) => index,
         Err(err) => {
@@ -189,6 +211,59 @@ fn sweep(dir: &Path, apply: bool) {
     }
 }
 
+/// Weigh, and on request reclaim, the dead records in the body shards.
+///
+/// What a re-import leaves behind: the shards are append-only and a dump
+/// names each system once, so a second import over the same directory
+/// writes a fresh record for every system and the one behind it is dead.
+/// Measured on one: `bodies/` at 301 GB, 49.8 % of it live.
+///
+/// A build sweeps for itself now — `galos_index::pack::sweep_bodies`, run
+/// once the new index file stands — so this is for the directories
+/// imported before it did, and for looking before acting. Reporting is the
+/// default for the reason the cell sweep's is.
+///
+/// Safe to run against a directory a map is *reading*: a shard is
+/// compacted whole and a reader whose data file goes out from under it
+/// reads the index again. Not safe against one something is *writing*,
+/// which is what [`held`] is for.
+fn sweep_bodies(dir: &Path, apply: bool, forced: bool) {
+    let lock = held(dir, forced);
+    let at = std::time::Instant::now();
+    match galos_index::pack::sweep_bodies(dir, &|| false, apply) {
+        Ok(swept) if swept.shards == 0 => println!(
+            "{}: every body shard's data file is live records",
+            dir.display(),
+        ),
+        Ok(swept) => {
+            let one = swept.shards == 1;
+            let bytes = size(swept.bytes);
+            println!(
+                "{}: {} shard{} {}, in {:.1?}{}",
+                dir.display(),
+                swept.shards,
+                if one { "" } else { "s" },
+                match apply {
+                    true => format!("rewritten, {bytes} reclaimed"),
+                    false => format!("holding {bytes} of dead record"),
+                },
+                at.elapsed(),
+                match swept.finished {
+                    true => "",
+                    false => ", and the rest were not reached",
+                },
+            );
+            if !apply {
+                println!("pass --apply to rewrite them");
+            }
+        }
+        Err(err) => {
+            eprintln!("{}: {err}", dir.display());
+            leave(Some(lock), 1);
+        }
+    }
+}
+
 /// Bytes in the unit a person would have said them in.
 fn size(bytes: u64) -> String {
     const KB: f64 = 1e3;
@@ -222,8 +297,8 @@ fn size(bytes: u64) -> String {
 /// `index.bin` is rewritten last, and a names table already at this
 /// version is not touched. The bodies, the sidecars and the tree itself
 /// are unchanged.
-fn upgrade(dir: &Path) {
-    let lock = held(dir);
+fn upgrade(dir: &Path, forced: bool) {
+    let lock = held(dir, forced);
     let at = std::time::Instant::now();
     // No stop flag of its own: a run cut short by a Ctrl-C leaves the
     // directory in a state the next run takes up, `index.bin` being
@@ -322,8 +397,8 @@ fn names_forward(dir: &Path, lock: &galos_index::Lock) {
 ///
 /// Not safe to run against a directory something is *writing*, which is
 /// what [`held`] is for.
-fn pack(dir: &Path) {
-    let lock = held(dir);
+fn pack(dir: &Path, forced: bool) {
+    let lock = held(dir, forced);
     let start = std::time::Instant::now();
     match galos_index::pack::pack(dir, &|| false) {
         Ok(done) => println!(
@@ -359,8 +434,8 @@ fn pack(dir: &Path) {
 /// version has nothing to do. Safe to run against a directory a map is
 /// *reading*, the table being swapped in by one rename and the chunks
 /// removed only after.
-fn fold_names(dir: &Path) {
-    let lock = held(dir);
+fn fold_names(dir: &Path, forced: bool) {
+    let lock = held(dir, forced);
     let start = std::time::Instant::now();
     match galos_index::names::fold_chunks(dir) {
         Ok(Some(named)) => println!(
@@ -532,8 +607,17 @@ fn sector_words(name: &str) -> Option<&str> {
 ///
 /// `galos-sync` takes the same lock, so either order of the two refuses
 /// rather than interleaves.
-fn held(dir: &Path) -> galos_index::Lock {
-    match galos_index::Lock::take(dir) {
+///
+/// `forced` is `--force-lock`, and is for the one thing a refusal cannot
+/// tell apart from a live builder: a lock whose process was killed. The
+/// refusal names the pid, and clearing one that is still running is two
+/// writers over a directory published whole — see [`galos_index::Lock`].
+fn held(dir: &Path, forced: bool) -> galos_index::Lock {
+    let taken = match forced {
+        true => galos_index::Lock::force(dir),
+        false => galos_index::Lock::take(dir),
+    };
+    match taken {
         Ok(lock) => lock,
         Err(err) => {
             eprintln!("{err}");

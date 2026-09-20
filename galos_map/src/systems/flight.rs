@@ -241,6 +241,7 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
         app.init_resource::<crate::systems::merged::Named>();
+        app.init_resource::<crate::systems::peopled::Peopled>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
@@ -272,6 +273,11 @@ impl Flight {
         let plan = world.register_system(crate::systems::aggregate::plan);
         let fetch = world.register_system(crate::systems::bounded::fetch);
         let collect = world.register_system(crate::systems::bounded::collect);
+        // Who lives where, gathered once as the map gathers it at
+        // startup: the population scale draws out of this and not out of
+        // a payload. See [`crate::systems::peopled`].
+        let gather = world.register_system(crate::systems::peopled::gather);
+        world.run_system(gather).expect("the peopled table gathers");
         let weigh = world.register_system(crate::systems::merged::weigh_blobs);
         let reconcile =
             world.register_system(crate::systems::bounded::reconcile);
@@ -388,6 +394,75 @@ impl Flight {
             std::thread::sleep(Duration::from_millis(1));
             world.run_system(self.collect).expect("the system runs");
         }
+    }
+}
+
+/// The same view draws the same sky, however the eye got there
+///
+/// **A view is a question about where the camera stands, and the answer
+/// must not depend on the route taken to it.** Reported as: zoom in on a
+/// filament, zoom back out to where you were, and the sky is fuller than
+/// it was. Measured over `.index/full` at 2,300, 13, 5,300 with the
+/// population scale on — two thousand light years back drew **57 systems
+/// arriving and 92 after a zoom in and back out**, and twelve thousand
+/// drew 87 and then 78, so it moved both ways.
+///
+/// The cause was the source: that mode draws the systems anybody lives
+/// in, one payload point in forty-four is one of those, and a payload is
+/// read as a magnitude-ordered prefix sized for the mark count — so the
+/// busiest of the prefix was not the busiest of the cell, and which
+/// prefix was resident depended on where the camera had been. It reads
+/// the resident table instead; see [`super::peopled::Peopled`].
+///
+/// Both modes, because the answer has to hold in each, and settled rather
+/// than merely visited: the map fills in behind a moving eye, so what a
+/// view *means* is what it comes to once the hand is off the mouse.
+#[test]
+fn a_view_is_what_it_is_however_it_was_reached() {
+    let Some(dir) = measured() else { return };
+    // Off the plane and out in the disc, where it was reported: a
+    // filament of colonies rather than the crowd around Sol.
+    let at = DVec3::new(2_300., 13., 5_300.);
+
+    for (scale, back) in
+        [(false, 2_000f32), (true, 2_000.), (true, 5_000.), (true, 12_000.)]
+    {
+        let mut flight = Flight::over(&dir);
+        flight.app.insert_resource(ScalePopulation(scale));
+
+        let settle = |flight: &mut Flight, back: f32| {
+            let mut drawn = 0;
+            for _ in 0..SETTLE {
+                drawn = flight.frame(at, back).drawn;
+            }
+            drawn
+        };
+        let first = settle(&mut flight, back);
+        // In, and back out, the way a hand on a wheel goes.
+        let mut closer = back;
+        while closer > back / 8. {
+            closer /= 1.5;
+            for _ in 0..DWELL {
+                flight.frame(at, closer);
+            }
+        }
+        while closer < back {
+            closer *= 1.5;
+            for _ in 0..DWELL {
+                flight.frame(at, closer);
+            }
+        }
+        let second = settle(&mut flight, back);
+
+        println!(
+            "  {back:>6.0} ly back, by population {scale:>5}: \
+             {first:>6} drawn arriving, {second:>6} after a zoom in and out",
+        );
+        assert_eq!(
+            first, second,
+            "{back:.0} ly back by population {scale}: the same view drew \
+             {first} systems arriving and {second} after a zoom in and out",
+        );
     }
 }
 

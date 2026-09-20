@@ -18,6 +18,7 @@ use crate::bucket::{self, Buckets, Formed};
 use crate::checkpoint::{By, Checkpoint, Compaction};
 use crate::meta::NameEntry;
 use crate::names;
+use crate::pack::Reclaimed;
 use crate::region::{self, Crown, Offer};
 use crate::source::{read_meta, write_meta};
 use crate::spill::Spilled;
@@ -455,6 +456,21 @@ impl<'a> Build<'a> {
             "the sweep of the old cells",
             crate::store::sweep_payloads(&dir, &index, true),
         )?;
+        // The dead records the body shards carry, which a re-import leaves
+        // one of for every system it rewrote: see
+        // [`crate::pack::sweep_bodies`]. After the index file, as the cell
+        // sweep is, though less turns on the order — every live record is
+        // in hand throughout a compaction, so an interruption here leaves
+        // a directory that is merely larger.
+        //
+        // **The stop is not asked.** None of the publish's passes ask it
+        // (see this type's docs), a shard is compacted whole, and a caller
+        // that has decided not to wait has the second Ctrl-C, which leaves
+        // the shards not yet reached exactly as this build left them.
+        let reclaimed = step(
+            "the compaction of the body shards",
+            crate::pack::sweep_bodies(&dir, &|| false, true),
+        )?;
         // Last, and only where the caller said where it had read to: the
         // mark stands for a published directory, so it goes out behind the
         // index file rather than in front of it.
@@ -473,7 +489,7 @@ impl<'a> Build<'a> {
             regions,
             over_budget,
             Pass { taken: named, named: published },
-            swept,
+            Tidied { cells: swept, bodies: reclaimed },
             &index,
         )))
     }
@@ -539,6 +555,18 @@ struct Pass {
     named: usize,
 }
 
+/// What the publish's two sweeps came to, carried through to the report.
+///
+/// One argument rather than two: they are asked at the same point for the
+/// same reason — what stood in the directory before this build that this
+/// build does not refer to — and differ only in what they reclaim.
+struct Tidied {
+    /// Payloads of cells the new tree does not name.
+    cells: Swept,
+    /// Records in the body shards the pack points at none of.
+    bodies: Reclaimed,
+}
+
 /// What a cold build came to, for a caller to print and check.
 #[derive(Copy, Clone, Debug)]
 pub struct ColdReport {
@@ -569,6 +597,10 @@ pub struct ColdReport {
     /// after it was written: whatever the tree that stood here before held
     /// and this one does not. See [`crate::store::sweep_payloads`].
     pub swept: Swept,
+    /// Dead records the body shards gave back, compacted once the index
+    /// file stood: a re-import appends a fresh record for every system and
+    /// the one behind it is dead. See [`crate::pack::sweep_bodies`].
+    pub reclaimed: Reclaimed,
 }
 
 impl ColdReport {
@@ -582,7 +614,7 @@ impl ColdReport {
         regions: usize,
         over_budget: usize,
         pass: Pass,
-        swept: Swept,
+        tidied: Tidied,
         index: &Index,
     ) -> ColdReport {
         let leaves = index.cells().filter(|c| c.is_leaf()).count();
@@ -605,7 +637,8 @@ impl ColdReport {
             over_budget,
             named: pass.named,
             named_rows: pass.taken,
-            swept,
+            swept: tidied.cells,
+            reclaimed: tidied.bodies,
         }
     }
 
@@ -620,7 +653,7 @@ impl fmt::Display for ColdReport {
         write!(
             f,
             "{} systems -> {} cells ({} leaves, {} internal), \
-             deepest level {}, largest leaf {} systems, {} placed{}{}{}",
+             deepest level {}, largest leaf {} systems, {} placed{}{}{}{}",
             self.systems,
             self.cells,
             self.leaves,
@@ -640,6 +673,13 @@ impl fmt::Display for ColdReport {
                     self.swept.bytes / 1_000_000
                 ),
             },
+            match self.reclaimed.shards {
+                0 => String::new(),
+                n => format!(
+                    ", compacted {n} body shards ({} MB of dead record)",
+                    self.reclaimed.bytes / 1_000_000
+                ),
+            },
         )
     }
 }
@@ -650,7 +690,7 @@ mod tests {
     use crate::names::Names;
     use crate::source::NAMES_DIR;
     use std::cell::Cell;
-    use std::collections::{BTreeMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Somewhere to build into, removed with the value.
@@ -1227,5 +1267,83 @@ mod tests {
             cells
         };
         assert_eq!(counted(&dir), counted(&whole), "the trees differ");
+    }
+
+    /// Bodies large enough that a shard's dead records are worth sweeping
+    ///
+    /// The sweep's bar is a mebibyte of dead record in a shard, which a
+    /// galaxy reaches with hundreds of thousands of systems in it and this
+    /// reaches with barycenters.
+    fn padded() -> crate::meta::SystemBodies {
+        let at = "2026-08-08T12:00:00Z".parse().expect("a moment");
+        crate::meta::SystemBodies {
+            barycenters: (0..8_000)
+                .map(|id| crate::meta::Barycenter {
+                    system_address: 1,
+                    id,
+                    updated_at: at,
+                    updated_by: "a test".into(),
+                    orbit: None,
+                })
+                .collect(),
+            ..crate::meta::SystemBodies::default()
+        }
+    }
+
+    /// A publish gives the body shards' dead records back
+    ///
+    /// The bodies are not a build's to write — a dump's reader writes them
+    /// as it reads — but the leftovers are its to reclaim, and this is the
+    /// one place that knows the read is over. An import over a directory
+    /// that already holds the galaxy appends a fresh record for every
+    /// system and leaves the one behind it dead, and nothing on the write
+    /// path reaches those: a shard is folded when its tail passes a bound
+    /// an import leaves it well under. Measured on a re-imported galaxy
+    /// before this ran here: 161.1 GB.
+    #[test]
+    fn a_publish_reclaims_the_body_shards() {
+        let at = Scratch::new("reclaimed");
+        let dir = at.join("served");
+        let inside = padded();
+        // One shard, so the dead records pile up in one data file rather
+        // than a kilobyte each across four thousand of them.
+        let shard = crate::pack::shard_of(1);
+        let addresses: Vec<i64> = (1i64..)
+            .filter(|&it| crate::pack::shard_of(it) == shard)
+            .take(4)
+            .collect();
+
+        // Written twice, which is what a re-import does to every system in
+        // the galaxy: the second record is what a reader answers and the
+        // first is bytes nothing points at.
+        for _ in 0..2 {
+            let rows: HashMap<i64, crate::meta::SystemBodies> =
+                addresses.iter().map(|&it| (it, inside.clone())).collect();
+            assert!(crate::pack::write(&dir, rows).failed.is_none());
+        }
+        let dead = crate::pack::sweep_bodies(&dir, &|| false, false)
+            .expect("a weighing");
+        assert_eq!(dead.shards, 1, "the re-import left nothing to reclaim");
+
+        let report =
+            built(&at, "served", BuildParams::default(), 6_000, &lumpy(1_000))
+                .expect("a cold build");
+        assert_eq!(
+            (report.reclaimed.shards, report.reclaimed.bytes),
+            (dead.shards, dead.bytes),
+            "the publish left the dead records where they were: {report}",
+        );
+        assert!(report.reclaimed.rewritten);
+        assert!(report.reclaimed.finished);
+
+        // And every system's own bodies came through the rewrite, which is
+        // the half of a compaction that cannot be got wrong quietly.
+        for &address in &addresses {
+            assert_eq!(
+                crate::pack::find(&dir, address).expect("the pack reads"),
+                crate::pack::Found::Bodies(inside.clone()),
+                "system {address} did not survive the publish",
+            );
+        }
     }
 }

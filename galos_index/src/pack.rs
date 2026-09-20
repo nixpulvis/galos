@@ -37,6 +37,9 @@
 //!   reader that finds its data file gone reads the index again. That retry
 //!   is the whole of the concurrency, there being one writer (the
 //!   directory's [`Lock`](crate::Lock)) and any number of readers.
+//! - **A sweep** is a compaction of every shard, asked for rather than
+//!   waited on: what a whole-galaxy re-import leaves behind, which no
+//!   append was ever going to reach. See [`sweep_bodies`].
 //!
 //! At 200 M systems that is 4,096 index files and a handful of data files
 //! rather than 188 M of them, **~450 GB rather than ~830 GB** — the
@@ -135,6 +138,20 @@ pub struct Packed {
     pub moved: usize,
     /// Whether nothing loose was left behind. A stop part way answers
     /// `false`; a directory with nothing loose answers `true`.
+    pub finished: bool,
+}
+
+/// What a sweep of the shards came to.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reclaimed {
+    /// Shards whose data file was worth rewriting.
+    pub shards: usize,
+    /// Dead bytes in them: what the rewrite gave back, or would have.
+    pub bytes: u64,
+    /// Whether they were rewritten rather than only weighed.
+    pub rewritten: bool,
+    /// Whether every shard was looked at. A stop part way answers `false`,
+    /// as does a shard that would not compact.
     pub finished: bool,
 }
 
@@ -241,6 +258,46 @@ impl Table {
 fn tail_bound(base: usize) -> usize {
     (base / 8).clamp(8 * 1024, 52 * 1024)
 }
+
+/// How much of a data file has to be dead before a fold rewrites it.
+///
+/// Dead is what the index points at none of: a record a later write
+/// replaced, or one a tombstone withdrew. Reclaiming it is the shard's
+/// live bytes written out again, so the bar is what that write is worth.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Dead {
+    /// Half the file. What the write path keeps: a feed appending to a
+    /// shard it has appended to for months pays the rewrite once the file
+    /// holds twice the bytes it needs, and no sooner.
+    Half,
+    /// A tenth of the file, and at least [`WORTH`] of it. What a sweep
+    /// asks by — an operator, or a build that has just rewritten the
+    /// galaxy, is paying for the space rather than for the next append.
+    Worth,
+}
+
+impl Dead {
+    /// Whether a file of `written` bytes holding `held` live ones has
+    /// reached this bar.
+    fn reached(self, held: u64, written: u64) -> bool {
+        let dead = written.saturating_sub(held);
+        match self {
+            // `>=`, and not `>`: a re-import replaces every record with
+            // one of very nearly the same length, which leaves a shard
+            // *at* half rather than past it. The strict test made a
+            // re-imported galaxy the one case the rule was written for
+            // and the one case it refused.
+            Dead::Half => dead * 2 >= written,
+            Dead::Worth => dead >= WORTH && dead * 10 >= written,
+        }
+    }
+}
+
+/// The least dead bytes worth rewriting a shard for.
+///
+/// A mebibyte, which is about 400 records. Below that the rewrite costs
+/// more in writes than the file gives back in blocks.
+const WORTH: u64 = 1 << 20;
 
 /// What an index file's header says.
 struct Header {
@@ -579,41 +636,81 @@ fn append(dir: &Path, shard: u64, batch: &[(i64, Vec<u8>)]) -> io::Result<()> {
     }
 }
 
-/// Merge a shard's tail into its base, and rewrite the data file where most
-/// of it is dead.
+/// Merge a shard's tail into its base, and rewrite the data file where
+/// enough of it is dead.
 ///
 /// The index is written beside and renamed over, so a reader sees one whole
 /// index or the other. A compaction writes the *next* generation's data file
 /// and leaves the old one until the index naming the new one is in place: a
 /// reader holding offsets into the old bytes has to go on being right about
 /// them until it reads the index again.
+///
+/// At [`Dead::Half`], which is the write path's bar. [`compact`] is the
+/// same fold at a sweep's.
 pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
+    folded(dir, shard, Dead::Half).map(|_| ())
+}
+
+/// Rewrite one shard's data file where a sweep's bar is reached, answering
+/// the bytes it gave back.
+pub fn compact(dir: &Path, shard: u64) -> io::Result<u64> {
+    folded(dir, shard, Dead::Worth)
+}
+
+/// What a sweep would reclaim from one shard, reclaiming nothing.
+///
+/// The weighing half of [`compact`]: the index read and the data file
+/// measured against it, which is what a sweep without `--apply` reports.
+fn dead(dir: &Path, shard: u64) -> io::Result<u64> {
+    let table = Table::read(&index_path(dir, shard))?;
+    let held: u64 = table.live().values().map(|it| 4 + it.len as u64).sum();
+    let data = data_path(dir, shard, table.generation);
+    let written = std::fs::metadata(&data).map(|it| it.len()).unwrap_or(0);
+    match written > 0 && Dead::Worth.reached(held, written) {
+        true => Ok(written - held),
+        false => Ok(0),
+    }
+}
+
+/// One fold, at whichever bar the caller keeps, answering the bytes a
+/// compaction gave back.
+fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
     let path = index_path(dir, shard);
     let table = Table::read(&path)?;
-    if table.tail.is_empty() {
-        return Ok(());
-    }
     let live = table.live();
     let data = data_path(dir, shard, table.generation);
     let held: u64 = live.values().map(|it| 4 + it.len as u64).sum();
     let written = std::fs::metadata(&data).map(|it| it.len()).unwrap_or(0);
 
-    // Half the file being records nothing points at is the trigger: a feed's
-    // thirty systems a second leave about six gigabytes of dead records a
-    // day over the galaxy, which reaches half a shard in a couple of months.
-    let compacting = written > 0 && held * 2 < written;
+    // Half the file being records nothing points at is the write path's
+    // trigger: a feed's thirty systems a second leave about six gigabytes
+    // of dead records a day over the galaxy, which reaches half a shard in
+    // a couple of months.
+    let compacting = written > 0 && bar.reached(held, written);
+
+    // Nothing to merge and nothing to reclaim.
+    //
+    // **The tail being empty was once the whole of this test**, which put
+    // a compaction out of reach of the shard that most needs one: a folded
+    // shard whose data file is half dead is exactly what a re-import
+    // leaves, and no later write folds it because the tail it left is
+    // under [`tail_bound`]. Measured on a re-imported galaxy — 4,096
+    // shards, 49.8 % of their bytes live, and not one of them foldable.
+    if table.tail.is_empty() && !compacting {
+        return Ok(0);
+    }
     let generation = match compacting {
         true => table.generation.wrapping_add(1),
         false => table.generation,
     };
 
     let mut base = Vec::with_capacity(live.len());
+    let mut at = 0u64;
     match compacting {
         true => {
             let to = data_path(dir, shard, generation);
             let mut out = io::BufWriter::new(File::create(&to)?);
             let mut from = File::open(&data)?;
-            let mut at = 0u64;
             for entry in live.values() {
                 from.seek(SeekFrom::Start(entry.offset))?;
                 let mut framed = vec![0u8; 4 + entry.len as usize];
@@ -636,12 +733,114 @@ pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &path)?;
 
-    if compacting {
-        // Nothing reads this generation any more: the index naming it is
-        // gone, and a reader that had already read it retries on the miss.
-        let _ = std::fs::remove_file(&data);
+    if !compacting {
+        return Ok(0);
     }
-    Ok(())
+    // Nothing reads this generation any more: the index naming it is
+    // gone, and a reader that had already read it retries on the miss.
+    let _ = std::fs::remove_file(&data);
+    Ok(written - at)
+}
+
+/// Rewrite every shard of a directory whose data file is worth it,
+/// answering what it gave back.
+///
+/// **What a whole-galaxy re-import leaves behind.** A dump names each
+/// system once and [`crate::bodies::Published::raising`] writes each record
+/// without reading what stood there, so a second import over a published
+/// directory appends a fresh record for every system and the one behind it
+/// is dead the moment the entry naming the new one lands. Nothing on the
+/// write path reclaims those: [`append`] folds when a shard's tail passes
+/// [`tail_bound`], and an import leaves every tail well under it. Measured
+/// on a re-imported galaxy: `bodies/` at 301 GB, 49.8 % of it live, and
+/// 150 GB of dead record no append was going to reach.
+///
+/// So the reclaim is asked for rather than waited on: by
+/// [`Build::finish`](crate::cold::Build::finish) once its index file
+/// stands, and by `galos-index sweep-bodies` for a directory nothing is
+/// about to build. `apply` false weighs every shard and rewrites none,
+/// which is what that command reports before it is asked to act.
+///
+/// **Nothing a stop or a kill can spoil, and no system at risk.** A shard
+/// is compacted whole — the next generation's data file written, the index
+/// naming it renamed over, the old generation unlinked after — and every
+/// live record is in hand throughout. What an interruption leaves is a
+/// directory part way through the sweep, which is to say one that is
+/// merely larger. That is the difference between this and clearing
+/// `bodies/` before a re-import, which would take with it every system the
+/// new read does not reach.
+///
+/// Safe beside a map *reading* the directory: a reader whose data file goes
+/// out from under it reads the index again — see [`find`]. Not safe beside
+/// anything *writing* it, which is what [`crate::Lock`] is for.
+pub fn sweep_bodies(
+    dir: &Path,
+    stop: &(dyn Fn() -> bool + Sync),
+    apply: bool,
+) -> io::Result<Reclaimed> {
+    if !dir.join(BODIES_DIR).is_dir() {
+        return Ok(Reclaimed { finished: true, ..Reclaimed::default() });
+    }
+    // A shard at a time, several shards at once, for the reason [`pack`]
+    // deals its directories out to threads: two shards share nothing but
+    // the disk, and the disk will take more in flight than one thread asks
+    // of it. Sequential inside a shard, the index being appended to and
+    // renamed over.
+    let hands = std::thread::available_parallelism()
+        .map(|it| it.get().min(PACKERS))
+        .unwrap_or(1);
+    let next = std::sync::atomic::AtomicU64::new(0);
+    let shards = std::sync::atomic::AtomicUsize::new(0);
+    let bytes = std::sync::atomic::AtomicU64::new(0);
+    let done = std::sync::atomic::AtomicBool::new(true);
+    let failed = std::sync::Mutex::<Option<io::Error>>::new(None);
+    std::thread::scope(|threads| {
+        for _ in 0..hands {
+            threads.spawn(|| {
+                loop {
+                    if stop() {
+                        done.store(false, Relaxed);
+                        break;
+                    }
+                    let shard = next.fetch_add(1, Relaxed);
+                    if shard >= SHARDS {
+                        break;
+                    }
+                    let gave = match apply {
+                        true => compact(dir, shard),
+                        false => dead(dir, shard),
+                    };
+                    match gave {
+                        Ok(0) => {}
+                        Ok(gave) => {
+                            shards.fetch_add(1, Relaxed);
+                            bytes.fetch_add(gave, Relaxed);
+                        }
+                        // The first failure is the answer rather than a
+                        // number folded into a total: a shard that will
+                        // not compact is a file to go and look at, and
+                        // what has been reclaimed already stands.
+                        Err(err) => {
+                            if let Ok(mut failed) = failed.lock() {
+                                failed.get_or_insert(err);
+                            }
+                            done.store(false, Relaxed);
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    if let Some(err) = failed.into_inner().unwrap_or(None) {
+        return Err(err);
+    }
+    Ok(Reclaimed {
+        shards: shards.load(Relaxed),
+        bytes: bytes.load(Relaxed),
+        rewritten: apply,
+        finished: done.load(Relaxed),
+    })
 }
 
 /// Every system the pack holds bodies for, in address order.
@@ -1425,6 +1624,208 @@ mod tests {
             .collect();
         want.sort_unstable();
         assert_eq!(addresses_of(&dir), want);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A data file exactly half dead is dead enough for the write path
+    ///
+    /// The boundary is the case rather than a corner of it: a re-import
+    /// replaces every record with one of very nearly the same length, so a
+    /// galaxy imported twice sits *at* half dead. `dead * 2 > written` put
+    /// the one arrangement the rule was written for on the wrong side of
+    /// it, and a shard whose tail then passed [`tail_bound`] folded
+    /// without reclaiming a byte.
+    #[test]
+    fn a_file_exactly_half_dead_is_compacted() {
+        assert!(Dead::Half.reached(50, 100));
+        assert!(!Dead::Half.reached(51, 100));
+
+        // Nothing dead is nothing to rewrite, at either bar.
+        assert!(!Dead::Half.reached(100, 100));
+        assert!(!Dead::Worth.reached(100, 100));
+
+        // The sweep asks a tenth of the file, and never fewer than
+        // [`WORTH`] bytes of it however large that tenth's share.
+        assert!(Dead::Worth.reached(9 * WORTH, 10 * WORTH));
+        assert!(!Dead::Worth.reached(10 * WORTH - 1, 10 * WORTH));
+        assert!(!Dead::Worth.reached(99, 100));
+    }
+
+    /// Records large enough that a shard's dead bytes reach [`WORTH`]
+    ///
+    /// A galaxy reaches it with hundreds of thousands of systems in a
+    /// shard; a test reaches it by making each record a big one. The
+    /// length does not vary with `id`, so a system rewritten is a record
+    /// replaced by one of exactly the same size — which is what an import
+    /// of the same galaxy twice is, and what puts a shard *at* half dead
+    /// rather than past it.
+    fn padded(id: i16) -> SystemBodies {
+        let mut bodies = inside(id);
+        bodies.stars[0].name = format!("Star {id} {}", "x".repeat(16 * 1024));
+        bodies
+    }
+
+    /// Addresses in one shard, so their dead bytes pile up in one file
+    fn together(shard: u64, count: usize) -> Vec<i64> {
+        (1i64..).filter(|&it| shard_of(it) == shard).take(count).collect()
+    }
+
+    /// A re-imported galaxy gives its dead records back
+    ///
+    /// **The bug this is here for.** A dump names each system once and the
+    /// store raising a directory writes without reading, so an import over
+    /// a directory already holding the galaxy appends a fresh record for
+    /// every system and leaves the one behind it dead. Nothing reclaimed
+    /// them: the write path folds when a shard's tail passes
+    /// [`tail_bound`] and an import leaves every tail well under it, and
+    /// the compaction it would have reached was `dead * 2 > written` —
+    /// which a rewrite of every record with one the same size lands
+    /// exactly on and so failed. Reported off a real directory: `bodies/`
+    /// at 301 GB, 49.8 % of it live, 150 GB unreachable.
+    #[test]
+    fn a_reimport_gives_its_dead_records_back() {
+        let dir = scratch("reimport");
+        let shard = shard_of(1);
+        let addresses = together(shard, 200);
+
+        let rows = |id| -> HashMap<i64, SystemBodies> {
+            addresses.iter().map(|&it| (it, padded(id))).collect()
+        };
+        write(&dir, rows(1));
+        let data = data_path(&dir, shard, 0);
+        let live = std::fs::metadata(&data).expect("a data file").len();
+
+        // The re-import: the same galaxy again, every record replaced.
+        write(&dir, rows(2));
+        assert_eq!(
+            std::fs::metadata(&data).expect("a data file").len(),
+            live * 2,
+            "the shard did not double",
+        );
+
+        // Weighed, and nothing touched.
+        let looked = sweep_bodies(&dir, &|| false, false).expect("a weighing");
+        assert_eq!(
+            looked,
+            Reclaimed {
+                shards: 1,
+                bytes: live,
+                rewritten: false,
+                finished: true,
+            }
+        );
+        assert_eq!(
+            std::fs::metadata(&data).expect("a data file").len(),
+            live * 2,
+            "a weighing rewrote the shard",
+        );
+
+        let swept = sweep_bodies(&dir, &|| false, true).expect("a sweep");
+        assert_eq!(
+            swept,
+            Reclaimed {
+                shards: 1,
+                bytes: live,
+                rewritten: true,
+                finished: true,
+            }
+        );
+        assert!(!data.exists(), "the compacted generation was left behind");
+        assert_eq!(
+            std::fs::metadata(data_path(&dir, shard, 1))
+                .expect("the next generation")
+                .len(),
+            live,
+            "the rewritten file is not the live records alone",
+        );
+
+        // The half that matters: every system reads back as the re-import
+        // wrote it, and not as the import it replaced did.
+        for &address in &addresses {
+            assert_eq!(
+                held(&dir, address),
+                Found::Bodies(padded(2)),
+                "system {address} did not survive the compaction",
+            );
+        }
+
+        // Idempotent: a shard that is all live records has nothing to give.
+        let again = sweep_bodies(&dir, &|| false, true).expect("a second");
+        assert_eq!(
+            again,
+            Reclaimed { shards: 0, bytes: 0, rewritten: true, finished: true }
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shard whose tail has been folded away is still compacted
+    ///
+    /// The other half of the same bug. [`fold`] returned on an empty tail
+    /// before it weighed the data file at all, so a shard whose last fold
+    /// declined the rewrite — the dead third below, which the write path's
+    /// bar is right to leave — could never be compacted again however much
+    /// of it was dead: there was no tail left to carry it back in.
+    #[test]
+    fn a_folded_shard_is_still_compacted() {
+        let dir = scratch("folded");
+        let shard = shard_of(1);
+        let addresses = together(shard, 200);
+
+        write(
+            &dir,
+            addresses
+                .iter()
+                .map(|&it| (it, padded(1)))
+                .collect::<HashMap<_, _>>(),
+        );
+        // A third of them again, which is under the write path's half.
+        let rewritten = &addresses[..100];
+        write(
+            &dir,
+            rewritten
+                .iter()
+                .map(|&it| (it, padded(2)))
+                .collect::<HashMap<_, _>>(),
+        );
+        let data = data_path(&dir, shard, 0);
+        let written = std::fs::metadata(&data).expect("a data file").len();
+        let dead = written / 3;
+
+        fold(&dir, shard).expect("the shard folds");
+        let table = Table::read(&index_path(&dir, shard)).expect("a table");
+        assert!(table.tail.is_empty(), "the fold left a tail");
+        assert_eq!(table.base.len(), 200);
+        assert_eq!(
+            std::fs::metadata(&data).expect("a data file").len(),
+            written,
+            "the write path's bar rewrote a file only a third dead",
+        );
+
+        // And the sweep, which asks by what the space is worth rather than
+        // by what the next append is. This is the step that did nothing.
+        let swept = sweep_bodies(&dir, &|| false, true).expect("a sweep");
+        assert_eq!(swept.shards, 1, "a folded shard was passed over");
+        assert_eq!(swept.bytes, dead);
+        assert_eq!(
+            std::fs::metadata(data_path(&dir, shard, 1))
+                .expect("the next generation")
+                .len(),
+            written - dead,
+        );
+
+        for (at, &address) in addresses.iter().enumerate() {
+            let want = match at < rewritten.len() {
+                true => padded(2),
+                false => padded(1),
+            };
+            assert_eq!(
+                held(&dir, address),
+                Found::Bodies(want),
+                "system {address} did not survive the compaction",
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

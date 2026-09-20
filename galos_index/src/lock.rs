@@ -25,7 +25,8 @@
 //! gone. That is the right default: a lock that cleared itself on a guess
 //! would clear itself exactly when a long build was still running and slow to
 //! answer. Check the pid the refusal names, and if nothing is running under
-//! it, run again with `galos-sync --force-lock`, which is [`Lock::force`].
+//! it, run again with `--force-lock` — `galos-sync`'s and `galos-index`'s
+//! alike — which is [`Lock::force`].
 
 use std::fs::OpenOptions;
 use std::io::{self, Write};

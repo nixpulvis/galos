@@ -1060,6 +1060,20 @@ impl Filters {
         }
     }
 
+    /// Whether a span is among the filters being asked
+    ///
+    /// The one question that cannot be answered about a system off the
+    /// resident tables: a moment is published per *payload point* and the
+    /// populated table carries none. What turns on it is where the
+    /// population scale reads its systems from; see
+    /// [`super::peopled::Peopled`].
+    pub(crate) fn asking_a_span(&self) -> bool {
+        self.asked
+            .iter()
+            .filter(|active| active.enabled)
+            .any(|active| matches!(active.filter, Filter::Recency { .. }))
+    }
+
     /// The filters that pick systems out by address, which is every kind
     /// but a span
     ///
