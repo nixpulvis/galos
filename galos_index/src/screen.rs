@@ -193,14 +193,14 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 #[derive(Default)]
 pub struct Crowded {
     taken: HashSet<u64, BuildHasherDefault<Quick>>,
-    /// The tangent of the angle one mark subtends, which is the pitch of
-    /// the grid on each face of the cube.
+    /// The angle one mark subtends, in radians: what a mark's width is
+    /// worth out at whatever distance a system stands.
     pitch: f64,
     eye: [f64; 3],
 }
 
 impl Crowded {
-    /// A grid as fine as a mark is wide, seen from where `view` stands.
+    /// A lattice as fine as a mark is wide, seen from where `view` stands.
     pub fn over(view: &View) -> Crowded {
         Crowded {
             taken: HashSet::default(),
@@ -209,53 +209,60 @@ impl Crowded {
         }
     }
 
-    /// Whether a mark at `at` is the first to want that patch of sky.
+    /// Whether a mark at `at` is the first to want that patch of *sky*.
     ///
-    /// **Which patch is a question about the direction, not about the
-    /// frame.** A grid laid on the screen turns with the camera, so its
-    /// boundaries sweep across the sky as the view rotates and whichever
-    /// of two neighbours falls on the near side of one changes with them
-    /// — reported as systems flickering while the camera turns. The
-    /// direction from the eye to a system does not change when the eye
-    /// turns, so the grid is laid on *that*: a cube about the eye, its
-    /// faces ruled at the angle one mark subtends. Rotating now moves
-    /// nothing, and only travelling does — which it must, the sky's own
-    /// separations changing when you move through it.
+    /// **In the galaxy, not on the frame.** Two things were wrong with
+    /// ruling the screen. It turns with the camera, so its boundaries
+    /// sweep the sky as the eye rotates and the drawn set churns for as
+    /// long as you are turning. And it has no depth: two systems in line
+    /// with one another merge however far apart they stand, so a volume
+    /// of sky reads as a mosaic laid on a sphere.
     ///
-    /// The cube's faces are the world's axes and not the camera's, for
-    /// the same reason. Cells grow by up to the usual cube-map third
-    /// toward a face's corners, which is a third of a mark.
+    /// So the lattice is in world coordinates, and only its *spacing*
+    /// comes from the view: a mark is `pitch` radians across, which out
+    /// at a distance `d` is `d · pitch` of galaxy, so that is the size of
+    /// a cell there. Two systems merge when they are within a mark of
+    /// each other **as the galaxy has them** — which is the same
+    /// question the merge frontier asks of a cell's contents, asked of
+    /// two systems.
+    ///
+    /// Squared to the world's axes and rounded to a power of two, so
+    /// neighbours at a similar distance rule the same lattice rather
+    /// than each carrying one of its own. A shell's worth of sky shares
+    /// a spacing and the spacing doubles every octave of distance.
+    ///
+    /// Turning the eye moves none of this. Travelling moves it slowly,
+    /// through the distance alone, and must: a mark is only so wide, and
+    /// what it covers of the galaxy depends on how far off that galaxy
+    /// is.
     pub fn claim(&mut self, at: [f64; 3]) -> bool {
         let from = [
             at[0] - self.eye[0],
             at[1] - self.eye[1],
             at[2] - self.eye[2],
         ];
-        let (face, major) = [0usize, 1, 2].iter().fold(
-            (0usize, 0.0f64),
-            |(face, major), &axis| match from[axis].abs() > major {
-                true => (axis, from[axis].abs()),
-                false => (face, major),
-            },
-        );
-        if major <= 0.0 {
-            // The eye is standing on it; there is no direction to bin.
-            return false;
+        let away =
+            (from[0] * from[0] + from[1] * from[1] + from[2] * from[2]).sqrt();
+        if !away.is_finite() || away <= 0.0 {
+            // The eye is standing on it, and nothing merges with it.
+            return true;
         }
-        let (u, v) = match face {
-            0 => (from[1], from[2]),
-            1 => (from[2], from[0]),
-            _ => (from[0], from[1]),
-        };
-        // Which side of the cube, so the two faces of an axis are told
-        // apart, and then the ruling on it.
-        let side = u64::from(from[face] > 0.0);
-        let cell = |it: f64| (it / major / self.pitch).floor() as i64 as u64;
-        let key = (face as u64) << 62
-            | side << 61
-            | (cell(u) & 0x3fff_ffff) << 30
-            | (cell(v) & 0x3fff_ffff);
-        self.taken.insert(key)
+        // One mark's worth of galaxy out there, to the octave.
+        let spacing = (away * self.pitch).max(f64::MIN_POSITIVE);
+        let octave = spacing.log2().round();
+        let spacing = octave.exp2();
+        let cell = |it: f64| (it / spacing).floor() as i64;
+        let mixed = [
+            octave as i64,
+            cell(at[0]),
+            cell(at[1]),
+            cell(at[2]),
+        ]
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |key, &part| {
+            (key ^ part as u64).wrapping_mul(0x100_0000_01b3)
+        });
+        self.taken.insert(mixed)
     }
 }
 
@@ -493,17 +500,16 @@ mod tests {
     }
 
 
-    /// Turning the camera does not change which marks are merged
+    /// Marks merge by where they stand in the galaxy, not by where they
+    /// land on the frame
     ///
-    /// **A grid laid on the screen turns with the camera.** Its
-    /// boundaries sweep across the sky as the view rotates, so whichever
-    /// of two neighbours falls on the near side of one changes with
-    /// them, and the drawn set churns while the eye turns — reported as
-    /// systems flickering on rotation. The direction from the eye does
-    /// not change when the eye turns, so that is what the grid is laid
-    /// on.
+    /// Two things a screen grid gets wrong, and this holds against
+    /// both. It turns with the camera, so its boundaries sweep the sky
+    /// and the drawn set churns while the eye rotates. And it has no
+    /// depth: two systems in line with one another merge however far
+    /// apart they stand, so a volume reads as a mosaic on a sphere.
     #[test]
-    fn turning_the_camera_merges_the_same_marks() {
+    fn marks_merge_where_they_stand() {
         // A sky of a thousand, spread over a few degrees at a thousand
         // light years: close enough together that most of them collide.
         let sky: Vec<[f64; 3]> = (0..1_000)
@@ -514,7 +520,7 @@ mod tests {
             })
             .collect();
 
-        let claimed = |view: &View| -> Vec<bool> {
+        let claimed = |view: &View, sky: &[[f64; 3]]| -> Vec<bool> {
             let mut crowded = Crowded::over(view);
             sky.iter().map(|&at| crowded.claim(at)).collect()
         };
@@ -528,7 +534,7 @@ mod tests {
             aspect: 16.0 / 9.0,
         };
 
-        let straight = claimed(&looking([0., 1., 0.], [0., 0., 1.]));
+        let straight = claimed(&looking([0., 1., 0.], [0., 0., 1.]), &sky);
         assert!(
             straight.iter().filter(|it| **it).count() < sky.len(),
             "nothing collided, so nothing is being tested",
@@ -537,19 +543,38 @@ mod tests {
         // differently, merges the same marks.
         assert_eq!(
             straight,
-            claimed(&looking([1., 1., 0.], [0., 0., 1.])),
+            claimed(&looking([1., 1., 0.], [0., 0., 1.]), &sky),
             "a roll changed which marks were merged",
         );
         assert_eq!(
             straight,
-            claimed(&looking([0., 1., 0.], [0.3, 0.1, 1.])),
+            claimed(&looking([0., 1., 0.], [0.3, 0.1, 1.]), &sky),
             "turning the eye changed which marks were merged",
         );
 
-        // Moving does change it, and must: the sky's own separations are
-        // what a mark's width is measured against.
-        let moved = View { eye: [0., 0., 900.], ..looking([0., 1., 0.], [0., 0., 1.]) };
-        assert_ne!(straight, claimed(&moved), "travelling changed nothing");
+        // Depth tells two systems apart, however exactly one stands
+        // behind the other: a mark is a mark's width of galaxy, and a
+        // hundred light years is many marks at this distance.
+        let inline = vec![[0., 0., 1_000.], [0., 0., 1_100.]];
+        assert_eq!(
+            claimed(&looking([0., 1., 0.], [0., 0., 1.]), &inline),
+            vec![true, true],
+            "one system was merged into another standing in front of it",
+        );
+        // And two a mark apart at that distance are one.
+        let view = looking([0., 1., 0.], [0., 0., 1.]);
+        let mark = 1_000. * MERGE_PX / view.pixels_per_radian();
+        let touching = vec![[0., 0., 1_000.], [mark / 8., 0., 1_000.]];
+        assert_eq!(
+            claimed(&view, &touching),
+            vec![true, false],
+            "two marks within a mark of each other were both drawn",
+        );
+
+        // Travelling changes it, and must: what a mark covers of the
+        // galaxy depends on how far off the galaxy is.
+        let moved = View { eye: [0., 0., 900.], ..view };
+        assert_ne!(straight, claimed(&moved, &sky), "travelling changed nothing");
     }
 
     /// A view a thousand light years back from the origin, looking at it.
