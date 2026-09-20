@@ -255,7 +255,17 @@ impl std::str::FromStr for Whence {
                     .to_string(),
             );
         }
-        said.parse().map(Whence::Published)
+        // The source grammar's own refusal lists the publishers and knows
+        // nothing of `database`, which is this verb's word. So the list a
+        // mistyped `--from` is answered with is completed here rather
+        // than a reader being told about six of the seven things they
+        // could have meant.
+        said.parse().map(Whence::Published).map_err(|said: String| {
+            match cfg!(feature = "db") {
+                true => format!("{said}, or `database`"),
+                false => said,
+            }
+        })
     }
 }
 
@@ -315,13 +325,16 @@ fn parts_of(named: &[Part]) -> galos_db::index::Parts {
 /// Its own thread because a publish is a whole-galaxy `fs::write` and
 /// everything else here is waiting on a socket.
 pub async fn ingest(it: Ingest, forced: bool) -> ExitCode {
-    let shutdown = Shutdown::new();
-    galos::shutdown::on_interrupt(shutdown.clone());
-
+    // Refused before anything is installed, locked or opened: a run that
+    // cannot mean anything should leave the directory and the terminal
+    // exactly as it found them.
     if let Err(said) = refused(&it) {
         eprintln!("{said}");
         return ExitCode::FAILURE;
     }
+
+    let shutdown = Shutdown::new();
+    galos::shutdown::on_interrupt(shutdown.clone());
 
     // One writer per directory for the length of the run. Two would each
     // hold their own tree of it and publish over one another, which
@@ -344,10 +357,9 @@ pub async fn ingest(it: Ingest, forced: bool) -> ExitCode {
     });
 
     // The database, where the run asked to be brought level with it
-    // first. Its own pool, and not the one the collect side would have
-    // had: a catch-up reads the galaxy back and a `Sink` method cannot
-    // report failure, so an acquire that stalls behind an hour-long build
-    // is a message silently dropped.
+    // first, and no connection at all otherwise — which is every other
+    // run of this verb, and the reason the tool builds without a
+    // database client in it.
     #[cfg(feature = "db")]
     let db = match it.catch_up {
         false => None,

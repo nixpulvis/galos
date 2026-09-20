@@ -88,21 +88,6 @@ pub struct Options {
     pub consumer: &'static str,
 }
 
-impl Default for Options {
-    fn default() -> Options {
-        Options {
-            user: None,
-            remote: None,
-            stall: None,
-            watch: None,
-            cube: None,
-            sphere: None,
-            shard: None,
-            consumer: from::CONSUMER,
-        }
-    }
-}
-
 /// The per-source flags of an ingest, exactly as the command line gave
 /// them.
 ///
