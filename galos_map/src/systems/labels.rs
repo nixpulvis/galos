@@ -174,7 +174,7 @@ pub struct ShowBodyNames(pub bool);
 pub(super) const GAP: f32 = 0.75;
 
 /// How far a label sits above its star, in text heights
-const RISE: f32 = 1.0;
+pub(super) const RISE: f32 = 1.0;
 
 /// Color of the line joining a star to its name
 ///
@@ -219,14 +219,14 @@ const ADVANCE: f32 = 0.7;
 /// at stake in the alpha: a ground and its words are two calls into one egui
 /// layer, the rect before the galley (see [`draw_names`]), and order in one
 /// layer is paint order, full stop.
-const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
+pub(super) const GROUND: Srgba = Srgba::new(0.03, 0.03, 0.05, 1.);
 
 /// How far the ground reaches past the words, as a fraction of [`NAME_HEIGHT`]
 ///
 /// Enough that the letters are not set against its edge, and no more. A ground
 /// wider than the word it carries reads as a box on the map rather than as the
 /// word standing clear of what is behind it.
-const GROUND_PAD: f32 = 0.3;
+pub(super) const GROUND_PAD: f32 = 0.3;
 
 /// How much of a name's own height is kept clear around it
 ///
@@ -1834,7 +1834,7 @@ pub fn draw_names(
     // The one face the chrome is set in as well, so a name on the map and the
     // same name in the bar are the one typeface. Egui's default monospace is
     // Hack, which is the face the chrome is set in.
-    let font = egui::FontId::new(NAME_HEIGHT, egui::FontFamily::Monospace);
+    let font = naming();
 
     for (words, child_of) in &tokens {
         let thing = child_of.parent();
@@ -1936,7 +1936,18 @@ pub fn draw_names(
 /// out is one thing in two places. Selection wins over pointing where both
 /// apply, as it does for the ring: the pointer will move on, and the selection
 /// is what was asked for.
-fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
+/// The face every name on the map is set in
+///
+/// Egui's default monospace is Hack, which is the face the chrome is set
+/// in, so a name on the map and the same name in the bar are one typeface.
+/// Shared with [`super::merged`], which writes what a merged mark stands
+/// for and must not look like something else.
+pub(super) fn naming() -> egui::FontId {
+    egui::FontId::new(NAME_HEIGHT, egui::FontFamily::Monospace)
+}
+
+/// The colour a name comes out in, given how it is marked out.
+pub(super) fn marked_tint(pointed_at: bool, selected: bool) -> Srgba {
     if selected {
         SELECTION
     } else if pointed_at {

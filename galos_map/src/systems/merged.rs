@@ -114,30 +114,46 @@ fn ring_blob(
 
     let ctx = contexts.ctx_mut()?;
     let painter = ctx.layer_painter(super::labels::annotations_layer());
-    let color = super::labels::color32(super::pointing::INDICATOR);
+    let color = super::labels::color32(super::labels::marked_tint(true, false));
     painter.circle_stroke(
         egui::pos2(at.x, at.y),
         CATCH_PX,
         egui::Stroke::new(super::pointing::RING_STROKE, color),
     );
 
-    let systems = blob.count;
+    // Laid out as the map lays a name, because that is what it is: the
+    // same face, the same dark ground, and the same gap up and to the
+    // right of the mark it belongs to. Written by hand and it read as a
+    // caption stuck beside a ring — a proportional face over the stars,
+    // with the field of them filling its counters. See
+    // [`super::labels::draw_names`], whose figures these are.
+    //
+    // No leader, as a name marked out has none: the ring already says
+    // which mark this is about.
     let by_population =
         super::scale::by_population(&view, &scale_population);
     let said = match prominent
         .of(blob.id, by_population, &populated)
         .map(|point| build_from_point(point, &populated, &names))
     {
-        Some(system) => format!("{} · {systems} systems", system.name),
-        None => format!("{systems} systems"),
+        Some(system) => format!("{} · {} systems", system.name, blob.count),
+        None => format!("{} systems", blob.count),
     };
-    painter.text(
-        egui::pos2(at.x + CATCH_PX + super::labels::NAME_HEIGHT * 0.5, at.y),
-        egui::Align2::LEFT_CENTER,
-        said,
-        egui::FontId::proportional(super::labels::NAME_HEIGHT),
-        color,
+    let galley =
+        painter.layout_no_wrap(said, super::labels::naming(), color);
+    let origin = egui::pos2(
+        at.x + CATCH_PX + super::labels::NAME_HEIGHT * super::labels::GAP,
+        at.y
+            - super::labels::NAME_HEIGHT * super::labels::RISE
+            - galley.size().y / 2.,
     );
+    let pad = super::labels::NAME_HEIGHT * super::labels::GROUND_PAD;
+    painter.rect_filled(
+        egui::Rect::from_min_size(origin, galley.size()).expand(pad),
+        0.,
+        super::labels::color32(super::labels::GROUND),
+    );
+    painter.galley(origin, galley, color);
     Ok(())
 }
 
