@@ -215,8 +215,8 @@ impl System {
 
     /// Write what a report says about a system.
     ///
-    /// The one way in for everything above body level. `galos-sync` hands
-    /// this whatever [`SystemReport::of`](galos_index::SystemReport::of)
+    /// The one way in for everything above body level. `galos-db ingest`
+    /// hands this whatever [`SystemReport::of`](galos_index::SystemReport::of)
     /// made of an event and whatever a published dump gave it, so the
     /// fifteen events that name a system reach Postgres through one call
     /// rather than through a call apiece.

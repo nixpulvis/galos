@@ -40,13 +40,12 @@
 //! yet written, which [`Sink::flush`] clears as it publishes.
 
 use crate::sink::tables::{Tables, Wrote};
+use crate::sink::{Clock, Stop};
 use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
-use galos_db::index::Stop;
-use galos_db::Database;
 use galos_index::galaxy::UNKNOWN;
 use galos_index::{
     BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
@@ -174,7 +173,7 @@ pub struct Index {
     ///
     /// Held for one thing: the clock a resume point's cursor is, sampled
     /// once per publish. Nothing is ever read back out of it.
-    db: Option<Database>,
+    clock: Option<Box<dyn Clock>>,
 }
 
 impl Index {
@@ -196,7 +195,7 @@ impl Index {
     pub fn open(
         dir: &Path,
         checkpoint: &Path,
-        db: Option<Database>,
+        clock: Option<Box<dyn Clock>>,
         stop: &Stop<'_>,
     ) -> Result<Index, String> {
         // The layout first, before anything reads or writes a file: a
@@ -263,7 +262,7 @@ impl Index {
             Err(err) => return Err(format!("{}: {err}", dir.display())),
         };
 
-        let ours = by(&db);
+        let ours = by(&clock);
         let resumed = match Checkpoint::read(checkpoint) {
             Ok(it) => {
                 one_hand(dir, checkpoint, served, it.by, ours)?;
@@ -372,7 +371,7 @@ impl Index {
             new: 0,
             updated: 0,
             published_once: false,
-            db,
+            clock,
         })
     }
 
@@ -450,12 +449,9 @@ impl Index {
     /// — see the module header. A sample that fails answers the error and
     /// the publish records no cursor rather than a wrong one.
     async fn cursor(&self) -> Result<Option<NaiveDateTime>, String> {
-        match &self.db {
+        match &self.clock {
             None => Ok(None),
-            Some(db) => match db.now().await {
-                Ok(now) => Ok(Some(now.naive_utc())),
-                Err(err) => Err(format!("{err}")),
-            },
+            Some(clock) => clock.now().await.map(Some),
         }
     }
 
@@ -486,7 +482,7 @@ impl Index {
         if let Err(err) = Checkpoint::compact(
             &self.checkpoint,
             cursor,
-            by(&self.db),
+            by(&self.clock),
             self.tree.inputs(),
         ) {
             warn!(
@@ -503,8 +499,8 @@ impl Index {
 ///
 /// With a database, a resume point carries a cursor and may be resumed by a
 /// catch-up; without one it carries nothing and may not.
-fn by(db: &Option<Database>) -> By {
-    match db {
+fn by(clock: &Option<Box<dyn Clock>>) -> By {
+    match clock {
         Some(_) => By::Database,
         None => By::Events,
     }
@@ -664,7 +660,7 @@ impl Sink for Index {
         Checkpoint::compact(
             &self.checkpoint,
             cursor,
-            by(&self.db),
+            by(&self.clock),
             self.tree.inputs(),
         )
         .map_err(failed("the resume point could not be written"))?;
@@ -824,7 +820,7 @@ impl Index {
         Checkpoint::compact(
             &self.checkpoint,
             cursor,
-            by(&self.db),
+            by(&self.clock),
             self.tree.inputs(),
         )
         .map_err(failed("the resume point could not be written"))?;
@@ -867,7 +863,7 @@ mod tests {
 
     /// A sink onto a scratch directory, with nothing asking it to stop.
     fn opened(dir: &Path, checkpoint: &Path) -> Result<Index, String> {
-        Index::open(dir, checkpoint, None, galos_db::index::never())
+        Index::open(dir, checkpoint, None, crate::sink::never())
     }
 
     fn jump(system: &str, address: i64, at: [f64; 3]) -> Arc<Entry<Event>> {

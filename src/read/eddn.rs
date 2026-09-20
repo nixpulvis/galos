@@ -32,10 +32,10 @@
 //! in the same order, so which one a run reads is a constructor argument —
 //! see `doc/PLAN-EDDN-SPOOL.md`. The alternative is this whole file twice.
 
+use crate::sink::{Reporter, Sink};
+use crate::Shutdown;
 use async_channel::{Receiver, TrySendError};
 use eddn::{Envelope, Feed, Message};
-use galos::sink::{Reporter, Sink};
-use galos::Shutdown;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -107,6 +107,7 @@ impl Eddn {
     pub fn spooled(
         dir: &std::path::Path,
         start: eddn::spool::Start,
+        consumer: &str,
     ) -> Result<Eddn, String> {
         let spool =
             eddn::spool::Spool::open(dir, start, eddn::spool::Replay::Follow)
@@ -114,7 +115,7 @@ impl Eddn {
                 // Named however it was started, so a run told
                 // `from=earliest` keeps its place from there on rather
                 // than only a run that started from a cursor.
-                .named(crate::from::CONSUMER);
+                .named(consumer);
         Ok(Eddn { feed: Box::new(spool), from: dir.display().to_string() })
     }
 

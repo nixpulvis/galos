@@ -4,11 +4,13 @@
 //! `sink/` is in the library rather than in the binary: no integration test
 //! could reach it there.
 //!
-//! `galos-sync` derives the index two ways. One writes the events to Postgres
-//! and builds the directory from the rows (`sink::Db`, then
-//! `galos_db::index::catch_up`); the other accumulates the events into
-//! `galos_index::Galaxy` and publishes the directory from that
-//! (`sink::Index`). Both take the same [`Sink`] trait, so this hands one list
+//! The index is derived two ways. One writes the events to Postgres and
+//! builds the directory from the rows (`sink::Db`, then
+//! `galos_db::index::catch_up`) — which is `galos-index build --from
+//! database`; the other accumulates the events into `galos_index::Galaxy`
+//! and publishes the directory from that (`sink::Index`) — which is
+//! `galos-index ingest`, and `build --from spansh=PATH` for a dump too big
+//! to hold. Both take the same [`Sink`] trait, so this hands one list
 //! of readings — each entry and whoever said it, a commander's journal and a
 //! published dump both — to each, and compares what they published.
 //!
@@ -83,9 +85,9 @@ const CMDR: &str = "cmdr";
 /// Whoever both sides file [`dumped`]'s readings under.
 ///
 /// Nobody flew a dump: the file it was read out of is the whole of its
-/// provenance, and this is the name `galos-sync spansh` hands a sink for
-/// one — `sync::from::published`, publisher and file name. A sink that took
-/// an uploader for nobody and filed these under
+/// provenance, and this is the name a `spansh=PATH` read hands a sink for
+/// one — `galos::read::from::published`, publisher and file name. A sink
+/// that took an uploader for nobody and filed these under
 /// `galos_index::galaxy::UNKNOWN` would publish a different `updated_by`
 /// from the rows, which is the whole of what makes that column worth
 /// comparing.
@@ -227,7 +229,7 @@ fn events() -> Vec<Arc<Entry<Event>>> {
 
 /// One system as a dump lists it, and the scans it stands for.
 ///
-/// What `galos-sync spansh` hands a sink: a line of `galaxy.json`, turned
+/// What a `spansh=PATH` read hands a sink: a line of `galaxy.json`, turned
 /// into scans by [`System::scans`]. Nobody flew here, so the file it was
 /// read out of is the provenance and both sinks are handed [`DUMP`].
 ///

@@ -11,9 +11,9 @@
 //! correctly rather than none of them, and re-running costs nothing. That is
 //! the property the whole import leans on.
 
-use crate::sink::{Landed, Reporter, Sink, SystemReport};
+use crate::sink::{Clock, Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use galos_db::{record, Database};
@@ -51,13 +51,45 @@ impl Db {
     }
 
     /// Count a landing and pass it on.
-    fn counted(&mut self, landed: Option<Landed>) -> Option<Landed> {
+    ///
+    /// **Where the database's word becomes the sink's.**
+    /// `galos_db::systems::Landed` is what an upsert answers and
+    /// [`Landed`] is what a [`Sink`] answers; they say the same three
+    /// things, and keeping them apart is what lets a sink exist in a
+    /// build with no database in it. This is the only place the two meet.
+    fn counted(
+        &mut self,
+        said: Option<galos_db::systems::Landed>,
+    ) -> Option<Landed> {
+        let landed = said.map(|said| match said {
+            galos_db::systems::Landed::New => Landed::New,
+            galos_db::systems::Landed::Updated => Landed::Updated,
+            galos_db::systems::Landed::Stale => Landed::Stale,
+        });
         match landed {
             Some(Landed::New) => self.new += 1,
             Some(Landed::Updated) => self.updated += 1,
             Some(Landed::Stale) | None => {}
         }
         landed
+    }
+}
+
+/// The database's own clock, which is what a resume point's cursor is.
+///
+/// `now()` is `SELECT now() AT TIME ZONE 'utc'` — the *server's* clock and
+/// not this process's, because what the cursor has to be comparable to is
+/// the `received_at` the server stamped the rows with. A run whose host
+/// clock is a minute fast would otherwise write a cursor a minute into
+/// the future and the next catch-up would read from after the rows it
+/// needs.
+#[async_trait]
+impl Clock for Database {
+    async fn now(&self) -> Result<NaiveDateTime, String> {
+        Database::now(self)
+            .await
+            .map(|now| now.naive_utc())
+            .map_err(|err| format!("{err}"))
     }
 }
 

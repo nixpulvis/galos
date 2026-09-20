@@ -13,10 +13,10 @@
 //! that an EDSM import lands in the newest Recency bucket. Worth knowing when
 //! reading the map right after one.
 
+use crate::bar;
+use crate::sink::{Sink, SystemName, SystemReport};
+use crate::{Shard, Shutdown};
 use chrono::offset::Utc;
-use galos::bar;
-use galos::sink::{Sink, SystemName, SystemReport};
-use galos::{Shard, Shutdown};
 use std::path::{Path, PathBuf};
 
 /// A nightly dump already on disk: `--from edsm=PATH`.
@@ -54,7 +54,7 @@ impl Dump {
             }
         };
 
-        let by = crate::from::published("EDSM", &self.path);
+        let by = crate::read::from::published("EDSM", &self.path);
         place(sink, shutdown, systems, &by, self.shard).await;
         true
     }

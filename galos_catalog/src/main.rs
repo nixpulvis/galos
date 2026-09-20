@@ -10,9 +10,9 @@
 //!
 //! Catalog-only and file-only: nothing here reaches a database. Comparing a
 //! catalog against the Elite dataset needs one, so that lives where the
-//! database does, as `galos-db catalog` — the same split `galos-sync db` sits
-//! on, where the tree belongs to `galos_index` and the build to whoever can
-//! read the rows.
+//! database does, as `galos-db catalog` — the same split `galos-index build
+//! --from database` sits on, where the tree belongs to `galos_index` and
+//! the build to whoever can read the rows.
 
 use clap::{Parser, Subcommand};
 use galos_catalog::{check, hyg};

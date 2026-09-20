@@ -34,16 +34,24 @@
 //! rounds converge: the first is a full build of an hour, the second is a
 //! few minutes of rows, the third is seconds.
 //!
-//! Without `--db` there is nothing to catch up from, so the sink opens on
-//! whatever the directory already holds and goes live immediately.
+//! Without a database there is nothing to catch up from, so the sink opens
+//! on whatever the directory already holds and goes live immediately. That
+//! is every run of `galos-index ingest` but the one that passes
+//! `--catch-up`, and it is the only thing in the index tool that reads
+//! Postgres at all — behind the `db` feature with everything else that
+//! does.
 
+use crate::sink::relay::{Dropped, Live, Reading};
+use crate::sink::{Clock, Index, Sink};
+use crate::Shutdown;
 use async_channel::Receiver;
-use galos::sink::relay::{Dropped, Live, Reading};
-use galos::sink::{Index, Sink};
-use galos::Shutdown;
+#[cfg(feature = "db")]
 use galos_db::index::{self, Parts, Reached};
+#[cfg(feature = "db")]
 use galos_db::Database;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "db")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -59,6 +67,7 @@ const TICK: Duration = Duration::from_millis(100);
 const GRACE: Duration = Duration::from_secs(2);
 
 /// What to do with what was buffered while a catch-up round ran.
+#[cfg(feature = "db")]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Buffered {
     /// Apply it to the index and go live.
@@ -82,6 +91,7 @@ pub enum Buffered {
 /// what was dropped: every one of those readings was written to Postgres by
 /// the database sink *before* the relay dropped it, which is the whole
 /// reason discarding is safe.
+#[cfg(feature = "db")]
 pub fn buffered(dropped: u64) -> Buffered {
     match dropped {
         0 => Buffered::Drain,
@@ -89,11 +99,30 @@ pub fn buffered(dropped: u64) -> Buffered {
     }
 }
 
+/// What the handoff came to: a clock to open with, or a stop.
+///
+/// A stop is not a failure and not an empty clock, which is why it is not
+/// an `Option` twice over: a cold build cut short published nothing, so
+/// there is no directory to open and nothing to close out.
+enum Levelled {
+    /// Asked to stop before the directory was level. Only the handoff can
+    /// answer this, a run with nothing to be level with having nothing to
+    /// stop in the middle of.
+    #[cfg_attr(not(feature = "db"), allow(dead_code))]
+    Stopped,
+    /// Level, and here is the clock a resume point's cursor is read off —
+    /// [`None`] where the run has no database under it.
+    Ready(Option<Box<dyn Clock>>),
+}
+
 /// The index worker: what one thread does for the length of a run.
 pub struct Derive {
     pub dir: PathBuf,
     pub checkpoint: PathBuf,
-    /// The derive side's own pool, where this run has a database at all.
+    /// The derive side's own pool, where the run was asked to bring the
+    /// directory level with the database before going live. See
+    /// [`Derive::levelled`].
+    #[cfg(feature = "db")]
     pub db: Option<Database>,
     /// How often what has been read is written out, where the run follows
     /// something. [`None`] is a run with an end: nothing is published
@@ -106,7 +135,10 @@ pub struct Derive {
     /// What the relays dropped, cleared at the top of each round.
     pub dropped: Dropped,
     /// Whether the operator asked for a directory that cannot be resumed
-    /// to be replaced, rather than the run refusing.
+    /// to be replaced, rather than the run refusing. Only the handoff can
+    /// meet one: a directory is replaced by a *derive*, and an ingest
+    /// writes over what is there whatever wrote it.
+    #[cfg(feature = "db")]
     pub rebuild: bool,
     pub shutdown: Shutdown,
 }
@@ -152,10 +184,6 @@ impl Derive {
     /// An [`Index`] on a directory that is level with the database, or
     /// [`None`] where the run was asked to stop before there was one.
     ///
-    /// The rounds of the handoff. Without a database there are none: there
-    /// is nothing to be level with and the sink opens on the directory as
-    /// it stands.
-    ///
     /// The shutdown token reaches all of it: a catch-up ends between
     /// passes, a cold build between the records it reads and the regions it
     /// raises, and either open abandons a layout migration rather than hold
@@ -168,9 +196,29 @@ impl Derive {
     /// is where this one started.
     async fn open(&self) -> Result<Option<Index>, String> {
         let stop = || self.shutdown.asked();
+        match self.levelled(&stop).await? {
+            Levelled::Stopped => Ok(None),
+            Levelled::Ready(clock) => {
+                Index::open(&self.dir, &self.checkpoint, clock, &stop).map(Some)
+            }
+        }
+    }
+
+    /// Bring the directory level with the database, where the run asked
+    /// for it, and answer the clock its cursor is read off.
+    ///
+    /// The rounds of the handoff, and the one place the index tool reads
+    /// Postgres. Nothing to be level with is [`None`] and no clock: the
+    /// resume point of a directory derived from records carries no cursor,
+    /// which is what makes `galos_db::index` rebuild rather than resume
+    /// from it.
+    #[cfg(feature = "db")]
+    async fn levelled(
+        &self,
+        stop: &(impl Fn() -> bool + Send + Sync),
+    ) -> Result<Levelled, String> {
         let Some(db) = &self.db else {
-            return Index::open(&self.dir, &self.checkpoint, None, &stop)
-                .map(Some);
+            return Ok(Levelled::Ready(None));
         };
 
         for round in 1.. {
@@ -183,7 +231,7 @@ impl Derive {
                 &self.checkpoint,
                 Parts::ALL,
                 self.rebuild,
-                &stop,
+                stop,
             )
             .await
             .map_err(|err| format!("{err}"))?;
@@ -198,7 +246,7 @@ impl Derive {
                          was published and the next run builds it from the \
                          start",
                     );
-                    return Ok(None);
+                    return Ok(Levelled::Stopped);
                 }
             };
             let dropped = self.dropped.count();
@@ -234,8 +282,16 @@ impl Derive {
             }
         }
 
-        Index::open(&self.dir, &self.checkpoint, self.db.clone(), &stop)
-            .map(Some)
+        Ok(Levelled::Ready(Some(Box::new(db.clone()))))
+    }
+
+    /// Nothing to be level with: this build has no database in it.
+    #[cfg(not(feature = "db"))]
+    async fn levelled(
+        &self,
+        _stop: &(impl Fn() -> bool + Send + Sync),
+    ) -> Result<Levelled, String> {
+        Ok(Levelled::Ready(None))
     }
 
     /// Everything waiting on the channel right now, applied.
@@ -253,6 +309,11 @@ impl Derive {
     }
 
     /// Throw the buffer away, answering how much of it there was.
+    ///
+    /// Only the handoff throws anything away: a relay drops a reading only
+    /// while the worker is busy catching up, and without a database it
+    /// never is.
+    #[cfg(feature = "db")]
     fn discard(&self) -> u64 {
         let mut thrown = 0;
         while self.readings.try_recv().is_ok() {
@@ -337,13 +398,13 @@ impl Derive {
 
 /// The index brought level with the database, with no events in it at all.
 ///
-/// The `--db --index` run with no `--from`: a rebuild, a repair of one part
-/// with `--only`, or a follower of the database with `--watch`. This is what
-/// `galos-sync db` was, under the flags that say which way it runs.
+/// The `galos-index build --from database` run: a rebuild, a repair of one
+/// part with `--only`, or a follower of the rows with `--watch`.
 ///
 /// A build cut short is a run that did what it was asked and wrote nothing:
 /// it says what was abandoned and answers [`Ok`], so a Ctrl-C in the first
 /// minute of a cold build is a successful exit rather than a failed run.
+#[cfg(feature = "db")]
 pub async fn from_database(
     db: &Database,
     dir: &Path,

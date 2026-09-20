@@ -42,11 +42,11 @@
 //! lines nothing could parse — and hands back one system at a time. Each
 //! way is the short loop over it that its own side needs.
 
+use crate::bar;
+use crate::sink::{Landed, Reporter, Sink, SystemName, SystemReport};
+use crate::{Shard, Shutdown};
 use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
-use galos::bar;
-use galos::sink::{Landed, Reporter, Sink, SystemName, SystemReport};
-use galos::{Shard, Shutdown};
 use galos_index::bodies::Shared;
 use galos_index::{Build, LeftOff, Rows, Taking};
 use serde::{Deserialize, Serialize};
@@ -80,7 +80,7 @@ impl Dump {
             }
         };
 
-        let by = crate::from::published("Spansh", &self.path);
+        let by = crate::read::from::published("Spansh", &self.path);
         loop {
             let (report, scans) = match reading.next() {
                 Next::System(report, scans) => (report, scans),
@@ -501,7 +501,7 @@ impl Galaxy {
         let (mut systems, mut bodies) =
             from.as_ref().map_or((0u64, 0), |it| (it.systems, it.bodies));
         let taken_up = systems;
-        let by = crate::from::published("Spansh", &self.path);
+        let by = crate::read::from::published("Spansh", &self.path);
         // One store for the whole read, though the accumulator is a line's.
         // What it holds is what makes the body records go out a shard at a
         // time rather than one append a system; see `galos_index::pack` and

@@ -8,7 +8,7 @@
 //! — or from EDDN — without standing a database up first.
 //!
 //! So the write path is a trait and the sources no longer name a
-//! [`Database`](galos_db::Database). A source reads; a sink decides what that
+//! `galos_db::Database`. A source reads; a sink decides what that
 //! means on the other side.
 //!
 //! ## What the trait is shaped by
@@ -56,16 +56,20 @@
 //! is a failure of the run rather than of a message.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use std::sync::Arc;
 
+/// Postgres, behind the `db` feature. See the crate header for what an
+/// index-only build leaves out.
+#[cfg(feature = "db")]
 pub mod db;
 pub mod index;
 pub mod relay;
 pub mod tables;
 
+#[cfg(feature = "db")]
 pub use db::Db;
 pub use index::Index;
 pub use relay::Relay;
@@ -74,7 +78,81 @@ pub use relay::Relay;
 ///
 /// Sources count these as they read, to show how many systems a run has
 /// taken in and how many were new.
-pub use galos_db::systems::Landed;
+///
+/// **Declared here rather than re-exported from `galos_db`.** It is the
+/// return of every [`Sink`] method that writes a system, and a sink is
+/// what an index-only build is made of — a trait whose signature names a
+/// database type is a trait that drags `sqlx` into a binary with no
+/// Postgres anywhere near it. The database has its own of these and
+/// [`Db`] converts, which is three lines in the one place that has a
+/// database to convert from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Landed {
+    /// No row existed; this write created it.
+    New,
+    /// A row existed and this reading is what it now says.
+    Updated,
+    /// A row existed with a newer reading, so this one did not win.
+    ///
+    /// Not a refusal: an older reading still fills columns the row has
+    /// never held. It means the stamp did not move, so counting it as an
+    /// update would count a reading that was thrown away.
+    Stale,
+}
+
+impl Landed {
+    /// The stronger of two landings, for a reading that went to more than
+    /// one sink, or to a sink that writes more than one thing.
+    ///
+    /// New beats updated beats stale beats nothing: a reading that
+    /// created a system somewhere created a system, whatever the other
+    /// sink made of it.
+    pub fn widest(one: Option<Landed>, two: Option<Landed>) -> Option<Landed> {
+        match (one, two) {
+            (Some(Landed::New), _) | (_, Some(Landed::New)) => {
+                Some(Landed::New)
+            }
+            (Some(Landed::Updated), _) | (_, Some(Landed::Updated)) => {
+                Some(Landed::Updated)
+            }
+            (Some(Landed::Stale), _) | (_, Some(Landed::Stale)) => {
+                Some(Landed::Stale)
+            }
+            (None, None) => None,
+        }
+    }
+}
+
+/// Whether whoever asked for a run has stopped wanting it.
+///
+/// Asked between records everywhere, and between the steps of an open
+/// that has a galaxy of body files to migrate. Declared here for the
+/// reason [`Landed`] is: it is in the signature of [`Index::open`], and
+/// an index-only build must not name a database type to call it.
+pub type Stop<'a> = dyn Fn() -> bool + Send + Sync + 'a;
+
+/// A stop nothing ever asks, for a caller with nothing to stop.
+pub fn never() -> &'static Stop<'static> {
+    &|| false
+}
+
+/// The clock a resume point's cursor is read off.
+///
+/// **What the index sink wanted a database for.** A directory derived
+/// from rows carries a cursor — the moment the rows it holds were
+/// written by, which a later catch-up reads `received_at` against — and
+/// the only thing that can say that moment is the database itself. A
+/// directory derived from events carries none, and [`None`] here is what
+/// says so: not "unknown", but "there is no such clock".
+///
+/// A trait rather than a `Database`, so the sink names a clock and the
+/// one implementor that is a database lives beside [`Db`], behind the
+/// feature that has one.
+#[async_trait]
+pub trait Clock: Send + Sync {
+    /// The moment the rows this index is derived from were written by.
+    async fn now(&self) -> Result<NaiveDateTime, String>;
+}
 
 /// The whole of what a source says about a system, which is
 /// [`SystemReport`].

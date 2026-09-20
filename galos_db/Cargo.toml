@@ -5,14 +5,6 @@ authors = ["Nathan Lilienthal <nathan@nixpulvis.com>"]
 edition = "2018"
 rust-version.workspace = true
 
-# The bin's rustdoc page would land at `doc/galos_db/`, the same path the
-# `galos_db` lib crate owns. Nothing consumes this executable's rustdoc, so
-# skip documenting it and let the crate keep the name.
-[[bin]]
-name = "galos-db"
-path = "src/bin/galos-db.rs"
-doc = false
-
 [features]
 # `galos_db::testing`, which hands a test a migrated database of its own and
 # drops it again. Not on by default: nothing in an ordinary build has any

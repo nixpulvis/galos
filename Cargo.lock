@@ -3994,6 +3994,7 @@ dependencies = [
  "eddn",
  "edsm",
  "elite_journal",
+ "galos_catalog",
  "galos_db",
  "galos_index",
  "indicatif",
@@ -4048,7 +4049,6 @@ version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
- "clap 4.6.6",
  "elite_journal",
  "galos_photometry",
  "glam",

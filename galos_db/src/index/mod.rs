@@ -916,8 +916,8 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
         return None;
     }
     let rebuild = format!(
-        "\n  galos-index info {dir}\n  \
-         galos-sync --db --index {dir} --rebuild",
+        "\n  galos-index status {dir}\n  \
+         galos-index build --from database --dir {dir} --rebuild",
         dir = dir.display(),
     );
     let checkpoint = match Checkpoint::read(path) {

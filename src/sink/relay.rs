@@ -23,10 +23,11 @@
 //! is inside `galos_db::index::catch_up`, which for a cold directory is an
 //! hour. The feed runs at 31 messages a second, so the buffer fills and the
 //! reading in hand is dropped — counted, not sent. Nothing is lost by that:
-//! the database sink beside this one wrote the entry before this saw it, and
-//! the worker answers a nonzero count by discarding what it buffered and
-//! running another catch-up round, which reads it back. See
-//! `derive::buffered` in `galos-sync`.
+//! the rows the catch-up reads back hold the entry already — the database
+//! was written before this saw it — and the worker answers a nonzero count
+//! by discarding what it buffered and running another round, which reads it
+//! back. See [`crate::read::derive::buffered`], and note that only
+//! `galos-index ingest --catch-up` has rounds to recover a drop with.
 //!
 //! Once the worker is live there is no next round to recover a drop, so a
 //! full channel is waited on instead. That is backpressure onto the source:

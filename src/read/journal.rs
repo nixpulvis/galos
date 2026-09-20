@@ -27,11 +27,11 @@
 // and `odyssey` flags off `LoadGame`, a schema and a header wrapped around
 // each message, and the gateway's rules about how much and how often.
 
+use crate::sink::{Reporter, Sink, SystemName, SystemReport};
+use crate::{bar, Shard, Shutdown};
 use elite_journal::entry::{Entry, Event, NavRoute};
 use elite_journal::journal::{Journal as Reader, Read};
 use elite_journal::system::Coordinate;
-use galos::sink::{Reporter, Sink, SystemName, SystemReport};
-use galos::{bar, Shard, Shutdown};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -748,11 +748,11 @@ fn remember(dir: &Path, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sink::Landed;
     use chrono::{DateTime, Utc};
     use elite_journal::entry::market::{
         BlackMarket, Market, Outfitting, Shipyard,
     };
-    use galos::sink::Landed;
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

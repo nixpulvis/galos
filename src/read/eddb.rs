@@ -8,10 +8,10 @@
 //! files them in the Recency bucket they belong in rather than making a dead
 //! site look like news.
 
+use crate::bar;
+use crate::sink::{Sink, SystemName, SystemReport};
+use crate::{Shard, Shutdown};
 use elite_journal::system::Coordinate;
-use galos::bar;
-use galos::sink::{Sink, SystemName, SystemReport};
-use galos::{Shard, Shutdown};
 use std::path::PathBuf;
 use tracing::warn;
 

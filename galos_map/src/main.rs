@@ -9,14 +9,14 @@ use galos_index::FsSource;
 use galos_map::*;
 use std::sync::Arc;
 
-/// Default index directory, matching `galos-sync --index` with no DIR.
+/// Default index directory, matching `galos-index`'s `--dir` with no DIR.
 const INDEX_DIR: &str = ".galos_index";
 
 /// Draw Elite's galaxy from a built index directory.
 #[derive(Parser)]
 #[command(name = "galos-map", version, about)]
 struct Cli {
-    /// Index directory to draw, as built by `galos-sync --index DIR`.
+    /// Index directory to draw, as built by `galos-index build --dir DIR`.
     ///
     /// Falls back to GALOS_INDEX, then to `.galos_index`.
     #[arg(

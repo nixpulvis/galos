@@ -91,7 +91,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Who a reading is filed under when nothing names anybody.
 ///
-/// `galos-sync journal` files them under the same word, and for the same
+/// An `ingest --from journal` files them under the same word, and for the same
 /// reason: nothing said who and that is the whole of the claim. Not what a
 /// reading nobody *flew* is filed under — a published file says which file
 /// it was, and `updated_by` is provenance rather than a claim about a
@@ -234,7 +234,7 @@ impl Galaxy {
     ///
     /// Which events name a system, and what each of them says about it, is
     /// [`SystemReport::of`]'s answer rather than this function's — the same
-    /// answer `galos-sync`'s write path gets, which is what stops the two
+    /// answer `galos-db ingest`'s write path gets, which is what stops the two
     /// derivations from disagreeing about which systems exist. What is left
     /// here is the three things a report does not carry: a route's several
     /// systems, the things scanned inside one, and who is flying.

@@ -1,9 +1,11 @@
 //! # Architecture
 //!
-//! The library behind two binaries: `galos`, the query CLI (`bin/galos/`),
-//! and `galos-sync`, the ingest tool (`bin/sync/`). What they share lives
-//! here: the [`sink`]s they write through, the [`bar`] they report
-//! progress on, and the [`Shard`] and [`Shutdown`] that divide and end a
+//! The library behind three binaries: `galos-index` (`bin/index/`) and
+//! `galos-db` (`bin/db/`), which are the two stores and every way of
+//! filling one, and `galos`, the query CLI (`bin/galos/`). What they share
+//! lives here: the [`read`] path the publishers come in through, the
+//! [`sink`]s they are written out through, the [`bar`] progress is
+//! reported on, and the [`Shard`] and [`Shutdown`] that divide and end a
 //! run.
 //!
 //! The formats and the stores are in the crates it depends on:
@@ -13,12 +15,22 @@
 //! - [`eddb`] - A [EDDB](https://eddb.io) data file parser (discontinued)
 //! - [`edsm`] - A [EDSM](https://edsm.net) API adapter and data file parser
 //! - [`spansh`] - A [Spansh](https://spansh.co.uk) galaxy dump reader
-//! - [`galos_db`] - PostgreSQL database and ORM
+//! - `galos_db` - PostgreSQL database and ORM, behind the `db` feature
 //! - [`galos_index`] - The index format, and the accumulator that fills it
 //!
-//! `galos`, and any run of `galos-sync` given `--db`, need a PostGIS
-//! database migrated up to date. The [`galos_db`] crate provides the tools
-//! to manage it.
+//! ## The `db` feature
+//!
+//! On by default, and off is the point: `galos-index` writes and serves a
+//! directory, and with the feature off nothing in the build has `sqlx`,
+//! `dotenv` or a `DATABASE_URL` in it. That is not a packaging detail —
+//! it is what lets the index tool run on a machine with no Postgres
+//! installed, which is the arrangement the whole index format exists for.
+//!
+//! Two things in the seam used to name a database and now do not:
+//! [`sink::Landed`], which is what a write came to, and [`sink::Clock`],
+//! which is what a resume point's cursor is read off. The database
+//! implements the second and converts into the first, in
+//! `sink::db` — the one module that has a database to do it with.
 //!
 //! # Commands
 //!
@@ -55,23 +67,27 @@
 //!
 //! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
-//! ### `galos-sync --from SOURCE... [--db] [--index DIR]`
+//! ### `galos-index <status|ingest|build|migrate|verify|sweep|pack|diff|sectors> …`
 //!
-//! Syncs the database and an index directory from EDDN, EDSM, EDDB and the
-//! game's own journal files, in one process.
+//! Everything that is done to an index directory. `ingest --from SOURCE`
+//! follows or reads a publisher into it; `build --from database` derives
+//! one from rows; the rest report on, repair or take apart a directory
+//! that is already there. `--from` repeats, and `--from eddn` subscribes
+//! to its ZMQ service until the run is asked to stop.
 //!
-//! `--from` repeats, and `--from eddn` subscribes to its ZMQ service and
-//! processes events until the run is asked to stop.
+//! ### `galos-db <status|ingest|migrate|verify|catalog|stats> …`
 //!
-//! Its write path is here rather than in the binary: [`sink`] is the seam
-//! the sources write through, and it is what an integration test has to be
-//! able to reach. An event becomes rows in [`galos_db::record`]. What lives
-//! in `bin/sync` is the command line, the sources — the journal reader
-//! among them — and the supervisor that joins them.
-
-use galos_db::Database;
+//! The same shape over Postgres, with `ingest --from SOURCE` reading the
+//! same publishers through the same [`read`] path into the other sink.
+//!
+//! Both write paths are here rather than in a binary: [`sink`] is the seam
+//! the sources write through and it is what an integration test has to be
+//! able to reach, and [`read`] is the sources themselves, which the two
+//! tools share entire. What lives in `bin/` is the command line and the
+//! supervisor that joins the halves of a run.
 
 pub mod bar;
+pub mod read;
 pub mod shard;
 pub mod shutdown;
 pub mod sink;
@@ -79,7 +95,13 @@ pub mod sink;
 pub use shard::Shard;
 pub use shutdown::Shutdown;
 
+/// A `galos` query subcommand.
+///
+/// The query CLI's own seam, which has always taken a database because
+/// querying is what it does. Behind the `db` feature with everything else
+/// that names one.
+#[cfg(feature = "db")]
 pub trait Run {
     // TODO: Reture Error
-    fn run(&self, db: &Database);
+    fn run(&self, db: &galos_db::Database);
 }

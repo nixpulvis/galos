@@ -1,40 +1,62 @@
-//! Command-line tools for the galaxy index files.
+//! Everything that is done to a galaxy index directory.
 //!
 //! ```sh
-//! cargo run -p galos_index -- info .galos_index
-//! cargo run -p galos_index -- verify .index/full
-//! cargo run -p galos_index -- sweep .index/full --bodies --apply
-//! cargo run -p galos_index -- diff .index/from_dump .index/from_db
+//! galos-index status .index/full
+//! galos-index ingest --from eddn --dir .index/full        # keep it current
+//! galos-index build --from spansh=galaxy.json --dir .index/full
+//! galos-index build --from database --watch 5             # from the rows
+//! galos-index verify .index/full --bodies
+//! galos-index sweep .index/full --bodies --apply
+//! galos-index diff .index/from_dump .index/from_db
 //! ```
 //!
-//! Database-free: everything here reads the cell records the builder wrote,
-//! never Postgres. `info` says what one directory holds and `verify` says
-//! what is wrong with it — both read-only; `diff` says whether two of them
-//! are the same derivation, which is the question a dump-built index and a
+//! **Database-free, and that is the point.** Build it with
+//! `--no-default-features` and there is no `sqlx`, no `dotenv` and no
+//! `DATABASE_URL` anywhere in it: an index is a file format a client draws
+//! from with no server at all, so the tool that fills and repairs one runs
+//! on a machine with no Postgres installed. `build --from database` is the
+//! one verb that needs the `db` feature, and it is the one verb that is
+//! about the other store.
+//!
+//! `ingest` and `build` are both "fill this directory", and which one to
+//! reach for is a question about *memory*, not about taste. `ingest` holds
+//! a live tree and the whole names table — a kilobyte a system — because
+//! something may be reading the directory while it is written, and that is
+//! what makes a feed, a journal or a small dump work. `build` holds one
+//! region at a time and publishes nothing until it is done, which is the
+//! only way a two hundred million system dump fits in memory at all. See
+//! [`galos::read::cold`].
+//!
+//! `status` says what one directory holds and `verify` says what is wrong
+//! with it — both read-only; `diff` says whether two of them are the same
+//! derivation, which is the question a dump-built index and a
 //! database-built index of the same galaxy are there to answer.
 //!
 //! The rest write, and each takes `<dir>.lock` for as long as it holds the
 //! directory: `sweep` gives back what nothing refers to, `pack` moves loose
-//! body files into the shards, `fold-names` and `upgrade` bring a
-//! directory's format forward. Every one of them weighs before it acts and
-//! reports before it is asked to act, because the passes are minutes over a
-//! galaxy and a silent terminal is not a run anybody can judge. Ctrl-C is
-//! answered between shards; a second one kills.
+//! body files into the shards, `migrate` brings a directory's format
+//! forward. Every one of them weighs before it acts and reports before it
+//! is asked to act, because the passes are minutes over a galaxy and a
+//! silent terminal is not a run anybody can judge. Ctrl-C is answered
+//! between shards; a second one kills.
 
 use clap::{Parser, Subcommand};
 use galos_index::geometry::MAX_LEVEL;
 use galos_index::{
-    Bodies, Cell, Index, NameEntry, PopulatedSystem, Published, SystemBoost,
-    SystemReach, source, store,
+    source, store, Bodies, Cell, Index, NameEntry, PopulatedSystem, Published,
+    SystemBoost, SystemReach,
 };
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-/// Read and inspect galaxy index files.
+mod fill;
+
+/// Fill, inspect and repair a galaxy index directory.
 #[derive(Parser)]
 #[command(name = "galos-index", version, about)]
 struct Cli {
@@ -52,11 +74,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Summarise a built index directory: its shape and the galaxy's summed light.
-    Info {
+    Status {
         /// The index directory to read.
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
+    /// Read a publisher into the directory, following it where it does not
+    /// end.
+    ///
+    /// Holds a live tree and publishes on a beat, so a map reading the
+    /// directory sees what arrives. A galaxy-sized dump wants `build`
+    /// instead — see the `--from spansh=PATH` note there.
+    Ingest(fill::Ingest),
+    /// Derive the whole directory from one finite source, publishing
+    /// nothing until it is built.
+    Build(fill::Build),
     /// Compare two built index directories: are they the same derivation?
     Diff {
         /// The two index directories to compare.
@@ -106,15 +138,18 @@ enum Command {
         #[arg(long)]
         bodies: bool,
     },
-    /// Fold a directory's MessagePack names chunks into the mapped table.
-    FoldNames {
-        /// The index directory to fold.
-        #[arg(default_value = ".galos_index")]
-        dir: PathBuf,
-    },
-    /// Bring a directory up to the format this build reads, in place.
-    Upgrade {
-        /// The index directory to upgrade.
+    /// Bring a directory's format forward, in place: its names chunks
+    /// folded into the mapped table, its payloads rewritten to the columns
+    /// this build reads, and the table itself brought to the version this
+    /// build writes.
+    ///
+    /// One verb rather than three, because there is no order to choose
+    /// between: the chunks are older than the table, the table is read by
+    /// the payload rewrite, and a directory half forward is one the next
+    /// refusal names again. Idempotent, so running it on something already
+    /// current costs a version read apiece.
+    Migrate {
+        /// The index directory to bring forward.
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
@@ -150,29 +185,72 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
     std::process::exit(code)
 }
 
-fn main() {
+/// What `RUST_LOG` falls back to.
+///
+/// Plain `info`, there being no chatty dependency to silence: the one
+/// crate that needed naming was `sqlx`, and a build of this tool need not
+/// contain it. `galos_db::HEARD` is what the database tool uses, and it
+/// names its own.
+const HEARD: &str = "info";
+
+#[async_std::main]
+async fn main() -> ExitCode {
+    // The reporting verbs print; `ingest` and `build` trace, and so does
+    // everything they call. Nothing a crate traces goes anywhere until
+    // something is listening for it.
+    tracing_subscriber::fmt()
+        // Above whatever bars are drawing, so they keep the bottom lines
+        // and the log does not land on top of them.
+        .with_writer(galos::bar::Log)
+        // Color is for a terminal. Redirected, it would be escape codes
+        // around every line of the log.
+        .with_ansi(std::io::stderr().is_terminal())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| HEARD.into()),
+        )
+        .init();
+
     let cli = Cli::parse();
     let forced = cli.force_lock;
-    asking_to_stop();
     match cli.command {
-        Command::Info { dir } => info(&dir),
-        Command::Diff { a, b, bodies, detail, limit } => {
-            diff(&a, &b, Compare { bodies, detail, limit })
-        }
-        Command::Pack { dir } => pack(&dir, forced),
-        Command::Sweep { dir, bodies, apply } => {
-            sweep(&dir, bodies, apply, forced)
-        }
-        Command::Verify { dir, bodies } => verify(&dir, bodies),
-        Command::FoldNames { dir } => fold_names(&dir, forced),
-        Command::Upgrade { dir } => upgrade(&dir, forced),
-        Command::Sectors { dir, out, force } => {
-            sectors(&dir, out.as_deref(), force)
+        // The two that fill a directory install their own handler: they
+        // have a publish and a resume point to close out, and what asks
+        // them to stop is a `Shutdown` several tasks read.
+        Command::Ingest(it) => fill::ingest(it, forced).await,
+        Command::Build(it) => fill::build(it, forced).await,
+        // Everything else is one pass over the directory, stopped between
+        // shards by the flag [`stopping`] reads.
+        pass => {
+            asking_to_stop();
+            match pass {
+                Command::Status { dir } => status(&dir),
+                Command::Diff { a, b, bodies, detail, limit } => {
+                    diff(&a, &b, Compare { bodies, detail, limit })
+                }
+                Command::Pack { dir } => pack(&dir, forced),
+                Command::Sweep { dir, bodies, apply } => {
+                    sweep(&dir, bodies, apply, forced)
+                }
+                Command::Verify { dir, bodies } => verify(&dir, bodies),
+                Command::Migrate { dir } => migrate(&dir, forced),
+                Command::Sectors { dir, out, force } => {
+                    sectors(&dir, out.as_deref(), force)
+                }
+                // Answered above, under the handler that suits them.
+                Command::Ingest(_) | Command::Build(_) => unreachable!(),
+            }
+            ExitCode::SUCCESS
         }
     }
 }
 
-/// Whether the run has been asked to stop.
+/// Whether the run has been asked to stop, for the passes that answer one.
+///
+/// A process-wide flag rather than a token threaded through: these are
+/// one-pass commands, the handler is installed once at the top of `main`,
+/// and what reads it is a `&dyn Fn() -> bool` several layers down inside
+/// `galos_index`.
 static ASKED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -185,23 +263,29 @@ static ASKED: std::sync::atomic::AtomicBool =
 /// checked between shards, so a stop lands in the time one shard takes
 /// and the command reports what it reclaimed before it was stopped.
 ///
-/// The handler puts the default back, so a *second* Ctrl-C kills the
-/// process as it always did — which is the answer for a pass that is
-/// somehow not reaching its next flag check.
+/// A *second* Ctrl-C leaves at once, which is the answer for a pass that
+/// is somehow not reaching its next flag check.
+///
+/// Through `ctrlc`, which is what the filling verbs install as well — one
+/// mechanism, rather than a hand-rolled `sigaction` here and a crate
+/// there. What differs is only what is asked to stop: a pass has a flag,
+/// and a run that follows a feed has a `Shutdown` several tasks read.
 fn asking_to_stop() {
-    #[cfg(unix)]
-    {
-        extern "C" fn asked(_: libc::c_int) {
-            ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
-            // SAFETY: `signal` is async-signal-safe, and this is the whole
-            // of what the handler does besides one atomic store.
-            unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+    let installed = ctrlc::set_handler(|| {
+        if ASKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("stopping now");
+            std::process::exit(130);
         }
-        // SAFETY: installing a handler that touches one atomic and one
-        // signal-safe call.
-        unsafe {
-            libc::signal(libc::SIGINT, asked as *const () as libc::sighandler_t)
-        };
+        eprintln!(
+            "stopping at the end of this shard, which takes a moment. \
+             Ctrl-C again to stop now."
+        );
+    });
+    if let Err(err) = installed {
+        eprintln!(
+            "no signal handler; Ctrl-C will stop this pass where it \
+                   stands: {err}"
+        );
     }
 }
 
@@ -276,9 +360,11 @@ fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
             leave(Some(lock), 1);
         }
     }
-    if bodies && let Err(err) = sweep_bodies(dir, apply) {
-        eprintln!("{}: {err}", dir.display());
-        leave(Some(lock), 1);
+    if bodies {
+        if let Err(err) = sweep_bodies(dir, apply) {
+            eprintln!("{}: {err}", dir.display());
+            leave(Some(lock), 1);
+        }
     }
 }
 
@@ -551,29 +637,37 @@ fn size(bytes: u64) -> String {
     }
 }
 
-/// Bring a directory up to the format this build reads
+/// Bring a directory up to the format this build reads.
 ///
 /// What [`galos_index::store`]'s version refusal names, so an operator met
-/// by "rebuild the directory" has one thing to run. It rewrites the
-/// payloads without reimporting the galaxy:
+/// by "rebuild the directory" has one thing to run. Three rewrites, in the
+/// only order they can happen in:
 ///
-/// The payloads written before the columns hold every field the new ones do
-/// but the star kind, and that is derivable from `bodies/` — the scan
-/// record the class comes from. So this joins the two and rewrites each
-/// cell, where the alternative is running the importer over the dump again.
+/// 1. **The names chunks are folded into the mapped table.** A build
+///    streams chunks and the table is what a read draws from, so a galaxy
+///    left unfolded is a galaxy of names nothing can spell. It is an
+///    external sort of gigabytes, which is why it is a verb and not
+///    something discovered at the front of somebody's import.
+/// 2. **The payloads are rewritten to the columns this build reads.**
 ///
-/// The names table comes forward too, where its version is older than the
-/// one this build writes. That rewrite is what drops every name the
-/// address spells — 97.4 % of a galaxy, and 3.94 GB of `text.bin` down to
-/// 133 MB — and it is a whole rewrite of the base, so it is done here on
-/// purpose rather than at the front of somebody's import.
+///    The ones written before them hold every field the new ones do but
+///    the star kind, and that is derivable from `bodies/` — the scan
+///    record the class comes from. So this joins the two and rewrites each
+///    cell, where the alternative is running the importer over the dump
+///    again.
+/// 3. **The table comes to the version this build writes**, where it is
+///    behind. That rewrite is what drops every name the address spells —
+///    97.4 % of a galaxy, and 3.94 GB of `text.bin` down to 133 MB.
 ///
-/// Idempotent and interruptible: a cell already columnar is left alone,
-/// `index.bin` is rewritten last, and a names table already at this
-/// version is not touched. The bodies, the sidecars and the tree itself
-/// are unchanged.
-fn upgrade(dir: &Path, forced: bool) {
+/// Idempotent and interruptible: a directory with no chunks is not
+/// folded, a cell already columnar is left alone, `index.bin` is rewritten
+/// last, and a table already at this version is not touched. The bodies,
+/// the sidecars and the tree itself are unchanged.
+fn migrate(dir: &Path, forced: bool) {
     let lock = held(dir, forced);
+    if !fold_names(dir, &lock) {
+        leave(Some(lock), 2);
+    }
     let at = std::time::Instant::now();
     // No stop flag of its own: a run cut short by a Ctrl-C leaves the
     // directory in a state the next run takes up, `index.bin` being
@@ -701,16 +795,13 @@ fn pack(dir: &Path, forced: bool) {
 /// gigabytes, and an operator would rather spend it on purpose than
 /// discover it at the front of a build.
 ///
-/// It also brings the table's *version* forward, which is the other reason
-/// to run it on purpose: a version 1 base stored every name, and rewriting
-/// it drops the 97.4 % of them the address spells — see [`names_forward`].
-///
-/// Idempotent: a directory with no chunks and a table already at this
-/// version has nothing to do. Safe to run against a directory a map is
-/// *reading*, the table being swapped in by one rename and the chunks
-/// removed only after.
-fn fold_names(dir: &Path, forced: bool) {
-    let lock = held(dir, forced);
+/// Idempotent: a directory with no chunks has nothing to do. Safe to run
+/// against a directory a map is *reading*, the table being swapped in by
+/// one rename and the chunks removed only after.
+/// Answers whether it folded what was there, so the caller holding the
+/// lock is the one that exits — see [`leave`].
+fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
+    let _ = lock;
     let start = std::time::Instant::now();
     match galos_index::names::fold_chunks(dir) {
         Ok(Some(named)) => println!(
@@ -719,14 +810,12 @@ fn fold_names(dir: &Path, forced: bool) {
             start.elapsed(),
         ),
         Ok(None) => println!("{}: no names chunks to fold", dir.display()),
-        // The lock goes with it: `fatal` exits, and an exit runs no
-        // destructors. See [`leave`].
         Err(e) => {
             eprintln!("cannot read {}: {e}", dir.display());
-            leave(Some(lock), 2);
+            return false;
         }
     }
-    names_forward(dir, &lock);
+    true
 }
 
 /// Learn the sector dictionary from a directory's names table.
@@ -880,7 +969,7 @@ fn sector_words(name: &str) -> Option<&str> {
 /// live import unlinked the import's row file and the build ended in a bare
 /// "No such file or directory" three minutes later.
 ///
-/// `galos-sync` takes the same lock, so either order of the two refuses
+/// `ingest` and `build` take the same lock, so either order refuses
 /// rather than interleaves.
 ///
 /// `forced` is `--force-lock`, and is for the one thing a refusal cannot
@@ -902,7 +991,7 @@ fn held(dir: &Path, forced: bool) -> galos_index::Lock {
 }
 
 /// Print a summary of a built index directory.
-fn info(dir: &Path) {
+fn status(dir: &Path) {
     let index = match Index::read(dir) {
         Ok(index) => index,
         Err(e) => {

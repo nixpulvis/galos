@@ -268,7 +268,7 @@ impl Sidecars {
     /// What the directory publishes for a system, where it publishes one.
     ///
     /// For a caller merging a thinner row over a richer one; see
-    /// `galos-sync`'s `sink::tables`.
+    /// `galos::sink::tables`.
     pub fn published(&self, address: i64) -> Option<&PopulatedSystem> {
         self.populated.get(&address)
     }

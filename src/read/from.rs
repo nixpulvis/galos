@@ -16,7 +16,7 @@
 //! A run of sources that all end writes its directory once, when it ends; a
 //! run that follows one writes on `--publish`'s beat as well.
 
-use galos::Shard;
+use crate::Shard;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -152,11 +152,14 @@ fn spool(said: String) -> Result<Source, String> {
     Ok(Source::Spool(dir, start))
 }
 
-/// What this run calls itself in a spool's `cursors/` directory.
+/// What a run calls itself in a spool's `cursors/` directory, where it
+/// did not say.
 ///
 /// One name per consumer, so `galos-db` and `galos-index` keep their own
-/// places in the same spool and neither can move the other's.
-pub const CONSUMER: &str = "galos-sync";
+/// places in the same spool and neither can move the other's — which is
+/// why the tools pass their own and this is only the fallback for a
+/// caller that is neither.
+pub const CONSUMER: &str = "galos";
 
 /// A path as written, with a leading `~` standing for the home directory.
 ///
@@ -292,11 +295,15 @@ mod tests {
             "spansh=galaxy.json".parse(),
             Ok(Source::Spansh(PathBuf::from("galaxy.json"))),
         );
+        // The name in it is the fallback: a tool passes its own to
+        // `Eddn::spooled`, which re-points the cursor before a message is
+        // read. What the parse decides is only *that* it starts from a
+        // cursor.
         assert_eq!(
             "spool=/var/lib/galos/spool".parse(),
             Ok(Source::Spool(
                 PathBuf::from("/var/lib/galos/spool"),
-                eddn::spool::Start::Cursor("galos-sync".to_owned()),
+                eddn::spool::Start::Cursor(CONSUMER.to_owned()),
             )),
         );
     }
