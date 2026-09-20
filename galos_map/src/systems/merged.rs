@@ -199,7 +199,7 @@ impl Prominent {
     /// thing under the cell.
     ///
     /// The busiest of the prefix where marks are drawn by population,
-    /// because there a mark's *size* is how many people live there and the
+    /// because there a mark's *size* is the population it carries and the
     /// biggest is what the eye is aiming at — the same rule
     /// `bounded::busiest_first` draws them in. Of the cell's own brightest
     /// and not of its whole subtree: the systems further down live in the
@@ -488,11 +488,12 @@ mod tests {
         let held = inhabited(8);
         let crowd = average_mark(Some(&held), 10_000, ColorBy::Allegiance,
             &gains);
-        let people = average_mark(Some(&held), 8, ColorBy::Allegiance, &gains);
+        let colonies =
+            average_mark(Some(&held), 8, ColorBy::Allegiance, &gains);
         assert!(
-            people.length() > crowd.length() * 2.,
+            colonies.length() > crowd.length() * 2.,
             "the colonies were drowned in a crowd the mode does not draw: \
-             {people:?} against {crowd:?}",
+             {colonies:?} against {crowd:?}",
         );
 
         // And a cell nobody lives in stands for nothing at all in that
@@ -669,7 +670,7 @@ mod tests {
     /// While marks are drawn by population, the mark stands for the
     /// busiest system under it and not the brightest
     ///
-    /// A mark's *size* is how many people live there in that mode, so the
+    /// A mark's *size* is the population it carries in that mode, so the
     /// biggest is what the eye is aiming at — the same rule the marks
     /// themselves are drawn in. Off the light, the brightest is what a
     /// mark says and what it answers with.
@@ -833,12 +834,12 @@ pub(crate) fn weigh_blobs(
     // standing for the crowd was a grey mark over a sky whose own systems
     // are not drawn. Reported as a lattice of grey fills where the mode
     // had drawn nothing but colonies.
-    let peopled_only = super::scale::by_population(&view, &scale_population);
+    let populated_only = super::scale::by_population(&view, &scale_population);
     standing.revision = revision;
     standing.marks.clear();
     standing.marks.extend(planned.0.blobs.iter().map(|blob| {
         let held = settled.0.get(blob.id);
-        let stands_for = match peopled_only {
+        let stands_for = match populated_only {
             true => held.map_or(0, galos_index::Inhabited::count),
             false => blob.count,
         };
@@ -884,16 +885,16 @@ pub struct Named {
 /// backdrop would keep light for systems no such filter could ever admit.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Held {
-    /// Named systems somebody lives in.
-    pub peopled: u32,
-    /// Named systems nobody does.
+    /// Named systems with a population.
+    pub populated: u32,
+    /// Named systems with none.
     pub alone: u32,
 }
 
 impl Held {
     /// Named either way, which is what a merged mark stands over.
     pub fn whole(self) -> u32 {
-        self.peopled + self.alone
+        self.populated + self.alone
     }
 }
 
@@ -910,11 +911,11 @@ impl Named {
         self.revision = revision;
         self.cells.clear();
         let cells = &mut self.cells;
-        let mut hold = |at: [f64; 3], peopled: bool| {
+        let mut hold = |at: [f64; 3], populated: bool| {
             index.descend(at, |id| {
                 let held = cells.entry(id).or_default();
-                match peopled {
-                    true => held.peopled += 1,
+                match populated {
+                    true => held.populated += 1,
                     false => held.alone += 1,
                 }
             });
@@ -938,7 +939,7 @@ impl Named {
                 super::filter::Filter::Route { systems, .. }
                 | super::filter::Filter::Systems { systems, .. } => {
                     for &address in systems {
-                        let (at, peopled) = match populated.get(address) {
+                        let (at, lived_in) = match populated.get(address) {
                             Some(known) => (
                                 [
                                     f64::from(known.position[0]),
@@ -949,7 +950,7 @@ impl Named {
                             ),
                             None => (names.placed(address).into(), false),
                         };
-                        hold(at, peopled);
+                        hold(at, lived_in);
                     }
                 }
                 // Answered off the aggregate's own age column instead; see
@@ -986,16 +987,16 @@ fn average_mark(
     gains: &super::glow::Gains,
 ) -> Vec3 {
     let mut light = Vec3::ZERO;
-    let mut peopled = 0u64;
+    let mut counted = 0u64;
     if let Some(held) = held {
         super::glow::political(held, color_by, |hue, systems| {
             light += hue.light()
                 * super::glow::mark_light(hue, true, gains)
                 * systems as f32;
-            peopled += u64::from(systems);
+            counted += u64::from(systems);
         });
     }
-    let alone = count.saturating_sub(peopled) as f32;
+    let alone = count.saturating_sub(counted) as f32;
     let grey = crate::systems::spawn::Hue::Grey;
     light += grey.light() * super::glow::mark_light(grey, false, gains) * alone;
     light / count.max(1) as f32

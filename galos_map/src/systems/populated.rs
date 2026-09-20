@@ -94,7 +94,7 @@ impl PopulatedCells {
 ///
 /// Once, when the index and the table have both arrived. The descent is
 /// the tree's own — [`galos_index::Index::descend`] — so a system lands in
-/// exactly the cells the walk can mark, and a cell asked about its people
+/// exactly the cells the walk can mark, and a cell asked about its populated systems
 /// gets the whole of its subtree's rather than the slice it happens to
 /// own.
 pub(crate) fn gather(
@@ -133,12 +133,12 @@ pub(crate) fn gather(
     );
     let mut runs: FxHashMap<CellId, Range<u32>> =
         FxHashMap::with_capacity_and_hasher(gathered.len(), Default::default());
-    for (id, mut people) in gathered {
-        people.sort_unstable_by_key(|&(count, address)| {
+    for (id, mut here) in gathered {
+        here.sort_unstable_by_key(|&(count, address)| {
             (std::cmp::Reverse(count), address)
         });
         let from = lived.len() as u32;
-        lived.extend(people.into_iter().map(|(_, address)| address));
+        lived.extend(here.into_iter().map(|(_, address)| address));
         runs.insert(id, from..lived.len() as u32);
     }
 
@@ -213,13 +213,14 @@ mod tests {
         app
     }
 
-    /// A cell answers with the people of its whole subtree, busiest first
+    /// A cell answers with the populated systems of its whole subtree,
+    /// busiest first
     ///
     /// Busiest first because that is the order the marks are spent in: a
     /// cell draws a share of what it holds, and in this mode a mark's size
     /// is how many live there, so the ones worth drawing are the large.
     #[test]
-    fn a_cell_answers_with_its_people_busiest_first() {
+    fn a_cell_answers_with_its_populated_systems_busiest_first() {
         let app = gathered(vec![
             lived_in(1, [0., 0., 0.], 1_000),
             lived_in(2, [1., 0., 0.], 40_000),

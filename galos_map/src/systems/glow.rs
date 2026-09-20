@@ -908,7 +908,7 @@ fn build_glow(
     // for anything. Laid anyway, the galaxy kept its grey while the marks
     // over it were only the colonies, which is the two halves of the
     // picture answering different questions.
-    let peopled_only =
+    let populated_only =
         crate::systems::scale::by_population(&view, &scale_population);
     // And the tilt, which is the dial's rest moving with the reach rather
     // than the user moving it; see [`RESTS_AT`].
@@ -1096,14 +1096,14 @@ fn build_glow(
             );
             let colony_share = filtering
                 .filters
-                .admitted_share(aged, held_named.peopled, peopled);
+                .admitted_share(aged, held_named.populated, peopled);
             let spent = |share: f32| {
                 share + (1. - share) * filtering.dim.opacity()
             };
 
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
-                && !peopled_only
+                && !populated_only
                 && let Some(at) = mass.centroid()
                 && in_reach(at)
             {
