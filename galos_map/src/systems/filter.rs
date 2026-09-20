@@ -1044,11 +1044,10 @@ impl Filters {
         for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 Filter::Recency { span, .. } => {
-                    let last = galos_index::derive::age_bucket(
-                        span.num_days().max(0),
-                    ) as usize;
-                    let fresh: u32 =
-                        aged.iter().take(last + 1).copied().sum();
+                    let last =
+                        galos_index::derive::age_bucket(span.num_days().max(0))
+                            as usize;
+                    let fresh: u32 = aged.iter().take(last + 1).copied().sum();
                     share = share.min(fresh as f32 / whole);
                 }
                 _ => picking = true,
@@ -1066,7 +1065,7 @@ impl Filters {
     /// resident tables: a moment is published per *payload point* and the
     /// populated table carries none. What turns on it is where the
     /// population scale reads its systems from; see
-    /// [`super::populated::PopulatedCells`].
+    /// [`super::populated::PopulatedOrder`].
     pub(crate) fn asking_a_span(&self) -> bool {
         self.asked
             .iter()

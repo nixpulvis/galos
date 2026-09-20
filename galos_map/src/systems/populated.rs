@@ -31,11 +31,9 @@ use crate::systems::MapSet;
 use crate::{Populated, ResidentIndex};
 use bevy::prelude::*;
 use galos_index::CellId;
-use rustc_hash::FxHashMap;
-use std::ops::Range;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<PopulatedCells>();
+    app.init_resource::<PopulatedOrder>();
     // Before anything draws from it, and only when the tables it is built
     // from arrive — which is once, at startup.
     app.add_systems(
@@ -46,71 +44,78 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-/// The systems anybody lives in, by the cell that holds them, busiest first
+/// Every system anybody lives in, busiest first
 ///
-/// **A flat array and a range apiece, not a list per cell.** Every
-/// populated system belongs to every cell on its path from the root, so
-/// the entries outnumber the systems: measured over `.index/full`,
-/// 1,669,602 entries over 148,199 systems and **4,314 cells** — the tree
-/// is shallow where the colonies are, thirteen levels at the deepest. That
-/// is 13.4 MB of addresses and a hundred kilobytes of ranges, gathered in
-/// 24 ms at startup, against the whole-cell payload reads it replaces: one
-/// faction filter at twelve thousand light years held **2.0 GB** of
-/// payload where the same view unfiltered held 46 MB.
+/// **One order for the galaxy, not a list per cell.** A draw wants the
+/// busiest systems in reach, and a cell is not how it wants to ask:
+/// every populated system belongs to every cell on its path from the
+/// root, so a pass that asks cell by cell walks the same systems once
+/// per level — measured over `.index/full` with the reach at five
+/// hundred light years, 1,559,152 entries read to choose 25,744 marks,
+/// over an index holding 148,199 populated systems in all. Read as one
+/// order it is 148,199 entries, and the pass stops as soon as the sky
+/// is full.
 ///
-/// Sorted busiest first within each cell, and by address where two are
-/// equal, so the order is the same answer every time rather than whatever
-/// the sort happened to do.
+/// 7.1 MB — 48 bytes apiece — gathered in 18 ms at startup, against the
+/// whole-cell payload reads it replaces: one faction filter at twelve
+/// thousand light years held **2.0 GB** of payload where the same view
+/// unfiltered held 46 MB.
+///
+/// Busiest first, and by address where two are equal, so it is the same
+/// answer every time rather than whatever the sort happened to do.
 #[derive(Resource, Default)]
-pub struct PopulatedCells {
-    /// Addresses, a cell's own run at a time.
-    lived: Vec<i64>,
-    /// Where each cell's run sits in it.
-    runs: FxHashMap<CellId, Range<u32>>,
+pub struct PopulatedOrder {
+    order: Vec<Stands>,
 }
 
-impl PopulatedCells {
-    /// The systems this cell's subtree holds that anybody lives in,
-    /// busiest first.
-    ///
-    /// Empty for a cell nobody lives in, which is nearly every cell: the
-    /// map holds two hundred million systems and 148,199 of them are
-    /// inhabited.
-    pub fn of(&self, id: CellId) -> &[i64] {
-        match self.runs.get(&id) {
-            Some(run) => &self.lived[run.start as usize..run.end as usize],
-            None => &[],
-        }
-    }
-
-    /// How many cells anybody lives in.
-    #[cfg(test)]
-    fn cells(&self) -> usize {
-        self.runs.len()
-    }
-}
-
-/// Gather the populated table into the cells that hold it
+/// One populated system as a draw wants it: where it stands, what to
+/// call it up by, and the deepest cell of the tree that holds it
 ///
-/// Once, when the index and the table have both arrived. The descent is
-/// the tree's own — [`galos_index::Index::descend`] — so a system lands in
-/// exactly the cells the walk can mark, and a cell asked about its populated systems
-/// gets the whole of its subtree's rather than the slice it happens to
-/// own.
+/// The cell because the draw books its mark against one — the field
+/// subtracts what a cell has drawn from the light it lays for that cell,
+/// so a mark nobody accounts for is a mark drawn twice. The deepest, and
+/// the draw walks up from it to the shallowest the plan marks: a dozen
+/// steps, and only for what is drawn.
+#[derive(Copy, Clone, Debug)]
+pub struct Stands {
+    pub address: i64,
+    pub at: [f64; 3],
+    pub deepest: CellId,
+}
+
+impl PopulatedOrder {
+    /// Every populated system, busiest first.
+    pub fn order(&self) -> &[Stands] {
+        &self.order
+    }
+
+    /// How many systems anybody lives in.
+    #[cfg(test)]
+    fn systems(&self) -> usize {
+        self.order.len()
+    }
+}
+
+/// Put the populated table in the order a draw reads it
+///
+/// Once, when the index and the table have both arrived. The cell each
+/// lands in is found by the tree's own descent —
+/// [`galos_index::Index::descend`] — so it is a cell the walk can mark
+/// rather than one computed beside it.
 pub(crate) fn gather(
     index: Res<ResidentIndex>,
     populated: Res<Populated>,
-    mut cells: ResMut<PopulatedCells>,
+    mut cells: ResMut<PopulatedOrder>,
 ) {
     if !index.is_changed() && !populated.is_changed() {
         return;
     }
     let _zone = info_span!("gathering the populated").entered();
 
-    // Gathered per cell and then flattened, since a system is met once per
-    // cell of its path and the paths interleave. The population rides
-    // along to sort by and is dropped: what the draw wants is the order.
-    let mut gathered: FxHashMap<CellId, Vec<(u64, i64)>> = FxHashMap::default();
+    // The population rides along to sort by and is then dropped: what a
+    // draw wants out of this is the order, and re-reading the count off
+    // the table costs a hash lookup it never needs.
+    let mut order: Vec<(u64, Stands)> = Vec::new();
     for system in populated.0.values() {
         if system.population == 0 {
             continue;
@@ -120,34 +125,21 @@ pub(crate) fn gather(
             f64::from(system.position[1]),
             f64::from(system.position[2]),
         ];
-        index.0.descend(at, |id| {
-            gathered
-                .entry(id)
-                .or_default()
-                .push((system.population, system.address));
-        });
+        let mut deepest = CellId::ROOT;
+        index.0.descend(at, |id| deepest = id);
+        order.push((
+            system.population,
+            Stands { address: system.address, at, deepest },
+        ));
     }
+    order.sort_unstable_by_key(|&(count, stands)| {
+        (std::cmp::Reverse(count), stands.address)
+    });
+    let order: Vec<Stands> =
+        order.into_iter().map(|(_, stands)| stands).collect();
 
-    let mut lived: Vec<i64> = Vec::with_capacity(
-        gathered.values().map(Vec::len).sum::<usize>(),
-    );
-    let mut runs: FxHashMap<CellId, Range<u32>> =
-        FxHashMap::with_capacity_and_hasher(gathered.len(), Default::default());
-    for (id, mut here) in gathered {
-        here.sort_unstable_by_key(|&(count, address)| {
-            (std::cmp::Reverse(count), address)
-        });
-        let from = lived.len() as u32;
-        lived.extend(here.into_iter().map(|(_, address)| address));
-        runs.insert(id, from..lived.len() as u32);
-    }
-
-    info!(
-        cells = runs.len(),
-        systems = lived.len(),
-        "gathered who lives where",
-    );
-    *cells = PopulatedCells { lived, runs };
+    info!(systems = order.len(), "gathered who lives where");
+    *cells = PopulatedOrder { order };
 }
 
 #[cfg(test)]
@@ -158,7 +150,11 @@ mod tests {
     use std::sync::Arc;
 
     /// One populated system at `at` with `population` living there.
-    fn lived_in(address: i64, at: [f32; 3], population: u64) -> PopulatedSystem {
+    fn lived_in(
+        address: i64,
+        at: [f32; 3],
+        population: u64,
+    ) -> PopulatedSystem {
         PopulatedSystem {
             address,
             name: format!("System {address}").into(),
@@ -201,7 +197,7 @@ mod tests {
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<PopulatedCells>();
+        app.init_resource::<PopulatedOrder>();
         app.insert_resource(ResidentIndex(built.index.clone()));
         app.insert_resource(Populated(Arc::new(
             rows.into_iter()
@@ -213,38 +209,48 @@ mod tests {
         app
     }
 
-    /// A cell answers with the populated systems of its whole subtree,
-    /// busiest first
+    /// The table answers busiest first
     ///
     /// Busiest first because that is the order the marks are spent in: a
-    /// cell draws a share of what it holds, and in this mode a mark's size
-    /// is how many live there, so the ones worth drawing are the large.
+    /// draw takes from the front until the sky is full, and in this mode a
+    /// mark's size is how many live there, so the ones worth drawing are
+    /// the large.
     #[test]
-    fn a_cell_answers_with_its_populated_systems_busiest_first() {
+    fn the_populated_answer_busiest_first() {
         let app = gathered(vec![
             lived_in(1, [0., 0., 0.], 1_000),
             lived_in(2, [1., 0., 0.], 40_000),
             lived_in(3, [2., 0., 0.], 9_000),
         ]);
-        let held = app.world().resource::<PopulatedCells>();
+        let held = app.world().resource::<PopulatedOrder>();
 
-        // The root holds all three, busiest first.
-        assert_eq!(held.of(CellId::ROOT), &[2, 3, 1]);
-        // And every one of them is in the deepest cell that holds it.
-        for (address, at) in
-            [(1i64, [0., 0., 0.]), (2, [1., 0., 0.]), (3, [2., 0., 0.])]
-        {
-            let deepest = CellId::of_point(at, 13);
-            let mut found = false;
-            let mut id = deepest;
-            loop {
-                found |= held.of(id).contains(&address);
-                match id.parent() {
-                    Some(up) => id = up,
-                    None => break,
-                }
-            }
-            assert!(found, "nothing holds {address}");
+        let order: Vec<i64> =
+            held.order().iter().map(|stands| stands.address).collect();
+        assert_eq!(order, &[2, 3, 1]);
+    }
+
+    /// Each is carried with the deepest cell of the tree that holds it,
+    /// which is what a draw books its mark against.
+    #[test]
+    fn each_knows_the_deepest_cell_that_holds_it() {
+        let app = gathered(vec![
+            lived_in(1, [0., 0., 0.], 1_000),
+            lived_in(2, [1., 0., 0.], 40_000),
+        ]);
+        let held = app.world().resource::<PopulatedOrder>();
+
+        for stands in held.order() {
+            assert!(
+                stands.deepest.level > 0,
+                "{} was left at the root",
+                stands.address,
+            );
+            assert_eq!(
+                stands.deepest,
+                CellId::of_point(stands.at, stands.deepest.level),
+                "{} is not in the cell it was given",
+                stands.address,
+            );
         }
     }
 
@@ -256,8 +262,10 @@ mod tests {
             lived_in(1, [0., 0., 0.], 0),
             lived_in(2, [1., 0., 0.], 7),
         ]);
-        let held = app.world().resource::<PopulatedCells>();
-        assert_eq!(held.of(CellId::ROOT), &[2]);
+        let held = app.world().resource::<PopulatedOrder>();
+        let order: Vec<i64> =
+            held.order().iter().map(|stands| stands.address).collect();
+        assert_eq!(order, &[2]);
     }
 
     /// Nothing is gathered twice when the tables have not moved: it is a
@@ -265,11 +273,11 @@ mod tests {
     #[test]
     fn it_is_gathered_once() {
         let mut app = gathered(vec![lived_in(1, [0., 0., 0.], 5)]);
-        let before = app.world().resource::<PopulatedCells>().cells();
+        let before = app.world().resource::<PopulatedOrder>().systems();
         app.update();
         app.update();
-        let after = app.world().resource::<PopulatedCells>();
-        assert_eq!(after.cells(), before);
-        assert_eq!(after.of(CellId::ROOT), &[1], "gathered twice over");
+        let after = app.world().resource::<PopulatedOrder>();
+        assert_eq!(after.systems(), before);
+        assert_eq!(after.order()[0].address, 1, "gathered twice over",);
     }
 }

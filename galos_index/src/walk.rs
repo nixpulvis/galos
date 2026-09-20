@@ -779,11 +779,7 @@ impl Index {
     /// descends [`Index::nodes`] rather than the map, and reads each cell's
     /// figures rather than working them out: **23 ms to 1.5 ms**, the same
     /// marks and the same field.
-    pub fn walk_screen(
-        &self,
-        view: &View,
-        within: Option<Reach>,
-    ) -> Needed {
+    pub fn walk_screen(&self, view: &View, within: Option<Reach>) -> Needed {
         let (marks, blobs) = self.frontier(view, MERGE_PX, false, within);
         Needed {
             mode: Mode::Shell,
@@ -1450,7 +1446,8 @@ mod tests {
         // root itself splats.
         let far = eye_out(CellId::ROOT, 20_000_000.0);
         assert!(
-            splat_ids(&index.needed(&far, Mode::Real, None)).contains(&CellId::ROOT)
+            splat_ids(&index.needed(&far, Mode::Real, None))
+                .contains(&CellId::ROOT)
         );
     }
 

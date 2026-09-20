@@ -47,7 +47,8 @@ const FOV_Y: f32 = std::f32::consts::FRAC_PI_4;
 const LOOK_AT: [f64; 3] = [0.0, 0.0, 0.0];
 
 /// The zooms the plan quotes, light years back from [`LOOK_AT`].
-const ZOOMS: [f64; 6] = [971.0, 2_000.0, 8_000.0, 30_000.0, 60_000.0, 130_000.0];
+const ZOOMS: [f64; 6] =
+    [971.0, 2_000.0, 8_000.0, 30_000.0, 60_000.0, 130_000.0];
 
 /// A camera `back` light years from `at`, looking at it, through `fov_y`.
 fn looking(at: [f64; 3], back: f64, fov_y: f32) -> View {
@@ -93,8 +94,7 @@ impl Lens {
         let forward = unit(view.forward);
         let right = unit(cross(forward, view.up));
         let up = cross(right, forward);
-        let focal =
-            HIGH as f64 / 2.0 / (f64::from(view.fov_y) / 2.0).tan();
+        let focal = HIGH as f64 / 2.0 / (f64::from(view.fov_y) / 2.0).tan();
         Lens { eye: view.eye, right, up, forward, focal }
     }
 
@@ -396,7 +396,6 @@ fn frame(
     }
     let read = at.elapsed();
 
-
     println!("  level   cells      read    points      marks     blobs");
     for level in 0..=20u8 {
         let row = &tally.levels[level as usize];
@@ -480,9 +479,8 @@ fn write(dir: &Path, name: &str, canvas: &Canvas) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let dir = PathBuf::from(
-        args.next().unwrap_or_else(|| ".index/full".to_string()),
-    );
+    let dir =
+        PathBuf::from(args.next().unwrap_or_else(|| ".index/full".to_string()));
     let out = PathBuf::from(
         args.next().unwrap_or_else(|| "/tmp/frontier".to_string()),
     );

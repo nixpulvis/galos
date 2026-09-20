@@ -241,7 +241,7 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Blobs>();
         app.init_resource::<crate::systems::merged::Standing>();
         app.init_resource::<crate::systems::merged::Named>();
-        app.init_resource::<crate::systems::populated::PopulatedCells>();
+        app.init_resource::<crate::systems::populated::PopulatedOrder>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
@@ -482,6 +482,63 @@ fn the_populated_sky_draws_what_stands_alone() {
     );
 }
 
+/// A still view of the populated sky costs nothing to hold
+///
+/// **What a mode draws is settled by the plan, not by the frame.** The
+/// population scale weighs every populated system in reach against the
+/// lattice that thins them, and it was doing that afresh sixty times a
+/// second: measured over `.index/full` with the reach at five hundred
+/// light years, **69 ms of every settled frame** — fourteen frames a
+/// second on a view nobody was moving. Reported as the mode being slow
+/// to load.
+///
+/// Two costs, and the test holds both. A settled frame owes only to mark
+/// what is drawn as wanted, which is 1.5 ms; the frame the plan moves
+/// owes the choice itself, which is 11.5 ms and not the 76 ms it was
+/// when each of the plan's 831 cells rescanned its own subtree — nested
+/// cells walking the same systems over and over, 1,559,152 entries read
+/// to choose 25,744 marks. See [`super::bounded::choose_populated`].
+#[test]
+fn the_populated_sky_settles_cheap() {
+    let Some(dir) = measured() else { return };
+    let radius = 500f32;
+    let mut flight = Flight::over(&dir);
+    flight.app.insert_resource(ScalePopulation(true));
+    {
+        let mut glass =
+            flight.app.world_mut().resource_mut::<crate::systems::Spyglass>();
+        glass.radius = radius;
+        glass.clear = true;
+        glass.follow_camera = false;
+    }
+    let mut frames = Vec::new();
+    for _ in 0..SETTLE {
+        frames.push(flight.frame(DVec3::ZERO, radius * 2.7).whole());
+    }
+    let worst = frames.iter().max().copied().unwrap_or_default();
+    let settled = frames.last().copied().unwrap_or_default();
+    let drawn = {
+        let world = flight.app.world_mut();
+        let mut systems = world.query::<&System>();
+        systems.iter(world).count()
+    };
+    println!(
+        "  {drawn} populated drawn, worst frame {worst:.2?}, \
+         settled {settled:.2?}",
+    );
+    // Roomy against the 1.5 ms and 11.5 ms measured, the point being the
+    // order of magnitude: a settled frame must not be paying for the
+    // choice, and the frame that does must stay inside a stutter.
+    assert!(
+        settled < Duration::from_millis(8),
+        "a still populated view costs {settled:.2?} a frame",
+    );
+    assert!(
+        worst < Duration::from_millis(40),
+        "the frame the plan moves costs {worst:.2?}",
+    );
+}
+
 /// The same view draws the same sky, however the eye got there
 ///
 /// **A view is a question about where the camera stands, and the answer
@@ -497,7 +554,7 @@ fn the_populated_sky_draws_what_stands_alone() {
 /// read as a magnitude-ordered prefix sized for the mark count — so the
 /// busiest of the prefix was not the busiest of the cell, and which
 /// prefix was resident depended on where the camera had been. It reads
-/// the resident table instead; see [`super::populated::PopulatedCells`].
+/// the resident table instead; see [`super::populated::PopulatedOrder`].
 ///
 /// Both modes, because the answer has to hold in each, and settled rather
 /// than merely visited: the map fills in behind a moving eye, so what a

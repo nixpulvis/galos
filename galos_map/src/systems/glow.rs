@@ -92,10 +92,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::walk::UNIFORM_SPAN;
 use galos_index::inhabited::{
     Inhabited, allegiance_at, government_at, security_at,
 };
+use galos_index::walk::UNIFORM_SPAN;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
@@ -542,7 +542,6 @@ const PIVOT: f32 = 0.05;
 /// the curve is not linear, so a ratio set there is not the ratio that
 /// comes out.
 const COLONY_PIVOT: f32 = 0.5;
-
 
 /// The hard stop under everything, in linear light
 ///
@@ -1094,12 +1093,13 @@ fn build_glow(
                 held_named.alone,
                 count.saturating_sub(peopled),
             );
-            let colony_share = filtering
-                .filters
-                .admitted_share(aged, held_named.populated, peopled);
-            let spent = |share: f32| {
-                share + (1. - share) * filtering.dim.opacity()
-            };
+            let colony_share = filtering.filters.admitted_share(
+                aged,
+                held_named.populated,
+                peopled,
+            );
+            let spent =
+                |share: f32| share + (1. - share) * filtering.dim.opacity();
 
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
@@ -1108,9 +1108,8 @@ fn build_glow(
                 && in_reach(at)
             {
                 let systems = empty as f32 * carried;
-                let light = Vec3::splat(
-                    systems * gains.faint * gains.mark * MARK_AREA,
-                );
+                let light =
+                    Vec3::splat(systems * gains.faint * gains.mark * MARK_AREA);
                 if let Some(lit) = quads.deposit(
                     orbit,
                     cot_half_fov,
@@ -1659,7 +1658,6 @@ mod tests {
         // The guard is under everything, which is what keeps a cell
         // floored to one pixel out of the bloom chain as an `inf`.
         assert!((compressed_level(1e12, PIVOT) * 1e6).min(CEILING) <= CEILING);
-
     }
 
     /// The tilt puts the dial's rest where the map was being driven to by
@@ -1895,12 +1893,7 @@ mod exposure {
     impl Set {
         /// The far case the exposure is judged on: no boundary, nothing drawn.
         fn open() -> Set {
-            Set {
-                reach: None,
-                accounted: false,
-                asked: None,
-                peopled: false,
-            }
+            Set { reach: None, accounted: false, asked: None, peopled: false }
         }
 
         /// The same, with a filter on the map.
@@ -1948,7 +1941,7 @@ mod exposure {
         app.init_resource::<Gains>();
         app.init_resource::<FieldExposure>();
         app.init_resource::<Laid>();
-            app.insert_resource(Planned(galos_index::Needed {
+        app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
             marks: Vec::new(),
             blobs: Vec::new(),

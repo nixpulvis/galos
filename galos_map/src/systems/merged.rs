@@ -34,8 +34,8 @@ use crate::systems::{MapSet, System};
 use crate::{Names, Populated, Transport};
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_index::{CellId, Point};
 use rustc_hash::FxHashMap;
 
@@ -48,9 +48,7 @@ pub fn plugin(app: &mut App) {
     // what a merged mark stands for is settled per plan, not per frame.
     app.add_systems(
         Update,
-        weigh_blobs
-            .in_set(MapSet::Populate)
-            .before(super::bounded::reconcile),
+        weigh_blobs.in_set(MapSet::Populate).before(super::bounded::reconcile),
     );
     app.add_systems(
         Update,
@@ -103,12 +101,9 @@ fn ring_blob(
         return Ok(());
     };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
-    let Some(at) = screen_position(
-        orbit,
-        cot_half_fov,
-        viewport,
-        DVec3::from(blob.at),
-    ) else {
+    let Some(at) =
+        screen_position(orbit, cot_half_fov, viewport, DVec3::from(blob.at))
+    else {
         return Ok(());
     };
 
@@ -130,8 +125,7 @@ fn ring_blob(
     //
     // No leader, as a name marked out has none: the ring already says
     // which mark this is about.
-    let by_population =
-        super::scale::by_population(&view, &scale_population);
+    let by_population = super::scale::by_population(&view, &scale_population);
     let said = match prominent
         .of(blob.id, by_population, &populated)
         .map(|point| build_from_point(point, &populated, &names))
@@ -139,12 +133,10 @@ fn ring_blob(
         Some(system) => format!("{} · {} systems", system.name, blob.count),
         None => format!("{} systems", blob.count),
     };
-    let galley =
-        painter.layout_no_wrap(said, super::labels::naming(), color);
+    let galley = painter.layout_no_wrap(said, super::labels::naming(), color);
     let origin = egui::pos2(
         at.x + CATCH_PX + super::labels::NAME_HEIGHT * super::labels::GAP,
-        at.y
-            - super::labels::NAME_HEIGHT * super::labels::RISE
+        at.y - super::labels::NAME_HEIGHT * super::labels::RISE
             - galley.size().y / 2.,
     );
     let pad = super::labels::NAME_HEIGHT * super::labels::GROUND_PAD;
@@ -376,8 +368,7 @@ fn click_blobs(
         return;
     }
     let Some(blob) = pointed.0 else { return };
-    let by_population =
-        super::scale::by_population(&view, &scale_population);
+    let by_population = super::scale::by_population(&view, &scale_population);
     let Some(point) = prominent.of(blob.id, by_population, &populated) else {
         return;
     };
@@ -446,12 +437,7 @@ mod tests {
         // A cell that is nothing but imperial colonies is painted the
         // imperial mark's own colour.
         let all = inhabited(8);
-        let imperial = average_mark(
-            Some(&all),
-            8,
-            ColorBy::Allegiance,
-            &gains,
-        );
+        let imperial = average_mark(Some(&all), 8, ColorBy::Allegiance, &gains);
         assert!(
             imperial.length() > empty.length(),
             "a cell of colonies came out no brighter than empty sky",
@@ -463,8 +449,12 @@ mod tests {
 
         // And a dozen colonies in ten thousand systems is nearly grey,
         // because that is what the ten thousand marks look like.
-        let trace =
-            average_mark(Some(&inhabited(12)), 10_000, ColorBy::Allegiance, &gains);
+        let trace = average_mark(
+            Some(&inhabited(12)),
+            10_000,
+            ColorBy::Allegiance,
+            &gains,
+        );
         assert!(
             (trace - grey).length() < (imperial - grey).length() * 0.05,
             "a trace of colonies painted the whole cell: {trace:?}",
@@ -486,8 +476,8 @@ mod tests {
 
         // A cell of ten thousand systems with eight colonies in it.
         let held = inhabited(8);
-        let crowd = average_mark(Some(&held), 10_000, ColorBy::Allegiance,
-            &gains);
+        let crowd =
+            average_mark(Some(&held), 10_000, ColorBy::Allegiance, &gains);
         let colonies =
             average_mark(Some(&held), 8, ColorBy::Allegiance, &gains);
         assert!(
@@ -500,8 +490,8 @@ mod tests {
         // mode, where ordinarily it stands for its whole subtree.
         let grey = Hue::Grey.light()
             * super::super::glow::mark_light(Hue::Grey, false, &gains);
-        let alone = average_mark(Some(&empty), 10_000, ColorBy::Allegiance,
-            &gains);
+        let alone =
+            average_mark(Some(&empty), 10_000, ColorBy::Allegiance, &gains);
         assert!((alone - grey).length() < 1e-9, "{alone:?}");
         assert_eq!(empty.count(), 0, "nothing to stand for");
     }
@@ -527,10 +517,8 @@ mod tests {
         app.init_resource::<PointedBlob>();
         app.insert_resource(Blobs(blobs));
         app.world_mut().spawn((OrbitCamera::default(), seeing()));
-        let mut window = Window {
-            resolution: WindowResolution::new(800, 600),
-            ..default()
-        };
+        let mut window =
+            Window { resolution: WindowResolution::new(800, 600), ..default() };
         window.set_cursor_position(Some(cursor));
         app.world_mut().spawn((window, PrimaryWindow));
         app.add_systems(Update, point_at_blobs);
@@ -582,7 +570,10 @@ mod tests {
         );
         app.update();
         let caught = app.world().resource::<PointedBlob>().0;
-        assert_eq!(caught.map(|blob| blob.id), Some(CellId::of_point(aside, 8)));
+        assert_eq!(
+            caught.map(|blob| blob.id),
+            Some(CellId::of_point(aside, 8))
+        );
     }
 
     /// A drawn system under the pointer wins over the merged mark behind it

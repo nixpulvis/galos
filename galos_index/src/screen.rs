@@ -17,9 +17,9 @@
 
 use crate::cache::Quick;
 use crate::geometry::CellId;
+use crate::walk::{MERGE_PX, View};
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
-use crate::walk::{MERGE_PX, View};
 
 /// How many marks the frame itself carries
 ///
@@ -131,11 +131,8 @@ impl View {
         let forward = unit(self.forward);
         let right = unit(cross(forward, self.up));
         let up = cross(right, forward);
-        let from = [
-            at[0] - self.eye[0],
-            at[1] - self.eye[1],
-            at[2] - self.eye[2],
-        ];
+        let from =
+            [at[0] - self.eye[0], at[1] - self.eye[1], at[2] - self.eye[2]];
         let ahead = dot(from, forward);
         if ahead <= 0.0 {
             return None;
@@ -239,11 +236,8 @@ impl Crowded {
     /// what it covers of the galaxy depends on how far off that galaxy
     /// is.
     pub fn claim(&mut self, at: [f64; 3]) -> bool {
-        let from = [
-            at[0] - self.eye[0],
-            at[1] - self.eye[1],
-            at[2] - self.eye[2],
-        ];
+        let from =
+            [at[0] - self.eye[0], at[1] - self.eye[1], at[2] - self.eye[2]];
         let away =
             (from[0] * from[0] + from[1] * from[1] + from[2] * from[2]).sqrt();
         if !away.is_finite() || away <= 0.0 {
@@ -255,16 +249,11 @@ impl Crowded {
         let octave = spacing.log2().round();
         let spacing = octave.exp2();
         let cell = |it: f64| (it / spacing).floor() as i64;
-        let mixed = [
-            octave as i64,
-            cell(at[0]),
-            cell(at[1]),
-            cell(at[2]),
-        ]
-        .iter()
-        .fold(0xcbf2_9ce4_8422_2325u64, |key, &part| {
-            (key ^ part as u64).wrapping_mul(0x100_0000_01b3)
-        });
+        let mixed = [octave as i64, cell(at[0]), cell(at[1]), cell(at[2])]
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325u64, |key, &part| {
+                (key ^ part as u64).wrapping_mul(0x100_0000_01b3)
+            });
         if !self.taken.insert(mixed) {
             return false;
         }
@@ -572,7 +561,6 @@ mod tests {
         }
     }
 
-
     /// Marks merge by where they stand in the galaxy, not by where they
     /// land on the frame
     ///
@@ -647,9 +635,8 @@ mod tests {
         // A line of sight carries a few marks and not a crowd: four
         // systems strung out behind one another give three marks, the
         // fourth being the one the sheet would have been made of.
-        let strung: Vec<[f64; 3]> = (0..4)
-            .map(|n| [0., 0., 1_000. + f64::from(n) * 100.])
-            .collect();
+        let strung: Vec<[f64; 3]> =
+            (0..4).map(|n| [0., 0., 1_000. + f64::from(n) * 100.]).collect();
         assert_eq!(
             claimed(&view, &strung),
             vec![true, true, true, false],
@@ -659,7 +646,11 @@ mod tests {
         // Travelling changes it, and must: what a mark covers of the
         // galaxy depends on how far off the galaxy is.
         let moved = View { eye: [0., 0., 900.], ..view };
-        assert_ne!(straight, claimed(&moved, &sky), "travelling changed nothing");
+        assert_ne!(
+            straight,
+            claimed(&moved, &sky),
+            "travelling changed nothing"
+        );
     }
 
     /// A view a thousand light years back from the origin, looking at it.

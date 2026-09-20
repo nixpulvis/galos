@@ -147,9 +147,7 @@ pub(crate) fn plan(
     // sets the map works over are the sets it draws from. See
     // [`galos_index::Reach`], and [`super::bounded::reach`] for why the
     // clamp is the spyglass's `clear` rather than its radius alone.
-    let bubble = spyglass
-        .clear
-        .then(|| (orbit.center(), spyglass.radius));
+    let bubble = spyglass.clear.then(|| (orbit.center(), spyglass.radius));
     let key = (orbit.eye(), mode, size, bubble);
     if last.as_ref() == Some(&key) && !index.is_changed() {
         return;

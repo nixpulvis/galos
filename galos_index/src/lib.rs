@@ -90,6 +90,6 @@ pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};
 pub use store::{Payload, Swept, sweep_payloads};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{
-    BlobRef, Index, MERGE_PX, Mode, MarkRef, Needed, Reach, STAR_MERGE_PX, SplatRef,
-    View,
+    BlobRef, Index, MERGE_PX, MarkRef, Mode, Needed, Reach, STAR_MERGE_PX,
+    SplatRef, View,
 };
