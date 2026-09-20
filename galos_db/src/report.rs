@@ -239,8 +239,8 @@ impl fmt::Display for Status {
 ///
 /// # Damage against backlog
 ///
-/// Two of these counts are a database waiting for data it has not been sent
-/// yet, and [`Self::is_sound`] does not fail on them:
+/// Three of these counts are a database waiting for data it has not been
+/// sent yet, and [`Self::is_sound`] does not fail on them:
 ///
 /// - `systems_without_position`. A system known by name from a market or a
 ///   faction report but never visited, so nobody has sent coordinates for
@@ -250,6 +250,14 @@ impl fmt::Display for Status {
 ///   did. `markets.system_address` was made nullable exactly so this could
 ///   be held rather than dropped, and `markets_waiting_on_system` is the
 ///   partial index that finds them again when the system lands.
+/// - `stations_without_type`. The same phenomenon and the same migration:
+///   `20260802080000_accept_market_data` made `stations.ty` nullable in
+///   the same breath as `markets.system_address`, because market data
+///   names a station before anything has docked there to report what kind
+///   it is. 25,110 of them on a development database of 3.4 M systems —
+///   ordinary operation, so failing on it would be a `verify` that exits
+///   1 on every healthy live database and can therefore never be run
+///   from anything.
 ///
 /// The rest are damage: a reference that names a row that does not exist,
 /// where the code that follows it assumes it will.
@@ -260,9 +268,9 @@ pub struct Verified {
     /// Backlog. Market data still waiting on its system row.
     pub markets_without_system: i64,
 
-    /// Placeholder stations: a name and a system from market data, with no
-    /// station type, because nothing has docked there and reported one.
-    /// Harmless to hold and wrong to serve, so they are counted.
+    /// Backlog. Placeholder stations: a name and a system from market
+    /// data, with no station type, because nothing has docked there and
+    /// reported one.
     pub stations_without_type: i64,
 
     /// `body_signals` rows naming a body that is not on record.
@@ -299,21 +307,34 @@ pub struct Verified {
 }
 
 impl Verified {
-    /// Whether the database is sound enough to build and serve from.
+    /// Whether anything in here is wrong rather than merely unfinished.
     ///
-    /// True when every count is zero except the two that are backlog rather
-    /// than damage — `systems_without_position` and
-    /// `markets_without_system`, which are reported and forgiven. False is
-    /// what the CLI exits 1 on, so it must mean "a reference in here points
-    /// at nothing and some reader is going to follow it", not "this galaxy
-    /// is incomplete". Every galaxy is incomplete.
+    /// **One count decides it**: `system_factions_without_faction`. There
+    /// is a foreign key on that column, so a nonzero count does not mean
+    /// "a report arrived out of order" — it means the constraint was not
+    /// enforced on the rows that are actually there, which is what
+    /// `pg_restore --disable-triggers` leaves behind. Nothing else here
+    /// can say that: every other reference names a body or a station type
+    /// that Postgres was never asked to guarantee, because the report
+    /// that names it routinely arrives before the report that defines it.
+    ///
+    /// **Measured, because the first version of this was wrong.** A
+    /// database migrated from nothing and fed fifteen seconds of the live
+    /// feed answers 73 dangling body parents, 7 dangling star parents, 3
+    /// stations naming no body and 3 stations with no type — ordinary
+    /// in-flight state, 1.78 M of the 1.92 M on the development server
+    /// naming body id 0, the arrival star every scan names as a parent
+    /// and which is written as a row only when it is itself scanned. A
+    /// rule that failed on those is a `verify` that exits 1 on every
+    /// database that has ever read the feed, which is a verb no cron can
+    /// run and therefore a verb nobody runs.
+    ///
+    /// The dangling counts are still worth reading, and the reason they
+    /// are reported rather than forgiven: they should hover, not climb. A
+    /// count that grows run over run is the feed dropping body scans,
+    /// which no constraint will ever tell anybody.
     pub fn is_sound(&self) -> bool {
-        self.stations_without_type == 0
-            && self.body_signals_without_body == 0
-            && self.stations_without_body == 0
-            && self.system_factions_without_faction == 0
-            && self.bodies_with_dangling_parents == 0
-            && self.stars_with_dangling_parents == 0
+        self.system_factions_without_faction == 0
     }
 }
 
@@ -407,19 +428,19 @@ impl fmt::Display for Verified {
         for (count, what) in [
             (self.systems_without_position, "systems with no position"),
             (self.markets_without_system, "markets with no system"),
+            (self.stations_without_type, "stations with no type yet"),
         ] {
             writeln!(f, "  {:>15}  {}", grouped(count), what)?;
         }
 
-        writeln!(f, "\nreferences that name nothing:")?;
+        writeln!(
+            f,
+            "\nreferences to bodies nobody has scanned yet (these should \
+             hover, not climb):"
+        )?;
         for (count, what) in [
-            (self.stations_without_type, "stations with no type"),
             (self.body_signals_without_body, "body signals with no body"),
             (self.stations_without_body, "stations naming no body"),
-            (
-                self.system_factions_without_faction,
-                "system factions naming no faction",
-            ),
             (
                 self.bodies_with_dangling_parents,
                 "body parent ids naming nothing in their system",
@@ -432,29 +453,30 @@ impl fmt::Display for Verified {
             writeln!(f, "  {:>15}  {}", grouped(count), what)?;
         }
 
-        if self.system_factions_without_faction == 0 {
-            writeln!(
-                f,
-                "\nno faction reference is dangling here. Hold on a filled \
-                 database and the `EXISTS (SELECT 1 FROM factions …)` \
-                 filter in index/metadata.rs is the stale one, guarding \
-                 against what the foreign key already forbids."
-            )?;
-        }
+        writeln!(f, "\nwhat the schema should have prevented:")?;
+        writeln!(
+            f,
+            "  {:>15}  {}",
+            grouped(self.system_factions_without_faction),
+            "system factions naming no faction",
+        )?;
 
-        if self.is_sound() {
-            writeln!(
+        match self.is_sound() {
+            true => writeln!(
                 f,
-                "\nsound. What is counted above is data not sent yet, not \
-                 data pointing at nothing."
-            )?;
-        } else {
-            writeln!(
+                "\nsound. Every faction id resolves, so the foreign key on \
+                 that column is being enforced — and the \
+                 `EXISTS (SELECT 1 FROM factions …)` filter in \
+                 index/metadata.rs is guarding against what it already \
+                 forbids. Everything above it is data not sent yet."
+            )?,
+            false => writeln!(
                 f,
-                "\nnot sound. The references above name rows that are not \
-                 there, and the ancestry walk and the index build both \
-                 assume they resolve."
-            )?;
+                "\nnot sound. A faction id names no faction, against a \
+                 foreign key Postgres lists as present: the constraint was \
+                 not enforced on the rows that are there, which is what a \
+                 restore with its triggers disabled leaves behind."
+            )?,
         }
 
         Ok(())
