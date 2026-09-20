@@ -80,6 +80,17 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Read a publisher into the database, an index directory, or both.
+    ///
+    /// `--from` names a publisher and repeats; `--db` and `-i/--index`
+    /// name where what is read goes, and naming both reads each publisher
+    /// once into the pair.
+    ///
+    /// **Every other flag belongs to one source or one sink, and the
+    /// heading it is listed under says which.** A flag the run has no use
+    /// for is refused rather than ignored — `--user` over the feed, a
+    /// `--shard` of a subscription, a `--publish` beat for a run with an
+    /// end — because a run that quietly did something other than what it
+    /// was asked is the failure that is hardest to notice.
     Ingest(ingest::Cli),
 
     /// Inspect and repair an index directory.

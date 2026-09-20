@@ -64,12 +64,54 @@ use tracing::info;
 /// are one reading, and it is the reading that has a position.
 const CONSUMER: &str = "galos";
 
-/// The heading the flags of a run that never ends are listed under.
-const FOLLOWING: &str = "Following what is published";
+// **Each heading is the condition its flags need**, because that is the
+// question a reader has: not "is this a following flag or an importing
+// flag" — which was the old grouping, and told nobody anything — but "does
+// this flag do something in the run I am about to make".
+//
+// A flag under a heading it does not match is **refused, not ignored**.
+// `--user` over EDDN is somebody who thinks they are filing a galaxy under
+// their own name; a run that took the flag and did nothing with it would
+// be wrong in exactly the way that is hardest to notice. See
+// [`refused`] and `galos::read::Qualifiers::refused`.
 
-/// The heading the flags of a run that reads something finite are listed
-/// under.
-const IMPORTING: &str = "Importing what is already there";
+/// Where the reading is written. Every run names at least one.
+const SINKS: &str = "Where it goes (at least one)";
+
+/// The two flags of a run with no end.
+///
+/// Two spellings, because a heading that named `database` in a build with
+/// no database in it would be pointing at a source that answers "rebuild
+/// with the `db` feature".
+#[cfg(feature = "db")]
+const FOLLOWING: &str = "Only where the source keeps going (eddn, spool, \
+                         journal, database)";
+#[cfg(not(feature = "db"))]
+const FOLLOWING: &str =
+    "Only where the source keeps going (eddn, spool, journal)";
+
+/// `--shard`, which divides a file.
+const SHARING: &str = "Only where the source is a file (journal, edsm, \
+                       eddb, spansh)";
+
+/// EDDN's own two.
+const FEED: &str = "Only with --from eddn";
+
+/// The journal's one.
+const JOURNAL: &str = "Only with --from journal=PATH";
+
+/// EDSM's API's two.
+const API: &str = "Only with --from edsm-api=NAME";
+
+/// The rows-into-a-directory build's two. Behind the feature, with the
+/// flags it heads: without a database there is no `--from database` to
+/// qualify.
+#[cfg(feature = "db")]
+const ROWS: &str = "Only with --from database";
+
+/// The one flag about how the pool is opened, likewise.
+#[cfg(feature = "db")]
+const BULK: &str = "Only with --db";
 
 /// Read what a publisher publishes into the database, a directory, or both.
 #[derive(Args)]
@@ -90,7 +132,7 @@ pub struct Cli {
 
     /// Write to Postgres, which is what `DATABASE_URL` names.
     #[cfg(feature = "db")]
-    #[arg(long)]
+    #[arg(long, help_heading = SINKS)]
     db: bool,
 
     /// Write an index directory, `.galos_index` where DIR is left off.
@@ -107,17 +149,23 @@ pub struct Cli {
         value_name = "DIR",
         num_args = 0..=1,
         default_missing_value = INDEX_DIR,
+        help_heading = SINKS,
     )]
     index: Option<PathBuf>,
 
     /// Resume file for the index, kept outside the served directory.
     /// `DIR.checkpoint` beside the index directory by default.
-    #[arg(long, value_name = "FILE")]
+    ///
+    /// Refused without `-i`: it is where an index resumes from, and a run
+    /// writing none has nothing to resume.
+    #[arg(long, value_name = "FILE", help_heading = SINKS)]
     checkpoint: Option<PathBuf>,
 
-    /// Whose journal this is, overriding what the files say. Only with
-    /// `--from journal=PATH`.
-    #[arg(short = 'u', long, value_name = "NAME")]
+    /// Whose journal this is, overriding what the files say.
+    ///
+    /// For a directory of logs copied off another machine, where the file
+    /// names no commander this one would recognise.
+    #[arg(short = 'u', long, value_name = "NAME", help_heading = JOURNAL)]
     user: Option<String>,
 
     /// Replace a directory that already serves systems, where this run
@@ -130,23 +178,40 @@ pub struct Cli {
     /// it publishes, so it is refused unless it is asked for here. `galos
     /// index status -i DIR` says what wrote the one you have.
     #[cfg(feature = "db")]
-    #[arg(long)]
+    #[arg(long, help_heading = ROWS)]
     rebuild: bool,
 
     /// Rebuild only these parts of the directory, leaving the rest as it
-    /// stands. Every part by default, and only for a one-shot `--from
-    /// database`.
+    /// stands. Every part by default.
+    ///
+    /// The repair case: a change to how one part is derived leaves every
+    /// published copy of that part stale and everything beside it fine,
+    /// and rebuilding the lot to fix one is a hundred megabytes of
+    /// rewriting to say nothing new.
+    ///
+    /// Refused with `--watch`, which would repair one part forever while
+    /// the rest of the directory aged behind it.
     #[cfg(feature = "db")]
-    #[arg(long, value_name = "PART", value_delimiter = ',', num_args = 1..)]
+    #[arg(
+        long,
+        value_name = "PART",
+        value_delimiter = ',',
+        num_args = 1..,
+        help_heading = ROWS,
+    )]
     only: Vec<Part>,
 
     /// Keep following what was named rather than exiting, SECS apart. A
     /// second where SECS is left off.
     ///
-    /// The database poll, and the longest a journal directory nothing is
-    /// writing to is left alone: the filesystem says when a log was written
-    /// to, so a journal is read as soon as the game writes rather than SECS
-    /// later. EDDN is a subscription and follows either way.
+    /// SECS is the database poll, and the longest a journal directory
+    /// nothing is writing to is left alone — the filesystem says when a
+    /// log was written, so a journal is read as the game writes rather
+    /// than SECS later.
+    ///
+    /// **EDDN and a spool follow with or without it**; it is a dump that
+    /// this cannot mean anything for, and naming one is refused rather
+    /// than waited on.
     #[arg(
         long,
         value_name = "SECS",
@@ -157,55 +222,63 @@ pub struct Cli {
     watch: Option<u64>,
 
     /// Seconds between index publishes, one at least, five by default.
-    /// Only for a run that follows something; a run with an end publishes
-    /// once, when it ends.
+    ///
+    /// The beat exists because something may be reading the directory
+    /// while it is written. A run with an end has no beat — it writes the
+    /// whole directory once, when it finishes — so naming this for one is
+    /// refused, as is naming it for a run that writes no index at all.
     #[arg(long, value_name = "SECS", help_heading = FOLLOWING)]
     publish: Option<u64>,
 
-    /// EDDN's ZMQ address, the feed's own by default. Only with `--from
-    /// eddn`.
-    #[arg(short = 'r', long, value_name = "URL", help_heading = FOLLOWING)]
+    /// The feed's ZMQ address, its published one by default.
+    #[arg(short = 'r', long, value_name = "URL", help_heading = FEED)]
     remote: Option<String>,
 
-    /// Seconds of EDDN silence before the connection is replaced, or 0 to
-    /// leave it alone. Only with `--from eddn`.
-    #[arg(long, value_name = "SECS", help_heading = FOLLOWING)]
+    /// Seconds of silence before the connection is replaced, or 0 to
+    /// leave it alone however quiet it goes.
+    ///
+    /// A ZMQ subscription that has died answers no error and delivers
+    /// nothing, so a quiet socket is reopened rather than trusted.
+    #[arg(long, value_name = "SECS", help_heading = FEED)]
     stall: Option<u64>,
 
     /// Open the database for a bulk import: commits left unflushed and a
     /// higher connection ceiling. For an import that can be re-run from
     /// its source, not for a live feed.
     #[cfg(feature = "db")]
-    #[arg(long, help_heading = IMPORTING)]
+    #[arg(long, help_heading = BULK)]
     bulk: bool,
 
-    /// Read one share of a source: every Nth record of a dump, or every
-    /// Nth file of a journal directory, offset I, so N processes cover it
-    /// exactly once between them. A journal shards by file because a file
-    /// is what names the commander who flew it. Every write is a guarded
-    /// upsert keyed by an address, so shards that overlap cost only time.
+    /// Read one share of the file: every Nth record, offset I, so N
+    /// processes cover it exactly once between them.
+    ///
+    /// A journal directory shards by *file*, because a file is what names
+    /// the commander who flew it. Every write is a guarded upsert keyed by
+    /// an address, so shares that overlap cost time and nothing else.
+    ///
+    /// Refused with `--watch`: a share is of what is there when the run
+    /// starts, and what arrives after it is every share's.
     #[arg(
         long,
         value_name = "I/N",
         value_parser = from::shard,
-        help_heading = IMPORTING,
+        help_heading = SHARING,
     )]
     shard: Option<Shard>,
 
-    /// EDSM's API: take everything in a cube this many light years across.
-    /// Only with `--from edsm-api=NAME`.
+    /// Take everything in a cube this many light years across, around the
+    /// system named.
     #[arg(
         long,
         short,
         value_name = "LY",
         conflicts_with = "sphere",
-        help_heading = IMPORTING,
+        help_heading = API,
     )]
     cube: Option<u32>,
 
-    /// EDSM's API: take everything within this many light years. Only with
-    /// `--from edsm-api=NAME`.
-    #[arg(long, short, value_name = "LY", help_heading = IMPORTING)]
+    /// Take everything within this many light years of it instead.
+    #[arg(long, short, value_name = "LY", help_heading = API)]
     sphere: Option<u32>,
 }
 

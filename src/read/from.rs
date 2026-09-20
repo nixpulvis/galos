@@ -70,6 +70,34 @@ impl Source {
     /// flown. The feed never ends however it was asked for, and a dump, a
     /// saved dump and an API answer are all there when the run starts and
     /// read out by the time it finishes.
+    /// Whether `--shard` divides this source between processes.
+    ///
+    /// **A file, and nothing else.** A share is every Nth record of what
+    /// is already there, so it needs a thing with an Nth record: the two
+    /// line-oriented dumps, the saved dump, and a journal directory,
+    /// which shares by *file* because a file is what names the commander
+    /// who flew it.
+    ///
+    /// The feed is a subscription — every subscriber is sent all of it —
+    /// and the API answers about one system's neighbourhood. A spool is
+    /// the feed written down, and its reader follows a cursor rather than
+    /// counting records; the rows are queried per part. None of the four
+    /// divides, and each reader would have taken the flag and quietly
+    /// read the whole of its source, which is why this is asked here
+    /// rather than left to whichever reader remembered to refuse.
+    pub fn divides(&self) -> bool {
+        match self {
+            Source::Journal(_)
+            | Source::Edsm(_)
+            | Source::Eddb(_)
+            | Source::Spansh(_) => true,
+            Source::Eddn
+            | Source::Spool(..)
+            | Source::EdsmApi(_)
+            | Source::Database => false,
+        }
+    }
+
     pub fn follows(&self, watching: bool) -> bool {
         match self {
             Source::Eddn | Source::Spool(..) => true,

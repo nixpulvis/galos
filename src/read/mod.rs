@@ -185,13 +185,13 @@ impl Qualifiers<'_> {
                             --watch is a feed with no end to divide"
                     .to_string());
             }
-            for source in self.sources {
-                if let Source::Eddn | Source::EdsmApi(_) = source {
-                    return Err(format!(
-                        "--shard divides a file between processes and \
-                         `{source}` is not a file"
-                    ));
-                }
+            if let Some(source) =
+                self.sources.iter().find(|source| !source.divides())
+            {
+                return Err(format!(
+                    "--shard divides a file between processes and \
+                     `{source}` is not one"
+                ));
             }
         }
 
@@ -453,7 +453,19 @@ mod tests {
             assert!(it.refused().is_ok(), "{source:?} reads a file");
         }
 
-        for source in [Source::Eddn, Source::EdsmApi("Sol".to_owned())] {
+        // The four that do not divide, each of whose reader would
+        // otherwise have taken the flag and read the whole of its source:
+        // a spool follows a cursor rather than counting records, and the
+        // rows are queried a part at a time.
+        for source in [
+            Source::Eddn,
+            Source::EdsmApi("Sol".to_owned()),
+            Source::Spool(
+                PathBuf::from("/tmp"),
+                ::eddn::spool::Start::Earliest,
+            ),
+            Source::Database,
+        ] {
             let sources = [source.clone()];
             let it = Qualifiers { shard: share, ..reading(&sources) };
             let Err(said) = it.refused() else {
