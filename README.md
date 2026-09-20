@@ -50,8 +50,12 @@ development headers.
 
 ## Configuration
 
-Every binary and `cargo sqlx` read the connection from `DATABASE_URL`, taken
-from the environment or a `.env` file in the working directory or one above it.
+`galos`, `galos-db` and `cargo sqlx` read the connection from
+`DATABASE_URL`, taken from the environment or a `.env` file in the working
+directory or one above it. `galos-index` reads it only for the two things
+that are about the other store — `build --from database` and `ingest
+--catch-up` — and a copy built without the `db` feature has no such flag
+and no client to open one with.
 
 ```sh
 # .env
@@ -60,20 +64,40 @@ DATABASE_URL=postgresql://postgres@localhost/galos_development
 
 ## Database Setup
 
-```sh
-cargo install sqlx-cli --locked --version "$(cargo pkgid sqlx | sed 's/.*@//')"
+`galos-db migrate` carries the migrations inside it and runs whichever the
+database has not, so a server needs the binary and nothing else:
 
-# Create the database and run the migrations.
-cargo sqlx database setup --source galos_db/migrations/
+```sh
+createdb galos_development
+
+# `SQLX_OFFLINE` for this one build: the checked query macros verify
+# themselves against `DATABASE_URL` as they compile, and the database this
+# is about to migrate has no schema for them to check against yet. `.sqlx/`
+# is the cached metadata they use instead.
+SQLX_OFFLINE=true cargo run --bin galos-db -- migrate
+
+cargo run --bin galos-db -- status   # the version it left, and what is in there
 ```
 
-Managing migrations and resetting the database live with the database crate,
-[`galos_db`](./galos_db).
+`sqlx-cli` is for *writing* a migration rather than running one — `cargo
+sqlx migrate add`, and `cargo sqlx prepare` to refresh the cached query
+metadata in `.sqlx/` after changing a checked query:
 
-To build or test without a database, use the cached query metadata in `.sqlx/`:
+```sh
+cargo install sqlx-cli --locked --version "$(cargo pkgid sqlx | sed 's/.*@//')"
+```
+
+Resetting the database, and the template a test builds its own from, live
+with the database crate, [`galos_db`](./galos_db).
+
+To build or test without a database, use that cached metadata:
 
 ```sh
 SQLX_OFFLINE=true cargo build
+
+# Or build the index tool with no database client in it at all, which is
+# what a machine that only serves the map wants.
+cargo build --bin galos-index --no-default-features
 ```
 
 ## Running
