@@ -17,7 +17,7 @@
 
 use crate::cache::Quick;
 use crate::geometry::CellId;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasherDefault;
 use crate::walk::{MERGE_PX, View};
 
@@ -193,6 +193,8 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 #[derive(Default)]
 pub struct Crowded {
     taken: HashSet<u64, BuildHasherDefault<Quick>>,
+    /// How many marks stand along each mark-wide line of sight.
+    stacked: HashMap<u64, u8, BuildHasherDefault<Quick>>,
     /// The angle one mark subtends, in radians: what a mark's width is
     /// worth out at whatever distance a system stands.
     pitch: f64,
@@ -204,6 +206,7 @@ impl Crowded {
     pub fn over(view: &View) -> Crowded {
         Crowded {
             taken: HashSet::default(),
+            stacked: HashMap::default(),
             pitch: MERGE_PX / view.pixels_per_radian(),
             eye: view.eye,
         }
@@ -262,9 +265,79 @@ impl Crowded {
         .fold(0xcbf2_9ce4_8422_2325u64, |key, &part| {
             (key ^ part as u64).wrapping_mul(0x100_0000_01b3)
         });
-        self.taken.insert(mixed)
+        if !self.taken.insert(mixed) {
+            return false;
+        }
+
+        // And the other half of it: how many marks are already stacked
+        // along this line of sight.
+        //
+        // **A lattice in the galaxy keeps depth, and depth is what
+        // stacks.** Two systems a thousand light years apart are two
+        // marks however close together they land, which is right —
+        // and through a bubble a thousand light years deep it is dozens
+        // of them to a line of sight, all landing in the same few
+        // pixels. Measured over `.index/full` with the reach at five
+        // hundred light years, 66,114 marks of the 116,511 systems in
+        // it, which is a sheet.
+        //
+        // So a line of sight carries [`STACKED`] marks and no more. The
+        // direction is binned on a cube about the eye, its faces ruled
+        // at the angle one mark subtends and squared to the *world's*
+        // axes — so this turns with nothing either, and what it costs is
+        // the same cube-map third toward a face's corners.
+        let (face, major) = [0usize, 1, 2].iter().fold(
+            (0usize, 0.0f64),
+            |(face, major), &axis| match from[axis].abs() > major {
+                true => (axis, from[axis].abs()),
+                false => (face, major),
+            },
+        );
+        let (u, v) = match face {
+            0 => (from[1], from[2]),
+            1 => (from[2], from[0]),
+            _ => (from[0], from[1]),
+        };
+        let ruled = |it: f64| (it / major / self.pitch).floor() as i64 as u64;
+        let ray = (face as u64) << 62
+            | u64::from(from[face] > 0.0) << 61
+            | (ruled(u) & 0x3fff_ffff) << 30
+            | (ruled(v) & 0x3fff_ffff);
+        let along = self.stacked.entry(ray).or_default();
+        if *along >= STACKED {
+            return false;
+        }
+        *along += 1;
+        true
     }
 }
+
+/// How many marks one mark-wide line of sight carries
+///
+/// **One is a mosaic and none is a sheet.** At one, a volume of sky
+/// collapses onto a sphere: whatever stands behind a mark is merged into
+/// it however far behind it stands, and turning the eye re-tiles the
+/// picture. With no cap at all the depth of a bubble stacks dozens of
+/// marks into the same few pixels and the middle of it fills solid.
+///
+/// Three, measured over `.index/full` at the two reaches the picture was
+/// judged at — a hundred light years, which reads well and must not
+/// change, and five hundred, which was filling solid:
+///
+/// | stacked | 100 ly, of 8,113 | 500 ly, of 116,511 |
+/// |---|---|---|
+/// | 1 | 5,727 | 10,713 |
+/// | 2 | 7,391 | 18,965 |
+/// | **3** | **7,822** | **25,744** |
+/// | 4 | 7,936 | 31,473 |
+/// | none | 7,970 | 66,114 |
+///
+/// Three keeps 98% of the near view — which is the one that was already
+/// right — and takes two thirds off the crowded one. One would cost the
+/// near view a quarter of itself to save a further fifth of the far,
+/// which is the wrong trade: the whole point of a lattice in the galaxy
+/// is that a system standing alone is drawn.
+const STACKED: u8 = 3;
 
 /// One tile of the screen: what landed on it, and the best thing there is
 /// to light it with if nothing did.
@@ -569,6 +642,18 @@ mod tests {
             claimed(&view, &touching),
             vec![true, false],
             "two marks within a mark of each other were both drawn",
+        );
+
+        // A line of sight carries a few marks and not a crowd: four
+        // systems strung out behind one another give three marks, the
+        // fourth being the one the sheet would have been made of.
+        let strung: Vec<[f64; 3]> = (0..4)
+            .map(|n| [0., 0., 1_000. + f64::from(n) * 100.])
+            .collect();
+        assert_eq!(
+            claimed(&view, &strung),
+            vec![true, true, true, false],
+            "a line of sight carried {STACKED} marks or none",
         );
 
         // Travelling changes it, and must: what a mark covers of the
