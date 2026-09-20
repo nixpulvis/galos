@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 mod metadata;
 pub use metadata::MetaReport;
@@ -530,6 +530,7 @@ pub async fn catch_up(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    rebuild: bool,
     stop: &Stop<'_>,
 ) -> Result<Reached<chrono::NaiveDateTime>> {
     if parts != Parts::ALL {
@@ -541,7 +542,9 @@ pub async fn catch_up(
             },
         ));
     }
-    Ok(bring_level(db, dir, checkpoint, stop).await?.map(|it| it.cursor))
+    Ok(bring_level(db, dir, checkpoint, rebuild, stop)
+        .await?
+        .map(|it| it.cursor))
 }
 
 /// Whether whoever asked for this has stopped wanting it.
@@ -605,10 +608,11 @@ pub async fn watch(
     dir: &Path,
     checkpoint: &Path,
     interval: Duration,
+    rebuild: bool,
     stop: &Stop<'_>,
 ) -> Result<()> {
     let Reached::End(mut level) =
-        bring_level(db, dir, checkpoint, stop).await?
+        bring_level(db, dir, checkpoint, rebuild, stop).await?
     else {
         info!(
             dir = %dir.display(),
@@ -673,12 +677,21 @@ async fn bring_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    rebuild: bool,
     stop: &Stop<'_>,
 ) -> Result<Reached<Level>> {
+    // Before the migration, which is the first thing here that touches the
+    // directory. A refusal that arrives after a layout migration has moved
+    // a galaxy's files is one that came too late — see [`refusal`].
+    if !rebuild {
+        if let Some(said) = refusal(dir, checkpoint) {
+            return Err(std::io::Error::other(said).into());
+        }
+    }
     migrate(dir, stop)?;
     let params = BuildParams::default();
     let mut level = match resume(dir, checkpoint, &params) {
-        Some((tree, meta, cursor)) => {
+        Resume::Level(tree, meta, cursor) => {
             info!(
                 systems = tree.len(),
                 cursor = %cursor,
@@ -687,44 +700,74 @@ async fn bring_level(
             );
             Level { tree, meta, cursor }
         }
-        None if stop() => return Ok(Reached::Stopped(Abandoned::unstarted())),
-        None => {
-            info!(dir = %dir.display(), "building initial index (reading every system)");
-            let start = Instant::now();
-            // The cold build, which holds no tree and writes the whole
-            // directory and the resume point. A watch needs a tree, so it
-            // gets one the way a restart would: by resuming from what the
-            // build just left.
-            let built =
-                build_to_dir(db, dir, checkpoint, Parts::ALL, stop).await?;
-            let report = match built {
-                Reached::End(report) => report,
+        // Everything a resume found wrong with a directory that is serving
+        // systems. `--rebuild` is the operator saying it anyway, and then
+        // it is said on the way past rather than swallowed.
+        Resume::Refuse(said) if !rebuild => {
+            return Err(std::io::Error::other(said).into());
+        }
+        other => {
+            if let Resume::Refuse(said) = &other {
+                warn!(dir = %dir.display(), "{said} Rebuilding as asked.");
+            }
+            // A build is not started by a run that is already stopping:
+            // the migration ahead of it may have been abandoned part way,
+            // and a cold build is the whole galaxy.
+            if stop() {
+                return Ok(Reached::Stopped(Abandoned::unstarted()));
+            }
+            match build_level(db, dir, checkpoint, stop).await? {
+                Reached::End(level) => level,
                 Reached::Stopped(abandoned) => {
                     return Ok(Reached::Stopped(abandoned));
                 }
-            };
-            info!(
-                %report,
-                elapsed = ?start.elapsed(),
-                "initial index built"
-            );
-            let (tree, meta, cursor) = resume(dir, checkpoint, &params)
-                // An `Io` error because that is what it is: a directory on
-                // disk that does not read as what was just written to it.
-                .ok_or_else(|| {
-                    std::io::Error::other(format!(
-                        "{}: the index this build just wrote will not \
-                         resume, so nothing can follow it",
-                        dir.display(),
-                    ))
-                })?;
-            Level { tree, meta, cursor }
+            }
         }
     };
     while !stop()
         && pass(db, dir, checkpoint, &mut level).await? >= CHANGED_CHUNK
     {}
     Ok(Reached::End(level))
+}
+
+/// Build the whole directory and open the tree a watch needs on what it
+/// wrote.
+///
+/// Split out of [`bring_level`] because two arms reach it now: a directory
+/// serving nothing, and one an operator asked to replace.
+async fn build_level(
+    db: &Database,
+    dir: &Path,
+    checkpoint: &Path,
+    stop: &Stop<'_>,
+) -> Result<Reached<Level>> {
+    info!(dir = %dir.display(), "building initial index (reading every system)");
+    let start = Instant::now();
+    // The cold build, which holds no tree and writes the whole
+    // directory and the resume point. A watch needs a tree, so it
+    // gets one the way a restart would: by resuming from what the
+    // build just left.
+    let report =
+        match build_to_dir(db, dir, checkpoint, Parts::ALL, stop).await? {
+            Reached::End(report) => report,
+            Reached::Stopped(abandoned) => {
+                return Ok(Reached::Stopped(abandoned));
+            }
+        };
+    info!(%report, elapsed = ?start.elapsed(), "initial index built");
+    match resume(dir, checkpoint, &BuildParams::default()) {
+        Resume::Level(tree, meta, cursor) => {
+            Ok(Reached::End(Level { tree, meta, cursor }))
+        }
+        // An `Io` error because that is what it is: a directory on
+        // disk that does not read as what was just written to it.
+        _ => Err(std::io::Error::other(format!(
+            "{}: the index this build just wrote will not resume, so \
+             nothing can follow it",
+            dir.display(),
+        ))
+        .into()),
+    }
 }
 
 /// Fold everything a tree holds into a new base, current as of `cursor`.
@@ -812,58 +855,178 @@ async fn pass(
     Ok(touched.len())
 }
 
+/// What a resume point and the directory beside it allow.
+///
+/// Three answers rather than two. `None` used to mean both "there is
+/// nothing here, build it" and "what is here cannot be resumed" — and
+/// [`bring_level`] escalated either to a rebuild of the whole galaxy, over
+/// whatever the directory was already serving. The cases are not the same
+/// and only one of them is safe to take unasked.
+enum Resume {
+    /// Read back: the tree, the tables and the clock to follow from.
+    Level(Tree, Metadata, chrono::NaiveDateTime),
+    /// Nothing is served, so building the whole galaxy replaces nothing.
+    Build,
+    /// Systems are served and this run would replace them. Refused, with
+    /// what to run if that is the intent.
+    Refuse(String),
+}
+
+/// How many systems the directory publishes, which is what a rebuild would
+/// replace.
+///
+/// An index file that is there but will not read — a foreign format
+/// version — is not nothing: it is a published directory this build cannot
+/// count, and replacing it unasked is the thing being prevented. So it
+/// answers "some", loudly, rather than zero.
+fn serving(dir: &Path) -> Option<u64> {
+    if !dir.join(galos_index::store::INDEX_FILE).exists() {
+        return None;
+    }
+    match Index::read(dir) {
+        Ok(index) => index.root().map(|root| root.aggregate.count()),
+        Err(_) => Some(u64::MAX),
+    }
+}
+
+/// Say what a directory serves, for a refusal to quote.
+fn serves(count: u64) -> String {
+    match count {
+        u64::MAX => "systems this build cannot count (its index file is of \
+                     another format version)"
+            .to_string(),
+        n => format!("{n} systems"),
+    }
+}
+
+/// Whether this run may write to `dir` at all, judged before anything has.
+///
+/// The cheap half of [`resume`]: what the directory serves and what the
+/// resume point says wrote it, with no tree built and no table read. It is
+/// separate so that it can be asked **before [`migrate`]**, which is the
+/// first thing in [`bring_level`] to touch the directory — a refusal that
+/// arrives after a layout migration has moved half a galaxy's files is a
+/// refusal that came too late.
+///
+/// [`None`] is "carry on". [`Some`] is the whole refusal, in the words the
+/// operator needs.
+fn refusal(dir: &Path, path: &Path) -> Option<String> {
+    let served = serving(dir)?;
+    if served == 0 {
+        return None;
+    }
+    let rebuild = format!(
+        "\n  galos-index info {dir}\n  \
+         galos-sync --db --index {dir} --rebuild",
+        dir = dir.display(),
+    );
+    let checkpoint = match Checkpoint::read(path) {
+        Ok(it) => it,
+        Err(err) => {
+            return Some(format!(
+                "{} serves {} and its resume point {} will not read \
+                 ({err}), so there is no way to edit what it holds and \
+                 this run would replace all of it.{rebuild}",
+                dir.display(),
+                serves(served),
+                path.display(),
+            ));
+        }
+    };
+    if checkpoint.by != By::Database {
+        return Some(format!(
+            "{} serves {}, derived from {:?}, and this run would replace \
+             them with what the database holds. Nothing has been written.\
+             {rebuild}",
+            dir.display(),
+            serves(served),
+            checkpoint.by,
+        ));
+    }
+    if checkpoint.cursor.is_none() {
+        return Some(format!(
+            "{} serves {} and its resume point carries no cursor to read \
+             the changes since, so this run would replace all of it.\
+             {rebuild}",
+            dir.display(),
+            serves(served),
+        ));
+    }
+    None
+}
+
 /// Rebuild the live tree and the metadata tables from a resume point and the
 /// directory they were published to, if the two still read as each other's.
-/// Answers the tree, the tables and the cursor to follow from, or [`None`]
-/// to build from scratch.
 ///
 /// The tree is the base built in one batch and the log applied over it,
 /// which is the same two moves a pass makes.
 ///
-/// Three gates. The resume point must be the database's own: an
-/// event-derived directory is internally consistent about the little it
-/// holds, so it would pass both counting gates below, and is refused
-/// outright. The directory must be internally consistent, its cell tree and
-/// its names table standing for exactly the same systems. And it must be at
-/// or ahead of the resume point, a delta publish repairing only what the
-/// next changes touch.
-fn resume(
-    dir: &Path,
-    path: &Path,
-    params: &BuildParams,
-) -> Option<(Tree, Metadata, chrono::NaiveDateTime)> {
-    let checkpoint = Checkpoint::read(path).ok()?;
+/// Three gates, and which answer a failed one gives turns on whether the
+/// directory is serving anything. The resume point must be the database's
+/// own: an event-derived directory is internally consistent about the
+/// little it holds, so it would pass both counting gates below. The
+/// directory must be internally consistent, its cell tree and its names
+/// table standing for exactly the same systems. And it must be at or ahead
+/// of the resume point, a delta publish repairing only what the next
+/// changes touch.
+///
+/// A directory serving nothing that fails any of them is [`Resume::Build`]:
+/// there is nothing to lose. One that is serving systems is
+/// [`Resume::Refuse`], which is the whole of the fix — the escalation from
+/// "cannot resume" to "replace the galaxy" was silent, and is now a
+/// sentence with `--rebuild` in it.
+fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
+    let served = serving(dir).unwrap_or(0);
+    let refuse = |why: String| match served {
+        0 => Resume::Build,
+        _ => Resume::Refuse(why),
+    };
+    if let Some(said) = refusal(dir, path) {
+        return refuse(said);
+    }
+    let Ok(checkpoint) = Checkpoint::read(path) else {
+        return Resume::Build;
+    };
     if checkpoint.by != By::Database {
         info!(
             by = ?checkpoint.by,
             checkpoint = %path.display(),
-            "checkpoint was written from the event feed, which stands for \
-             what the feed reported and not for the galaxy; building afresh"
+            "checkpoint was written from the event feed and the directory \
+             serves nothing; building afresh"
         );
-        return None;
+        return Resume::Build;
     }
     let Some(cursor) = checkpoint.cursor else {
         debug!(
             checkpoint = %path.display(),
             "checkpoint carries no cursor to follow from; building afresh"
         );
-        return None;
+        return Resume::Build;
     };
     let mut tree = Tree::build(checkpoint.base(), params);
     tree.apply(checkpoint.deltas());
-    let count = Index::read(dir).ok()?.root()?.aggregate.count();
-    let meta = Metadata::resume(dir).ok()?;
+    let (Ok(index), Ok(meta)) = (Index::read(dir), Metadata::resume(dir))
+    else {
+        return refuse(format!(
+            "{} serves {} and its tables will not read back, so this run \
+             would replace all of it.",
+            dir.display(),
+            serves(served),
+        ));
+    };
+    let count = index.root().map_or(0, |root| root.aggregate.count());
     if meta.names() as u64 != count || count < tree.len() as u64 {
-        debug!(
-            names = meta.names(),
-            served = count,
-            checkpointed = tree.len(),
-            replayed = checkpoint.deltas().len(),
-            "checkpoint does not match the served directory; building afresh"
-        );
-        return None;
+        return refuse(format!(
+            "{} does not read as its own resume point — {} in the cell \
+             tree, {} in the names table, {} in the resume point — so this \
+             run would replace all of it.",
+            dir.display(),
+            count,
+            meta.names(),
+            tree.len(),
+        ));
     }
-    Some((tree, meta, cursor))
+    Resume::Level(tree, meta, cursor)
 }
 
 /// A summary of a build, for the binary to print and check.
@@ -1041,9 +1204,14 @@ mod tests {
         )
         .expect("a resume point should write");
         assert!(
-            resume(&dir, &path, &params).is_some(),
+            matches!(resume(&dir, &path, &params), Resume::Level(..)),
             "a directory the database derived, matching its own resume point, \
              was refused",
+        );
+        assert_eq!(
+            refusal(&dir, &path),
+            None,
+            "a directory the database derived was refused before it was read",
         );
 
         Checkpoint::compact(
@@ -1053,10 +1221,36 @@ mod tests {
             inputs.iter().copied(),
         )
         .expect("a resume point should write");
+
+        // The whole of the fix: an event-derived directory that is serving
+        // systems is neither resumed nor silently rebuilt over. Before this
+        // the answer here was "build the galaxy afresh", and what it
+        // replaced was every system the directory published.
+        let Resume::Refuse(said) = resume(&dir, &path, &params) else {
+            panic!("a resume point the event feed wrote was rebuilt over")
+        };
         assert!(
-            resume(&dir, &path, &params).is_none(),
-            "a resume point the event feed wrote was adopted as the galaxy's",
+            said.contains("--rebuild"),
+            "the refusal has to name the way past it: {}",
+            said,
         );
+        let before_writing = refusal(&dir, &path)
+            .expect("the same refusal, before anything has been written");
+        assert!(
+            before_writing.contains("--rebuild"),
+            "the pre-write gate has to name the way past it too: {}",
+            before_writing,
+        );
+
+        // And a directory serving nothing is built without a word: there is
+        // nothing there to lose, which is the case the old `None` was right
+        // about.
+        let empty = dir.with_extension("empty");
+        let _ = std::fs::remove_dir_all(&empty);
+        std::fs::create_dir_all(&empty).expect("a scratch directory");
+        assert_eq!(refusal(&empty, &path), None);
+        assert!(matches!(resume(&empty, &path, &params), Resume::Build));
+        let _ = std::fs::remove_dir_all(&empty);
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&path);
@@ -1132,11 +1326,12 @@ mod tests {
         .await
         .expect("the system should write");
 
-        let cursor = catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
-            .await
-            .expect("the catch-up should run")
-            .end()
-            .expect("nothing asked it to stop");
+        let cursor =
+            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
+                .await
+                .expect("the catch-up should run")
+                .end()
+                .expect("nothing asked it to stop");
         assert!(
             cursor > before,
             "a cursor at {} is behind the write at {} it covered, so whoever \
@@ -1161,11 +1356,12 @@ mod tests {
                 .expect("a modification time");
         async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
 
-        let again = catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
-            .await
-            .expect("the second catch-up should run")
-            .end()
-            .expect("nothing asked it to stop");
+        let again =
+            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
+                .await
+                .expect("the second catch-up should run")
+                .end()
+                .expect("nothing asked it to stop");
         assert!(again >= cursor, "the cursor went backwards");
         let after =
             std::fs::metadata(galos_index::source::populated_path(&dir))
@@ -1233,7 +1429,7 @@ mod tests {
         // A directory brought level, and then a system written after it
         // was: the pass that publishes this one is what has to leave the
         // resume point standing for it.
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
             .await
             .expect("the first catch-up should run");
         let system = elite_journal::system::System {
@@ -1262,7 +1458,7 @@ mod tests {
         Pending::append(&checkpoint, None, &[input(RECORDED, [7.0, 8.0, 9.0])])
             .expect("a pending log should write");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, never())
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
             .await
             .expect("the second catch-up should run");
 
@@ -1289,7 +1485,7 @@ mod tests {
         );
         assert!(written.cursor.is_some(), "a resume point with no cursor");
         assert!(
-            resume(&dir, &checkpoint, &params).is_some(),
+            matches!(resume(&dir, &checkpoint, &params), Resume::Level(..)),
             "the resume point a catch-up left was refused by the resume it \
              was written for",
         );
@@ -1323,7 +1519,7 @@ mod tests {
         let _ = std::fs::remove_file(&checkpoint);
 
         let stopped =
-            catch_up(&db, &dir, &checkpoint, Parts::ALL, &|| true).await;
+            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, &|| true).await;
         assert_eq!(
             stopped.expect("a stop is not a failure"),
             Reached::Stopped(Abandoned::unstarted()),

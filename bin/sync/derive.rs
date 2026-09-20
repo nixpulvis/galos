@@ -105,6 +105,9 @@ pub struct Derive {
     pub live: Live,
     /// What the relays dropped, cleared at the top of each round.
     pub dropped: Dropped,
+    /// Whether the operator asked for a directory that cannot be resumed
+    /// to be replaced, rather than the run refusing.
+    pub rebuild: bool,
     pub shutdown: Shutdown,
 }
 
@@ -179,6 +182,7 @@ impl Derive {
                 &self.dir,
                 &self.checkpoint,
                 Parts::ALL,
+                self.rebuild,
                 &stop,
             )
             .await
@@ -346,6 +350,7 @@ pub async fn from_database(
     checkpoint: &Path,
     parts: Parts,
     watch: Option<Duration>,
+    rebuild: bool,
     shutdown: &Shutdown,
 ) -> Result<(), String> {
     // Asked between chunks, between passes and between the records of a
@@ -354,13 +359,14 @@ pub async fn from_database(
     // question.
     let stop = || shutdown.asked();
     match watch {
-        Some(every) => index::watch(db, dir, checkpoint, every, &stop)
+        Some(every) => index::watch(db, dir, checkpoint, every, rebuild, &stop)
             .await
             .map_err(|err| format!("{err}")),
         None => {
-            let levelled = index::catch_up(db, dir, checkpoint, parts, &stop)
-                .await
-                .map_err(|err| format!("{err}"))?;
+            let levelled =
+                index::catch_up(db, dir, checkpoint, parts, rebuild, &stop)
+                    .await
+                    .map_err(|err| format!("{err}"))?;
             match levelled {
                 Reached::End(cursor) => {
                     info!(

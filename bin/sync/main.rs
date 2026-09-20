@@ -161,6 +161,18 @@ struct Cli {
     #[arg(long = "force-lock")]
     force_lock: bool,
 
+    /// Replace a directory that already serves systems, where this run
+    /// cannot resume what is there.
+    ///
+    /// A derive from the database rebuilds the whole directory when its
+    /// resume point is not one of the database's — a directory built from
+    /// a dump, or from the feed, whose systems this has no other way to
+    /// carry forward. That replaces every system it publishes, so it is
+    /// refused unless it is asked for here. `galos-index status DIR` says
+    /// what wrote the one you have.
+    #[arg(long)]
+    rebuild: bool,
+
     /// Whose journal this is, overriding what the files say. Only with
     /// `--from journal=PATH`.
     #[arg(short = 'u', long, value_name = "NAME")]
@@ -659,6 +671,7 @@ async fn run(cli: Cli) -> Result<bool, String> {
             &checkpoint,
             parts_of(&cli.only),
             cli.watch.map(Duration::from_secs),
+            cli.rebuild,
             &shutdown,
         )
         .await
@@ -693,6 +706,7 @@ async fn run(cli: Cli) -> Result<bool, String> {
                 readings: receiver.clone(),
                 live: live.clone(),
                 dropped: dropped.clone(),
+                rebuild: cli.rebuild,
                 shutdown: shutdown.clone(),
             };
             Some(
