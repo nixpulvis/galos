@@ -1006,10 +1006,56 @@ pub(crate) fn reconcile(
     // payload.
     let population = population(&planned.0);
     let share = share(population, frame_marks(&view));
-    // Which tiles of the frame the pass leaves dark. Filled as the marks
-    // and the merged marks are decided and read out at the end of both;
-    // see [`Empty`].
-    let mut lighting = Empty::over(&view);
+    // Which patches of sky the frame leaves dark, and the one mark each
+    // of them lights. A pass of its own over the plan, before anything is
+    // drawn, because the question is about the frame as a whole: a tile is
+    // dark only once every mark and every merged mark has had its say. It
+    // reads no payload and asks the filters nothing — a take off the
+    // plan's own counts and a projection apiece. See [`Empty`].
+    //
+    // Cells are binned at their own centroid rather than at each mark they
+    // draw. A cell above the frontier spreads its marks over the patch it
+    // covers, so this can call a tile dark that one of them landed in —
+    // which lights one mark that was not needed, of the at most one a tile
+    // this may light at all.
+    let lit: Vec<u32> = {
+        let _zone = info_span!("dark tiles").entered();
+        let mut lighting = Empty::over(&view);
+        for (offer, mark) in planned.0.marks.iter().enumerate() {
+            if !in_reach(mark.id, orbit, bubble) {
+                continue;
+            }
+            match wanted(share, mark.slice as usize, mark.id) {
+                0 => lighting.offered(
+                    &view,
+                    mark.at,
+                    u64::from(mark.slice),
+                    offer as u32,
+                ),
+                take => lighting.drew(&view, mark.at, take),
+            }
+        }
+        for (offer, blob) in planned.0.blobs.iter().enumerate() {
+            if !in_reach(blob.id, orbit, bubble) {
+                continue;
+            }
+            let offer = (planned.0.marks.len() + offer) as u32;
+            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+                0 => lighting.offered(&view, blob.at, blob.count, offer),
+                _ => lighting.drew(&view, blob.at, 1),
+            }
+        }
+        lighting.lit()
+    };
+    // Whether a plan entry is one of them, walked alongside the plan
+    // rather than looked up: both are in the plan's own order.
+    let mut lighting = lit.iter().copied().peekable();
+    let mut is_lit = move |offer: u32| {
+        while lighting.peek().is_some_and(|&lit| lit < offer) {
+            lighting.next();
+        }
+        lighting.next_if_eq(&offer).is_some()
+    };
     let mut took_all = 0usize;
     let mut behind = 0u64;
 
@@ -1038,7 +1084,7 @@ pub(crate) fn reconcile(
     // nothing, so walking it only to skip it is the pass done twice.
     let prefixes =
         info_span!("cell prefixes", cells = planned.0.marks.len()).entered();
-    for mark in &planned.0.marks {
+    for (offer, mark) in planned.0.marks.iter().enumerate() {
         let id = mark.id;
         // **Asked before the payload is looked up.** Most marked cells
         // draw nothing at a wide zoom — the share is thousandths and a
@@ -1053,7 +1099,13 @@ pub(crate) fn reconcile(
         // not grow as the read arrives: a share struck over the prefix in
         // hand would ask for less of a cell the moment less of it was
         // held, and every mark would shift as the payloads came in.
-        let asked = wanted(share, mark.slice as usize, id);
+        // A cell the share draws nothing of still draws one mark where
+        // nothing else in the frame reaches its patch of sky: the
+        // brightest it holds, which is the head of its payload. See
+        // [`Empty`] — and the payload is in hand for it, every marked cell
+        // in reach being read to [`READ_LEAST`] whatever its share.
+        let asked = wanted(share, mark.slice as usize, id)
+            .max(usize::from(is_lit(offer as u32)));
         if asked == 0 {
             continue;
         }
@@ -1104,12 +1156,6 @@ pub(crate) fn reconcile(
             }
             let address = point.id64 as i64;
             took_all += 1;
-            // Where this mark lands, for [`Empty`]: a tile a read cell
-            // draws into is a tile nothing needs to light. Off the point's
-            // own position and not the cell's, since a cell above the
-            // frontier is wider than a mark by construction and its marks
-            // are spread over the patch of sky it covers.
-            lighting.drew(&view, point.pos, 1);
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would
             // otherwise go on drawing for the frame or two it takes to land,
@@ -1172,30 +1218,13 @@ pub(crate) fn reconcile(
         if !in_reach(blob.id, orbit, bubble) {
             continue;
         }
-        if wanted(share * blob.blend, blob.count as usize, blob.id) == 0 {
-            // Nothing, at the share. Offered to its tile instead: if the
-            // frame draws nothing else there at all, this is what says the
-            // patch of sky is not empty. See [`Empty`].
-            lighting.offered(&view, blob.at, blob.count, offer as u32);
+        let drawn = wanted(share * blob.blend, blob.count as usize, blob.id)
+            > 0
+            || is_lit((planned.0.marks.len() + offer) as u32);
+        if !drawn {
             continue;
         }
         behind += blob.count;
-        lighting.drew(&view, blob.at, 1);
-        blobs.0.push(Blob {
-            id: blob.id,
-            count: blob.count,
-            at: blob.at,
-            m_min: blob.m_min,
-        });
-    }
-    // And the patches of sky the whole frame left dark, one mark apiece.
-    // Bounded by the frame rather than by the tree: at most one to a tile,
-    // which is 900 marks of the 57,600 a 1280x720 frame carries.
-    let mut lit = 0usize;
-    for offer in lighting.lit() {
-        let blob = &planned.0.blobs[offer as usize];
-        behind += blob.count;
-        lit += 1;
         blobs.0.push(Blob {
             id: blob.id,
             count: blob.count,
@@ -1210,7 +1239,7 @@ pub(crate) fn reconcile(
         share: share as f32,
         drawn: took_all,
         blobs: blobs.0.len(),
-        lit,
+        lit: lit.len(),
         behind,
     });
 
@@ -1851,6 +1880,7 @@ mod tests {
                     marks.push(galos_index::MarkRef {
                         id: cell.id,
                         slice: points.len() as u32,
+                        at: cell.id.bounds().center(),
                     });
                 }
             }
@@ -2287,6 +2317,7 @@ mod tests {
             marks: vec![galos_index::MarkRef {
                 id: owner,
                 slice: built.payload(owner).len() as u32,
+                at: owner.bounds().center(),
             }],
             blobs: Vec::new(),
             splats: Vec::new(),

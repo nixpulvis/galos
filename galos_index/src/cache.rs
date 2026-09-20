@@ -251,8 +251,8 @@ mod tests {
         let needed = Needed {
             mode: Mode::Shell,
             marks: vec![
-                MarkRef { id: a, slice: 1 },
-                MarkRef { id: b, slice: 1 },
+                MarkRef { id: a, slice: 1, at: [0.; 3] },
+                MarkRef { id: b, slice: 1, at: [0.; 3] },
             ],
             blobs: vec![],
             splats: vec![],

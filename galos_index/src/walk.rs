@@ -318,12 +318,21 @@ pub struct BlobRef {
 /// is a hash lookup per cell per frame in each of them. Measured over
 /// `.index/full` at a wide zoom, that is sixty thousand lookups a pass
 /// and three passes a frame.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct MarkRef {
     /// The cell whose payload is read.
     pub id: CellId,
     /// How many systems it owns in its own slice.
     pub slice: u32,
+    /// Where its contents sit, light years: the count centroid, as
+    /// [`BlobRef::at`] is.
+    ///
+    /// What the draw bins by to find the patches of sky it is leaving
+    /// dark ([`crate::screen::Empty`]). A cell above the frontier spreads
+    /// its marks over the patch it covers rather than standing at one
+    /// point, so this is where the cell *is* and not where each of its
+    /// marks lands — which is the grain that question is asked at.
+    pub at: [f64; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -715,6 +724,7 @@ impl Index {
                 marks.push(MarkRef {
                     id: node.id,
                     slice: node.slice.min(u64::from(u32::MAX)) as u32,
+                    at: node.center,
                 });
             }
             for child in
@@ -925,7 +935,7 @@ fn contents_width(cell: &Cell) -> f64 {
 }
 
 /// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
-const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
+pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
 
 /// How far a cell has split out of its own blob: nothing at the merge
 /// distance, all of it an octave above ([`MERGE_BAND`]), a cross-fade

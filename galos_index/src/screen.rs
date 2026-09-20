@@ -199,13 +199,15 @@ struct Tile {
 /// one mark a tile, and one mark to [`TILE_PX`] squared is the faintest
 /// thing the frame can say.
 ///
-/// **Merged marks only.** A blob is a cell whose whole contents fall inside
-/// one mark and it is drawn off its aggregate, so lighting one costs
-/// nothing but the mark itself; a cell above the frontier would have to
-/// have its payload read first, which is a fetch this cannot reach. That
-/// costs nothing in coverage: a cell stays above the frontier by being
-/// wider than a mark, so what stands under it in an empty patch of sky is
-/// blobs, and they are what this lights.
+/// **Either kind of cell.** A merged mark is drawn off its aggregate and
+/// costs nothing but the mark; a cell above the frontier draws the head of
+/// its own payload, which is the brightest thing it holds, and that
+/// payload is in hand — every marked cell in reach is read to the client's
+/// `READ_LEAST` whatever its share. Merged marks alone were tried and it
+/// is not enough: the one inhabited system more than two thousand light
+/// years off the galactic plane in `.index/full`, `HIP 58832`, sits in a
+/// level 5 cell holding two systems that the walk answers as a *mark* and
+/// not a blob, so blobs-only left it — the only thing up there — undrawn.
 pub struct Empty {
     tiles: Vec<Tile>,
     across: usize,
@@ -528,35 +530,77 @@ mod drawing {
             .sum();
         let share = share(population, frame_marks(view));
 
+        // One pass to settle which patches of sky the frame leaves dark,
+        // over both kinds of cell, and then the draw.
         let mut lighting = Empty::over(view);
-        let mut marks = Vec::new();
-        for mark in &needed.marks {
-            let take = wanted(share, mark.slice as usize, mark.id);
-            // Every read mark stands somewhere inside its own cell; the
-            // centre is close enough for a tile thirty-two pixels across.
-            for _ in 0..take {
-                let at = index
-                    .get(mark.id)
-                    .and_then(|cell| cell.aggregate.count_centroid())
-                    .unwrap_or_else(|| mark.id.bounds().center());
-                lighting.drew(view, at, 1);
-                marks.push(at);
+        for (offer, mark) in needed.marks.iter().enumerate() {
+            match wanted(share, mark.slice as usize, mark.id) {
+                0 => lighting.offered(
+                    view,
+                    mark.at,
+                    u64::from(mark.slice),
+                    offer as u32,
+                ),
+                take => lighting.drew(view, mark.at, take),
             }
         }
         for (offer, blob) in needed.blobs.iter().enumerate() {
-            if wanted(share * blob.blend, blob.count as usize, blob.id) == 0 {
-                lighting.offered(view, blob.at, blob.count, offer as u32);
-                continue;
+            let offer = (needed.marks.len() + offer) as u32;
+            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+                0 => lighting.offered(view, blob.at, blob.count, offer),
+                _ => lighting.drew(view, blob.at, 1),
             }
-            lighting.drew(view, blob.at, 1);
-            marks.push(blob.at);
         }
-        let lit = lighting
-            .lit()
+        let lit = lighting.lit();
+
+        let mut marks = Vec::new();
+        for mark in &needed.marks {
+            for _ in 0..wanted(share, mark.slice as usize, mark.id) {
+                marks.push(mark.at);
+            }
+        }
+        for blob in &needed.blobs {
+            if wanted(share * blob.blend, blob.count as usize, blob.id) > 0 {
+                marks.push(blob.at);
+            }
+        }
+        let lit = lit
             .into_iter()
-            .map(|offer| needed.blobs[offer as usize].at)
+            .map(|offer| match needed.marks.get(offer as usize) {
+                Some(mark) => mark.at,
+                None => needed.blobs[offer as usize - needed.marks.len()].at,
+            })
             .collect();
         (marks, lit)
+    }
+
+    /// One system on its own draws a mark, whichever kind of cell the walk
+    /// answers it as
+    ///
+    /// **This is the case merged marks alone did not cover.** A cell stays
+    /// above the frontier by being wider than a mark, so the reasoning
+    /// went that what stands in an empty patch of sky is always a blob. It
+    /// is not: measured over `.index/full`, the one inhabited system more
+    /// than two thousand light years off the galactic plane sits in a cell
+    /// the walk answers as a mark, and lighting blobs alone left the only
+    /// thing up there undrawn.
+    #[test]
+    fn one_system_alone_out_there_is_drawn() {
+        let mut at = plane_and_clump(1200.0);
+        at.truncate(20_000);
+        at.push([HERE[0], HERE[1] + 1200.0, HERE[2]]);
+        let built = sky(&at);
+        let index = Index::from_cells(built.index.cells().cloned());
+        let view = eye(9000.0);
+
+        let (marks, lit) = drawn(&index, &view);
+        let high = |at: &[f64; 3]| at[1] - HERE[1] > 600.0;
+        assert_eq!(
+            marks.iter().filter(|at| high(at)).count(),
+            0,
+            "the share alone should draw nothing out there",
+        );
+        assert!(lit.iter().any(high), "the one system up there went undrawn");
     }
 
     /// A clump standing on its own draws a mark, at a zoom where the share

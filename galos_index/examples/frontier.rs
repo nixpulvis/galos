@@ -309,23 +309,55 @@ fn frame(
     }
     let share = share_of(population, frame_marks(view));
 
-    // The tiles of the frame the draw leaves dark, which is the client's
-    // own [`Empty`] and not a second copy of it.
-    let mut lighting = Empty::over(view);
+    // The patches of sky the frame leaves dark, settled over the whole
+    // plan before anything is drawn: the client's own [`Empty`], and its
+    // own two-pass shape, not a second copy of either.
+    let lit: Vec<u32> = {
+        let mut lighting = Empty::over(view);
+        for (offer, mark) in needed.marks.iter().enumerate() {
+            if !inside(mark.id) {
+                continue;
+            }
+            match wanted(share, mark.slice as usize, mark.id) {
+                0 => lighting.offered(
+                    view,
+                    mark.at,
+                    u64::from(mark.slice),
+                    offer as u32,
+                ),
+                take => lighting.drew(view, mark.at, take),
+            }
+        }
+        for (offer, blob) in needed.blobs.iter().enumerate() {
+            if !inside(blob.id) {
+                continue;
+            }
+            let offer = (needed.marks.len() + offer) as u32;
+            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+                0 => lighting.offered(view, blob.at, blob.count, offer),
+                _ => lighting.drew(view, blob.at, 1),
+            }
+        }
+        lighting.lit()
+    };
+    let is_lit = |offer: u32| lit.binary_search(&offer).is_ok();
+
     let mut marks: Vec<Mark> = Vec::new();
     for (offer, blob) in needed.blobs.iter().enumerate() {
         if !inside(blob.id) {
             continue;
         }
         let count = blob.count;
-        if wanted(share * blob.blend, count as usize, blob.id) == 0 {
-            lighting.offered(view, blob.at, count, offer as u32);
+        let offered = (needed.marks.len() + offer) as u32;
+        if wanted(share * blob.blend, count as usize, blob.id) == 0
+            && !is_lit(offered)
+        {
             continue;
         }
+        tally.lit += usize::from(is_lit(offered));
         tally.blobs += 1;
         tally.behind += count;
         tally.levels[blob.id.level as usize].blobs += 1;
-        lighting.drew(view, blob.at, 1);
         marks.push(Mark { at: blob.at, merged: true });
     }
 
@@ -359,22 +391,11 @@ fn frame(
             }
             tally.drawn += 1;
             tally.levels[id.level as usize].drawn += 1;
-            lighting.drew(view, point.pos, 1);
             marks.push(Mark { at: point.pos, merged: false });
         }
     }
     let read = at.elapsed();
 
-    // And the patches of sky nothing else reached: one merged mark apiece,
-    // which is what says a tile holding something is not a void.
-    for offer in lighting.lit() {
-        let blob = &needed.blobs[offer as usize];
-        tally.lit += 1;
-        tally.blobs += 1;
-        tally.behind += blob.count;
-        tally.levels[blob.id.level as usize].blobs += 1;
-        marks.push(Mark { at: blob.at, merged: true });
-    }
 
     println!("  level   cells      read    points      marks     blobs");
     for level in 0..=20u8 {

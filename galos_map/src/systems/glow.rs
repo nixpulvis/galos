@@ -92,6 +92,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
+use galos_index::walk::UNIFORM_SPAN;
 use galos_index::inhabited::{
     Inhabited, allegiance_at, government_at, security_at,
 };
@@ -1004,8 +1005,35 @@ fn build_glow(
                 taken.count.saturating_sub(taken.inhabited.count()),
             );
             // The finest either channel may claim of this cell, in light
-            // years, and the same figure for both ([`COVERAGE`]).
-            let finest = cell.id.edge_ly() * COVERAGE;
+            // years, and the same rule for both ([`COVERAGE`]) — but never
+            // wider than the contents themselves reach.
+            //
+            // **The floor is an admission of ignorance, and it has to stop
+            // where the ignorance does.** Half a cell is what sums flat
+            // over a lattice of *filled* cells, where the map knows a
+            // cell's systems only to its own edge; for a cell holding one
+            // system the map knows exactly where that system is, and
+            // spreading it over half a cell invents a region of sky that
+            // is not there. Measured over `.index/full`: `HIP 58832` is
+            // the one inhabited system more than two thousand light years
+            // off the galactic plane, it sits alone in a level 5 cell, and
+            // the floor drew it as a ball of colony light 2,048 light
+            // years in radius reaching seven thousand light years up — a
+            // bright political region over sky holding, in the whole
+            // galaxy, seven systems. Every other colony splat in that
+            // frame reached 820.
+            //
+            // Capped by the support of what is held — the RMS radius read
+            // as the span of an even spread, [`UNIFORM_SPAN`], which is
+            // the same figure the walk's own merge rule measures a cell's
+            // contents by. A cell whose systems fill it has a support of
+            // about its whole edge and keeps the floor it had; a cell
+            // holding a knot keeps the knot; a cell holding one system
+            // floors at nothing and is laid at half a pixel
+            // ([`FINEST`]), which is what one system looks like.
+            let covered = |spread: f64| {
+                (cell.id.edge_ly() * COVERAGE).min(spread * UNIFORM_SPAN)
+            };
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
                 && let Some(at) = mass.centroid()
@@ -1021,7 +1049,8 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    (mass.rms_radius() * FLATTENED).max(finest),
+                    (mass.rms_radius() * FLATTENED)
+                        .max(covered(mass.rms_radius())),
                     light,
                     systems * MARK_AREA,
                     gains.crowd * gains.backdrop,
@@ -1056,7 +1085,7 @@ fn build_glow(
                     viewport,
                     half,
                     at,
-                    (held.spread() * FLATTENED).max(finest),
+                    (held.spread() * FLATTENED).max(covered(held.spread())),
                     mix * carried * gains.mark * MARK_AREA,
                     systems * MARK_AREA,
                     gains.crowd,
