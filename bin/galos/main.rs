@@ -1,39 +1,40 @@
-//! Elite's galaxy: the two stores, and the questions asked of them.
+//! Elite's galaxy: filling the two stores, and asking them.
 //!
 //! ```sh
-//! galos index ingest --from eddn --dir .galos_index   # fill a directory
-//! galos db ingest --from eddn                         # fill the database
-//! galos index status .index/full                      # what a directory holds
-//! galos db verify                                     # what is wrong in there
-//! galos search -s 'Sol*'                              # ask about it
+//! galos ingest --from eddn --db --index      # one read, both stores
+//! galos ingest --from spansh=galaxy.json --index   # a galaxy, region by region
+//! galos ingest --from database --index --watch 5   # the rows into a directory
+//! galos index status .index/full             # what a directory holds
+//! galos db verify                            # what is wrong in there
+//! galos search -s 'Sol*'                     # ask about it
 //! ```
 //!
-//! ## One command, three groups of verbs
+//! ## One verb writes; two groups are asked
 //!
-//! [`index`] is everything done to an index directory and [`db`] is
-//! everything done to the database; [`search`] and [`route`] are the
-//! questions, which only the database can answer. The groups are separate
-//! because the two stores are not two settings of one store — a database
-//! keeps stations, markets, signals and factions, an index keeps the sky —
-//! and they are one *program* because filling either one is the same
-//! reading of the same publishers, through [`galos::read`], and because a
-//! reader should not have to know which of two binaries a verb lives in.
+//! [`ingest`] is the only thing here that *fills* anything, and `--db` and
+//! `--index` name which stores this run writes. That is one verb because
+//! it is one job: a source reads a publisher and hands over what it read,
+//! and each sink takes what it is for ([`galos::read`],
+//! [`galos::sink`]). Naming both reads each publisher once — over EDDN the
+//! difference between one subscription and two carrying the same galaxy,
+//! and the run an operator keeping both stores current actually wants.
 //!
-//! What was two flags is now the verb's own name. `--db` and `--index DIR`
-//! took a dozen refusals between them to say which combinations meant
-//! anything; `galos index ingest` and `galos db ingest` need none, and
-//! filling both stores is the two commands run side by side, each with its
-//! own subscription.
+//! [`index`] and [`db`] are what is asked *of* each store once it is
+//! filled, and those are two groups because the stores are not two
+//! settings of one store: a database keeps stations, markets, signals and
+//! factions, an index keeps the sky, and `status`, `verify` and `migrate`
+//! mean different work on each side with no code in common.
+//! [`search`] and [`route`] are the questions, which only the database can
+//! answer.
 //!
 //! ## The `db` feature
 //!
-//! On by default, and off is the point. Built `--no-default-features`, this
-//! binary is the [`index`] group alone: no `sqlx`, no `dotenv`, no
-//! `DATABASE_URL`, and no client compiled in. That is what a machine
-//! serving the map from a directory wants, since it has no Postgres for a
-//! client to open. `galos index build --from database` and
-//! `galos index ingest --catch-up` are the two verbs inside that group
-//! which need the feature, and they are the two that are about the other
+//! On by default, and off is the point. Built `--no-default-features`,
+//! this binary is [`ingest`] `--index` and the [`index`] group: no `sqlx`,
+//! no `dotenv`, no `DATABASE_URL`, and no client compiled in. That is what
+//! a machine serving the map from a directory wants, since it has no
+//! Postgres for a client to open. `--db` and `--from database` are what
+//! the feature adds to the writing, and they are what is about the other
 //! store.
 
 // `row!`/`table!` for the query verbs' output, which is the only thing
@@ -48,6 +49,7 @@ use std::io::{stderr, IsTerminal};
 use std::process::ExitCode;
 
 mod index;
+mod ingest;
 
 #[cfg(feature = "db")]
 mod db;
@@ -77,7 +79,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fill, inspect and repair an index directory.
+    /// Read a publisher into the database, an index directory, or both.
+    Ingest(ingest::Cli),
+
+    /// Inspect and repair an index directory.
     Index(index::Cli),
 
     /// Work with the galaxy database.
@@ -127,7 +132,15 @@ async fn main() -> ExitCode {
 
     let forced = cli.force_lock;
     match cli.command {
-        Command::Index(it) => index::run(it, forced).await,
+        Command::Ingest(it) => match ingest::run(it, forced).await {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(said) => {
+                eprintln!("{said}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::Index(it) => index::run(it, forced),
         #[cfg(feature = "db")]
         Command::Db(it) => match db::run(it).await {
             Ok(true) => ExitCode::SUCCESS,

@@ -8,6 +8,13 @@
 //! comes here instead, which cuts the galaxy into regions and builds them
 //! one at a time, holding one region rather than the sky.
 //!
+//! That is `galos ingest --from spansh=PATH --index DIR` and nothing
+//! names it: no flag and no verb of its own, because the shape of the run
+//! already says it — a source with an end, one sink, and no reader
+//! waiting on a directory being published as it is written. What the run
+//! does say is which route it took, when it starts, since 200 GB of
+//! resident memory is not a thing to discover afterwards.
+//!
 //! [`region_budget`] is the memory dial of that route, and what it bounds
 //! is how many systems are held at once: a region's systems are read back
 //! off its spill, built, written and dropped. A region can be dropped

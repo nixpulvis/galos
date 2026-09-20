@@ -6,25 +6,24 @@
 //! on its side: rows in Postgres, or a `galos_index` directory a client
 //! draws from with no server at all.
 //!
-//! **Here rather than in `bin/` because there are two sinks.**
-//! `galos index ingest` and `galos db ingest` read the same publishers
-//! into different sinks; the reading is the same sentence either way, and
-//! the only thing that differs is what [`collect`] is handed to fan into.
-//! That was one program with a `--db`/`--index` pair of flags and the
-//! dozen refusals it took to say which combinations meant anything; it is
-//! two groups of verbs and no flags now.
+//! **Here rather than in `bin/` because there are two sinks.** One reading
+//! fans into one or both of them — `galos ingest --db`, `--index`, or the
+//! pair named together. The reading is the same sentence whichever is
+//! named, and the only thing that differs is what [`collect`] is handed to
+//! fan into, which is why the fan is a library concern and not the command
+//! line's.
 //!
 //! ```text
 //! eddn ────────┐
-//! journal=PATH ┼─> events ─┬─> galos db     (Postgres, per message)
-//! edsm=PATH ───┘           └─> galos index  (cell tree + tables, on a beat)
+//! journal=PATH ┼─> events ─┬─> --db     (Postgres, per message)
+//! edsm=PATH ───┘           └─> --index  (cell tree + tables, on a beat)
 //! ```
 //!
 //! Events are the live input to both. A database is what an index is
-//! rebuilt *from*, not what it is maintained from, so a running ingest
-//! never reads the database to keep a directory current — see
-//! [`derive`] for the one path that does, which is a build rather than
-//! an ingest.
+//! rebuilt *from*, not what it is maintained from, so a run following a
+//! publisher never reads the database to keep a directory current — see
+//! [`derive`] for the two paths that do: `--from database`, and the
+//! handoff a run naming both sinks starts with.
 //!
 //! The sinks are not interchangeable and are not meant to be. A database
 //! keeps stations, markets, signals and factions; an index keeps the sky
@@ -83,21 +82,22 @@ pub struct Options {
     /// One process's share of a file, from `--shard`.
     pub shard: Option<Shard>,
     /// What the reader calls itself in a spool's `cursors/` directory. One
-    /// name per consumer, so the two verb groups keep their own places in
-    /// the same spool and neither can move the other's.
+    /// name per consumer, so a run into rows and a run into a directory
+    /// keep their own places in the same spool and neither moves the
+    /// other's.
     pub consumer: &'static str,
 }
 
 /// The per-source flags of an ingest, exactly as the command line gave
 /// them.
 ///
-/// **Both tools' `ingest` takes these same eight flags, so the rules about
-/// them are written once, here.** Each is a flag that qualifies a reading
+/// **Every source takes these same eight flags, so the rules about them
+/// are written once, here.** Each is a flag that qualifies a reading
 /// rather than naming one, and each is refused where the run reads no
 /// source it could qualify — a feed's address given to a run that reads a
 /// dump, a commander named over EDDN. Two copies of those rules drift: a
-/// tenth source, or one more flag, and the two verb groups disagree about
-/// what a command line means.
+/// tenth source, or one more flag, and the copies disagree about what a
+/// command line means.
 ///
 /// Raw rather than an [`Options`], because a refusal has to tell "unset"
 /// from "set to the value that happens to be the default" — `--stall 0`
@@ -252,7 +252,9 @@ impl Qualifiers<'_> {
                 | Source::Eddb(path)
                 | Source::Spool(path, _)
                 | Source::Spansh(path) => path,
-                Source::Eddn | Source::EdsmApi(_) => continue,
+                Source::Eddn | Source::EdsmApi(_) | Source::Database => {
+                    continue
+                }
             };
             if !named.exists() {
                 return Err(format!(
@@ -323,6 +325,18 @@ pub async fn collect(
             spansh::Dump { path, shard: options.shard }
                 .read(&mut fan, &shutdown)
                 .await
+        }
+        // The rows are not read through a sink: a directory is *derived*
+        // from them, by `derive::from_database`, which writes the cells
+        // and the tables itself. `galos ingest` keeps them out of the fan
+        // for that reason; this arm is what would catch a caller that
+        // did not.
+        Source::Database => {
+            error!(
+                "the database is derived from, not read through a sink; \
+                 this reading was dropped",
+            );
+            false
         }
     };
 

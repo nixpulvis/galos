@@ -6,13 +6,15 @@
 //!
 //! The index is derived two ways. One writes the events to Postgres and
 //! builds the directory from the rows (`sink::Db`, then
-//! `galos_db::index::catch_up`) — which is `galos index build --from
-//! database`; the other accumulates the events into `galos_index::Galaxy`
+//! `galos_db::index::catch_up`) — which is `galos ingest --from database
+//! --index DIR`, and the first half of what a run naming `--db --index`
+//! does; the other accumulates the events into `galos_index::Galaxy`
 //! and publishes the directory from that (`sink::Index`) — which is
-//! `galos index ingest`, and `build --from spansh=PATH` for a dump too big
-//! to hold. Both take the same [`Sink`] trait, so this hands one list
-//! of readings — each entry and whoever said it, a commander's journal and a
-//! published dump both — to each, and compares what they published.
+//! `galos ingest --index DIR` off a feed, and the regional build for a
+//! dump too big to hold. Both take the same [`Sink`] trait, so this hands
+//! one list of readings — each entry and whoever said it, a commander's
+//! journal and a published dump both — to each, and compares what they
+//! published.
 //!
 //! ## What is compared, and what is not
 //!

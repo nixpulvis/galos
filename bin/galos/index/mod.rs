@@ -1,32 +1,18 @@
-//! Everything that is done to a galaxy index directory: `galos index`.
+//! Inspecting and repairing an index directory: `galos index`.
 //!
 //! ```sh
 //! galos index status .index/full
-//! galos index ingest --from eddn --dir .index/full        # keep it current
-//! galos index build --from spansh=galaxy.json --dir .index/full
-//! galos index build --from database --watch 5             # from the rows
 //! galos index verify .index/full --bodies
 //! galos index sweep .index/full --bodies --apply
+//! galos index migrate .galos_index
 //! galos index diff .index/from_dump .index/from_db
 //! ```
 //!
-//! **Database-free, and that is the point.** Build `galos` with
-//! `--no-default-features` and there is no `sqlx`, no `dotenv` and no
-//! `DATABASE_URL` anywhere in it — these verbs are all that is left, and
-//! they are enough: an index is a file format a client draws from with no
-//! server at all, so filling and repairing one runs on a machine with no
-//! Postgres installed. `build --from database` and `ingest --catch-up`
-//! are the two things here that need the `db` feature, and they are the
-//! two that are about the other store.
-//!
-//! `ingest` and `build` are both "fill this directory", and which one to
-//! reach for is a question about *memory*, not about taste. `ingest` holds
-//! a live tree and the whole names table — a kilobyte a system — because
-//! something may be reading the directory while it is written, and that is
-//! what makes a feed, a journal or a small dump work. `build` holds one
-//! region at a time and publishes nothing until it is done, which is the
-//! only way a two hundred million system dump fits in memory at all. See
-//! [`galos::read::cold`].
+//! **Filling a directory is not here** — that is `galos ingest --index
+//! DIR`, which is one verb for both stores because it is one reading. What
+//! is here is everything done *to* a directory that already exists, and
+//! none of it needs a database: build this binary
+//! `--no-default-features` and these verbs are all of it.
 //!
 //! `status` says what one directory holds and `verify` says what is wrong
 //! with it — both read-only; `diff` says whether two of them are the same
@@ -34,8 +20,8 @@
 //! database-built index of the same galaxy are there to answer.
 //!
 //! The rest write, and each takes `<dir>.lock` for as long as it holds the
-//! directory: `sweep` gives back what nothing refers to, `pack` moves loose
-//! body files into the shards, `migrate` brings a directory's format
+//! directory: `sweep` gives back what nothing refers to, `pack` moves
+//! loose body files into the shards, `migrate` brings a directory's format
 //! forward. Every one of them weighs before it acts and reports before it
 //! is asked to act, because the passes are minutes over a galaxy and a
 //! silent terminal is not a run anybody can judge. Ctrl-C is answered
@@ -44,18 +30,14 @@
 use clap::Subcommand;
 use galos_index::geometry::MAX_LEVEL;
 use galos_index::{
-    source, store, Bodies, Cell, Index, NameEntry, PopulatedSystem, Published,
-    SystemBoost, SystemReach,
+    source, store, Bodies, Cell, Index, NameEntry, Names, PopulatedSystem,
+    Published, SystemBoost, SystemReach,
 };
 use serde::de::DeserializeOwned;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-
-mod fill;
 
 /// Fill, inspect and repair a galaxy index directory.
 #[derive(clap::Args)]
@@ -72,16 +54,6 @@ pub(super) enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
-    /// Read a publisher into the directory, following it where it does not
-    /// end.
-    ///
-    /// Holds a live tree and publishes on a beat, so a map reading the
-    /// directory sees what arrives. A galaxy-sized dump wants `build`
-    /// instead — see the `--from spansh=PATH` note there.
-    Ingest(fill::Ingest),
-    /// Derive the whole directory from one finite source, publishing
-    /// nothing until it is built.
-    Build(fill::Build),
     /// Compare two built index directories: are they the same derivation?
     Diff {
         /// The two index directories to compare.
@@ -91,8 +63,9 @@ pub(super) enum Command {
         /// system and hours of them over a galaxy.
         #[arg(long)]
         bodies: bool,
-        /// Name the rows that differ, which holds both names tables in
-        /// memory: a galaxy's worth is tens of gigabytes.
+        /// Name the rows that differ, up to `--limit` of them. Met as the
+        /// walk meets them, so it costs the rows it names and nothing
+        /// else.
         #[arg(long)]
         detail: bool,
         /// How many differing rows to name before counting the rest.
@@ -184,37 +157,28 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
 /// verb group, because clearing a lock a killed builder left behind is a
 /// judgement about the *directory* rather than about the verb that met the
 /// refusal.
-pub async fn run(cli: Cli, forced: bool) -> ExitCode {
+pub fn run(cli: Cli, forced: bool) -> ExitCode {
+    // Every verb here is one pass over the directory, stopped between
+    // shards by the flag [`stopping`] reads. A run that *fills* one has a
+    // publish and a resume point to close out and installs a handler of
+    // its own; see `crate::ingest`.
+    asking_to_stop();
     match cli.command {
-        // The two that fill a directory install their own handler: they
-        // have a publish and a resume point to close out, and what asks
-        // them to stop is a `Shutdown` several tasks read.
-        Command::Ingest(it) => fill::ingest(it, forced).await,
-        Command::Build(it) => fill::build(it, forced).await,
-        // Everything else is one pass over the directory, stopped between
-        // shards by the flag [`stopping`] reads.
-        pass => {
-            asking_to_stop();
-            match pass {
-                Command::Status { dir } => status(&dir),
-                Command::Diff { a, b, bodies, detail, limit } => {
-                    diff(&a, &b, Compare { bodies, detail, limit })
-                }
-                Command::Pack { dir } => pack(&dir, forced),
-                Command::Sweep { dir, bodies, apply } => {
-                    sweep(&dir, bodies, apply, forced)
-                }
-                Command::Verify { dir, bodies } => verify(&dir, bodies),
-                Command::Migrate { dir } => migrate(&dir, forced),
-                Command::Sectors { dir, out, force } => {
-                    sectors(&dir, out.as_deref(), force)
-                }
-                // Answered above, under the handler that suits them.
-                Command::Ingest(_) | Command::Build(_) => unreachable!(),
-            }
-            ExitCode::SUCCESS
+        Command::Status { dir } => status(&dir),
+        Command::Diff { a, b, bodies, detail, limit } => {
+            diff(&a, &b, Compare { bodies, detail, limit })
+        }
+        Command::Pack { dir } => pack(&dir, forced),
+        Command::Sweep { dir, bodies, apply } => {
+            sweep(&dir, bodies, apply, forced)
+        }
+        Command::Verify { dir, bodies } => verify(&dir, bodies),
+        Command::Migrate { dir } => migrate(&dir, forced),
+        Command::Sectors { dir, out, force } => {
+            sectors(&dir, out.as_deref(), force)
         }
     }
+    ExitCode::SUCCESS
 }
 
 /// Whether the run has been asked to stop, for the passes that answer one.
@@ -1109,13 +1073,29 @@ const DRIFT: f64 = 1e-9;
 /// - the cell tree, by its integer columns — the cells present, `rank_lo`,
 ///   `rank_hi`, `child_mask` and each aggregate's count;
 /// - the aggregates' summed light, to [`DRIFT`];
-/// - every cell's payload, byte for byte, which is the systems it owns and
-///   the order it owns them in;
-/// - the names table, by count and an order-independent digest, read a
-///   chunk at a time so a galaxy's worth is never held;
-/// - `populated.bin`, `reaches.bin` and `boosts.bin`, row by row, absent
-///   and empty told apart;
+/// - every cell's payload, by the bytes of the two files, decoded only
+///   where those disagree;
+/// - the names table, by the bytes of the base a generation at a time,
+///   and by a merged walk that holds a row of each side where they
+///   disagree;
+/// - `populated.bin`, `reaches.bin` and `boosts.bin`, by their bytes and
+///   row by row where the bytes differ, absent and empty told apart;
 /// - the body files, on `--bodies`, which is a file a scanned system.
+///
+/// **Every section is walked and none of them gives up early.** A run that
+/// stopped at the first difference could not say whether the rest agree,
+/// which is the question the verb exists to answer. What it can do is
+/// answer each section for the least reading — which is what the byte
+/// comparisons are — and say what it is doing while it does it: every
+/// section reports what it cost, and the two that are minutes over a
+/// galaxy count up on `\r` while they run, because a terminal that says
+/// nothing for two minutes is not a run anybody can judge.
+///
+/// **Measured over `.index/full` against itself** — 204,466 cells, 9.2 GB
+/// of payloads, 200,071,629 names and 80 M table rows, page cache warm
+/// both times: **2m00s before this and 3.9s after**, of which the
+/// payloads are 3.3s. A run whose section files have gone cold again
+/// pays about two seconds more for them and no more than that.
 fn diff(a: &Path, b: &Path, how: Compare) {
     let left = open(a);
     let right = open(b);
@@ -1155,12 +1135,64 @@ fn open(dir: &Path) -> Index {
     }
 }
 
+/// How much of a file a streamed comparison holds at a time.
+///
+/// Two of these and nothing else, one a side: `.index/full` holds 9.2 GB
+/// of payloads and a 2.6 GB `reaches.bin`, and every one of them is
+/// answered out of 128 KiB.
+const BLOCK: usize = 64 * 1024;
+
+/// Whether two files hold the same bytes, and which one would not read.
+///
+/// The lengths are the caller's to compare — it has stat'ed both to find
+/// out they are there at all, and two lengths that differ are an answer
+/// without a read. What is left is the read, [`BLOCK`] at a time through
+/// two buffered readers, stopping at the first block that disagrees.
+///
+/// The path comes back with the error because what a caller has to say is
+/// which of its two directories will not read.
+fn same_bytes(x: &Path, y: &Path) -> Result<bool, (PathBuf, io::Error)> {
+    use std::io::BufRead;
+    let open = |path: &Path| match std::fs::File::open(path) {
+        Ok(file) => Ok(io::BufReader::with_capacity(BLOCK, file)),
+        Err(e) => Err((path.to_path_buf(), e)),
+    };
+    let (mut left, mut right) = (open(x)?, open(y)?);
+    loop {
+        let read = {
+            let this = left.fill_buf().map_err(|e| (x.to_path_buf(), e))?;
+            let that = right.fill_buf().map_err(|e| (y.to_path_buf(), e))?;
+            if this.is_empty() || that.is_empty() {
+                // Equal lengths end together; a caller that did not check
+                // gets the honest answer anyway.
+                return Ok(this.len() == that.len());
+            }
+            let read = this.len().min(that.len());
+            if this[..read] != that[..read] {
+                return Ok(false);
+            }
+            read
+        };
+        left.consume(read);
+        right.consume(read);
+    }
+}
+
+/// Which of the two directories a file that would not read came out of.
+fn side<'d>(path: &Path, a: &'d Path, b: &'d Path) -> &'d Path {
+    match path.starts_with(a) {
+        true => a,
+        false => b,
+    }
+}
+
 /// The cells, by the columns that do not drift.
 ///
 /// Answers the cells both sides hold, for everything downstream to compare
 /// over: a cell only one side has is already a difference and has no pair
 /// to be read against.
 fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
+    let at = std::time::Instant::now();
     let keyed = |index: &Index| -> BTreeMap<(u8, u64), Cell> {
         index.cells().map(|it| ((it.id.level, it.id.morton()), *it)).collect()
     };
@@ -1177,13 +1209,19 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
         .collect();
 
     match only_left.is_empty() && only_right.is_empty() {
-        true => println!("  cells         {} in both", shared.len()),
+        true => println!(
+            "  cells         {} in both, in {:.1?}",
+            shared.len(),
+            at.elapsed(),
+        ),
         false => {
             println!(
-                "  cells         {} in both, {} only in A, {} only in B",
+                "  cells         {} in both, {} only in A, {} only in B, \
+                 in {:.1?}",
                 shared.len(),
                 only_left.len(),
                 only_right.len(),
+                at.elapsed(),
             );
             for (level, morton) in
                 only_left.iter().chain(&only_right).take(limit)
@@ -1195,6 +1233,7 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
 
     // The integer columns: what a cell holds, how much of it, and where in
     // the ranking its slice sits.
+    let at = std::time::Instant::now();
     let mut differing = Vec::new();
     for (left, right) in &shared {
         let same = left.rank_lo == right.rank_lo
@@ -1206,9 +1245,13 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
         }
     }
     match differing.is_empty() {
-        true => println!("  columns       identical"),
+        true => println!("  columns       identical, in {:.1?}", at.elapsed()),
         false => {
-            println!("  columns       {} cells differ", differing.len());
+            println!(
+                "  columns       {} cells differ, in {:.1?}",
+                differing.len(),
+                at.elapsed(),
+            );
             for cell in differing.iter().take(limit) {
                 println!(
                     "                  L{} {:016x}",
@@ -1231,6 +1274,7 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
 
 /// The summed light, which is allowed to drift and not to move.
 fn aggregates(shared: &[(Cell, Cell)]) -> Verdict {
+    let at = std::time::Instant::now();
     let mut worst = 0.0f64;
     let mut faintest = 0.0f32;
     for (left, right) in shared {
@@ -1251,59 +1295,138 @@ fn aggregates(shared: &[(Cell, Cell)]) -> Verdict {
     match worst <= DRIFT && faintest == 0.0 {
         true => {
             println!(
-                "  aggregates    agree (flux within {worst:.1e}, same M_abs)"
+                "  aggregates    agree (flux within {worst:.1e}, same \
+                 M_abs), in {:.1?}",
+                at.elapsed(),
             );
             Verdict::Same
         }
         false => {
             println!(
                 "  aggregates    flux differs by {worst:.1e}, M_abs by \
-                 {faintest:.3}",
+                 {faintest:.3}, in {:.1?}",
+                at.elapsed(),
             );
             Verdict::Differ
         }
     }
 }
 
-/// Every shared cell's payload, byte for byte.
+/// Every shared cell's payload, by the bytes of the two files.
 ///
-/// Read through [`Index::read_payload`], so a directory part way through
-/// the shard migration answers off whichever path it has.
+/// **This read 9.2 GB twice and rmp-decoded all of it twice** to answer a
+/// question two `stat`s answer for most cells: a payload is written whole
+/// by one writer version, sorted by magnitude, so equal content is equal
+/// bytes — the same argument [`tables`] makes, and the crate's own
+/// cross-build test (`store::tests::assert_dirs_identical`) compares
+/// payloads by their bytes already.
+///
+/// **The decoder keeps the last word.** Equal bytes are equal points and
+/// need no reading; unequal bytes are not yet a difference — a file with a
+/// torn record on its end decodes to what the whole one does, the codec
+/// dropping it — so where the bytes disagree both sides are read through
+/// [`Index::read_payload`] and the points compared, which is what this
+/// used to do to every cell. The verdict is the one it always gave, for
+/// the reading of the cells that actually disagree.
+///
+/// **Cells are compared on as many threads as the machine has**, because
+/// what is left after the decoding is gone is 409 thousand small files
+/// opened one at a time: 45 KB apiece, scattered over the Morton shards,
+/// which is a queue one deep against a device that answers dozens at
+/// once. Measured over `.index/full` against itself, the same byte
+/// comparison took 25.7 s on one thread and 3.3 s on eighteen. The cells
+/// are split into one contiguous run a thread and the runs' findings
+/// concatenated in order, so which cells are named does not depend on
+/// which thread got there first.
 fn payloads(
     a: &Path,
     b: &Path,
     shared: &[(Cell, Cell)],
     limit: usize,
 ) -> Verdict {
-    let mut differing = Vec::new();
-    for (cell, _) in shared {
-        let left = Index::read_payload(a, cell.id);
-        let right = Index::read_payload(b, cell.id);
-        match (left, right) {
-            (Ok(left), Ok(right)) if left == right => {}
-            (Ok(_), Ok(_)) => differing.push(cell.id),
-            (left, right) => {
-                if let Err(e) = left {
-                    eprintln!("cannot read a payload of {}: {e}", a.display());
-                    std::process::exit(2);
+    let at = std::time::Instant::now();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let run = |cells: &[(Cell, Cell)]| -> (Vec<galos_index::CellId>, usize) {
+        let weigh = |dir: &Path, cell: &Cell| {
+            payload_file(dir, cell).unwrap_or_else(|e| unreadable(dir, e))
+        };
+        let (mut differing, mut decoded) = (Vec::new(), 0usize);
+        for (cell, _) in cells {
+            // The count is every thread's, so what it says is what has
+            // been done and not what this run of cells has reached.
+            let done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if done % 4096 == 0 {
+                let total = shared.len();
+                eprint!("\r  payloads      {done} of {total} compared");
+            }
+            let same = match (weigh(a, cell), weigh(b, cell)) {
+                // Neither side keeps a file for a cell that owns nothing,
+                // and two payloads that are not there read as the same
+                // empty one.
+                (None, None) => true,
+                (Some((x, n)), Some((y, m))) => {
+                    n == m
+                        && same_bytes(&x, &y).unwrap_or_else(|(path, e)| {
+                            unreadable(side(&path, a, b), e)
+                        })
                 }
-                if let Err(e) = right {
-                    eprintln!("cannot read a payload of {}: {e}", b.display());
-                    std::process::exit(2);
-                }
+                _ => false,
+            };
+            if same {
+                continue;
+            }
+            // Not the same file, which is not yet not the same payload.
+            decoded += 1;
+            let left = Index::read_payload(a, cell.id)
+                .unwrap_or_else(|e| unreadable(a, e));
+            let right = Index::read_payload(b, cell.id)
+                .unwrap_or_else(|e| unreadable(b, e));
+            if left != right {
+                differing.push(cell.id);
             }
         }
-    }
+        (differing, decoded)
+    };
+
+    let threads = std::thread::available_parallelism().map_or(1, |it| it.get());
+    let each = shared.len().div_ceil(threads).max(1);
+    let found: Vec<(Vec<galos_index::CellId>, usize)> =
+        std::thread::scope(|scope| {
+            let spawned: Vec<_> = shared
+                .chunks(each)
+                .map(|cells| scope.spawn(move || run(cells)))
+                .collect();
+            spawned
+                .into_iter()
+                .map(|it| it.join().expect("a run of cells compared"))
+                .collect()
+        });
+    eprint!("\r");
+    let decoded: usize = found.iter().map(|(_, it)| it).sum();
+    let differing: Vec<galos_index::CellId> =
+        found.into_iter().flat_map(|(it, _)| it).collect();
+
+    // How many cells the bytes could not answer for, because it is the
+    // one number that says whether the fast road is being taken at all.
+    let read = match decoded {
+        0 => String::new(),
+        n => format!(" ({n} decoded)"),
+    };
     match differing.is_empty() {
         true => {
-            println!("  payloads      {} identical", shared.len());
+            println!(
+                "  payloads      {} identical{read}, in {:.1?}",
+                shared.len(),
+                at.elapsed(),
+            );
             Verdict::Same
         }
         false => {
             println!(
-                "  payloads      {} of {} differ",
+                "  payloads      {} of {} differ{read}, in {:.1?}",
                 differing.len(),
                 shared.len(),
+                at.elapsed(),
             );
             for id in differing.iter().take(limit) {
                 println!(
@@ -1317,100 +1440,426 @@ fn payloads(
     }
 }
 
-/// The names table, a chunk at a time.
+/// Where a cell's payload lies and how long it is, or [`None`] where the
+/// directory keeps none for it.
 ///
-/// By count and digest rather than by holding the table: 200 M entries is
-/// tens of gigabytes on each side, and which chunk a system landed in is
-/// append order rather than an invariant, so the digest is over the entries
-/// and not over the files. `--detail` is the road that names the rows, and
-/// it is the one that holds both tables.
+/// The sharded name first and the flat one after it, which is the order
+/// [`Index::read_payload`] reads them in: `store::payload_path` is the
+/// crate's own spelling of the pair and is `pub(crate)`, so they are
+/// spelled again here.
+///
+/// **A spelling that goes stale costs speed and not truth.** Where either
+/// side answers [`None`] the two payloads are read and decoded instead, by
+/// the crate's own reader, which cannot be wrong about where a payload
+/// lives — so a layout that moves under this makes the comparison slow
+/// again and never makes it wrong.
+fn payload_file(dir: &Path, cell: &Cell) -> io::Result<Option<(PathBuf, u64)>> {
+    let morton = cell.id.morton();
+    let cells = dir.join(store::PAYLOAD_DIR);
+    let name = format!("{:02}-{morton:016x}.bin", cell.id.level);
+    let sharded = cells.join(format!("{:03x}", morton & 0xfff)).join(&name);
+    for path in [sharded, cells.join(&name)] {
+        match std::fs::metadata(&path) {
+            Ok(meta) => return Ok(Some((path, meta.len()))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+
+/// A payload that stopped being readable part way through a comparison.
+fn unreadable(dir: &Path, e: io::Error) -> ! {
+    eprintln!("cannot read a payload of {}: {e}", dir.display());
+    std::process::exit(2);
+}
+
+/// The names table: the base by its bytes, and by a merged walk of both
+/// sides where those disagree.
+///
+/// **The walk is 200 M rows a side and 70 s of them**, and most of what it
+/// spends goes on names that are equal by construction: 97.4 % of a
+/// galaxy's rows store no name at all, and reading one spells it out of
+/// its address (`procedural::name_of` — a sector lookup, a `format!` and
+/// an allocation, a row) only for the two sides to agree about it.
+///
+/// **The base is written whole, from rows sorted by address, by one
+/// writer version** (`names::write_base`), so equal content is equal
+/// bytes — which is the argument [`tables`] and [`payloads`] make about
+/// their own files. The chunked table that argument did *not* hold for is
+/// gone: "which chunk a system landed in is append order rather than an
+/// invariant" was true of the format before the mapped base, and that is
+/// why this used to be a digest of decoded entries.
+///
+/// So [`same_base`] answers first and the walk answers what it cannot:
+/// 1.8 GB of sections a side read in 1.2 s, where the walk over the same
+/// two tables was 70 s.
+///
+/// The walk is still what says *which* rows differ, and it is one pass
+/// that counts them and names the first `--limit` of them together —
+/// where `--detail` used to collect every row of both tables into memory,
+/// after a digest pass had already read them, which over a galaxy is tens
+/// of gigabytes and an OOM.
+///
+/// The names alone are compared, because an entry is its address and its
+/// name: a position is the middle of the address's boxel on the base's
+/// road and `placed` puts the log's rows on that same road
+/// ([`Names::entry_of`](galos_index::Names::entry_of)), so two rows that
+/// agree about the address agree about the position.
 fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
-    let left = digest(a).unwrap_or_else(|e| fatal(a, e));
-    let right = digest(b).unwrap_or_else(|e| fatal(b, e));
-    if left == right {
-        println!("  names         {} entries, identical", left.0);
+    let at = std::time::Instant::now();
+    let left = Names::open(a).unwrap_or_else(|e| fatal(a, e));
+    let right = Names::open(b).unwrap_or_else(|e| fatal(b, e));
+    if same_base(a, b, &left, &right) && same_log(&left, &right) {
+        println!(
+            "  names         {} entries, identical, in {:.1?}",
+            left.len(),
+            at.elapsed(),
+        );
         return Verdict::Same;
     }
 
-    println!("  names         {} entries in A, {} in B", left.0, right.0);
+    let total = left.len().max(right.len());
+    let (mut x, mut y) = (Rows::of(&left), Rows::of(&right));
+    let (mut this, mut that) = (x.next(), y.next());
+
+    let (mut both, mut only_left, mut only_right) = (0usize, 0usize, 0usize);
+    let (mut differing, mut walked) = (0usize, 0usize);
+    // The first `--limit` differing rows, named as they are met and
+    // never more of them than that: this is the collection `--detail`
+    // used to make of both whole tables.
+    let mut named: Vec<String> = Vec::new();
+    let mut note = |what: std::fmt::Arguments| {
+        if how.detail && named.len() < how.limit {
+            named.push(what.to_string());
+        }
+    };
+    while this.is_some() || that.is_some() {
+        if walked % (1 << 22) == 0 {
+            eprint!("\r  names         {walked} of {total} walked");
+        }
+        walked += 1;
+        let step = match (&this, &that) {
+            (Some((x, _)), Some((y, _))) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => unreachable!("the walk ends where both do"),
+        };
+        match step {
+            std::cmp::Ordering::Less => {
+                let (address, _) = this.take().expect("a row only A holds");
+                only_left += 1;
+                note(format_args!("{address} only in A"));
+                this = x.next();
+            }
+            std::cmp::Ordering::Greater => {
+                let (address, _) = that.take().expect("a row only B holds");
+                only_right += 1;
+                note(format_args!("{address} only in B"));
+                that = y.next();
+            }
+            std::cmp::Ordering::Equal => {
+                let (address, mine) = this.take().expect("a row A holds");
+                let (_, theirs) = that.take().expect("a row B holds");
+                both += 1;
+                if mine != theirs {
+                    differing += 1;
+                    note(format_args!("{address} A {mine:?} B {theirs:?}"));
+                }
+                this = x.next();
+                that = y.next();
+            }
+        }
+    }
+    eprint!("\r");
+
+    if only_left == 0 && only_right == 0 && differing == 0 {
+        println!(
+            "  names         {both} entries, identical, in {:.1?}",
+            at.elapsed(),
+        );
+        return Verdict::Same;
+    }
+    println!(
+        "  names         {} entries in A, {} in B: {only_left} only in A, \
+         {only_right} only in B, {differing} differ, in {:.1?}",
+        both + only_left,
+        both + only_right,
+        at.elapsed(),
+    );
     match how.detail {
         true => {
-            rows(
-                "names rows",
-                Some(entries(a).unwrap_or_else(|e| fatal(a, e))),
-                Some(entries(b).unwrap_or_else(|e| fatal(b, e))),
-                |it: &NameEntry| it.address,
-                how,
-            );
+            for what in &named {
+                println!("                  {what}");
+            }
         }
         false => println!("                  pass --detail to name the rows"),
     }
     Verdict::Differ
 }
 
-/// A names table's count and an order-independent digest of its entries.
+/// Whether the two directories' names bases are the same base, by their
+/// bytes.
 ///
-/// Read off the mapping a row at a time, base and log together, so the
-/// digest of a galaxy costs a row and not a table.
-fn digest(dir: &Path) -> io::Result<(usize, u64, u64)> {
-    let held = galos_index::Names::open(dir)?;
-    let (mut count, mut sum, mut xor) = (0usize, 0u64, 0u64);
-    for address in held.addresses() {
-        let Some(entry) = held.entry_of(address) else {
-            continue;
-        };
-        let mut hasher = DefaultHasher::new();
-        entry.address.hash(&mut hasher);
-        entry.name.hash(&mut hasher);
-        for axis in entry.position {
-            axis.to_bits().hash(&mut hasher);
-        }
-        let hash = hasher.finish();
-        count += 1;
-        sum = sum.wrapping_add(hash);
-        xor ^= hash;
+/// One generation directory a side, the same table version, and the four
+/// sections that carry the content equal byte for byte:
+/// [`ADDR_FILE`](galos_index::names::ADDR_FILE) is which systems are
+/// named, [`EXCEPTION_FILE`](galos_index::names::EXCEPTION_FILE) and
+/// [`SPAN_FILE`](galos_index::names::SPAN_FILE) are which of them stored
+/// a name and where it lies, and
+/// [`TEXT_FILE`](galos_index::names::TEXT_FILE) is the names themselves.
+/// Everything else a row can be asked is arithmetic over the address.
+///
+/// **`byname.bin` is not read.** It is those four sorted by name — 800 MB
+/// of an answer they already hold — and this asks what the table says,
+/// not how fast it can be searched. `head.bin` is read for the version
+/// and never compared: it carries the generation number, which counts a
+/// directory's folds and not its content, so two honest builds of one
+/// galaxy differ in it.
+///
+/// Anything this cannot settle answers `false`, and the walk says what is
+/// true: a version it cannot read, two generations left by a build that
+/// died between writing the base and renaming `head.bin` over, a section
+/// only one side has. Being wrong costs the read it took to find out,
+/// which is a `stat` for two tables of different size and 1.8 GB a side
+/// for two of the same size that are not the same table.
+fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
+    // How many rows of the sections are live is the head's to say, and a
+    // head that says none is answered without mapping them at all — so
+    // two directories can hold the same sections and still name a
+    // different number of systems. The counts go first.
+    if left.base().len() != right.base().len() {
+        return false;
     }
-    Ok((count, sum, xor))
+    let (Some(x), Some(y)) = (generation(a), generation(b)) else {
+        return false;
+    };
+    let version = |dir: &Path| galos_index::names::version(dir).ok().flatten();
+    let Some(held) = version(a) else { return false };
+    if Some(held) != version(b) {
+        return false;
+    }
+    let sections = [
+        galos_index::names::ADDR_FILE,
+        galos_index::names::SPAN_FILE,
+        galos_index::names::EXCEPTION_FILE,
+        galos_index::names::TEXT_FILE,
+    ];
+    sections.iter().all(|file| {
+        let (x, y) = (x.join(file), y.join(file));
+        match (std::fs::metadata(&x), std::fs::metadata(&y)) {
+            (Ok(n), Ok(m)) => {
+                n.len() == m.len() && same_bytes(&x, &y).unwrap_or(false)
+            }
+            // A section the version does not write: dense spans have no
+            // exception list.
+            (Err(n), Err(m)) => {
+                n.kind() == io::ErrorKind::NotFound
+                    && m.kind() == io::ErrorKind::NotFound
+            }
+            _ => false,
+        }
+    })
 }
 
-/// Every row of a names table, for the road that names them.
+/// The one generation directory a names base lives in, or [`None`] where
+/// a directory holds none or holds more than one.
 ///
-/// The one place a whole table is held: `--detail` is asked for a pair of
-/// directories a human is going to read the difference between, not for a
-/// galaxy.
-fn entries(dir: &Path) -> io::Result<Vec<NameEntry>> {
-    let held = galos_index::Names::open(dir)?;
-    Ok(held.addresses().filter_map(|at| held.entry_of(at)).collect())
+/// A swap sweeps the generations it retires (`names::sweep_generations`),
+/// so one is what a directory that finished a write has. More than one is
+/// a build that died mid-swap, and which of them is live is `head.bin`'s
+/// to say and not this crate's to tell from outside — so the comparison
+/// takes the slow road rather than guess.
+fn generation(dir: &Path) -> Option<PathBuf> {
+    let mut held: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(source::names_dir(dir)).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_dir() {
+            continue;
+        }
+        if held.replace(entry.path()).is_some() {
+            return None;
+        }
+    }
+    held
+}
+
+/// Whether two logs say the same thing: the same rows named, the same
+/// addresses withdrawn.
+///
+/// Sorted and compared, which holds what a log holds and no more — a
+/// folded directory's is empty, and folding is what keeps it that way.
+/// A log that only says again what its base already says is not told
+/// apart from one that says nothing, so this answers `false` for two
+/// tables that are in fact the same; the walk then says so.
+fn same_log(a: &Names, b: &Names) -> bool {
+    fn named(held: &Names) -> Vec<(i64, &str)> {
+        let mut rows: Vec<(i64, &str)> =
+            held.delta().entries().map(|it| (it.address, &*it.name)).collect();
+        rows.sort_unstable();
+        rows
+    }
+    fn gone(held: &Names) -> Vec<i64> {
+        let mut rows: Vec<i64> = held.delta().withdrawn().collect();
+        rows.sort_unstable();
+        rows
+    }
+    named(a) == named(b) && gone(a) == gone(b)
+}
+
+/// One names table's rows, by ascending address, held one at a time.
+///
+/// **[`galos_index::Names::addresses`] is not this order.** It says so —
+/// "in no order a caller may rely on" — and it is the base's addresses,
+/// which *are* ascending, `addr.bin` being the mapping a lookup binary
+/// searches (`names::Table::addresses`, "Every address, ascending"), with
+/// the log's rows chained on the end out of a `HashMap`, which are not.
+///
+/// So the order is made here: the base walked where it lies, the log's
+/// live rows sorted once, and the two merged. The log is what a directory
+/// has taken in since its last fold and [`galos_index::Names`] holds the
+/// whole of it already, so sorting it holds nothing new; the base is the
+/// 200 M rows, and it is never held at all.
+struct Rows<'n> {
+    held: &'n Names,
+    /// Which base row is next.
+    row: usize,
+    /// Whether the log shadows anything, so a folded directory — whose log
+    /// is empty — pays no lookup a row for the answer "no".
+    shadowed: bool,
+    /// The log's live rows, ascending.
+    logged: std::iter::Peekable<std::vec::IntoIter<&'n NameEntry>>,
+}
+
+impl<'n> Rows<'n> {
+    fn of(held: &'n Names) -> Rows<'n> {
+        let mut logged: Vec<&NameEntry> = held.delta().entries().collect();
+        logged.sort_unstable_by_key(|it| it.address);
+        Rows {
+            held,
+            row: 0,
+            shadowed: !held.delta().is_empty(),
+            logged: logged.into_iter().peekable(),
+        }
+    }
+
+    /// The next row: what it names and what it is called.
+    fn next(&mut self) -> Option<(i64, std::borrow::Cow<'n, str>)> {
+        let logged = |it: &'n NameEntry| {
+            (it.address, std::borrow::Cow::Borrowed(&*it.name))
+        };
+        let base = self.held.base();
+        while self.row < base.len() {
+            let address = base.address_at(self.row);
+            // A base row the log has since renamed or withdrawn is the
+            // log's to answer for, which is what `Names::addresses` does
+            // and what `Names::entry_of` would answer.
+            if self.shadowed && self.held.delta().said(address).is_some() {
+                self.row += 1;
+                continue;
+            }
+            if self.logged.peek().is_some_and(|it| it.address < address) {
+                return self.logged.next().map(logged);
+            }
+            self.row += 1;
+            return Some((address, base.name_at(self.row - 1)));
+        }
+        self.logged.next().map(logged)
+    }
 }
 
 /// The three tables a record can fill.
 ///
-/// Each is written sorted by address, so equal content is equal bytes and
-/// a row comparison says the same thing as a byte one — but a row
-/// comparison can say which system.
+/// Each is written sorted by address by one writer version, so equal
+/// content is equal bytes and a length and a streamed read say what a row
+/// comparison says. **`reaches.bin` is 76 M rows and 2.6 GB**, and both
+/// sides of it were deserialised into `Vec`s, resident at once, to answer
+/// "identical"; the bytes answer it in 1.1 s and hold [`BLOCK`] of each.
+///
+/// Where the bytes *do* differ the rows are what can say which system, so
+/// that is the road taken then, and it is the road this always took.
 fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
-    let populated = rows(
+    let populated = agree(
         "populated",
-        table::<PopulatedSystem>(a, &source::populated_path(a)),
-        table::<PopulatedSystem>(b, &source::populated_path(b)),
+        a,
+        b,
+        source::populated_path,
         |it: &PopulatedSystem| it.address,
         how,
     );
-    let reaches = rows(
+    let reaches = agree(
         "reaches",
-        table::<SystemReach>(a, &source::reaches_path(a)),
-        table::<SystemReach>(b, &source::reaches_path(b)),
+        a,
+        b,
+        source::reaches_path,
         |it: &SystemReach| it.address,
         how,
     );
-    let boosts = rows(
+    let boosts = agree(
         "boosts",
-        table::<SystemBoost>(a, &source::boosts_path(a)),
-        table::<SystemBoost>(b, &source::boosts_path(b)),
+        a,
+        b,
+        source::boosts_path,
         |it: &SystemBoost| it.address,
         how,
     );
     populated.and(reaches).and(boosts)
+}
+
+/// Whether one of the three tables says the same thing in both
+/// directories: its bytes, and its rows where those differ.
+fn agree<T: DeserializeOwned + PartialEq>(
+    label: &str,
+    a: &Path,
+    b: &Path,
+    of: fn(&Path) -> PathBuf,
+    key: impl Fn(&T) -> i64,
+    how: &Compare,
+) -> Verdict {
+    let at = std::time::Instant::now();
+    let (x, y) = (of(a), of(b));
+    let weigh = |dir: &Path, path: &Path| match std::fs::metadata(path) {
+        Ok(meta) => Some(meta.len()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => fatal(dir, e),
+    };
+    if let (Some(n), Some(m)) = (weigh(a, &x), weigh(b, &y)) {
+        let same = n == m
+            && same_bytes(&x, &y)
+                .unwrap_or_else(|(path, e)| fatal(side(&path, a, b), e));
+        if same {
+            let rows = counted(&x).unwrap_or_else(|e| fatal(a, e));
+            println!(
+                "  {label:<13} {rows} rows, identical, in {:.1?}",
+                at.elapsed(),
+            );
+            return Verdict::Same;
+        }
+    }
+    rows(label, table::<T>(a, &x), table::<T>(b, &y), key, how, at)
+}
+
+/// How many rows a table file says it holds, off its head.
+///
+/// `source::write_meta` writes a `Vec` through `rmp_serde`, and a
+/// MessagePack array says its length in its first one, three or five
+/// bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
+/// `0xdd` and a `u32`. So a count for the report is five bytes read rather
+/// than a table deserialised — `.index/full`'s `reaches.bin` opens
+/// `dd 04 88 58 64`, which is the 76,044,388 rows it holds.
+fn counted(path: &Path) -> io::Result<usize> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)?.take(5).read_to_end(&mut head)?;
+    match head.as_slice() {
+        [n, ..] if *n & 0xf0 == 0x90 => Ok((*n & 0x0f) as usize),
+        [0xdc, hi, lo, ..] => Ok(u16::from_be_bytes([*hi, *lo]) as usize),
+        [0xdd, a, b, c, d] => Ok(u32::from_be_bytes([*a, *b, *c, *d]) as usize),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "a table that does not open as a MessagePack array",
+        )),
+    }
 }
 
 /// One table, or [`None`] where the directory does not hold it.
@@ -1426,24 +1875,29 @@ fn table<T: DeserializeOwned>(dir: &Path, path: &Path) -> Option<Vec<T>> {
 }
 
 /// Compare two tables of rows keyed by address.
+///
+/// The road for two files whose bytes differ, which is why "identical" is
+/// still one of its answers: two encodings of one table are the same
+/// table.
 fn rows<T: PartialEq>(
     label: &str,
     a: Option<Vec<T>>,
     b: Option<Vec<T>>,
     key: impl Fn(&T) -> i64,
     how: &Compare,
+    at: std::time::Instant,
 ) -> Verdict {
     let (mut left, mut right) = match (a, b) {
         (None, None) => {
-            println!("  {label:<13} absent from both");
+            println!("  {label:<13} absent from both, in {:.1?}", at.elapsed());
             return Verdict::Same;
         }
         (Some(_), None) => {
-            println!("  {label:<13} only A holds one");
+            println!("  {label:<13} only A holds one, in {:.1?}", at.elapsed());
             return Verdict::Differ;
         }
         (None, Some(_)) => {
-            println!("  {label:<13} only B holds one");
+            println!("  {label:<13} only B holds one, in {:.1?}", at.elapsed());
             return Verdict::Differ;
         }
         (Some(left), Some(right)) => (left, right),
@@ -1481,17 +1935,22 @@ fn rows<T: PartialEq>(
     only_right += right.len() - j;
 
     if only_left == 0 && only_right == 0 && differing.is_empty() {
-        println!("  {label:<13} {} rows, identical", left.len());
+        println!(
+            "  {label:<13} {} rows, identical, in {:.1?}",
+            left.len(),
+            at.elapsed(),
+        );
         return Verdict::Same;
     }
     println!(
         "  {label:<13} {} rows in A, {} in B: {} only in A, {} only in B, \
-         {} differ",
+         {} differ, in {:.1?}",
         left.len(),
         right.len(),
         only_left,
         only_right,
         differing.len(),
+        at.elapsed(),
     );
     if how.detail {
         for address in differing.iter().take(how.limit) {
@@ -1502,7 +1961,13 @@ fn rows<T: PartialEq>(
 }
 
 /// The body files, which is a file a scanned system.
+///
+/// Read and decoded a pair at a time rather than compared by their bytes,
+/// as the payloads and the tables are: a body file is loose in one
+/// directory and inside a shard in the next (`galos index pack`), so
+/// there is not always a file of its own on each side to compare.
 fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
+    let at = std::time::Instant::now();
     let left = Published::new(a).scanned();
     let right = Published::new(b).scanned();
 
@@ -1510,6 +1975,9 @@ fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
     let (mut i, mut j) = (0usize, 0usize);
     let (mut only_left, mut only_right) = (0usize, 0usize);
     while i < left.len() && j < right.len() {
+        if (i + j) % 4096 == 0 {
+            eprint!("\r  bodies        {i} of {} compared", left.len());
+        }
         match left[i].cmp(&right[j]) {
             std::cmp::Ordering::Less => {
                 only_left += 1;
@@ -1535,19 +2003,25 @@ fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
     }
     only_left += left.len() - i;
     only_right += right.len() - j;
+    eprint!("\r");
 
     if only_left == 0 && only_right == 0 && differing.is_empty() {
-        println!("  bodies        {} files, identical", left.len());
+        println!(
+            "  bodies        {} files, identical, in {:.1?}",
+            left.len(),
+            at.elapsed(),
+        );
         return Verdict::Same;
     }
     println!(
         "  bodies        {} files in A, {} in B: {} only in A, {} only in \
-         B, {} differ",
+         B, {} differ, in {:.1?}",
         left.len(),
         right.len(),
         only_left,
         only_right,
         differing.len(),
+        at.elapsed(),
     );
     for address in differing.iter().take(limit) {
         println!("                  {address}");

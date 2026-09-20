@@ -4888,8 +4888,9 @@ fn plotting(
     let range = jump_range(asked)?;
     if drive.named().is_some() && !boosts.published() {
         return Err("No supercharge table in the index. Rebuild it with \
-             `galos index build --from database --only boosts`, or let the \
-             ingest that writes it publish once more, or plot unaided.");
+             `galos ingest --from database --index DIR --only boosts`, or \
+             let the ingest that writes it publish once more, or plot \
+             unaided.");
     }
     Ok(range)
 }

@@ -47,6 +47,18 @@ pub enum Source {
     Eddb(PathBuf),
     /// A Spansh galaxy dump: a system and every body in it, per line.
     Spansh(PathBuf),
+    /// The rows, read back out into a directory.
+    ///
+    /// **A publisher like the others, and not like them.** An index is
+    /// *rebuilt* from the database rather than maintained from it: what
+    /// this reads is a query per part rather than a stream of events, it
+    /// carries a cursor nothing else can offer — the clock the rows were
+    /// written by — and it is the one source that cannot be read into the
+    /// database, which is what it is. It is a `--from` anyway because
+    /// naming it beside a feed is exactly the run that wants both: bring
+    /// the directory level with the rows, then carry it forward from what
+    /// arrives. See `galos::read::derive`.
+    Database,
 }
 
 impl Source {
@@ -62,6 +74,10 @@ impl Source {
         match self {
             Source::Eddn | Source::Spool(..) => true,
             Source::Journal(_) => watching,
+            // The rows have no end of their own either way: `--watch`
+            // polls them and without it the pass reads what is there and
+            // stops, which is the same rule a journal directory has.
+            Source::Database => watching,
             Source::Edsm(_)
             | Source::EdsmApi(_)
             | Source::Eddb(_)
@@ -73,8 +89,8 @@ impl Source {
 impl FromStr for Source {
     type Err = String;
 
-    /// `eddn`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` or
-    /// `spansh=PATH`.
+    /// `eddn`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH`,
+    /// `spansh=PATH` or `database`.
     ///
     /// `journal:PATH` is taken too. A Windows path begins `C:\` and a reader
     /// who writes `--from journal:C:\…` should get the directory they meant
@@ -100,13 +116,34 @@ impl FromStr for Source {
             ("edsm-api", arg) => Ok(Source::EdsmApi(named(arg)?)),
             ("eddb", arg) => Ok(Source::Eddb(path(named(arg)?))),
             ("spansh", arg) => Ok(Source::Spansh(path(named(arg)?))),
+            ("database" | "db", None) => database(),
+            ("database" | "db", Some(_)) => {
+                Err("`database` takes no path; the connection is whatever \
+                     DATABASE_URL names"
+                    .to_string())
+            }
             (other, _) => Err(format!(
                 "unknown source `{other}`; expected `eddn`, `spool=DIR`, \
-                 `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` \
-                 or `spansh=PATH`"
+                 `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH`, \
+                 `spansh=PATH` or `database`"
             )),
         }
     }
+}
+
+/// The rows, where this build has a client to read them with.
+///
+/// Refused by name rather than missing from the grammar: a reader who
+/// asks a copy built without the `db` feature to read the database has
+/// asked for something coherent, and "unknown source" would send them
+/// looking for a typo instead of at the build they are holding.
+fn database() -> Result<Source, String> {
+    #[cfg(feature = "db")]
+    return Ok(Source::Database);
+    #[cfg(not(feature = "db"))]
+    Err("this build has no database in it; rebuild with the `db` feature, \
+         or name a publisher"
+        .to_string())
 }
 
 /// `DIR`, and where in it to start: `DIR,from=earliest|latest|cursor` or
@@ -208,6 +245,7 @@ impl fmt::Display for Source {
             Source::EdsmApi(name) => write!(f, "edsm-api={name}"),
             Source::Eddb(path) => write!(f, "eddb={}", path.display()),
             Source::Spansh(path) => write!(f, "spansh={}", path.display()),
+            Source::Database => write!(f, "database"),
         }
     }
 }

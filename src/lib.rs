@@ -1,8 +1,9 @@
 //! # Architecture
 //!
-//! The library behind one binary, `galos` (`bin/galos/`): the `index` and
-//! `db` verb groups, which are the two stores and every way of filling
-//! one, and `search` and `route`, the queries. What they share lives here:
+//! The library behind one binary, `galos` (`bin/galos/`): `ingest`, which
+//! is every way of filling either store, the `index` and `db` groups,
+//! which are what is asked of each store once it holds something, and
+//! `search` and `route`, the queries. What they share lives here:
 //! the [`read`] path the publishers come in through, the [`sink`]s they
 //! are written out through, the [`bar`] progress is reported on, and the
 //! [`Shard`] and [`Shutdown`] that divide and end a run.
@@ -19,11 +20,12 @@
 //!
 //! ## The `db` feature
 //!
-//! On by default, and off is the point: `galos index` writes and serves a
-//! directory, and with the feature off nothing in the build has `sqlx`,
-//! `dotenv` or a `DATABASE_URL` in it. That is not a packaging detail —
-//! it is what lets those verbs run on a machine with no Postgres
-//! installed, which is the arrangement the whole index format exists for.
+//! On by default, and off is the point: `galos ingest --index` writes a
+//! directory and the `galos index` verbs serve and repair one, and with
+//! the feature off nothing in the build has `sqlx`, `dotenv` or a
+//! `DATABASE_URL` in it. That is not a packaging detail — it is what lets
+//! those runs work on a machine with no Postgres installed, which is the
+//! arrangement the whole index format exists for.
 //!
 //! Two things in the seam used to name a database and now do not:
 //! [`sink::Landed`], which is what a write came to, and [`sink::Clock`],
@@ -66,23 +68,32 @@
 //!
 //! TODO: Incorperate queries for both `+` and `|` nodes in the route.
 //!
-//! ### `galos index <status|ingest|build|migrate|verify|sweep|pack|diff|sectors> …`
+//! ### `galos ingest --from SOURCE… [--db] [--index [DIR]] …`
 //!
-//! Everything that is done to an index directory. `ingest --from SOURCE`
-//! follows or reads a publisher into it; `build --from database` derives
-//! one from rows; the rest report on, repair or take apart a directory
-//! that is already there. `--from` repeats, and `--from eddn` subscribes
-//! to its ZMQ service until the run is asked to stop.
+//! The one verb that fills anything. `--from` names a publisher and
+//! repeats — `eddn`, `spool=DIR`, `journal=PATH`, `edsm=PATH`,
+//! `edsm-api=NAME`, `eddb=PATH`, `spansh=PATH`, `database` — and `--from
+//! eddn` subscribes to its ZMQ service until the run is asked to stop.
+//! `--db` and `--index` name the sinks, and naming both reads each
+//! publisher once into the pair. `--from database --index DIR` is the
+//! rows read back out into a directory, which is how one is rebuilt
+//! rather than maintained.
 //!
-//! ### `galos db <status|ingest|migrate|verify|catalog|stats> …`
+//! ### `galos index <status|diff|pack|sweep|verify|migrate|sectors> …`
 //!
-//! The same shape over Postgres, with `ingest --from SOURCE` reading the
-//! same publishers through the same [`read`] path into the other sink.
+//! Everything done *to* an index directory that already exists: report on
+//! it, compare two of them, repair one, or take one apart. None of it
+//! needs a database.
 //!
-//! Both write paths are here rather than in `bin/`: [`sink`] is the seam
+//! ### `galos db <status|migrate|verify|catalog|stats> …`
+//!
+//! The same shape over Postgres: what it is, what is wrong with it, and
+//! what it holds.
+//!
+//! The write path is here rather than in `bin/`: [`sink`] is the seam
 //! the sources write through and it is what an integration test has to be
 //! able to reach, and [`read`] is the sources themselves, which the two
-//! verb groups share entire. What lives in `bin/` is the command line and
+//! sinks share entire. What lives in `bin/` is the command line and
 //! the supervisor that joins the halves of a run.
 
 pub mod bar;

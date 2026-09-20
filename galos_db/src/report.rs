@@ -18,7 +18,7 @@
 
 use crate::migrate;
 use crate::{Database, Result};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use sqlx::Row;
 use std::fmt;
 
@@ -42,31 +42,111 @@ const WATCHED: &[&str] = &[
     "system_factions",
 ];
 
+/// Both of a table's clocks, as the database holds them.
+///
+/// Kept as a pair per table rather than as one galaxy clock standing over
+/// three arrivals, because only the pair is comparable. `stars` going a
+/// minute without an arrival while `systems` keeps changing is an ordinary
+/// minute on a live feed, and a report that set those two side by side
+/// would have called it a skew several times an hour.
+pub struct Clocks {
+    /// Which table these were read off.
+    pub table: &'static str,
+
+    /// Newest `updated_at`: when the newest thing here happened out in the
+    /// galaxy, as the report that carried it says. [`None`] only where the
+    /// table holds no rows at all, the column being `NOT NULL` on all
+    /// three.
+    pub changed: Option<DateTime<Utc>>,
+
+    /// Newest `received_at`: when this database last wrote a row here.
+    ///
+    /// The clock a watch's cursor and the index's checkpoint are
+    /// comparable to. [`None`] against a table that has rows means not one
+    /// of them carries an arrival: `20260816000050` left the rows it found
+    /// null on purpose rather than invent one for them, and the partial
+    /// indexes it created are `WHERE received_at IS NOT NULL`, so a watch
+    /// cannot see those rows either. That is
+    /// [`Self::predates_arrivals`], and it is a different thing from an
+    /// empty table however alike the two look in a column of timestamps.
+    pub arrived: Option<DateTime<Utc>>,
+}
+
+impl Clocks {
+    /// How long after the reading the row carrying it was written.
+    ///
+    /// The delivery latency, which is a second or so off the live feed and
+    /// as long as the import ran for a database fed from a journal. It is
+    /// positive in the ordinary case and that is not a fault: the write
+    /// cannot precede the event it records. Negative is
+    /// [`Self::ahead`], and is the one direction that is wrong.
+    pub fn lag(&self) -> Option<Duration> {
+        Some(self.arrived? - self.changed?)
+    }
+
+    /// How far the newest reading here is dated past the moment this
+    /// database wrote it down, where it is dated past it at all.
+    ///
+    /// A row's `updated_at` is `GREATEST(old, $stamp)` and its
+    /// `received_at` is `clock_timestamp() AT TIME ZONE 'utc'` at the
+    /// write, so `updated_at <= received_at` holds on every row whose
+    /// sender's clock was not ahead of this server's, and the maxima
+    /// inherit it: the row holding `max(updated_at)` has a `received_at`
+    /// no larger than `max(received_at)`. The maxima crossing therefore
+    /// says a stamp came out of the future — a host clock running fast, or
+    /// a journal carrying a bad timestamp.
+    pub fn ahead(&self) -> Option<Duration> {
+        self.lag().filter(|lag| *lag < Duration::zero()).map(|lag| -lag)
+    }
+
+    /// Rows here, but not one of them arrived after the column existed.
+    pub fn predates_arrivals(&self) -> bool {
+        self.changed.is_some() && self.arrived.is_none()
+    }
+
+    /// No rows here at all, so neither clock has anything to say.
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_none()
+    }
+}
+
 /// How current the database is and roughly how much of it there is.
 ///
-/// The two clocks are kept apart because they are different questions.
-/// `changed` is the newest `systems.updated_at`, which is when the galaxy
-/// last did something as far as this database knows. `arrived` is the newest
-/// `received_at` on each of the three tables that carry one, which is when a
-/// report last reached us — the clock a watch's cursor and the index's
-/// checkpoint are comparable to. A database fed by a journal import moves
-/// the first one backwards and the second one forwards, and only the second
-/// says whether the feed is alive.
+/// Both clocks of every table that carries them, and the server's own time
+/// to measure them against, because a single timestamp on a line answers
+/// nothing. `updated_at` is the galaxy's clock — when the reading happened
+/// out there — and `received_at` is this database's, when the row was
+/// written in here. The second following the first by the delivery latency
+/// is the ordinary case, and reporting the two apart made it read as a
+/// contradiction; they are reported as a pair and a [`Clocks::lag`] now,
+/// so that the orderings that *are* wrong are the ones that stand out.
+///
+/// Three of those, and [`fmt::Display`] names each one:
+///
+/// - Nothing arriving. [`Self::quiet`] against [`Self::now`] is the number
+///   that says the feed is down or nothing is ingesting, and it is the
+///   only one of the three an operator watches for.
+/// - A reading dated in the future, [`Clocks::ahead`].
+/// - Rows older than the arrival column, [`Clocks::predates_arrivals`].
 pub struct Status {
     /// The newest `_sqlx_migrations` row, from [`migrate::applied`]. [`None`]
     /// is an unmigrated database, not a failure to ask.
     pub version: Option<i64>,
     pub described: Option<String>,
 
-    /// Newest `systems.updated_at`: when the galaxy last changed.
-    pub changed: Option<DateTime<Utc>>,
-
-    /// Newest `received_at` per table: when a report last reached us.
+    /// The server's clock, read in the same statement as [`Self::clocks`].
     ///
-    /// [`None`] against a table means nothing there has arrived since the
-    /// column was added, since the migration left existing rows null on
-    /// purpose rather than invent an arrival for them.
-    pub arrived: Vec<(&'static str, Option<DateTime<Utc>>)>,
+    /// The server's and not this process's, for the reason
+    /// [`Database::now`] gives at length: a caller comparing a row's stamp
+    /// against its own clock is trusting two clocks to agree. Read in the
+    /// same round trip rather than through that method so that "how long
+    /// since anything arrived" subtracts two numbers taken at one instant
+    /// off one clock. [`None`] on an unmigrated database, which is not
+    /// asked anything.
+    pub now: Option<DateTime<Utc>>,
+
+    /// Both clocks per table, for the three that carry a `received_at`.
+    pub clocks: Vec<Clocks>,
 
     /// Estimated live rows per table of [`WATCHED`], in that order. [`None`]
     /// where the table is not in this database at all, which is how a
@@ -94,25 +174,54 @@ impl Status {
         Status {
             version: None,
             described: None,
-            changed: None,
-            arrived: Vec::new(),
+            now: None,
+            clocks: Vec::new(),
             estimates: Vec::new(),
             factions: 0,
         }
+    }
+
+    /// How long it has been since anything arrived anywhere.
+    ///
+    /// The freshness that matters: a galaxy clock says when the newest
+    /// reading this database holds was taken, which a database nobody has
+    /// fed for a week still answers perfectly well. This one says whether
+    /// anything is being written, and nothing else here does.
+    ///
+    /// [`None`] where no table has an arrival at all, which is a database
+    /// that has not been written to since `received_at` was added rather
+    /// than a database that was written to infinitely long ago.
+    pub fn quiet(&self) -> Option<Duration> {
+        let newest = self.clocks.iter().filter_map(|it| it.arrived).max()?;
+        Some(self.now? - newest)
     }
 }
 
 /// Ask the database what it is.
 ///
-/// Two round trips: one for the clocks and the exact faction count, one for
-/// the row estimates. The estimates come from `pg_class.reltuples`, which is
-/// what `ANALYZE` last wrote, falling back to `pg_stat_user_tables.n_live_tup`
-/// for a table Postgres records as never analysed (`reltuples = -1`) — the
-/// live-tuple counter is the only figure a freshly restored table has. Both
-/// are estimates and are labelled as such in the report: a `count(*)` over
-/// `systems` is a two-gigabyte sequential scan today and a hundred-odd
-/// gigabyte one at the galaxy target, which is not a thing a status verb may
-/// do.
+/// Two round trips: one for the clocks, the server's own time and the
+/// exact faction count, one for the row estimates. The estimates come from
+/// `pg_class.reltuples`, which is what `ANALYZE` last wrote, falling back
+/// to `pg_stat_user_tables.n_live_tup` for a table Postgres records as
+/// never analysed (`reltuples = -1`) — the live-tuple counter is the only
+/// figure a freshly restored table has. Both are estimates and are
+/// labelled as such in the report: a `count(*)` over `systems` is a
+/// two-gigabyte sequential scan today and a hundred-odd gigabyte one at
+/// the galaxy target, which is not a thing a status verb may do.
+///
+/// # What the six clocks cost
+///
+/// Four of them come off an index. The other two do not: only `systems`
+/// has an index on `updated_at`, so `max(updated_at)` on `stars` and on
+/// `system_factions` are parallel sequential scans — **53 ms** over 1.1 M
+/// stars and **10 ms** over 429 k faction rows, warm, on the 3.4 M-system
+/// development server. That is paid rather than dropped because the
+/// cheaper report — every arrival held against `systems.updated_at` — is
+/// wrong: `stars` going one second longer than the feed's latency without
+/// a write puts its arrival behind the galaxy clock, and a skew reported
+/// several times an hour on a healthy database is a skew nobody reads.
+/// The two scans grow with their tables and are the only part of `status`
+/// that does.
 pub async fn status(db: &Database) -> Result<Status> {
     // A database with no `_sqlx_migrations` has none of the tables below
     // either, and asking about them would answer with the first one
@@ -126,13 +235,19 @@ pub async fn status(db: &Database) -> Result<Status> {
         Option<NaiveDateTime>,
         Option<NaiveDateTime>,
         Option<NaiveDateTime>,
+        Option<NaiveDateTime>,
+        Option<NaiveDateTime>,
         i64,
+        NaiveDateTime,
     ) = sqlx::query_as(
         "SELECT (SELECT max(updated_at) FROM systems), \
                 (SELECT max(received_at) FROM systems), \
+                (SELECT max(updated_at) FROM stars), \
                 (SELECT max(received_at) FROM stars), \
+                (SELECT max(updated_at) FROM system_factions), \
                 (SELECT max(received_at) FROM system_factions), \
-                (SELECT count(*)::bigint FROM factions)",
+                (SELECT count(*)::bigint FROM factions), \
+                now() AT TIME ZONE 'utc'",
     )
     .fetch_one(&db.pool)
     .await?;
@@ -157,11 +272,23 @@ pub async fn status(db: &Database) -> Result<Status> {
     Ok(Status {
         version: Some(newest.0),
         described: Some(newest.1),
-        changed: clocks.0.map(|it| it.and_utc()),
-        arrived: vec![
-            ("systems", clocks.1.map(|it| it.and_utc())),
-            ("stars", clocks.2.map(|it| it.and_utc())),
-            ("system_factions", clocks.3.map(|it| it.and_utc())),
+        now: Some(clocks.7.and_utc()),
+        clocks: vec![
+            Clocks {
+                table: "systems",
+                changed: clocks.0.map(|it| it.and_utc()),
+                arrived: clocks.1.map(|it| it.and_utc()),
+            },
+            Clocks {
+                table: "stars",
+                changed: clocks.2.map(|it| it.and_utc()),
+                arrived: clocks.3.map(|it| it.and_utc()),
+            },
+            Clocks {
+                table: "system_factions",
+                changed: clocks.4.map(|it| it.and_utc()),
+                arrived: clocks.5.map(|it| it.and_utc()),
+            },
         ],
         estimates: WATCHED
             .iter()
@@ -173,7 +300,7 @@ pub async fn status(db: &Database) -> Result<Status> {
                 (*table, found)
             })
             .collect(),
-        factions: clocks.4,
+        factions: clocks.6,
     })
 }
 
@@ -194,17 +321,79 @@ impl fmt::Display for Status {
             }
         }
 
-        writeln!(f, "\nclocks:")?;
-        writeln!(f, "  {:<24} {}", "galaxy changed", when(self.changed))?;
-        for (table, at) in &self.arrived {
-            writeln!(f, "  {:<24} {}", format!("{table} arrived"), when(*at))?;
-        }
-        if self.arrived.iter().all(|(_, at)| at.is_none()) {
+        // The zone is said once in the heading and left off every stamp
+        // below it: three stamps to a line, and " UTC" on each of them is
+        // twelve columns spent saying the same thing three times.
+        writeln!(f, "\nclocks (UTC):")?;
+        writeln!(
+            f,
+            "  updated_at is the galaxy's own clock — when the reading\n  \
+             happened out there. received_at is this database's — when the\n  \
+             row was written in here. A write comes after the event it\n  \
+             records, so an arrival behind its own reading by the delivery\n  \
+             latency is the ordinary case and not a contradiction.\n"
+        )?;
+        writeln!(
+            f,
+            "  {:<17} {:<20} {:<20} lag",
+            "table", "updated_at", "received_at"
+        )?;
+        for clocks in &self.clocks {
             writeln!(
                 f,
-                "  nothing has arrived since `received_at` was added; a watch \
-                 following that clock has no cursor to move"
+                "  {:<17} {:<20} {:<20} {}",
+                clocks.table,
+                when(clocks.changed),
+                when(clocks.arrived),
+                behind(clocks.lag())
             )?;
+        }
+
+        match self.quiet() {
+            Some(quiet) => writeln!(
+                f,
+                "\n  nothing has arrived in {}; the server's clock reads {}",
+                span(quiet),
+                when(self.now)
+            )?,
+            None => writeln!(
+                f,
+                "\n  nothing has arrived since `received_at` was added; a watch \
+                 following that clock has no cursor to move"
+            )?,
+        }
+
+        // Each of these is a line only when it has something to say, so
+        // an ordinary database prints the block above and nothing else.
+        for clocks in &self.clocks {
+            if clocks.is_empty() {
+                writeln!(
+                    f,
+                    "  {} holds no rows at all, so neither clock has \
+                     anything to say for it",
+                    clocks.table
+                )?;
+            } else if clocks.predates_arrivals() {
+                writeln!(
+                    f,
+                    "  {} holds rows but not one of them carries a \
+                     received_at: they were written before migration \
+                     20260816000050 added the column, and the partial index \
+                     it created — the one a watch reads — cannot see them",
+                    clocks.table
+                )?;
+            }
+            if let Some(ahead) = clocks.ahead() {
+                writeln!(
+                    f,
+                    "  the newest reading in {} is dated {} after the moment \
+                     this database wrote it down: a reading out of the \
+                     future, which is a host clock running fast or a journal \
+                     carrying a bad timestamp, and not a feed that is early",
+                    clocks.table,
+                    span(ahead)
+                )?;
+            }
         }
 
         writeln!(f, "\nrows (estimated from the planner's statistics):")?;
@@ -244,8 +433,8 @@ impl fmt::Display for Status {
 ///
 /// - `systems_without_position`. A system known by name from a market or a
 ///   faction report but never visited, so nobody has sent coordinates for
-///   it. The index build filters `position IS NOT NULL`, so these are
-///   simply not served; they are not wrong.
+///   it. Deriving the index from the rows filters `position IS NOT NULL`,
+///   so these are simply not served; they are not wrong.
 /// - `markets_without_system`. Market data that arrived before its system
 ///   did. `markets.system_address` was made nullable exactly so this could
 ///   be held rather than dropped, and `markets_waiting_on_system` is the
@@ -649,10 +838,51 @@ impl fmt::Display for Stats {
 }
 
 /// A timestamp as a reader wants it, or a word for not having one.
+///
+/// Without the zone, which the block it prints into says once in its
+/// heading. Whole seconds: `received_at` carries microseconds from
+/// `clock_timestamp()` and `updated_at` does not, and six digits of
+/// precision on one of two columns being compared invites a reader to
+/// compare them at a precision only one of them has.
 fn when(at: Option<DateTime<Utc>>) -> String {
     match at {
-        Some(at) => at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+        Some(at) => at.format("%Y-%m-%d %H:%M:%S").to_string(),
         None => "never".to_string(),
+    }
+}
+
+/// A length of time from its largest non-zero unit and the one under it.
+///
+/// What the reader of a lag wants is the order of magnitude — whether an
+/// arrival is a second behind its reading or four days behind it — and
+/// `367583s` does not answer that at a glance. Rounded down, and never
+/// signed: which way it points is a word in the sentence around it,
+/// because `-4d 3h behind` is not a thing anybody can read.
+fn span(length: Duration) -> String {
+    let seconds = length.num_seconds().abs();
+    let (days, hours) = (seconds / 86_400, seconds / 3_600 % 24);
+    let (minutes, rest) = (seconds / 60 % 60, seconds % 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {rest}s")
+    } else {
+        format!("{rest}s")
+    }
+}
+
+/// Which way a [`Clocks::lag`] points, in the one column it gets.
+///
+/// `behind` is the ordinary direction and says nothing more than how far;
+/// `ahead` is the anomaly, and the line under the table says what it
+/// means. A table missing either clock has no lag to report at all.
+fn behind(lag: Option<Duration>) -> String {
+    match lag {
+        Some(lag) if lag < Duration::zero() => format!("{} ahead", span(lag)),
+        Some(lag) => format!("{} behind", span(lag)),
+        None => "—".to_string(),
     }
 }
 
@@ -699,7 +929,8 @@ fn size(bytes: i64) -> String {
 mod tests {
     use super::*;
 
-    /// The one piece of arithmetic here that is not the database's.
+    /// One of the two pieces of arithmetic here that are not the
+    /// database's.
     #[test]
     fn counts_are_grouped_in_threes() {
         assert_eq!(grouped(0), "0");
@@ -707,6 +938,46 @@ mod tests {
         assert_eq!(grouped(1_000), "1,000");
         assert_eq!(grouped(3_412_771), "3,412,771");
         assert_eq!(grouped(-1_234), "-1,234");
+    }
+
+    /// The other, and the one with edges: every unit boundary is a place
+    /// the reported magnitude can jump a whole unit the wrong way.
+    #[test]
+    fn a_span_carries_its_largest_unit_and_the_one_under_it() {
+        assert_eq!(span(Duration::seconds(0)), "0s");
+        assert_eq!(span(Duration::seconds(59)), "59s");
+        assert_eq!(span(Duration::seconds(60)), "1m 0s");
+        assert_eq!(span(Duration::seconds(3_599)), "59m 59s");
+        assert_eq!(span(Duration::seconds(3_600)), "1h 0m");
+        assert_eq!(span(Duration::seconds(86_399)), "23h 59m");
+        assert_eq!(span(Duration::seconds(86_400)), "1d 0h");
+        assert_eq!(span(Duration::seconds(356_400)), "4d 3h");
+    }
+
+    /// Which way round the clocks read, which is the whole point of
+    /// reporting them as a pair: the ordinary case is an arrival behind
+    /// the reading it carries, and only the other direction is a fault.
+    #[test]
+    fn an_arrival_after_its_reading_is_not_the_anomaly() {
+        let at = |secs| Some(DateTime::from_timestamp(secs, 0).unwrap());
+        let delivered =
+            Clocks { table: "systems", changed: at(1_000), arrived: at(1_001) };
+        assert_eq!(delivered.lag(), Some(Duration::seconds(1)));
+        assert_eq!(delivered.ahead(), None, "a write follows its event");
+
+        let skewed =
+            Clocks { table: "systems", changed: at(1_060), arrived: at(1_000) };
+        assert_eq!(
+            skewed.ahead(),
+            Some(Duration::seconds(60)),
+            "a reading stamped after its own write came from the future",
+        );
+
+        let older_than_the_column =
+            Clocks { table: "stars", changed: at(1_000), arrived: None };
+        assert!(older_than_the_column.predates_arrivals());
+        assert!(!older_than_the_column.is_empty(), "rows are here");
+        assert_eq!(older_than_the_column.lag(), None);
     }
 
     /// What is unfinished is forgiven; what a constraint should have

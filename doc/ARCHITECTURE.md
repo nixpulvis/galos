@@ -19,7 +19,7 @@ Elite's own dataset arrives two ways. EDDN carries everyone else's game; the
 commander's *own* game is written to journal files on their own machine. Both
 are publishers of the same events and either sink takes them, so a run naming
 both merges the world and the commander as it writes:
-`galos index ingest --from eddn --from journal=DIR --dir DIR` is one
+`galos ingest --from eddn --from journal=DIR --index DIR` is one
 directory holding the pair, and the map reads one directory.
 
 ## Which way the data runs
@@ -38,9 +38,9 @@ flowchart TD
     ED2 --> READ
     SPC --> READ
 
-    READ -->|"galos db ingest: sink::Db, galos_db: record"| PG[(Postgres + PostGIS)]
-    READ -->|"galos index ingest: sink::Index, galos_index: galaxy"| IDX["an index directory"]
-    PG --> BAKE["galos index build: galos_db index, over galos_index cold"]
+    READ -->|"galos ingest --db: sink::Db, galos_db: record"| PG[(Postgres + PostGIS)]
+    READ -->|"galos ingest --index: sink::Index, galos_index: galaxy"| IDX["an index directory"]
+    PG --> BAKE["galos ingest --from database --index: galos_db index, over galos_index cold"]
     BAKE -->|"a cold build or a delta pass"| IDX
 
     IDX --> MAP["galos_map: the 3D map"]
@@ -73,8 +73,8 @@ it is one client.
 |---|---|---|
 | `galos_map` | 53,787 | The 3D galaxy map. A bevy application, and a pure index client |
 | `galos_index` | 14,516 | The octree, its format, the two inputs that fill it, and the walks that read it |
-| `galos_db` | 9,019 | The database: one module per entity, plus the index builder |
-| `galos` (root) | 11,345 | One binary — `galos`, its `index` and `db` verb groups — and the library they share |
+| `galos_db` | 9,019 | The database: one module per entity, plus the builder that derives the index from it |
+| `galos` (root) | 11,345 | One binary — `galos`: `ingest` fills either store, the `index` and `db` groups ask — and the library they share |
 | `galos_catalog` | 2,353 | Earth-measured star catalogs, and comparing them to Elite's sky |
 | `galos_sky` | 2,089 | A CPU renderer for one patch of sky, to look at the physics |
 | `galos_photometry` | 1,809 | Magnitudes, temperatures, colours, and the point spread |
@@ -82,8 +82,9 @@ it is one client.
 | `galos_server` | 321 | An axum + askama HTML front end over the database |
 
 The root package is `bin/` and `src/`, and its row above counts both:
-`bin/galos` is the one binary — `main.rs` with `search.rs` and `route.rs`
-the query verbs, `index/` and `db/` a verb group per store — and `src` is
+`bin/galos` is the one binary — `main.rs`, with `ingest.rs` the one verb
+that fills a store and `search.rs` and `route.rs` the query verbs, and
+`index/` and `db/` a group of questions per store — and `src` is
 what they and `tests/derivations_agree.rs` share — `read/`, `sink/`, `bar`,
 `shutdown`, `shard`.
 
@@ -98,32 +99,44 @@ are `elite_dat` and `galos_worker`, whose directories are gone.
 
 ## 1. Ingest
 
-**Six publishers, two verb groups, one verb apiece.** `galos index ingest`
-and `galos db ingest` are where the galaxy moves from wherever it is
-published into somewhere it can be read. `--from` names a publisher and
-repeats: `eddn` (the live feed, a subscription that never returns),
-`spool=DIR`, `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH`,
-`spansh=PATH`. The verb is the sink, so nothing names one: filling both is
-the two commands side by side, over one `galos::read` and one
-`read::Qualifiers`.
+**Seven publishers, one verb, one or two sinks.** `galos ingest` is where the
+galaxy moves from wherever it is published into somewhere it can be read.
+`--from` names a publisher and repeats: `eddn` (the live feed, a subscription
+that never returns), `spool=DIR`, `journal=PATH`, `edsm=PATH`,
+`edsm-api=NAME`, `eddb=PATH`, `spansh=PATH`, and `database` — the rows read
+back out, which is how a directory is rebuilt rather than maintained. `--db`
+and `--index [DIR]` name which stores the run writes. The groups are not the
+writing: the `index` and `db` verbs are what is asked *of* each store once it
+holds something, and filling is one verb because it is one job — a source
+reads a publisher, a sink takes what a reading means on its side. So naming
+both sinks reads each publisher *once* into the pair, which over EDDN is one
+subscription rather than two carrying the same galaxy, over one `galos::read`
+and one `read::Qualifiers`.
 
-**Two write routes, and the choice is memory.** `ingest` holds a live tree and
-the whole names table, about a kilobyte a system, and publishes on
-`--publish`'s beat, so a map can read the directory as it is written; `build`
-holds one region at a time and publishes nothing until it is whole — over a
-two hundred million system dump, some 200 GB resident apart
-(`bin/galos/index/fill.rs:6-16`). Both fill it from the events: **an index
-is kept current from what is published, not from the database**, which is
-what `galos index build --from database` rebuilds it from.
+**Two write routes into a directory, and the choice is memory.** The index
+sink holds a live tree and the whole names table, about a kilobyte a system,
+and publishes on `--publish`'s beat, so a map can read the directory as it is
+written; the regional build holds one region at a time and publishes nothing
+until it is whole — over a two hundred million system dump, some 200 GB
+resident apart (`bin/galos/ingest.rs:26-45`). Which one a run takes is not a
+flag and not a verb: a finite dump, an `--index` and no `--db` has nothing to
+fan out to and no reader waiting on a half-written directory, so it takes the
+regional build; everything else holds the tree. **The route is announced when
+the run starts**, because it is the difference between minutes and hours, and
+a silently chosen route is what the inference was objectionable for. Both
+fill the directory from the events: **an index is kept current from what is
+published, not from the database**, which is what
+`galos ingest --from database --index DIR` rebuilds it from.
 
-**And so the `index` verbs hold no database client**: built
-`--no-default-features` there is no `sqlx`, no `dotenv`, no `DATABASE_URL` in
-it. Three seams in `src/sink/mod.rs` buy that — `Landed` declared there rather
+**And so a build with no `db` feature holds no database client**: built
+`--no-default-features` it is `ingest --index` and the `index` group, and
+there is no `sqlx`, no `dotenv`, no `DATABASE_URL` in it. Three seams in
+`src/sink/mod.rs` buy that — `Landed` declared there rather
 than re-exported from `galos_db`, `sink/db.rs` converting (`mod.rs:82-88`);
 `Stop`, a bare `Fn` (`mod.rs:126-132`); and `Clock`, the one thing the index
 sink wanted a `Database` for (`mod.rs:139-155`).
 
-**A published dump is an import, not a feed.** `galos db ingest --bulk` says
+**A published dump is an import, not a feed.** `galos ingest --db --bulk` says
 so: the pool opens with `synchronous_commit = off` and a ceiling of sixteen
 connections rather than five, so a commit returns without waiting for the
 write-ahead log to reach the disk and a crash loses the last of what was
@@ -133,7 +146,7 @@ once between them; what a record is belongs to the source, the line-oriented
 dumps counting lines and a journal directory counting files. It is safe
 because every write a shard makes is a guarded upsert keyed by an address, so
 two shards over one record cost time and nothing else (`src/shard.rs`,
-`galos_db/src/lib.rs:51-56`, `bin/galos/db/mod.rs`'s `BULK_CONNECTIONS`).
+`galos_db/src/lib.rs:51-56`, `bin/galos/ingest.rs`'s `BULK_CONNECTIONS`).
 
 `src/sink/` is the seam, and its header says what shaped it — not what
 either sink wants, but what the sources have to say. There turn out
@@ -206,22 +219,23 @@ The two sinks:
   from Postgres and one written from a feed are not the same artefact, and
   neither resumes onto the other's work. See §5.
 
-`sink/` is in the library rather than under either verb group, and that is what
+`sink/` is in the library rather than under the verb, and that is what
 `tests/derivations_agree.rs` is for: one list of events handed to each sink,
 and everything either directory publishes about the systems the test owns
 compared row for row — names, populated columns, reaches, supercharges and
 every system's bodies. It would have caught every drift the two have had.
 
 `galos::read::derive` is the worker that makes the two agree on start. Under
-`galos index ingest --catch-up` it runs `galos_db::index::catch_up` first —
+`galos ingest --db --index` it runs `galos_db::index::catch_up` first —
 build or delta, the database clock taken before each read — while the collect
 side buffers what it reads for the index. Then it opens the sink on what the
 catch-up wrote, drains the buffer into it, and goes live. A buffer that fills
 is discarded and another round runs instead: everything discarded reached
 Postgres before the relay dropped it, so the rounds converge and nothing is at
-risk (`src/read/derive.rs:86-93`). `bin/galos/index/fill.rs::ingest` is the
-supervisor over both halves — the directory's lock, the worker thread, the
-signal handler and the exit code.
+risk (`src/read/derive.rs:86-93`). That handoff is why naming both sinks
+needs no flag of its own: it is what one reading into both stores *is*.
+`bin/galos/ingest.rs::run` is the supervisor over both halves — the
+directory's lock, the worker thread, the signal handler and the exit code.
 
 ## 2. The database
 
@@ -250,8 +264,9 @@ queries are `ST_3DDWithin`. 90 migration files under `galos_db/migrations/`.
 
 **Offline builds.** 75 cached query files in `.sqlx/` at the workspace root, so
 `SQLX_OFFLINE=true cargo build` works without a database; CI sets it
-workspace-wide. The index builder deliberately uses *unchecked* `sqlx::query`
-so the build verb needs no compile-time database
+workspace-wide. The builder that derives an index deliberately uses
+*unchecked* `sqlx::query`, so a directory can be derived by a build with no
+compile-time database
 (`galos_db/src/index/mod.rs:8-10`).
 
 **What the tests defend.** `galos_db/tests/write_path.rs` is 2,938 lines and
@@ -265,7 +280,7 @@ names is a server: each test gets a migrated database of its own from
 `galos_db::testing`, a copy of the `galos_test_template` the migrations are
 run into once, and drops it as it ends.
 
-## 3. The index build, and the seam
+## 3. Deriving the index from the rows, and the seam
 
 `galos_db/src/index/` is where the derived index meets the authoritative
 dataset. It reads Postgres, derives photometry through `galos_photometry`'s
@@ -275,16 +290,16 @@ sequence is not here: `galos_index::cold` holds that, and what this crate
 does is push its rows into the builder — one streamed read, a record at a
 time, and nothing about a tree.
 
-`galos index build --from database [--watch SECS] [--only PART,…]` is the
-verb that derives one. `catch_up` is build-or-resume followed by delta passes
+`galos ingest --from database --index DIR [--watch SECS] [--only PART,…]` is
+what derives one. `catch_up` is build-or-resume followed by delta passes
 until a pass finds less than a chunk left; `--watch` keeps polling after that,
-and `galos index ingest --catch-up` calls the same `catch_up` once at startup
+and a run that names `--db --index` calls the same `catch_up` once at startup
 and then maintains the directory from events instead. `Parts` is
 `{cells, names, populated, reaches, boosts, factions, bodies}`, and `--only`
 is for a change to how one part is derived, which leaves every published copy
 of that part stale while everything beside it is fine: rebuilding the lot to
 fix one is "a hundred megabytes of rewriting to say nothing new"
-(`bin/galos/index/fill.rs`'s `Part`, `galos_db/src/index/mod.rs:30-36`). Two
+(`bin/galos/ingest.rs`'s `Part`, `galos_db/src/index/mod.rs:30-36`). Two
 invariants hold it: a part left out is left exactly as it stands, and nothing
 here ever removes a file, so a partial build leaves the index older but never
 short. The supercharge table is read off the nearest scanned star rather than
@@ -455,11 +470,11 @@ first because everything else leans on it.
 
 Two large modules are easy to mistake for map code and are not.
 `inside.rs` (1,057) and `orbit.rs` (1,172) are the shared Kepler and
-system-arrangement arithmetic: the index build derives the reach table with
+system-arrangement arithmetic: the derivation of the reach table uses
 them and the map draws a system's insides with them, held in one crate
 precisely so the two answers cannot disagree.
 
-`galos index info DIR` summarises a built directory.
+`galos index status DIR` summarises a built directory.
 
 ## 5. The commander's own journal
 
@@ -532,13 +547,14 @@ anyway, and is what a feed needs: a `meta::Body` is 376 bytes before its four
 strings, its parents and its materials, so holding everyone's scans is a
 process that grows for as long as it runs.
 
-**The join is at write time.** `galos index ingest --from eddn --from
-journal=DIR --dir DIR` reads both publishers into one directory — one tree,
+**The join is at write time.** `galos ingest --from eddn --from
+journal=DIR --index DIR` reads both publishers into one directory — one tree,
 one set of tables, everybody else's galaxy and this commander's merged by the
 same `SystemReport::over` that merges two readings of anything else. The map
 reads that one directory through `FsSource` and knows nothing about where a
-system came from. A journal into Postgres instead is `galos db ingest --from
-journal=DIR`, whence the ordinary build picks it up; filling both is both.
+system came from. A journal into Postgres instead is `galos ingest --from
+journal=DIR --db`, whence the ordinary build picks it up; filling both is
+one run naming `--db --index`.
 
 A directory written from events is not one a database-derived build rewrites:
 the resume point records which derivation wrote it and the two refuse to
@@ -553,7 +569,7 @@ feed alone.
 `galos_photometry` is the vocabulary: `Magnitude`, `Flux`, `Temperature`,
 `Color`, `Luminance`, `Distance` (unit-carrying), and `ClassLight::of`, which
 turns a spectral class into a typical magnitude and heat — the last link in
-the index build's fallback chain, and what lets a system with nothing recorded
+the derivation's fallback chain, and what lets a system with nothing recorded
 but its primary's letter still take its place in the ordering.
 
 Three of its items are about the instrument rather than the light, and the
@@ -670,9 +686,9 @@ by dropping the plugin.
   can be developed against a picture. Guarded by a golden image of the Big
   Dipper (`tests/golden.rs`).
 - **`galos_catalog`** — reads published star catalogs (HYG today) into the same
-  position / absolute-magnitude / temperature vocabulary the index build
+  position / absolute-magnitude / temperature vocabulary the derived index
   produces. It has **no `galos_db` dependency** and its header argues why: it
-  is a peer of the index build, not of the database, and "knows nothing about
+  is a peer of that derivation, not of the database, and "knows nothing about
   the tree, the renderer or Postgres". `compare.rs` fits the rotation between
   two datasets from matched stars rather than assuming it, "so a wrong guess
   about axes cannot masquerade as every star being in the wrong place".
@@ -682,8 +698,8 @@ by dropping the plugin.
   one whole object per line, so the framing is a `read_line` and the parsing
   is `serde_json` per object, and nothing is held whole — which is what lets
   610 GB be read in a process that grows no further than its longest line
-  (`spansh/src/lib.rs`). `galos index build --from spansh=PATH` is the cold
-  route over one; either group's `ingest` reads the same source.
+  (`spansh/src/lib.rs`). `galos ingest --from spansh=PATH --index DIR` is the
+  cold route over one; the same source reads into `--db` just as well.
 - **`galos_server`** — 321 lines of axum with six askama templates: an index,
   a system list, and pages for a system, a station, a body and a route. Live,
   thin, and untested.

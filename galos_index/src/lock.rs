@@ -6,9 +6,9 @@
 //! galaxies into it — each writing a cell tree the other's metadata does not
 //! describe — and neither notices, since neither reads what the other wrote.
 //! Nothing stopped that, and it is an easy mistake to make two ways:
-//! `galos index ingest --dir DIR` run twice in two terminals, or a `galos
-//! index build` into the directory a `sweep`, `pack` or `migrate` is already
-//! rewriting.
+//! `galos ingest --index DIR` run twice in two terminals, or an ingest
+//! into the directory a `galos index sweep`, `pack` or `migrate` is
+//! already rewriting.
 //!
 //! So a builder takes `<dir>.lock` for as long as it holds the directory. The
 //! file sits *beside* the directory rather than inside it: the directory is

@@ -36,9 +36,10 @@
 //!
 //! Without a database there is nothing to catch up from, so the sink opens
 //! on whatever the directory already holds and goes live immediately. That
-//! is every run of `galos index ingest` but the one that passes
-//! `--catch-up`, and it is the only thing in the `index` verbs that reads
-//! Postgres at all — behind the `db` feature with everything else that
+//! is every `galos ingest --index` run that does not also name `--db`.
+//! The handoff and `galos ingest --from database --index DIR` are the only
+//! two things on the writing side that read Postgres into a directory at
+//! all, and both sit behind the `db` feature with everything else that
 //! does.
 
 use crate::sink::relay::{Dropped, Live, Reading};
@@ -398,8 +399,8 @@ impl Derive {
 
 /// The index brought level with the database, with no events in it at all.
 ///
-/// The `galos index build --from database` run: a rebuild, a repair of one
-/// part with `--only`, or a follower of the rows with `--watch`.
+/// The `galos ingest --from database --index DIR` run: a rebuild, a repair
+/// of one part with `--only`, or a follower of the rows with `--watch`.
 ///
 /// A build cut short is a run that did what it was asked and wrote nothing:
 /// it says what was abandoned and answers [`Ok`], so a Ctrl-C in the first

@@ -33,11 +33,11 @@
 //!   nothing underneath needs keeping. That is two file opens and a rename a
 //!   system less, which over a galaxy is most of what the read costs.
 //!
-//! The second is what a feed needs. `galos index ingest --from eddn --dir
-//! DIR` carries everyone's scans, and holding them all is a process that
+//! The second is what a feed needs. `galos ingest --from eddn --index DIR`
+//! carries everyone's scans, and holding them all is a process that
 //! grows for as long as it runs — a `meta::Body` is 376 bytes before its
 //! four strings, its parents and its materials, so a million of them is
-//! about a gigabyte. `galos index build --from database` never had the
+//! about a gigabyte. Deriving a directory from the rows never had the
 //! problem because Postgres is its body store; this gives the database-free
 //! path the same answer, with the directory standing in for the database.
 //!

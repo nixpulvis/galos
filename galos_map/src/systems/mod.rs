@@ -221,7 +221,7 @@ impl System {
     /// was built from a payload point rather than a name lookup
     ///
     /// The raw figure the realistic view reads, [`None`] rather than the
-    /// default class, so a panel can say what the index build actually assigned
+    /// default class, so a panel can say what the derivation actually assigned
     /// and a too-bright star can be told from a merely unscanned one.
     pub(crate) fn indexed_magnitude(&self) -> Option<f32> {
         self.absolute_magnitude

@@ -3,31 +3,33 @@
 //! ```sh
 //! galos db status                                 # what it is, how current
 //! galos db migrate                                # bring the schema forward
-//! galos db ingest --from journal=~/Saved\ Games/… # a commander's own logs
-//! galos db ingest --from eddn --watch             # follow the feed
-//! galos db ingest --from spansh=galaxy.json --bulk --shard 0/8
 //! galos db verify                                 # what is wrong in here
 //! galos db catalog hygdata_v41.csv                # a survey from Earth
 //! galos db stats                                  # what the galaxy holds
 //! ```
 //!
-//! ## Why this is a verb group and not a pair of flags
+//! Filling it is `galos ingest --db`, which is one verb for both stores
+//! because it is one reading of one publisher — see `crate::ingest`. What
+//! is here is everything else the database is asked or told.
+//!
+//! ## Why the stores are two groups, and the writing is not
 //!
 //! There are two stores and they are not two settings of one store. A
 //! database keeps stations, markets, signals and factions — everything a
 //! question is asked *about* — and an index keeps the sky: the cell tree a
-//! map draws and the bodies inside a system. One reading feeds both, which
-//! is why the reading is shared rather than copied per sink
-//! ([`galos::read`]); each sink then takes what it is for and says in its
-//! own impl what it does with the rest. A pair of flags choosing between
-//! them was never choosing between two outputs of one job, it was two jobs
-//! sharing a command line, and most of what either one was given had to be
-//! refused for the other. So they are two groups of verbs under one
-//! command, and what each verb writes is in its name rather than in a flag
-//! beside it. The machine settles the rest: an index is served out of a
-//! directory with no server at all, so a machine that builds one has no
-//! Postgres on it, no `DATABASE_URL`, and — the `db` feature being off
-//! there — no client compiled in and none of this group to ask for.
+//! map draws and the bodies inside a system. So what is asked *of* each is
+//! its own group of verbs: `status`, `verify`, `migrate` and the rest mean
+//! different work on each side and share no code, and a reader looking for
+//! "what is wrong with my database" should not have to pick it out of a
+//! list that also repairs body shards.
+//!
+//! **Filling them is the other way round.** One reading feeds both: a
+//! source hands over what it read and each sink takes what it is for
+//! ([`galos::read`], [`galos::sink`]). Two verbs for that would be two
+//! subscriptions carrying the same galaxy, and an operator keeping both
+//! current would run them side by side forever — so it is one `galos
+//! ingest` and `--db`/`--index` name which sinks this run has. Naming both
+//! reads each publisher once.
 //!
 //! The connection is read from `DATABASE_URL`, as everything else here
 //! reads it, and [`status`] says out loud which database that came to.
@@ -38,8 +40,6 @@ use galos_catalog::hyg;
 // that writes the one line it silences.
 use galos_db::{Database, HEARD};
 use std::path::{Path, PathBuf};
-
-mod ingest;
 
 /// Work with the galaxy database.
 #[derive(clap::Args)]
@@ -75,20 +75,6 @@ pub(super) enum Command {
     /// `count(*)`, a galaxy being too many rows to count for a status
     /// line, and the report says so where it does it.
     Status,
-
-    /// Read what a publisher publishes into the database.
-    ///
-    /// `--from` repeats and every source named is read at once, each with
-    /// a sink of its own onto the same pool: a dump and the feed are one
-    /// run, and neither waits on the other.
-    ///
-    /// A run either **follows** something or **imports** something, and
-    /// every per-source flag belongs to one of the two — the flags below
-    /// are grouped that way. It follows where a source has no end: the
-    /// feed, a spool, or a journal under `--watch`. Everything else is an
-    /// import — a dump, a saved dump, an API answer, a journal read once —
-    /// and has an end the run exits at.
-    Ingest(ingest::Ingest),
 
     /// Run the migrations this build carries, and say where that left the
     /// database.
@@ -136,7 +122,6 @@ pub(super) enum Command {
 pub async fn run(cli: Cli) -> Result<bool, String> {
     match cli.command {
         Command::Status => status().await,
-        Command::Ingest(it) => ingest::run(it).await,
         Command::Migrate => migrate().await,
         Command::Verify => verify().await,
         Command::Catalog { file } => catalog(&file).await,

@@ -16,7 +16,7 @@ const INDEX_DIR: &str = ".galos_index";
 #[derive(Parser)]
 #[command(name = "galos-map", version, about)]
 struct Cli {
-    /// Index directory to draw, as built by `galos index build --dir DIR`.
+    /// Index directory to draw, as written by `galos ingest --index DIR`.
     ///
     /// Falls back to GALOS_INDEX, then to `.galos_index`.
     #[arg(
