@@ -709,22 +709,39 @@ mod tests {
         assert_eq!(grouped(-1_234), "-1,234");
     }
 
-    /// Backlog is reported and forgiven; a dangling reference is not.
+    /// What is unfinished is forgiven; what a constraint should have
+    /// stopped is not.
+    ///
+    /// The numbers are the two databases this was measured against: a
+    /// development server restored with its triggers disabled, and a
+    /// database migrated from nothing and fed fifteen seconds of the live
+    /// feed. The second is what the first version of this rule got wrong
+    /// — it called that database unsound, and every database that has
+    /// read the feed with it.
     #[test]
-    fn backlog_is_not_damage() {
-        let mut verified = Verified {
-            systems_without_position: 26_213,
-            markets_without_system: 167,
-            stations_without_type: 0,
-            body_signals_without_body: 0,
-            stations_without_body: 0,
+    fn what_is_merely_unfinished_is_not_unsound() {
+        let fed_for_fifteen_seconds = Verified {
+            systems_without_position: 10,
+            markets_without_system: 7,
+            stations_without_type: 4,
+            body_signals_without_body: 6,
+            stations_without_body: 3,
+            bodies_with_dangling_parents: 134,
+            stars_with_dangling_parents: 13,
             system_factions_without_faction: 0,
-            bodies_with_dangling_parents: 0,
-            stars_with_dangling_parents: 0,
         };
-        assert!(verified.is_sound());
+        assert!(
+            fed_for_fifteen_seconds.is_sound(),
+            "a database reading the feed is not damaged by reading it",
+        );
 
-        verified.stars_with_dangling_parents = 1;
-        assert!(!verified.is_sound());
+        let restored_without_triggers = Verified {
+            system_factions_without_faction: 76_791,
+            ..fed_for_fifteen_seconds
+        };
+        assert!(
+            !restored_without_triggers.is_sound(),
+            "a faction id naming no faction is a foreign key not enforced",
+        );
     }
 }
