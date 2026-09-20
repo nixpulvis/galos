@@ -881,6 +881,7 @@ fn build_glow(
     gains: Res<Gains>,
     exposure: Res<FieldExposure>,
     view: Res<View>,
+    scale_population: Res<crate::systems::scale::ScalePopulation>,
     spyglass: Res<crate::systems::Spyglass>,
     mut laid: ResMut<Laid>,
     mut glow: Query<&mut Mesh3d, With<GlowMark>>,
@@ -897,6 +898,18 @@ fn build_glow(
     // much of the field's range reaches the display at once rather than
     // where that range sits.
     let opened = exposure.factor();
+    // Whether the sky is being read as populations, in which the crowd
+    // nobody lives in is not drawn at all.
+    //
+    // **The field stands in for marks and has to say what they say.**
+    // [`mark_light`] is one figure for a mark and for the light laid down
+    // in its place, and in that mode an uninhabited system's mark is
+    // never drawn — so the light standing in for one is not standing in
+    // for anything. Laid anyway, the galaxy kept its grey while the marks
+    // over it were only the colonies, which is the two halves of the
+    // picture answering different questions.
+    let peopled_only =
+        crate::systems::scale::by_population(&view, &scale_population);
     // And the tilt, which is the dial's rest moving with the reach rather
     // than the user moving it; see [`RESTS_AT`].
     // Held inside the reaches the tilt was read from. Outside them it is
@@ -1090,6 +1103,7 @@ fn build_glow(
 
             let mass = cell.aggregate.mass().remove(taken.mass);
             if empty > 0
+                && !peopled_only
                 && let Some(at) = mass.centroid()
                 && in_reach(at)
             {
@@ -1874,12 +1888,19 @@ mod exposure {
         accounted: bool,
         /// A filter to put on the map before the field is laid.
         asked: Option<crate::systems::filter::Filter>,
+        /// Whether the sky is read as populations.
+        peopled: bool,
     }
 
     impl Set {
         /// The far case the exposure is judged on: no boundary, nothing drawn.
         fn open() -> Set {
-            Set { reach: None, accounted: false, asked: None }
+            Set {
+                reach: None,
+                accounted: false,
+                asked: None,
+                peopled: false,
+            }
         }
 
         /// The same, with a filter on the map.
@@ -1921,6 +1942,9 @@ mod exposure {
         });
         app.insert_resource(View::Map);
         app.insert_resource(ColorBy::Allegiance);
+        app.insert_resource(crate::systems::scale::ScalePopulation(
+            set.peopled,
+        ));
         app.init_resource::<Gains>();
         app.init_resource::<FieldExposure>();
         app.init_resource::<Laid>();
@@ -2004,6 +2028,31 @@ mod exposure {
         world.run_system(build).expect("the field builds");
         let planned = world.resource::<Planned>().0.splats.len();
         (*world.resource::<Laid>(), planned)
+    }
+
+    /// Reading the sky as populations puts the backdrop out, as it puts
+    /// the marks of the same systems out
+    ///
+    /// The two halves of the picture are one light: an uninhabited
+    /// system's mark is not drawn in that mode, so the field standing in
+    /// for one must not be either. Reported as the galaxy keeping its grey
+    /// while the marks over it were only the colonies.
+    #[test]
+    fn the_peopled_sky_lays_no_backdrop() {
+        let Some(dir) = measured() else { return };
+        let (whole, _) = laid_at(&dir, 30_000., Set::open());
+        assert!(whole.backdrop > 0, "the ordinary sky laid no backdrop");
+
+        let (peopled, _) =
+            laid_at(&dir, 30_000., Set { peopled: true, ..Set::open() });
+        assert_eq!(
+            peopled.backdrop, 0,
+            "the crowd nobody lives in was laid where no mark of it is drawn",
+        );
+        assert_eq!(
+            peopled.colonies, whole.colonies,
+            "the colonies went with it",
+        );
     }
 
     /// A filter reaches the field, and takes a share of it rather than all
