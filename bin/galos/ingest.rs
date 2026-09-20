@@ -94,7 +94,20 @@ pub struct Cli {
     db: bool,
 
     /// Write an index directory, `.galos_index` where DIR is left off.
-    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = INDEX_DIR)]
+    ///
+    /// **`-i/--index` names the directory everywhere it appears — but
+    /// here it also chooses a sink**, which is why it takes no
+    /// `GALOS_INDEX` default the way `galos index`'s verbs do: those act
+    /// on a directory that exists and there is one obvious one to act on,
+    /// while an environment variable that silently made every ingest
+    /// write a galaxy of cells is not a default, it is a surprise.
+    #[arg(
+        short = 'i',
+        long,
+        value_name = "DIR",
+        num_args = 0..=1,
+        default_missing_value = INDEX_DIR,
+    )]
     index: Option<PathBuf>,
 
     /// Resume file for the index, kept outside the served directory.
@@ -115,7 +128,7 @@ pub struct Cli {
     /// directory built from a dump, or from the feed, whose systems the
     /// rows have no other way to carry forward. That replaces every system
     /// it publishes, so it is refused unless it is asked for here. `galos
-    /// index status DIR` says what wrote the one you have.
+    /// index status -i DIR` says what wrote the one you have.
     #[cfg(feature = "db")]
     #[arg(long)]
     rebuild: bool,
@@ -536,7 +549,7 @@ fn refused(cli: &Cli) -> Result<(), String> {
         if cli.index.is_none() {
             return Err(
                 "--from database reads the rows into a directory; name \
-                 --index DIR"
+                 -i/--index DIR"
                     .into(),
             );
         }
@@ -544,7 +557,7 @@ fn refused(cli: &Cli) -> Result<(), String> {
 
     if !cli.to_db() && cli.index.is_none() {
         return Err(
-            "nothing to write to: name --db, --index DIR, or both".into()
+            "nothing to write to: name --db, -i/--index DIR, or both".into()
         );
     }
 

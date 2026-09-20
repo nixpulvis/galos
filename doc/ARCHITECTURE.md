@@ -474,7 +474,7 @@ system-arrangement arithmetic: the derivation of the reach table uses
 them and the map draws a system's insides with them, held in one crate
 precisely so the two answers cannot disagree.
 
-`galos index status DIR` summarises a built directory.
+`galos index status -i DIR` summarises a built directory.
 
 ## 5. The commander's own journal
 

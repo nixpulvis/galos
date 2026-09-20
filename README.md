@@ -227,7 +227,7 @@ GALOS_INDEX=/srv/galos_index cargo run --release -p galos_map
 cargo run --release -p galos_map --features tracy
 
 # What a built index directory holds, without writing anything anywhere.
-cargo run --bin galos -- index status .galos_index
+cargo run --bin galos -- index status -i .galos_index
 ```
 
 `RUST_LOG` selects what a run logs (e.g. `RUST_LOG=debug`), info and above

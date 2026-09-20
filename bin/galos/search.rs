@@ -170,8 +170,8 @@ fn matched(dir: &str, query: &str) -> Result<Vec<i64>, String> {
         .map_err(|err| format!("reading the names table at {dir}: {err}"))?;
     if names.is_empty() {
         return Err(format!(
-            "{dir} publishes no names; build one with `galos index build \
-             --from database --dir {dir}`"
+            "{dir} publishes no names; build one with \
+             `galos ingest --from database -i {dir}`"
         ));
     }
     let query = galos_index::SystemName::new(query.trim_matches('%'));

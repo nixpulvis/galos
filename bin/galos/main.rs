@@ -4,7 +4,7 @@
 //! galos ingest --from eddn --db --index      # one read, both stores
 //! galos ingest --from spansh=galaxy.json --index   # a galaxy, region by region
 //! galos ingest --from database --index --watch 5   # the rows into a directory
-//! galos index status .index/full             # what a directory holds
+//! galos index status -i .index/full       # what a directory holds
 //! galos db verify                            # what is wrong in there
 //! galos search -s 'Sol*'                     # ask about it
 //! ```

@@ -26,7 +26,10 @@ db = ["dep:galos_db", "dep:galos_catalog"]
 # `attributes` is `#[async_std::main]`. It arrived transitively through
 # `galos_db` before the `db` feature could be turned off under it.
 async-std = { version = "1", features = ["attributes"] }
-clap = { version = "4", features = ["derive"] }
+# `env` is `GALOS_INDEX`: the index directory a verb works on is named the
+# same way in the map (`galos_map`, which has read it from there since
+# before this), so a reader who exports it once is obeyed by both.
+clap = { version = "4", features = ["derive", "env"] }
 itertools = "0.14"
 indicatif = "0.17"
 chrono = "0.4"

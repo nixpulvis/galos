@@ -1,10 +1,10 @@
 //! Inspecting and repairing an index directory: `galos index`.
 //!
 //! ```sh
-//! galos index status .index/full
-//! galos index verify .index/full --bodies
-//! galos index sweep .index/full --bodies --apply
-//! galos index migrate .galos_index
+//! galos index status -i .index/full
+//! galos index verify -i .index/full --bodies
+//! galos index sweep -i .index/full --bodies --apply
+//! galos index migrate            # -i defaults, or GALOS_INDEX says
 //! galos index diff .index/from_dump .index/from_db
 //! ```
 //!
@@ -28,6 +28,7 @@
 //! between shards; a second one kills.
 
 use clap::Subcommand;
+use galos::sink::index::INDEX_DIR;
 use galos_index::geometry::MAX_LEVEL;
 use galos_index::{
     source, store, Bodies, Cell, Index, NameEntry, Names, PopulatedSystem,
@@ -51,12 +52,18 @@ pub(super) enum Command {
     /// Summarise a built index directory: its shape and the galaxy's summed light.
     Status {
         /// The index directory to read.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
     },
     /// Compare two built index directories: are they the same derivation?
     Diff {
         /// The two index directories to compare.
+        ///
+        /// Positional, and the one verb here that does not take
+        /// `-i/--index`: it works on two directories and neither of them
+        /// is *the* index, so there is nothing for a default or for
+        /// `GALOS_INDEX` to name.
         a: PathBuf,
         b: PathBuf,
         /// Compare the body files as well, which is a file a scanned
@@ -75,7 +82,8 @@ pub(super) enum Command {
     /// Walk a directory's loose body files into the packed shard files.
     Pack {
         /// The index directory to pack.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
     },
     /// Give back what a directory holds and nothing refers to: the
@@ -83,7 +91,8 @@ pub(super) enum Command {
     /// the dead records in the body shards.
     Sweep {
         /// The index directory to sweep.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
         /// Sweep the body shards too, which a re-import leaves a dead
         /// record in for every system it rewrote.
@@ -97,7 +106,8 @@ pub(super) enum Command {
     /// nothing.
     Verify {
         /// The index directory to read.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
         /// Weigh the body shards against the tree, which reads every
         /// system's address: a galaxy is 1.6 GB held and a minute.
@@ -116,14 +126,16 @@ pub(super) enum Command {
     /// current costs a version read apiece.
     Migrate {
         /// The index directory to bring forward.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
     },
     /// Write the sector dictionary `galos_index::procedural` derives names
     /// through, learned from a built directory.
     Sectors {
         /// The index directory to learn from.
-        #[arg(default_value = ".galos_index")]
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
         /// Where to write it. `galos_index/data/sectors.csv` is the one
         /// the crate compiles in.
@@ -496,8 +508,8 @@ fn verify(dir: &Path, bodies: bool) {
     if holes > 0 {
         println!(
             "\n{holes} cells the tree names have no payload: that is systems \
-             the index says are there and cannot serve. `galos index build` \
-             is the repair.",
+             the index says are there and cannot serve. \
+             `galos ingest --from database -i DIR` is the repair.",
         );
         std::process::exit(1);
     }

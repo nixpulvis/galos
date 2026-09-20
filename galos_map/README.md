@@ -3,7 +3,7 @@
 ![Galos Galaxy Zoom](./galaxy.png)
 
 The map is pointed at one directory, and reads no database of its own.
-`--index DIR` is the index `galos ingest --index DIR` writes, and
+`--index DIR` is the index `galos ingest -i DIR` writes, and
 `GALOS_INDEX` says the same thing for a machine that always draws the same
 one; with neither, the map reads `.galos_index` under wherever it was run
 from. A commander's own journal reaches the map the same way everything
