@@ -102,7 +102,7 @@ pub struct ResidentCell {
 /// map's own tree addresses — and the mix below is the same one the
 /// aggregates' own moments are dithered with.
 #[derive(Default)]
-struct Quick(u64);
+pub(crate) struct Quick(u64);
 
 impl Hasher for Quick {
     fn write(&mut self, bytes: &[u8]) {

@@ -15,7 +15,10 @@
 //! sky is dense the marks land closer than the pitch and read as a brighter
 //! patch, which is what a dense sky looks like.
 
+use crate::cache::Quick;
 use crate::geometry::CellId;
+use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
 use crate::walk::{MERGE_PX, View};
 
 /// How many marks the frame itself carries
@@ -189,36 +192,70 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 /// tile is the largest thing in it.
 #[derive(Default)]
 pub struct Crowded {
-    taken: Vec<bool>,
-    across: usize,
-    down: usize,
+    taken: HashSet<u64, BuildHasherDefault<Quick>>,
+    /// The tangent of the angle one mark subtends, which is the pitch of
+    /// the grid on each face of the cube.
+    pitch: f64,
+    eye: [f64; 3],
 }
 
 impl Crowded {
-    /// A grid over `view`, one entry to [`MERGE_PX`] squared — which is
-    /// [`frame_marks`] of them, the frame's own capacity in marks.
+    /// A grid as fine as a mark is wide, seen from where `view` stands.
     pub fn over(view: &View) -> Crowded {
-        let [width, height] = frame(view);
-        let across = (width / MERGE_PX).ceil().max(1.0) as usize;
-        let down = (height / MERGE_PX).ceil().max(1.0) as usize;
-        Crowded { taken: vec![false; across * down], across, down }
+        Crowded {
+            taken: HashSet::default(),
+            pitch: MERGE_PX / view.pixels_per_radian(),
+            eye: view.eye,
+        }
     }
 
-    /// Whether a mark at `at` is the first to want that patch of screen.
+    /// Whether a mark at `at` is the first to want that patch of sky.
     ///
-    /// Off the frame is [`false`]: nothing there is drawn, and a mark
-    /// behind the eye has no tile to claim.
-    pub fn claim(&mut self, view: &View, at: [f64; 3]) -> bool {
-        let Some([x, y]) = view.project(at) else { return false };
-        if x < 0.0 || y < 0.0 {
+    /// **Which patch is a question about the direction, not about the
+    /// frame.** A grid laid on the screen turns with the camera, so its
+    /// boundaries sweep across the sky as the view rotates and whichever
+    /// of two neighbours falls on the near side of one changes with them
+    /// — reported as systems flickering while the camera turns. The
+    /// direction from the eye to a system does not change when the eye
+    /// turns, so the grid is laid on *that*: a cube about the eye, its
+    /// faces ruled at the angle one mark subtends. Rotating now moves
+    /// nothing, and only travelling does — which it must, the sky's own
+    /// separations changing when you move through it.
+    ///
+    /// The cube's faces are the world's axes and not the camera's, for
+    /// the same reason. Cells grow by up to the usual cube-map third
+    /// toward a face's corners, which is a third of a mark.
+    pub fn claim(&mut self, at: [f64; 3]) -> bool {
+        let from = [
+            at[0] - self.eye[0],
+            at[1] - self.eye[1],
+            at[2] - self.eye[2],
+        ];
+        let (face, major) = [0usize, 1, 2].iter().fold(
+            (0usize, 0.0f64),
+            |(face, major), &axis| match from[axis].abs() > major {
+                true => (axis, from[axis].abs()),
+                false => (face, major),
+            },
+        );
+        if major <= 0.0 {
+            // The eye is standing on it; there is no direction to bin.
             return false;
         }
-        let (column, row) = ((x / MERGE_PX) as usize, (y / MERGE_PX) as usize);
-        if column >= self.across || row >= self.down {
-            return false;
-        }
-        let tile = &mut self.taken[row * self.across + column];
-        !std::mem::replace(tile, true)
+        let (u, v) = match face {
+            0 => (from[1], from[2]),
+            1 => (from[2], from[0]),
+            _ => (from[0], from[1]),
+        };
+        // Which side of the cube, so the two faces of an axis are told
+        // apart, and then the ruling on it.
+        let side = u64::from(from[face] > 0.0);
+        let cell = |it: f64| (it / major / self.pitch).floor() as i64 as u64;
+        let key = (face as u64) << 62
+            | side << 61
+            | (cell(u) & 0x3fff_ffff) << 30
+            | (cell(v) & 0x3fff_ffff);
+        self.taken.insert(key)
     }
 }
 
@@ -455,6 +492,65 @@ mod tests {
         }
     }
 
+
+    /// Turning the camera does not change which marks are merged
+    ///
+    /// **A grid laid on the screen turns with the camera.** Its
+    /// boundaries sweep across the sky as the view rotates, so whichever
+    /// of two neighbours falls on the near side of one changes with
+    /// them, and the drawn set churns while the eye turns — reported as
+    /// systems flickering on rotation. The direction from the eye does
+    /// not change when the eye turns, so that is what the grid is laid
+    /// on.
+    #[test]
+    fn turning_the_camera_merges_the_same_marks() {
+        // A sky of a thousand, spread over a few degrees at a thousand
+        // light years: close enough together that most of them collide.
+        let sky: Vec<[f64; 3]> = (0..1_000)
+            .map(|n| {
+                let turn = f64::from(n) * 0.61;
+                let out = 3. + f64::from(n % 37);
+                [out * turn.cos(), out * turn.sin(), 1_000.]
+            })
+            .collect();
+
+        let claimed = |view: &View| -> Vec<bool> {
+            let mut crowded = Crowded::over(view);
+            sky.iter().map(|&at| crowded.claim(at)).collect()
+        };
+
+        let looking = |up: [f64; 3], forward: [f64; 3]| View {
+            eye: [0.0; 3],
+            forward,
+            up,
+            fov_y: std::f32::consts::FRAC_PI_4,
+            viewport_height: 720.0,
+            aspect: 16.0 / 9.0,
+        };
+
+        let straight = claimed(&looking([0., 1., 0.], [0., 0., 1.]));
+        assert!(
+            straight.iter().filter(|it| **it).count() < sky.len(),
+            "nothing collided, so nothing is being tested",
+        );
+        // Rolled, and then turned away: the same eye, pointed
+        // differently, merges the same marks.
+        assert_eq!(
+            straight,
+            claimed(&looking([1., 1., 0.], [0., 0., 1.])),
+            "a roll changed which marks were merged",
+        );
+        assert_eq!(
+            straight,
+            claimed(&looking([0., 1., 0.], [0.3, 0.1, 1.])),
+            "turning the eye changed which marks were merged",
+        );
+
+        // Moving does change it, and must: the sky's own separations are
+        // what a mark's width is measured against.
+        let moved = View { eye: [0., 0., 900.], ..looking([0., 1., 0.], [0., 0., 1.]) };
+        assert_ne!(straight, claimed(&moved), "travelling changed nothing");
+    }
 
     /// A view a thousand light years back from the origin, looking at it.
     fn looking() -> View {

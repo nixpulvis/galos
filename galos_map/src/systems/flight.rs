@@ -436,7 +436,7 @@ fn the_populated_sky_draws_what_stands_alone() {
     let drawn: Vec<&System> = systems.iter(world).collect();
     let mut held = galos_index::screen::Crowded::over(&view);
     for system in &drawn {
-        held.claim(&view, system.position);
+        held.claim(system.position);
     }
     let addresses: HashSet<i64> =
         drawn.iter().map(|system| system.address).collect();
@@ -468,7 +468,7 @@ fn the_populated_sky_draws_what_stands_alone() {
         .filter(|(_, address, _)| !addresses.contains(address))
         // Claiming answers true only where nothing holds the tile, so
         // what is left is a system dropped from empty screen.
-        .filter(|(_, _, at)| held.claim(&view, *at))
+        .filter(|(_, _, at)| held.claim(*at))
         .map(|&(population, address, _)| (population, address))
         .collect();
     assert!(

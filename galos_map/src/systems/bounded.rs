@@ -1336,7 +1336,7 @@ pub(crate) fn reconcile(
                 }) {
                     continue;
                 }
-                if !crowded.claim(&view, at) {
+                if !crowded.claim(at) {
                     continue;
                 }
                 fresh.push((address, at));
