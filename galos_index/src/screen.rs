@@ -316,17 +316,19 @@ impl Crowded {
 /// | stacked | 100 ly, of 8,113 | 500 ly, of 116,511 |
 /// |---|---|---|
 /// | 1 | 5,727 | 10,713 |
-/// | 2 | 7,391 | 18,965 |
-/// | **3** | **7,822** | **25,744** |
+/// | **2** | **7,391** | **18,965** |
+/// | 3 | 7,822 | 25,744 |
 /// | 4 | 7,936 | 31,473 |
 /// | none | 7,970 | 66,114 |
 ///
-/// Three keeps 98% of the near view — which is the one that was already
-/// right — and takes two thirds off the crowded one. One would cost the
-/// near view a quarter of itself to save a further fifth of the far,
-/// which is the wrong trade: the whole point of a lattice in the galaxy
-/// is that a system standing alone is drawn.
-const STACKED: u8 = 3;
+/// Two, on the picture: three was judged still a little dense at the
+/// far reach and two takes a further quarter off it, for 5% of the near
+/// view — which is the one that was already right, and still keeps 91%
+/// of it. One is where the trade turns: it would cost the near view a
+/// quarter of itself to save a further fifth of the far, and the whole
+/// point of a lattice in the galaxy is that a system standing alone is
+/// drawn.
+const STACKED: u8 = 2;
 
 /// One tile of the screen: what landed on it, and the best thing there is
 /// to light it with if nothing did.
@@ -632,15 +634,20 @@ mod tests {
             "two marks within a mark of each other were both drawn",
         );
 
-        // A line of sight carries a few marks and not a crowd: four
-        // systems strung out behind one another give three marks, the
-        // fourth being the one the sheet would have been made of.
+        // A line of sight carries a few marks and not a crowd: strung
+        // out behind one another, [`STACKED`] of them are drawn and the
+        // rest are what the sheet would have been made of. Stated
+        // against the cap rather than against a count, the cap being a
+        // dial the picture turns.
+        let deep = usize::from(STACKED) + 2;
         let strung: Vec<[f64; 3]> =
-            (0..4).map(|n| [0., 0., 1_000. + f64::from(n) * 100.]).collect();
+            (0..deep).map(|n| [0., 0., 1_000. + n as f64 * 100.]).collect();
+        let mut wanted = vec![false; deep];
+        wanted[..usize::from(STACKED)].fill(true);
         assert_eq!(
             claimed(&view, &strung),
-            vec![true, true, true, false],
-            "a line of sight carried {STACKED} marks or none",
+            wanted,
+            "a line of sight did not carry {STACKED} marks",
         );
 
         // Travelling changes it, and must: what a mark covers of the
