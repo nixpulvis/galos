@@ -81,7 +81,7 @@ pub use moments::Moments;
 pub use name::SystemName;
 pub use names::{Delta, Names, Said, Table, Writer};
 pub use orbit::{Orbit, Orbits, Spacing};
-pub use pack::{Reclaimed, sweep_bodies};
+pub use pack::{Gave, Held, Reclaimed, sweep_bodies};
 pub use report::SystemReport;
 pub use serialization::{Codec, Decode, Encode, FixedCodec, INDEX_VERSION};
 pub use sidecars::{Rows, Sidecars};

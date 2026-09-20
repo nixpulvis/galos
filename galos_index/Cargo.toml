@@ -33,6 +33,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # worth of one is eleven gigabytes: it is mapped and handed to the tree build
 # as a slice rather than decoded into one. Nothing else here maps a file.
 memmap2 = "0.9"
+# The hole punch a sweep reclaims dead records with, which is one `fcntl` on
+# macOS and one `fallocate` on Linux and has no safe wrapper in `std`. Nothing
+# new in the tree: `memmap2` above already links it.
+libc = "0.2"
 # The transport seam is async so the one HTTP impl to come is a drop-in; boxed
 # so a client holds it behind `Arc<dyn Source>` and swaps FS for HTTP whole.
 async-trait = "0.1"

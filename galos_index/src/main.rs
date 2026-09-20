@@ -2,14 +2,24 @@
 //!
 //! ```sh
 //! cargo run -p galos_index -- info .galos_index
+//! cargo run -p galos_index -- verify .index/full
+//! cargo run -p galos_index -- sweep .index/full --bodies --apply
 //! cargo run -p galos_index -- diff .index/from_dump .index/from_db
 //! ```
 //!
-//! Read-only and database-free: everything here reads the cell records the
-//! builder wrote, never Postgres. `info` says what one directory holds;
-//! `diff` says whether two of them are the same derivation, which is the
-//! question a dump-built index and a database-built index of the same
-//! galaxy are there to answer.
+//! Database-free: everything here reads the cell records the builder wrote,
+//! never Postgres. `info` says what one directory holds and `verify` says
+//! what is wrong with it — both read-only; `diff` says whether two of them
+//! are the same derivation, which is the question a dump-built index and a
+//! database-built index of the same galaxy are there to answer.
+//!
+//! The rest write, and each takes `<dir>.lock` for as long as it holds the
+//! directory: `sweep` gives back what nothing refers to, `pack` moves loose
+//! body files into the shards, `fold-names` and `upgrade` bring a
+//! directory's format forward. Every one of them weighs before it acts and
+//! reports before it is asked to act, because the passes are minutes over a
+//! galaxy and a silent terminal is not a run anybody can judge. Ctrl-C is
+//! answered between shards; a second one kills.
 
 use clap::{Parser, Subcommand};
 use galos_index::geometry::MAX_LEVEL;
@@ -70,24 +80,31 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
-    /// Remove the payloads of cells the index no longer names.
+    /// Give back what a directory holds and nothing refers to: the
+    /// payloads of cells the index no longer names, and with `--bodies`
+    /// the dead records in the body shards.
     Sweep {
         /// The index directory to sweep.
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
-        /// Delete them. Without this the orphans are only counted.
+        /// Sweep the body shards too, which a re-import leaves a dead
+        /// record in for every system it rewrote.
+        #[arg(long)]
+        bodies: bool,
+        /// Do it. Without this everything is only weighed and reported.
         #[arg(long)]
         apply: bool,
     },
-    /// Reclaim the body shards' dead records, which a re-import leaves one
-    /// of for every system it rewrote.
-    SweepBodies {
-        /// The index directory to compact.
+    /// Say what a directory holds and what is wrong with it, writing
+    /// nothing.
+    Verify {
+        /// The index directory to read.
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
-        /// Rewrite them. Without this the dead bytes are only weighed.
+        /// Weigh the body shards against the tree, which reads every
+        /// system's address: a galaxy is 1.6 GB held and a minute.
         #[arg(long)]
-        apply: bool,
+        bodies: bool,
     },
     /// Fold a directory's MessagePack names chunks into the mapped table.
     FoldNames {
@@ -136,16 +153,17 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
 fn main() {
     let cli = Cli::parse();
     let forced = cli.force_lock;
+    asking_to_stop();
     match cli.command {
         Command::Info { dir } => info(&dir),
         Command::Diff { a, b, bodies, detail, limit } => {
             diff(&a, &b, Compare { bodies, detail, limit })
         }
         Command::Pack { dir } => pack(&dir, forced),
-        Command::Sweep { dir, apply } => sweep(&dir, apply, forced),
-        Command::SweepBodies { dir, apply } => {
-            sweep_bodies(&dir, apply, forced)
+        Command::Sweep { dir, bodies, apply } => {
+            sweep(&dir, bodies, apply, forced)
         }
+        Command::Verify { dir, bodies } => verify(&dir, bodies),
         Command::FoldNames { dir } => fold_names(&dir, forced),
         Command::Upgrade { dir } => upgrade(&dir, forced),
         Command::Sectors { dir, out, force } => {
@@ -154,20 +172,69 @@ fn main() {
     }
 }
 
-/// Count, and on request remove, the payloads of cells the published tree
-/// does not name.
+/// Whether the run has been asked to stop.
+static ASKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Take Ctrl-C, so a pass over a galaxy can be stopped and say so.
 ///
-/// What a whole-directory rebuild leaves behind: it writes its own cells
-/// and knows nothing of the tree that stood before it, so the old tree's
-/// are still there, referred to by nothing. Measured at 200,248 files and
-/// 4.9 GB on a directory rebuilt from the database over one built from a
-/// dump.
+/// **The default action is to die where it stands**, which for a sweep is
+/// a directory part way through one — recoverable, since every pass here
+/// is idempotent, but it is not the answer an operator asked for and it
+/// says nothing about how far it got. The flag [`stopping`] reads is
+/// checked between shards, so a stop lands in the time one shard takes
+/// and the command reports what it reclaimed before it was stopped.
 ///
-/// A build sweeps for itself now — `galos_index::store::sweep_payloads`,
-/// run once the new index file stands — so this is for the directories
-/// rebuilt before it did, and for looking before acting. Reporting is the
-/// default because deleting from a served directory on a typo is not.
-fn sweep(dir: &Path, apply: bool, forced: bool) {
+/// The handler puts the default back, so a *second* Ctrl-C kills the
+/// process as it always did — which is the answer for a pass that is
+/// somehow not reaching its next flag check.
+fn asking_to_stop() {
+    #[cfg(unix)]
+    {
+        extern "C" fn asked(_: libc::c_int) {
+            ASKED.store(true, std::sync::atomic::Ordering::Relaxed);
+            // SAFETY: `signal` is async-signal-safe, and this is the whole
+            // of what the handler does besides one atomic store.
+            unsafe { libc::signal(libc::SIGINT, libc::SIG_DFL) };
+        }
+        // SAFETY: installing a handler that touches one atomic and one
+        // signal-safe call.
+        unsafe {
+            libc::signal(libc::SIGINT, asked as *const () as libc::sighandler_t)
+        };
+    }
+}
+
+/// Whether whoever asked for this run has stopped wanting it.
+fn stopping() -> impl Fn() -> bool + Sync {
+    || ASKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Count, and on request give back, what the directory holds and nothing
+/// refers to.
+///
+/// Two kinds, and the second only when it is asked for:
+///
+/// - **The payloads of cells the published tree does not name.** What a
+///   whole-directory rebuild leaves behind: it writes its own cells and
+///   knows nothing of the tree that stood before it. Measured at 200,248
+///   files and 4.9 GB on a directory rebuilt from the database over one
+///   built from a dump.
+/// - **The dead records in the body shards**, on `--bodies`: a re-import
+///   appends a fresh record for every system and the one behind it is
+///   dead. Measured on a re-imported galaxy at 161.1 GB.
+///
+/// A build sweeps both for itself now — `store::sweep_payloads` and
+/// `pack::sweep_bodies`, run once the new index file stands — so this is
+/// for the directories written before it did, and for looking before
+/// acting. **Reporting is the default**, because acting on a served
+/// directory on a typo is not, and because the weighing is what says what
+/// the run is about to cost.
+///
+/// Safe to run against a directory a map is *reading*: a payload the tree
+/// does not name has no reader, and a shard is reclaimed whole. Not safe
+/// against one something is *writing*, which is what [`held`] is for.
+fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
     let lock = held(dir, forced);
     let index = match galos_index::Index::read(dir) {
         Ok(index) => index,
@@ -209,58 +276,266 @@ fn sweep(dir: &Path, apply: bool, forced: bool) {
             leave(Some(lock), 1);
         }
     }
+    if bodies && let Err(err) = sweep_bodies(dir, apply) {
+        eprintln!("{}: {err}", dir.display());
+        leave(Some(lock), 1);
+    }
 }
 
 /// Weigh, and on request reclaim, the dead records in the body shards.
 ///
-/// What a re-import leaves behind: the shards are append-only and a dump
-/// names each system once, so a second import over the same directory
-/// writes a fresh record for every system and the one behind it is dead.
-/// Measured on one: `bodies/` at 301 GB, 49.8 % of it live.
-///
-/// A build sweeps for itself now — `galos_index::pack::sweep_bodies`, run
-/// once the new index file stands — so this is for the directories
-/// imported before it did, and for looking before acting. Reporting is the
-/// default for the reason the cell sweep's is.
-///
-/// Safe to run against a directory a map is *reading*: a shard is
-/// compacted whole and a reader whose data file goes out from under it
-/// reads the index again. Not safe against one something is *writing*,
-/// which is what [`held`] is for.
-fn sweep_bodies(dir: &Path, apply: bool, forced: bool) {
-    let lock = held(dir, forced);
+/// **Weighed first, always.** The weighing is a read of 4,096 index files
+/// — a second over a galaxy — and what it answers is how long the rest of
+/// the run will take and what it will give back. A pass that reclaims 161
+/// GB is minutes of work, and minutes of a silent terminal is a run
+/// nobody can tell from a hung one.
+fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
+    let stop = stopping();
     let at = std::time::Instant::now();
-    match galos_index::pack::sweep_bodies(dir, &|| false, apply) {
-        Ok(swept) if swept.shards == 0 => println!(
-            "{}: every body shard's data file is live records",
-            dir.display(),
-        ),
-        Ok(swept) => {
-            let one = swept.shards == 1;
-            let bytes = size(swept.bytes);
-            println!(
-                "{}: {} shard{} {}, in {:.1?}{}",
-                dir.display(),
-                swept.shards,
-                if one { "" } else { "s" },
-                match apply {
-                    true => format!("rewritten, {bytes} reclaimed"),
-                    false => format!("holding {bytes} of dead record"),
-                },
-                at.elapsed(),
-                match swept.finished {
-                    true => "",
-                    false => ", and the rest were not reached",
-                },
-            );
-            if !apply {
-                println!("pass --apply to rewrite them");
+    let weighed = galos_index::pack::weigh(dir, &stop)?;
+    println!(
+        "{}: {} shards, {} systems, {} live, {} dead, in {:.1?}",
+        dir.display(),
+        weighed.shards,
+        weighed.records,
+        size(weighed.live),
+        size(weighed.dead),
+        at.elapsed(),
+    );
+    if weighed.loose > 0 {
+        println!(
+            "{} body files are still loose; `galos-index pack` moves them",
+            weighed.loose,
+        );
+    }
+    if weighed.reclaimable == 0 {
+        println!("nothing in the shards is worth reclaiming");
+        return Ok(());
+    }
+    if !apply {
+        println!(
+            "{} of that would be given back; pass --apply to do it",
+            size(weighed.reclaimable),
+        );
+        return Ok(());
+    }
+
+    // Said before the wait and not after it: this is the minutes.
+    println!("reclaiming {} ...", size(weighed.reclaimable));
+    let from = std::time::Instant::now();
+    let said = |run: &galos_index::Reclaimed| {
+        eprint!(
+            "\r{} shards, {} reclaimed, {:.0?}",
+            run.shards,
+            size(run.bytes),
+            from.elapsed(),
+        );
+    };
+    let swept = galos_index::pack::sweep_bodies(dir, &stop, &said);
+    eprintln!();
+    let swept = swept?;
+    println!(
+        "{}: {} shards, {} reclaimed ({} punched, {} copied), in {:.1?}{}",
+        dir.display(),
+        swept.shards,
+        size(swept.bytes),
+        size(swept.punched),
+        size(swept.bytes - swept.punched),
+        from.elapsed(),
+        match swept.finished {
+            true => "",
+            false => ", and the rest were not reached",
+        },
+    );
+    Ok(())
+}
+
+/// Say what a directory holds and what is wrong with it, writing nothing.
+///
+/// Four questions, in the order a directory fails them:
+///
+/// 1. **Does it have a tree at all?** `index.bin` is the one mandatory
+///    file: everything under it reads as empty where it is missing, so a
+///    directory without it serves nothing and nothing else here matters.
+/// 2. **Is every cell the tree names backed by a payload?** An orphan —
+///    a payload no cell names — is dead weight and `sweep` removes it. A
+///    **hole** is the other way round and is the serious one: a cell the
+///    tree names with no payload under it reads as a cell with no systems
+///    in it, which is a galaxy quietly missing a piece.
+/// 3. **What do the body shards hold, and what is dead in them?**
+/// 4. On `--bodies`, **do the shards answer for systems the tree does not
+///    name?** That one reads every address in the directory — 1.6 GB held
+///    over a galaxy — so it is asked for rather than run by default, and
+///    it says what it is about to cost before it does it.
+///
+/// No lock: nothing here writes. A directory being written underneath
+/// gives numbers from either side of a publish, which is worth knowing
+/// before reading too much into a single hole.
+fn verify(dir: &Path, bodies: bool) {
+    let stop = stopping();
+    let index = match Index::read(dir) {
+        Ok(index) => index,
+        Err(err) => {
+            eprintln!("{}: no index to verify: {err}", dir.display());
+            std::process::exit(1);
+        }
+    };
+    // **Every cell that owns systems, and not only the leaves.** An
+    // internal cell keeps the systems its children are too coarse to
+    // draw, so it has a payload of its own: checking the leaves alone
+    // read 186.8 M of a 200.07 M-system directory and called the
+    // difference nothing.
+    let owners: Vec<Cell> =
+        index.cells().filter(|it| it.slice_len() > 0).copied().collect();
+    let leaves = index.cells().filter(|it| it.is_leaf()).count();
+    let systems = index.root().map(|it| it.aggregate.count()).unwrap_or(0);
+    println!("{}", dir.display());
+    println!(
+        "  index       {} cells ({leaves} leaves, {} with systems of their \
+         own), {systems} systems",
+        index.len(),
+        owners.len(),
+    );
+
+    // A hole is a cell the tree names with nothing under it, and a short
+    // payload is the same wound half open: both read as a cell with fewer
+    // systems in it than the index says, which is a galaxy quietly
+    // missing a piece. Mapped rather than read — the count is in the
+    // payload's own header, and 4.9 GB of columns need not be decoded to
+    // compare it.
+    let at = std::time::Instant::now();
+    let mut holes = 0usize;
+    let mut short = 0usize;
+    let mut held = 0u64;
+    for (n, cell) in owners.iter().enumerate() {
+        if stop() {
+            println!("  payloads    stopped after {n} of {}", owners.len());
+            return;
+        }
+        if n % 4096 == 0 {
+            eprint!("\r  payloads    {n} of {} read", owners.len());
+        }
+        match store::Payload::open(dir, cell.id) {
+            Ok(Some(payload)) => {
+                held += payload.len() as u64;
+                short += usize::from(payload.len() as u64 != cell.slice_len());
+            }
+            Ok(None) => holes += 1,
+            Err(err) => {
+                eprintln!("\n{}: {err}", dir.display());
+                std::process::exit(1);
             }
         }
+    }
+    let orphans = match galos_index::sweep_payloads(dir, &index, false) {
+        Ok(swept) => swept,
         Err(err) => {
-            eprintln!("{}: {err}", dir.display());
-            leave(Some(lock), 1);
+            eprintln!("\n{}: {err}", dir.display());
+            std::process::exit(1);
         }
+    };
+    eprint!("\r");
+    println!(
+        "  payloads    {held} systems held, {holes} missing, {short} short, \
+         {} named by no cell ({}), in {:.0?}",
+        orphans.orphans,
+        size(orphans.bytes),
+        at.elapsed(),
+    );
+
+    match galos_index::pack::weigh(dir, &stop) {
+        Ok(weighed) => {
+            println!(
+                "  bodies      {} shards, {} systems, {} live, {} dead \
+                 ({} reclaimable)",
+                weighed.shards,
+                weighed.records,
+                size(weighed.live),
+                size(weighed.dead),
+                size(weighed.reclaimable),
+            );
+            if weighed.loose > 0 {
+                println!("              {} still loose", weighed.loose);
+            }
+            if bodies {
+                strays(dir, &owners, systems, weighed.records, &stop);
+            }
+        }
+        Err(err) => println!("  bodies      unreadable: {err}"),
+    }
+
+    // The names table last, it being the one part a directory can serve
+    // without: a build stopped before its fold has chunks and no base.
+    match galos_index::Names::open(dir) {
+        Ok(names) => println!("  names       {} systems named", names.len()),
+        Err(err) => println!("  names       unreadable: {err}"),
+    }
+
+    if holes > 0 {
+        println!(
+            "\n{holes} cells the tree names have no payload: that is systems \
+             the index says are there and cannot serve. `galos-index build` \
+             is the repair.",
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Count the systems the shards answer for that the tree does not name.
+///
+/// **The galaxy-sized half of `verify`, and why it is behind a flag.**
+/// There is no address list in the directory: the tree's addresses are in
+/// the payloads, one leaf at a time, so answering this means holding every
+/// one of them — 8 bytes a system, 1.6 GB over a galaxy — and walking
+/// every shard's index against it.
+///
+/// A stray is not a wrong answer, it is dead weight: bodies are reached by
+/// clicking a system the tree holds, so a record for a system the tree
+/// lost is a file nobody can ask for. They are what a rebuild from a
+/// smaller source leaves — a database-derived directory over a
+/// dump-derived one keeps the dump's bodies — and counting them is how an
+/// operator finds out. Nothing here removes them: withdrawing a scan is a
+/// decision about data, not about space.
+fn strays(
+    dir: &Path,
+    owners: &[Cell],
+    systems: u64,
+    records: u64,
+    stop: &dyn Fn() -> bool,
+) {
+    println!(
+        "              reading the {systems} addresses the tree names, \
+         which is about {} held ...",
+        size(systems * 8),
+    );
+    let at = std::time::Instant::now();
+    let mut named: Vec<u64> = Vec::with_capacity(systems as usize);
+    for cell in owners {
+        if stop() {
+            println!("              stopped before the addresses were read");
+            return;
+        }
+        let Ok(Some(payload)) = store::Payload::open(dir, cell.id) else {
+            continue;
+        };
+        named.extend((0..payload.len()).map(|at| payload.id64_at(at)));
+    }
+    named.sort_unstable();
+
+    let mut strays = 0u64;
+    let walked = galos_index::pack::each_address(dir, stop, &mut |address| {
+        if named.binary_search(&(address as u64)).is_err() {
+            strays += 1;
+        }
+    });
+    match walked {
+        Ok(true) => println!(
+            "              {strays} of {records} body records are for \
+             systems the tree does not name, in {:.1?}",
+            at.elapsed(),
+        ),
+        Ok(false) => println!("              stopped after {strays} strays"),
+        Err(err) => println!("              unreadable: {err}"),
     }
 }
 

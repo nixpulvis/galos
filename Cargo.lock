@@ -4052,6 +4052,7 @@ dependencies = [
  "elite_journal",
  "galos_photometry",
  "glam",
+ "libc",
  "memmap2",
  "pollster 0.3.0",
  "rmp-serde",

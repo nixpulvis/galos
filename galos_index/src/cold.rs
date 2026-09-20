@@ -469,7 +469,7 @@ impl<'a> Build<'a> {
         // the shards not yet reached exactly as this build left them.
         let reclaimed = step(
             "the compaction of the body shards",
-            crate::pack::sweep_bodies(&dir, &|| false, true),
+            crate::pack::sweep_bodies(&dir, &|| false, &|_| {}),
         )?;
         // Last, and only where the caller said where it had read to: the
         // mark stands for a published directory, so it goes out behind the
@@ -1321,19 +1321,17 @@ mod tests {
                 addresses.iter().map(|&it| (it, inside.clone())).collect();
             assert!(crate::pack::write(&dir, rows).failed.is_none());
         }
-        let dead = crate::pack::sweep_bodies(&dir, &|| false, false)
-            .expect("a weighing");
-        assert_eq!(dead.shards, 1, "the re-import left nothing to reclaim");
+        let dead = crate::pack::weigh(&dir, &|| false).expect("a weighing");
+        assert!(dead.reclaimable > 0, "the re-import left nothing to reclaim");
 
         let report =
             built(&at, "served", BuildParams::default(), 6_000, &lumpy(1_000))
                 .expect("a cold build");
         assert_eq!(
             (report.reclaimed.shards, report.reclaimed.bytes),
-            (dead.shards, dead.bytes),
+            (1, dead.reclaimable),
             "the publish left the dead records where they were: {report}",
         );
-        assert!(report.reclaimed.rewritten);
         assert!(report.reclaimed.finished);
 
         // And every system's own bodies came through the rewrite, which is

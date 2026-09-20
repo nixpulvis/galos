@@ -141,17 +141,18 @@ pub struct Packed {
     pub finished: bool,
 }
 
-/// What a sweep of the shards came to.
+/// What a sweep of the shards gave back.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reclaimed {
-    /// Shards whose data file was worth rewriting.
+    /// Shards that gave anything back.
     pub shards: usize,
-    /// Dead bytes in them: what the rewrite gave back, or would have.
+    /// Bytes the disk no longer holds.
     pub bytes: u64,
-    /// Whether they were rewritten rather than only weighed.
-    pub rewritten: bool,
+    /// Of those, the bytes punched out in place. The rest were copied —
+    /// see [`How`], which is where the two are chosen between.
+    pub punched: u64,
     /// Whether every shard was looked at. A stop part way answers `false`,
-    /// as does a shard that would not compact.
+    /// as does a shard that would not reclaim.
     pub finished: bool,
 }
 
@@ -277,18 +278,18 @@ pub enum Dead {
 }
 
 impl Dead {
-    /// Whether a file of `written` bytes holding `held` live ones has
-    /// reached this bar.
-    fn reached(self, held: u64, written: u64) -> bool {
-        let dead = written.saturating_sub(held);
+    /// Whether what [`cost`] measured has reached this bar.
+    fn reached(self, cost: &Cost) -> bool {
         match self {
             // `>=`, and not `>`: a re-import replaces every record with
             // one of very nearly the same length, which leaves a shard
             // *at* half rather than past it. The strict test made a
             // re-imported galaxy the one case the rule was written for
             // and the one case it refused.
-            Dead::Half => dead * 2 >= written,
-            Dead::Worth => dead >= WORTH && dead * 10 >= written,
+            Dead::Half => cost.dead >= cost.live,
+            // A tenth of what the file holds is `dead * 10 >= dead +
+            // live`, which is this.
+            Dead::Worth => cost.dead >= WORTH && cost.dead * 9 >= cost.live,
         }
     }
 }
@@ -636,7 +637,7 @@ fn append(dir: &Path, shard: u64, batch: &[(i64, Vec<u8>)]) -> io::Result<()> {
     }
 }
 
-/// Merge a shard's tail into its base, and rewrite the data file where
+/// Merge a shard's tail into its base, and reclaim the data file where
 /// enough of it is dead.
 ///
 /// The index is written beside and renamed over, so a reader sees one whole
@@ -645,48 +646,39 @@ fn append(dir: &Path, shard: u64, batch: &[(i64, Vec<u8>)]) -> io::Result<()> {
 /// reader holding offsets into the old bytes has to go on being right about
 /// them until it reads the index again.
 ///
-/// At [`Dead::Half`], which is the write path's bar. [`compact`] is the
+/// At [`Dead::Half`], which is the write path's bar. [`reclaim`] is the
 /// same fold at a sweep's.
 pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
     folded(dir, shard, Dead::Half).map(|_| ())
 }
 
-/// Rewrite one shard's data file where a sweep's bar is reached, answering
-/// the bytes it gave back.
-pub fn compact(dir: &Path, shard: u64) -> io::Result<u64> {
+/// Give one shard's dead bytes back, where a sweep's bar is reached.
+pub fn reclaim(dir: &Path, shard: u64) -> io::Result<Gave> {
     folded(dir, shard, Dead::Worth)
 }
 
-/// What a sweep would reclaim from one shard, reclaiming nothing.
-///
-/// The weighing half of [`compact`]: the index read and the data file
-/// measured against it, which is what a sweep without `--apply` reports.
-fn dead(dir: &Path, shard: u64) -> io::Result<u64> {
-    let table = Table::read(&index_path(dir, shard))?;
-    let held: u64 = table.live().values().map(|it| 4 + it.len as u64).sum();
-    let data = data_path(dir, shard, table.generation);
-    let written = std::fs::metadata(&data).map(|it| it.len()).unwrap_or(0);
-    match written > 0 && Dead::Worth.reached(held, written) {
-        true => Ok(written - held),
-        false => Ok(0),
-    }
+/// What one shard gave back, and how.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Gave {
+    /// Bytes the disk no longer holds for this shard.
+    pub bytes: u64,
+    /// Whether they were punched out in place rather than copied away.
+    pub punched: bool,
 }
 
-/// One fold, at whichever bar the caller keeps, answering the bytes a
-/// compaction gave back.
-fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
+/// One fold, at whichever bar the caller keeps.
+fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
     let path = index_path(dir, shard);
     let table = Table::read(&path)?;
     let live = table.live();
     let data = data_path(dir, shard, table.generation);
-    let held: u64 = live.values().map(|it| 4 + it.len as u64).sum();
-    let written = std::fs::metadata(&data).map(|it| it.len()).unwrap_or(0);
+    let cost = cost(&data, &live)?;
 
     // Half the file being records nothing points at is the write path's
     // trigger: a feed's thirty systems a second leave about six gigabytes
     // of dead records a day over the galaxy, which reaches half a shard in
     // a couple of months.
-    let compacting = written > 0 && bar.reached(held, written);
+    let reclaiming = bar.reached(&cost);
 
     // Nothing to merge and nothing to reclaim.
     //
@@ -696,21 +688,44 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
     // leaves, and no later write folds it because the tail it left is
     // under [`tail_bound`]. Measured on a re-imported galaxy — 4,096
     // shards, 49.8 % of their bytes live, and not one of them foldable.
-    if table.tail.is_empty() && !compacting {
-        return Ok(0);
+    if table.tail.is_empty() && !reclaiming {
+        return Ok(Gave::default());
     }
-    let generation = match compacting {
-        true => table.generation.wrapping_add(1),
-        false => table.generation,
-    };
 
+    // Punched where the dead bytes are whole blocks and the file has not
+    // outgrown what it holds, copied where they are not. See [`How`].
+    let mut how = match reclaiming {
+        true => How::of(&cost),
+        false => How::Nothing,
+    };
+    let mut gave = Gave::default();
+
+    // **Before the index, and the copy after it.** The two are not the
+    // same operation: a punch takes bytes nothing points at and leaves
+    // every live offset where it was, so a reader mapping the index at
+    // any point either side of it reads the same records. The copy moves
+    // them, which is why it has to hand the index over first.
+    //
+    // A filesystem that will not punch says so here — no hole is opened
+    // by a failed `fcntl` — and the shard takes the copy instead.
+    if how == How::Punch {
+        match punched(&data, &cost) {
+            Ok(()) => gave = Gave { bytes: cost.punchable, punched: true },
+            Err(_) => how = How::Copy,
+        }
+    }
+
+    let generation = match how {
+        How::Copy => table.generation.wrapping_add(1),
+        How::Punch | How::Nothing => table.generation,
+    };
     let mut base = Vec::with_capacity(live.len());
-    let mut at = 0u64;
-    match compacting {
-        true => {
+    match how {
+        How::Copy => {
             let to = data_path(dir, shard, generation);
             let mut out = io::BufWriter::new(File::create(&to)?);
             let mut from = File::open(&data)?;
+            let mut at = 0u64;
             for entry in live.values() {
                 from.seek(SeekFrom::Start(entry.offset))?;
                 let mut framed = vec![0u8; 4 + entry.len as usize];
@@ -720,8 +735,11 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
                 at += framed.len() as u64;
             }
             out.flush()?;
+            gave = Gave { bytes: cost.dead, punched: false };
         }
-        false => base.extend(live.values().copied()),
+        // In place, so the entries are the entries: every live offset
+        // still names the byte it named before.
+        How::Punch | How::Nothing => base.extend(live.values().copied()),
     }
 
     let mut bytes = Vec::with_capacity(HEADER + base.len() * ENTRY);
@@ -733,17 +751,381 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &path)?;
 
-    if !compacting {
-        return Ok(0);
+    if how == How::Copy {
+        // Nothing reads this generation any more: the index naming it is
+        // gone, and a reader that had already read it retries on the miss.
+        let _ = std::fs::remove_file(&data);
     }
-    // Nothing reads this generation any more: the index naming it is
-    // gone, and a reader that had already read it retries on the miss.
-    let _ = std::fs::remove_file(&data);
-    Ok(written - at)
+    Ok(gave)
 }
 
-/// Rewrite every shard of a directory whose data file is worth it,
-/// answering what it gave back.
+/// Punch every whole block of a shard's data file that nothing points at.
+///
+/// All or nothing as far as the caller is concerned: a filesystem that
+/// refuses the first hole has opened none of them, and one that refuses a
+/// later one has opened holes only in runs that were already dead. Either
+/// way the error sends the shard down the copy, which reclaims whatever
+/// is left.
+fn punched(data: &Path, cost: &Cost) -> io::Result<()> {
+    let file = OpenOptions::new().write(true).open(data)?;
+    for &(at, len) in &cost.holes {
+        punch(&file, at, len)?;
+    }
+    Ok(())
+}
+
+/// How a shard gives its dead bytes back.
+///
+/// **The copy is the expensive one, and was the only one.** It reads every
+/// live record and writes it into the next generation — 160 GB moved to
+/// free 161 GB, measured over a re-imported galaxy — because a reader
+/// holding an offset into the old bytes must not be handed new ones.
+///
+/// A hole moves nothing and hands nobody anything: the live records stay
+/// at the offsets the index already names, and the blocks under the dead
+/// runs go back to the filesystem. Which is the shape a re-import leaves —
+/// the first import's records are one run ahead of the second's, so a
+/// shard is a single punch of about half the file.
+///
+/// It is not always available and not always enough:
+///
+/// - A filesystem that cannot punch answers an error, and the copy is what
+///   the sweep falls back to.
+/// - Blocks are the granularity, so dead records finely interleaved with
+///   live ones — what a feed leaves — free nothing. Under [`PUNCHED`] of
+///   the dead bytes, the copy is the honest answer.
+/// - A punched file keeps its length, and appends go on past it, so a
+///   shard punched for ever is a file whose length grows without bound —
+///   and a `cp` or an `rsync` that does not understand holes copies the
+///   length rather than the blocks. [`BLOAT`] is where that stops: past
+///   it the shard is copied, which sets the length back to what it holds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum How {
+    /// Punch the dead runs; the file keeps its offsets and its length.
+    Punch,
+    /// Write the live records into the next generation.
+    Copy,
+    /// Fold the index and leave the data file alone.
+    Nothing,
+}
+
+/// What share of a shard's dead bytes a punch has to reach to be worth
+/// preferring to the copy, as the divisor of `(n-1)/n`.
+///
+/// Four, so three quarters: below that the file is left mostly dead and
+/// the copy is the thing that actually reclaims it.
+const PUNCHED: u64 = 4;
+
+/// How far a data file's length may run past the bytes it holds before a
+/// shard is copied rather than punched again.
+///
+/// Four, which is three re-imports of a galaxy before a shard is rewritten
+/// once. The length is what a tool that does not understand holes copies.
+const BLOAT: u64 = 4;
+
+impl How {
+    /// Which way this shard gives its dead bytes back.
+    fn of(cost: &Cost) -> How {
+        match cost.punchable * PUNCHED >= cost.dead * (PUNCHED - 1)
+            && cost.length <= cost.live.saturating_mul(BLOAT)
+        {
+            true => How::Punch,
+            false => How::Copy,
+        }
+    }
+}
+
+/// What a shard's data file costs, weighed against the index over it.
+///
+/// **Measured against the file's own extents, not against its size.**
+/// Neither number is the truth on its own: a punched file keeps the
+/// length it grew to, and an appended file is over-allocated past its end
+/// — 84.6 MB of blocks behind a 79.1 MB shard, measured on APFS. Weighing
+/// by either makes a shard that has just been swept look worth sweeping
+/// again, for ever. What is dead is the bytes that are *in* the file, are
+/// backed by blocks, and have no entry pointing at them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Cost {
+    /// Bytes of record the index points at.
+    live: u64,
+    /// Bytes the file holds that it points at none of.
+    dead: u64,
+    /// Of the dead, what punching [`Cost::holes`] would free: whole
+    /// blocks, and only the ones still backed by data.
+    punchable: u64,
+    /// The file's length, which after a punch is more than it costs.
+    length: u64,
+    /// What the disk holds for it, which is what `du` reports.
+    allocated: u64,
+    /// The block-aligned dead runs, ready to punch.
+    holes: Vec<(u64, u64)>,
+}
+
+/// Weigh a data file against the live entries of the index over it.
+fn cost(data: &Path, live: &BTreeMap<i64, Entry>) -> io::Result<Cost> {
+    let Ok(meta) = std::fs::metadata(data) else {
+        return Ok(Cost::default());
+    };
+    #[cfg(unix)]
+    let (length, allocated, block) = {
+        use std::os::unix::fs::MetadataExt;
+        (meta.len(), meta.blocks() * 512, meta.blksize().max(512))
+    };
+    #[cfg(not(unix))]
+    let (length, allocated, block) = (meta.len(), meta.len(), 4096);
+
+    let mut cost = Cost { length, allocated, ..Cost::default() };
+    if length == 0 {
+        return Ok(cost);
+    }
+    cost.live = live.values().map(|it| 4 + it.len as u64).sum();
+
+    let file = File::open(data)?;
+    let data = extents(&file, length);
+    for (from, to) in gaps(live, length) {
+        cost.dead += backed(&data, from, to);
+        // Pulled *in* to the blocks inside the run: a hole is whole
+        // blocks or it is nothing, and a range that is not block-aligned
+        // is refused outright — `EINVAL` from `F_PUNCHHOLE`, measured —
+        // rather than rounded for you.
+        let (from, to) = (from.div_ceil(block) * block, to / block * block);
+        if to > from {
+            let backed = backed(&data, from, to);
+            if backed > 0 {
+                cost.punchable += backed;
+                cost.holes.push((from, to - from));
+            }
+        }
+    }
+    Ok(cost)
+}
+
+/// The runs of a data file no live entry covers, in file order.
+fn gaps(live: &BTreeMap<i64, Entry>, length: u64) -> Vec<(u64, u64)> {
+    let mut spans: Vec<(u64, u64)> = live
+        .values()
+        .map(|it| (it.offset, it.offset + 4 + it.len as u64))
+        .collect();
+    spans.sort_unstable();
+
+    let mut at = 0u64;
+    let mut runs = Vec::new();
+    for (from, to) in spans {
+        if from > at {
+            runs.push((at, from));
+        }
+        at = at.max(to);
+    }
+    if length > at {
+        runs.push((at, length));
+    }
+    runs
+}
+
+/// Where a file's bytes actually are.
+///
+/// `SEEK_DATA` and `SEEK_HOLE`, walked once: a file that has never been
+/// punched answers one extent and a swept one answers a handful. This is
+/// what keeps the weighing honest across a sweep — the runs a previous
+/// sweep punched are holes, and a hole is not dead weight, it is nothing
+/// at all.
+///
+/// A filesystem that does not answer these is taken at its length, which
+/// is what every filesystem looked like before holes.
+fn extents(file: &File, length: u64) -> Vec<(u64, u64)> {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "android"
+    ))]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = file.as_raw_fd();
+        // SAFETY: two seeks on a live descriptor, neither of which moves
+        // anything this process reads through.
+        let seek = |from: u64, whence: libc::c_int| -> Option<u64> {
+            match unsafe { libc::lseek(fd, from as libc::off_t, whence) } {
+                -1 => None,
+                at => Some(at as u64),
+            }
+        };
+        let mut found = Vec::new();
+        let mut at = 0u64;
+        while at < length {
+            let Some(from) = seek(at, libc::SEEK_DATA) else { break };
+            let to = seek(from, libc::SEEK_HOLE).unwrap_or(length).min(length);
+            if to <= from {
+                break;
+            }
+            found.push((from, to));
+            at = to;
+        }
+        // An answer of nothing is a file that is all hole; an error on
+        // the first seek is a filesystem that does not answer, and it is
+        // told apart by whether anything was found before the break.
+        if !found.is_empty() || seek(0, libc::SEEK_DATA).is_none() {
+            return found;
+        }
+    }
+    let _ = file;
+    vec![(0, length)]
+}
+
+/// How much of `[from, to)` is backed by bytes rather than by hole.
+fn backed(extents: &[(u64, u64)], from: u64, to: u64) -> u64 {
+    extents
+        .iter()
+        .map(|&(at, end)| end.min(to).saturating_sub(at.max(from)))
+        .sum()
+}
+
+/// Give the blocks under `[at, at + len)` back to the filesystem.
+///
+/// The file keeps its length and the range reads as zeroes. Offset and
+/// length must both be block-aligned; [`holes`] is the only caller and is
+/// where they are aligned.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn punch(file: &File, at: u64, len: u64) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    /// `fpunchhole_t`, whose two spare words must be zero.
+    #[repr(C)]
+    struct Punchhole {
+        flags: u32,
+        reserved: u32,
+        offset: libc::off_t,
+        length: libc::off_t,
+    }
+    let hole = Punchhole {
+        flags: 0,
+        reserved: 0,
+        offset: at as libc::off_t,
+        length: len as libc::off_t,
+    };
+    // SAFETY: `F_PUNCHHOLE` reads one `fpunchhole_t` through the pointer,
+    // which is live for the call, as is the descriptor.
+    match unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PUNCHHOLE, &hole) } {
+        -1 => Err(io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
+
+/// The same, where the hole is `fallocate`'s to punch.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn punch(file: &File, at: u64, len: u64) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a syscall against a live descriptor; nothing is read through
+    // a pointer.
+    let done = unsafe {
+        libc::fallocate(
+            file.as_raw_fd(),
+            libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+            at as libc::off_t,
+            len as libc::off_t,
+        )
+    };
+    match done {
+        -1 => Err(io::Error::last_os_error()),
+        _ => Ok(()),
+    }
+}
+
+/// And where it is nobody's: the copy is the whole of the reclaim.
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "linux",
+    target_os = "android"
+)))]
+fn punch(_file: &File, _at: u64, _len: u64) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this platform cannot punch a hole in a file",
+    ))
+}
+
+/// What the body shards hold, and what a sweep would give back.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Shards with an index file.
+    pub shards: usize,
+    /// Systems the pack answers for.
+    pub records: u64,
+    /// Bytes of record those systems are.
+    pub live: u64,
+    /// Bytes the disk holds for the data files, live and dead together.
+    pub allocated: u64,
+    /// Of those, bytes nothing points at.
+    pub dead: u64,
+    /// Of the dead, what a sweep would actually give back: a shard under
+    /// the bar is left alone, and a punch frees whole blocks or nothing.
+    pub reclaimable: u64,
+    /// Body files still loose in the older layouts, which `pack` moves.
+    pub loose: u64,
+    /// Whether every shard was looked at. A stop part way answers `false`.
+    pub finished: bool,
+}
+
+/// Weigh a directory's body shards, writing nothing.
+///
+/// What `galos-index verify` reports, and what `galos-index sweep
+/// --bodies` says before it is asked to act. One read of each shard's
+/// index and one walk of its data file's extents — a second over a
+/// galaxy — and nothing decoded at all.
+pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Held> {
+    let bodies = dir.join(BODIES_DIR);
+    let mut held = Held { finished: true, ..Held::default() };
+    let Ok(entries) = std::fs::read_dir(&bodies) else {
+        return Ok(held);
+    };
+    // The loose files of both older layouts, counted on the way past: a
+    // directory part way through its packing has systems the shards do not
+    // answer for, and a count that did not say so would read as a galaxy
+    // with holes in it.
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {
+                held.loose += std::fs::read_dir(entry.path())
+                    .map(|it| it.flatten().count() as u64)
+                    .unwrap_or(0);
+            }
+            Ok(_) => {
+                let name = entry.file_name();
+                held.loose +=
+                    u64::from(name.to_string_lossy().ends_with(".bin"));
+            }
+            Err(_) => {}
+        }
+    }
+
+    for shard in 0..SHARDS {
+        if stop() {
+            held.finished = false;
+            return Ok(held);
+        }
+        let path = index_path(dir, shard);
+        if !path.exists() {
+            continue;
+        }
+        let table = Table::read(&path)?;
+        let live = table.live();
+        let cost = cost(&data_path(dir, shard, table.generation), &live)?;
+        held.shards += 1;
+        held.records += live.len() as u64;
+        held.live += cost.live;
+        held.allocated += cost.allocated;
+        held.dead += cost.dead;
+        if Dead::Worth.reached(&cost) {
+            held.reclaimable += match How::of(&cost) {
+                How::Punch => cost.punchable,
+                How::Copy | How::Nothing => cost.dead,
+            };
+        }
+    }
+    Ok(held)
+}
+
+/// Give a directory's dead body records back, shard by shard.
 ///
 /// **What a whole-galaxy re-import leaves behind.** A dump names each
 /// system once and [`crate::bodies::Published::raising`] writes each record
@@ -752,19 +1134,24 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
 /// is dead the moment the entry naming the new one lands. Nothing on the
 /// write path reclaims those: [`append`] folds when a shard's tail passes
 /// [`tail_bound`], and an import leaves every tail well under it. Measured
-/// on a re-imported galaxy: `bodies/` at 301 GB, 49.8 % of it live, and
-/// 150 GB of dead record no append was going to reach.
+/// on a re-imported galaxy: `bodies/` at 323 GB, 49.8 % of it live, and
+/// 161 GB of dead record no append was going to reach.
 ///
 /// So the reclaim is asked for rather than waited on: by
 /// [`Build::finish`](crate::cold::Build::finish) once its index file
-/// stands, and by `galos-index sweep-bodies` for a directory nothing is
-/// about to build. `apply` false weighs every shard and rewrites none,
-/// which is what that command reports before it is asked to act.
+/// stands, and by `galos-index sweep --bodies` for a directory nothing is
+/// about to build. [`held`] weighs what this would do without doing any of
+/// it, which is what that command reports before it is asked to act.
+///
+/// `said` is handed the running total as each shard lands. A galaxy is
+/// minutes of this, and minutes of silence is a run nobody can tell from a
+/// hang; it is called from the worker threads, and from several at once.
 ///
 /// **Nothing a stop or a kill can spoil, and no system at risk.** A shard
-/// is compacted whole — the next generation's data file written, the index
-/// naming it renamed over, the old generation unlinked after — and every
-/// live record is in hand throughout. What an interruption leaves is a
+/// is reclaimed whole — punched behind an index that no longer names the
+/// dead runs, or copied into the next generation with the old one unlinked
+/// only once the index naming the new one is in place — and every live
+/// record is in hand throughout. What an interruption leaves is a
 /// directory part way through the sweep, which is to say one that is
 /// merely larger. That is the difference between this and clearing
 /// `bodies/` before a re-import, which would take with it every system the
@@ -776,7 +1163,7 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<u64> {
 pub fn sweep_bodies(
     dir: &Path,
     stop: &(dyn Fn() -> bool + Sync),
-    apply: bool,
+    said: &(dyn Fn(&Reclaimed) + Sync),
 ) -> io::Result<Reclaimed> {
     if !dir.join(BODIES_DIR).is_dir() {
         return Ok(Reclaimed { finished: true, ..Reclaimed::default() });
@@ -791,9 +1178,16 @@ pub fn sweep_bodies(
         .unwrap_or(1);
     let next = std::sync::atomic::AtomicU64::new(0);
     let shards = std::sync::atomic::AtomicUsize::new(0);
+    let punched = std::sync::atomic::AtomicU64::new(0);
     let bytes = std::sync::atomic::AtomicU64::new(0);
     let done = std::sync::atomic::AtomicBool::new(true);
     let failed = std::sync::Mutex::<Option<io::Error>>::new(None);
+    let running = || Reclaimed {
+        shards: shards.load(Relaxed),
+        bytes: bytes.load(Relaxed),
+        punched: punched.load(Relaxed),
+        finished: done.load(Relaxed),
+    };
     std::thread::scope(|threads| {
         for _ in 0..hands {
             threads.spawn(|| {
@@ -806,20 +1200,20 @@ pub fn sweep_bodies(
                     if shard >= SHARDS {
                         break;
                     }
-                    let gave = match apply {
-                        true => compact(dir, shard),
-                        false => dead(dir, shard),
-                    };
-                    match gave {
-                        Ok(0) => {}
+                    match reclaim(dir, shard) {
+                        Ok(gave) if gave.bytes == 0 => {}
                         Ok(gave) => {
                             shards.fetch_add(1, Relaxed);
-                            bytes.fetch_add(gave, Relaxed);
+                            bytes.fetch_add(gave.bytes, Relaxed);
+                            if gave.punched {
+                                punched.fetch_add(gave.bytes, Relaxed);
+                            }
+                            said(&running());
                         }
                         // The first failure is the answer rather than a
                         // number folded into a total: a shard that will
-                        // not compact is a file to go and look at, and
-                        // what has been reclaimed already stands.
+                        // not reclaim is a file to go and look at, and
+                        // what has been given back already stands.
                         Err(err) => {
                             if let Ok(mut failed) = failed.lock() {
                                 failed.get_or_insert(err);
@@ -835,12 +1229,7 @@ pub fn sweep_bodies(
     if let Some(err) = failed.into_inner().unwrap_or(None) {
         return Err(err);
     }
-    Ok(Reclaimed {
-        shards: shards.load(Relaxed),
-        bytes: bytes.load(Relaxed),
-        rewritten: apply,
-        finished: done.load(Relaxed),
-    })
+    Ok(running())
 }
 
 /// Every system the pack holds bodies for, in address order.
@@ -928,20 +1317,43 @@ pub fn each_arrival_class(
     Ok(swept)
 }
 
-pub fn addresses(dir: &Path) -> io::Result<Vec<i64>> {
-    let mut addresses = Vec::new();
-    let bodies = dir.join(BODIES_DIR);
-    let Ok(entries) = std::fs::read_dir(&bodies) else {
-        return Ok(addresses);
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|it| it != "idx") {
+/// Every address the pack answers for, one shard's index at a time.
+///
+/// The cheap walk: the indexes are read and the data files are not
+/// touched at all, which is the difference between this and
+/// [`each_arrival_class`]. A caller weighing a galaxy's bodies against the
+/// tree that names them wants exactly this and nothing decoded.
+///
+/// Interruptible, and what it abandons costs nothing: the caller is
+/// counting, and a count cut short says so.
+pub fn each_address(
+    dir: &Path,
+    stop: &dyn Fn() -> bool,
+    each: &mut dyn FnMut(i64),
+) -> io::Result<bool> {
+    for shard in 0..SHARDS {
+        if stop() {
+            return Ok(false);
+        }
+        let path = index_path(dir, shard);
+        if !path.exists() {
             continue;
         }
-        let table = Table::read(&path)?;
-        addresses.extend(table.live().into_keys());
+        for address in Table::read(&path)?.live().into_keys() {
+            each(address);
+        }
     }
+    Ok(true)
+}
+
+/// Every address the pack answers for, in address order.
+///
+/// Held whole, which at a galaxy's scale is 76 million of them and 609 MB:
+/// a caller that only wants to count them should take
+/// [`each_address`] instead.
+pub fn addresses(dir: &Path) -> io::Result<Vec<i64>> {
+    let mut addresses = Vec::new();
+    each_address(dir, &|| false, &mut |address| addresses.push(address))?;
     addresses.sort_unstable();
     Ok(addresses)
 }
@@ -1628,28 +2040,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A data file exactly half dead is dead enough for the write path
+    /// A shard weighs by what is in it, not by how large the file is
     ///
-    /// The boundary is the case rather than a corner of it: a re-import
-    /// replaces every record with one of very nearly the same length, so a
-    /// galaxy imported twice sits *at* half dead. `dead * 2 > written` put
-    /// the one arrangement the rule was written for on the wrong side of
-    /// it, and a shard whose tail then passed [`tail_bound`] folded
-    /// without reclaiming a byte.
+    /// Two readings that used to be taken off the file's size, and are
+    /// wrong from either end of it. Exactly half dead is the case rather
+    /// than a corner of it — a re-import replaces every record with one
+    /// of very nearly the same length, so a galaxy imported twice sits
+    /// *at* half, which `dead * 2 > written` refused. And a file is not
+    /// its length or its blocks: a punched shard keeps a length it no
+    /// longer costs, and an appended one is over-allocated past its end
+    /// (84.6 MB of blocks behind a 79.1 MB shard, measured), either of
+    /// which makes a swept shard look worth sweeping again for ever.
     #[test]
-    fn a_file_exactly_half_dead_is_compacted() {
-        assert!(Dead::Half.reached(50, 100));
-        assert!(!Dead::Half.reached(51, 100));
+    fn a_shard_weighs_by_what_is_in_it() {
+        let at = |live: u64, dead: u64| Cost {
+            live,
+            dead,
+            // The length and the blocks disagree with both, and with
+            // each other, and neither is asked.
+            length: 1 << 40,
+            allocated: 0,
+            ..Cost::default()
+        };
+        assert!(Dead::Half.reached(&at(50, 50)));
+        assert!(!Dead::Half.reached(&at(51, 49)));
 
         // Nothing dead is nothing to rewrite, at either bar.
-        assert!(!Dead::Half.reached(100, 100));
-        assert!(!Dead::Worth.reached(100, 100));
+        assert!(!Dead::Half.reached(&at(100, 0)));
+        assert!(!Dead::Worth.reached(&at(100, 0)));
 
-        // The sweep asks a tenth of the file, and never fewer than
-        // [`WORTH`] bytes of it however large that tenth's share.
-        assert!(Dead::Worth.reached(9 * WORTH, 10 * WORTH));
-        assert!(!Dead::Worth.reached(10 * WORTH - 1, 10 * WORTH));
-        assert!(!Dead::Worth.reached(99, 100));
+        // The sweep asks a tenth of what the file holds, and never fewer
+        // than [`WORTH`] bytes of it however large that tenth's share.
+        assert!(Dead::Worth.reached(&at(9 * WORTH, WORTH)));
+        assert!(!Dead::Worth.reached(&at(9 * WORTH + 1, WORTH - 1)));
+        assert!(!Dead::Worth.reached(&at(90, 10)));
     }
 
     /// Records large enough that a shard's dead bytes reach [`WORTH`]
@@ -1671,6 +2095,17 @@ mod tests {
         (1i64..).filter(|&it| shard_of(it) == shard).take(count).collect()
     }
 
+    /// What the data file the index names costs, and what it holds.
+    fn measured(dir: &Path, shard: u64) -> Cost {
+        let table = Table::read(&index_path(dir, shard)).expect("a table");
+        let live = table.live();
+        cost(&data_path(dir, shard, table.generation), &live)
+            .expect("a data file")
+    }
+
+    /// Nothing watching, for a sweep a test is not reading progress off.
+    fn quietly(_: &Reclaimed) {}
+
     /// A re-imported galaxy gives its dead records back
     ///
     /// **The bug this is here for.** A dump names each system once and the
@@ -1682,7 +2117,7 @@ mod tests {
     /// the compaction it would have reached was `dead * 2 > written` —
     /// which a rewrite of every record with one the same size lands
     /// exactly on and so failed. Reported off a real directory: `bodies/`
-    /// at 301 GB, 49.8 % of it live, 150 GB unreachable.
+    /// at 323 GB, 49.8 % of it live, 161 GB unreachable.
     #[test]
     fn a_reimport_gives_its_dead_records_back() {
         let dir = scratch("reimport");
@@ -1693,52 +2128,55 @@ mod tests {
             addresses.iter().map(|&it| (it, padded(id))).collect()
         };
         write(&dir, rows(1));
-        let data = data_path(&dir, shard, 0);
-        let live = std::fs::metadata(&data).expect("a data file").len();
+        let one = measured(&dir, shard);
 
         // The re-import: the same galaxy again, every record replaced.
         write(&dir, rows(2));
-        assert_eq!(
-            std::fs::metadata(&data).expect("a data file").len(),
-            live * 2,
-            "the shard did not double",
-        );
+        let two = measured(&dir, shard);
+        assert_eq!(two.length, one.length * 2, "the shard did not double");
 
         // Weighed, and nothing touched.
-        let looked = sweep_bodies(&dir, &|| false, false).expect("a weighing");
-        assert_eq!(
-            looked,
-            Reclaimed {
-                shards: 1,
-                bytes: live,
-                rewritten: false,
-                finished: true,
-            }
-        );
-        assert_eq!(
-            std::fs::metadata(&data).expect("a data file").len(),
-            live * 2,
-            "a weighing rewrote the shard",
+        let looked = weigh(&dir, &|| false).expect("a weighing");
+        assert_eq!(looked.shards, 1);
+        assert_eq!(looked.records, 200);
+        assert_eq!((looked.live, looked.dead), (two.live, two.dead));
+        assert_eq!(looked.dead, one.live, "the first import is what is dead");
+        assert_eq!(measured(&dir, shard), two, "a weighing moved bytes");
+
+        let swept = sweep_bodies(&dir, &|| false, &quietly).expect("a sweep");
+        assert_eq!(swept.shards, 1);
+        assert_eq!(swept.bytes, looked.reclaimable, "{swept:?}");
+        assert!(swept.finished);
+        assert!(
+            looked.reclaimable * 4 >= looked.dead * 3,
+            "most of the dead bytes were left where they were: {looked:?}",
         );
 
-        let swept = sweep_bodies(&dir, &|| false, true).expect("a sweep");
-        assert_eq!(
-            swept,
-            Reclaimed {
-                shards: 1,
-                bytes: live,
-                rewritten: true,
-                finished: true,
+        // What it says it gave back is what the disk gave back, and what
+        // is left costs what it holds.
+        let after = measured(&dir, shard);
+        assert!(
+            after.allocated + swept.bytes <= two.allocated + 4096
+                && after.allocated + swept.bytes + 4096 >= two.allocated,
+            "the report and the disk disagree: {after:?} {swept:?}",
+        );
+        // Where there is a hole punch, it is the road a re-import takes:
+        // the dead records are one run and nothing is moved to free them.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(swept.punched > 0, "the punch was not taken: {swept:?}");
+        match swept.punched {
+            // Punched: the same generation, the same length, the same
+            // offsets — and the blocks under the first import gone.
+            0 => {
+                assert!(!data_path(&dir, shard, 0).exists());
+                assert!(data_path(&dir, shard, 1).exists());
             }
-        );
-        assert!(!data.exists(), "the compacted generation was left behind");
-        assert_eq!(
-            std::fs::metadata(data_path(&dir, shard, 1))
-                .expect("the next generation")
-                .len(),
-            live,
-            "the rewritten file is not the live records alone",
-        );
+            punched => {
+                assert_eq!(punched, swept.bytes);
+                assert!(data_path(&dir, shard, 0).exists());
+                assert_eq!(after.length, two.length, "a punch moved records");
+            }
+        }
 
         // The half that matters: every system reads back as the re-import
         // wrote it, and not as the import it replaced did.
@@ -1746,29 +2184,26 @@ mod tests {
             assert_eq!(
                 held(&dir, address),
                 Found::Bodies(padded(2)),
-                "system {address} did not survive the compaction",
+                "system {address} did not survive the reclaim",
             );
         }
 
-        // Idempotent: a shard that is all live records has nothing to give.
-        let again = sweep_bodies(&dir, &|| false, true).expect("a second");
-        assert_eq!(
-            again,
-            Reclaimed { shards: 0, bytes: 0, rewritten: true, finished: true }
-        );
+        // Idempotent: a shard that costs what it holds has nothing to give.
+        let again = sweep_bodies(&dir, &|| false, &quietly).expect("a second");
+        assert_eq!(again, Reclaimed { finished: true, ..Reclaimed::default() });
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A shard whose tail has been folded away is still compacted
+    /// A shard whose tail has been folded away is still reclaimed
     ///
     /// The other half of the same bug. [`fold`] returned on an empty tail
     /// before it weighed the data file at all, so a shard whose last fold
     /// declined the rewrite — the dead third below, which the write path's
-    /// bar is right to leave — could never be compacted again however much
+    /// bar is right to leave — could never be reclaimed again however much
     /// of it was dead: there was no tail left to carry it back in.
     #[test]
-    fn a_folded_shard_is_still_compacted() {
+    fn a_folded_shard_is_still_reclaimed() {
         let dir = scratch("folded");
         let shard = shard_of(1);
         let addresses = together(shard, 200);
@@ -1789,30 +2224,30 @@ mod tests {
                 .map(|&it| (it, padded(2)))
                 .collect::<HashMap<_, _>>(),
         );
-        let data = data_path(&dir, shard, 0);
-        let written = std::fs::metadata(&data).expect("a data file").len();
-        let dead = written / 3;
+        let before = measured(&dir, shard);
 
         fold(&dir, shard).expect("the shard folds");
         let table = Table::read(&index_path(&dir, shard)).expect("a table");
         assert!(table.tail.is_empty(), "the fold left a tail");
         assert_eq!(table.base.len(), 200);
         assert_eq!(
-            std::fs::metadata(&data).expect("a data file").len(),
-            written,
-            "the write path's bar rewrote a file only a third dead",
+            measured(&dir, shard),
+            before,
+            "the write path's bar reclaimed a file only a third dead",
         );
 
-        // And the sweep, which asks by what the space is worth rather than
-        // by what the next append is. This is the step that did nothing.
-        let swept = sweep_bodies(&dir, &|| false, true).expect("a sweep");
-        assert_eq!(swept.shards, 1, "a folded shard was passed over");
-        assert_eq!(swept.bytes, dead);
-        assert_eq!(
-            std::fs::metadata(data_path(&dir, shard, 1))
-                .expect("the next generation")
-                .len(),
-            written - dead,
+        // And the sweep, which asks what the space is worth rather than
+        // what the next append is. This is the step that did nothing.
+        let weighed = weigh(&dir, &|| false).expect("a weighing");
+        let swept = sweep_bodies(&dir, &|| false, &quietly).expect("a sweep");
+        assert!(
+            measured(&dir, shard).allocated + swept.bytes
+                <= before.allocated + 4096,
+            "the report and the disk disagree",
+        );
+        assert!(
+            swept.shards == 1 && swept.bytes == weighed.reclaimable,
+            "a folded shard was passed over: {swept:?} {weighed:?}",
         );
 
         for (at, &address) in addresses.iter().enumerate() {
@@ -1823,9 +2258,114 @@ mod tests {
             assert_eq!(
                 held(&dir, address),
                 Found::Bodies(want),
-                "system {address} did not survive the compaction",
+                "system {address} did not survive the reclaim",
             );
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dead run gives up its whole blocks, and a swept file says so
+    ///
+    /// Two claims about the weighing, and the second is what keeps a
+    /// sweep from running for ever. The alignment: `F_PUNCHHOLE` refuses
+    /// a range that is not a multiple of the block size outright —
+    /// `EINVAL`, measured — so a run is pulled *in* to the blocks inside
+    /// it and a run with no whole block in it is not a hole at all. And
+    /// the read-back: the bytes a punch gave away are gone from the next
+    /// weighing, because what is dead is measured against where the
+    /// file's data actually is and not against its length.
+    #[test]
+    fn a_hole_is_the_whole_blocks_of_a_dead_run() {
+        let dir = scratch("holes");
+        let data = dir.join("probe.dat");
+        std::fs::write(&data, vec![7u8; 40_960]).expect("a data file");
+        let at = |address: i64, offset: u64, len: u32| {
+            (address, Entry { address, offset, len })
+        };
+        // Live at [0, 100) and [20_000, 20_100), so the dead runs are
+        // [100, 20_000) and [20_100, 40_960).
+        let live = BTreeMap::from([at(1, 0, 96), at(2, 20_000, 96)]);
+        let weighed = cost(&data, &live).expect("a weighing");
+        assert_eq!(weighed.live, 200);
+        assert_eq!(weighed.dead, 19_900 + 20_860);
+        assert_eq!(weighed.holes, vec![(4096, 12_288), (20_480, 20_480)]);
+        assert_eq!(weighed.punchable, 12_288 + 20_480);
+
+        if punched(&data, &weighed).is_err() {
+            // A filesystem with no holes in it; the copy is its road and
+            // the rest of this is about holes.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let after = cost(&data, &live).expect("a second weighing");
+        assert_eq!(after.length, weighed.length, "a punch moved the end");
+        assert_eq!(
+            after.allocated,
+            weighed.allocated - weighed.punchable,
+            "the disk did not give the blocks back",
+        );
+        // What is left dead is the edges of the runs the blocks did not
+        // cover — 3,996 and 3,616 bytes either side of the first hole,
+        // 380 before the second — and there is nothing left to punch.
+        assert_eq!(after.dead, 3_996 + 3_616 + 380);
+        assert_eq!(after.punchable, 0);
+        assert!(after.holes.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The copy is what reclaims a file a punch cannot
+    ///
+    /// Three shapes, and the road each is owed. A re-import is the
+    /// first: one run of dead records ahead of the live ones, which is a
+    /// single punch of half the file. A feed leaves the second: records
+    /// smaller than a block, dead ones between live ones, where punching
+    /// frees almost nothing and only the copy reclaims it. The third is
+    /// the one that stops a punched shard's length growing for ever.
+    #[test]
+    fn the_copy_takes_what_a_punch_cannot() {
+        let half = 4u64 << 20;
+        let reimported = Cost {
+            live: half,
+            dead: half,
+            punchable: half - 8192,
+            length: half * 2,
+            allocated: half * 2,
+            holes: Vec::new(),
+        };
+        assert_eq!(How::of(&reimported), How::Punch);
+
+        let fed = Cost { punchable: 128 << 10, ..reimported.clone() };
+        assert_eq!(How::of(&fed), How::Copy);
+
+        let bloated = Cost { length: half * (BLOAT + 1), ..reimported.clone() };
+        assert_eq!(How::of(&bloated), How::Copy);
+    }
+
+    /// A sweep asked to stop gives nothing back and says so
+    ///
+    /// The flag is asked between shards, so what a stop leaves is a
+    /// directory some of whose shards have been reclaimed and the rest
+    /// of which stand exactly as they were — which is why `finished` is
+    /// part of the answer and not an aside.
+    #[test]
+    fn a_stopped_sweep_says_so() {
+        let dir = scratch("stopped");
+        let shard = shard_of(1);
+        let addresses = together(shard, 8);
+        for id in 1..=2 {
+            let rows: HashMap<i64, SystemBodies> =
+                addresses.iter().map(|&it| (it, padded(id))).collect();
+            write(&dir, rows);
+        }
+        let before = measured(&dir, shard);
+
+        let swept = sweep_bodies(&dir, &|| true, &quietly).expect("a sweep");
+        assert_eq!(swept, Reclaimed::default());
+        assert!(!swept.finished, "a stopped sweep called itself finished");
+        assert_eq!(measured(&dir, shard), before, "a stopped sweep wrote");
+        assert_eq!(held(&dir, addresses[0]), Found::Bodies(padded(2)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
