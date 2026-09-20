@@ -138,6 +138,7 @@ struct Flight {
     plan: SystemId,
     fetch: SystemId,
     collect: SystemId,
+    weigh: SystemId,
     reconcile: SystemId,
     evict: SystemId,
     drain: SystemId,
@@ -187,17 +188,32 @@ impl Flight {
     /// what it sees, and the galaxy grid the stars are placed in.
     fn over(dir: &PathBuf) -> Flight {
         let source = FsSource::new(dir);
-        let index = pollster::block_on(async {
+        let (index, populated) = pollster::block_on(async {
             use galos_index::Source as _;
-            source.index().await.expect("the index should read")
+            (
+                source.index().await.expect("the index should read"),
+                source.populated().await.unwrap_or_default(),
+            )
         });
+        // The political table, rolled up the tree as the client rolls it:
+        // what a merged mark's colour and a faction filter's verdict are
+        // read off ([`crate::systems::merged`]). Empty, the weighing pass
+        // would measure the miss path over a galaxy nobody lives in.
+        let settled = crate::Settled(std::sync::Arc::new(
+            galos_index::Inhabitance::of(&index, populated.iter()),
+        ));
 
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
 
         app.insert_resource(ResidentIndex(index));
         app.insert_resource(Transport(std::sync::Arc::new(source)));
-        app.insert_resource(Populated::default());
+        app.insert_resource(settled);
+        app.insert_resource(Populated(std::sync::Arc::new(
+            populated.into_iter().map(|it| (it.address, it)).collect(),
+        )));
+        app.insert_resource(crate::systems::spawn::ColorBy::Allegiance);
+        app.init_resource::<crate::systems::glow::Gains>();
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
         app.insert_resource(ScalePopulation(false));
@@ -223,6 +239,7 @@ impl Flight {
         app.init_resource::<crate::systems::bounded::Keeping>();
         app.init_resource::<crate::systems::bounded::Sampled>();
         app.init_resource::<crate::systems::bounded::Blobs>();
+        app.init_resource::<crate::systems::merged::Standing>();
         app.init_resource::<crate::refresh::Held>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
@@ -254,6 +271,7 @@ impl Flight {
         let plan = world.register_system(crate::systems::aggregate::plan);
         let fetch = world.register_system(crate::systems::bounded::fetch);
         let collect = world.register_system(crate::systems::bounded::collect);
+        let weigh = world.register_system(crate::systems::merged::weigh_blobs);
         let reconcile =
             world.register_system(crate::systems::bounded::reconcile);
         let evict =
@@ -267,6 +285,7 @@ impl Flight {
             plan,
             fetch,
             collect,
+            weigh,
             reconcile,
             evict,
             drain,
@@ -306,6 +325,7 @@ impl Flight {
             ("plan", self.plan),
             ("fetch", self.fetch),
             ("collect", self.collect),
+            ("weigh", self.weigh),
             ("reconcile", self.reconcile),
             ("evict", self.evict),
             ("drain", self.drain),
@@ -447,8 +467,9 @@ fn flying_stays_quick() {
         whole += frame.whole();
         println!(
             "{n:>5} {back:>6.0} {:>8.2?} {:>6} {:>6} {:>6} {:>7} {:>6} {:>7}  \
-             plan {:>7.2?} fetch {:>7.2?} collect {:>7.2?} reconcile {:>7.2?} \
-             evict {:>7.2?} drain {:>7.2?} drop {:>7.2?}  {leg}",
+             plan {:>7.2?} fetch {:>7.2?} collect {:>7.2?} weigh {:>7.2?} \
+             reconcile {:>7.2?} evict {:>7.2?} drain {:>7.2?} drop {:>7.2?}  \
+             {leg}",
             frame.whole(),
             frame.marks,
             frame.asked,
@@ -459,6 +480,7 @@ fn flying_stays_quick() {
             frame.of("plan"),
             frame.of("fetch"),
             frame.of("collect"),
+            frame.of("weigh"),
             frame.of("reconcile"),
             frame.of("evict"),
             frame.of("drain"),
@@ -473,6 +495,7 @@ fn flying_stays_quick() {
         "plan",
         "fetch",
         "collect",
+        "weigh",
         "reconcile",
         "evict",
         "drain",

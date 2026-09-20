@@ -193,6 +193,23 @@ impl Aggregate {
         self.count
     }
 
+    /// The newest Recency bucket the subtree holds anything in, or
+    /// [`AGE_BUCKETS`] where it holds nothing at all
+    ///
+    /// **What lets a Recency span be answered about a cell rather than
+    /// about a system.** The buckets are [`crate::derive::AGE_EDGES`] and
+    /// they only widen, so "is anything here newer than `span`" is one
+    /// comparison against the lowest bucket that carries a count —
+    /// monotone, and the same question the filter asks of a payload point,
+    /// answered to the day instead of to the second. The column was
+    /// written for this from the start and had no reader.
+    pub fn newest_age(&self) -> u8 {
+        self.aged
+            .iter()
+            .position(|&count| count > 0)
+            .unwrap_or(AGE_BUCKETS) as u8
+    }
+
     /// The total linear flux across every temperature bucket.
     pub fn total_flux(&self) -> f64 {
         self.flux.iter().sum()

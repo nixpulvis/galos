@@ -279,6 +279,9 @@ pub struct BlobRef {
     /// Where the mark goes: the count centroid of everything it stands for,
     /// in light years.
     pub at: [f64; 3],
+    /// The newest Recency bucket anything under it falls in, which is what
+    /// a span is answered against: [`Aggregate::newest_age`].
+    pub newest: u8,
     /// The brightest absolute magnitude under it, which is what the sky's
     /// cut is taken against.
     ///
@@ -401,6 +404,9 @@ struct Node {
     slice: u64,
     /// The brightest absolute magnitude in the subtree, for the sky's cut.
     m_min: Option<f32>,
+    /// The newest Recency bucket the subtree holds anything in, so a span
+    /// can be asked of a merged mark: [`Aggregate::newest_age`].
+    newest: u8,
     /// The cell's address, which is what a walk answers with.
     id: CellId,
     /// Where this node's children begin. They are contiguous, so a walk
@@ -425,6 +431,7 @@ impl Node {
             count: cell.aggregate.count(),
             slice: cell.slice_len(),
             m_min: cell.aggregate.m_min(),
+            newest: cell.aggregate.newest_age(),
             id: cell.id,
             first_child: 0,
             children: 0,
@@ -714,6 +721,7 @@ impl Index {
                     count: node.count,
                     blend: shown * (1.0 - alpha),
                     at: node.center,
+                    newest: node.newest,
                     m_min: node.m_min,
                 });
             }

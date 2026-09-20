@@ -110,12 +110,122 @@ pub fn reshard_cells(
     Ok(Resharded { moved, finished: true })
 }
 
+/// What a sweep of the payload directory found.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    /// Payload files no cell of the index names.
+    pub orphans: usize,
+    /// What those files hold, in bytes.
+    pub bytes: u64,
+    /// Whether they were removed rather than only counted.
+    pub removed: bool,
+}
+
+/// Remove the payloads of cells the published tree does not name.
+///
+/// A whole-directory build writes its own cells and knows nothing of the
+/// tree that stood before it, so every cell the old tree had and the new
+/// one does not is left behind: 200,248 files and 4.9 GB of them, measured
+/// on a directory rebuilt from the database over one built from a dump.
+/// The live path has no such debt — a publish deletes what
+/// [`Snapshot::write_diff`] is told went — and the names table already
+/// retires its stale generations. This is the same sweep for the cells.
+///
+/// **Call it only once the new index file stands.** An orphan is a file
+/// nothing refers to and a hole is a cell the tree names with no payload
+/// under it, so a sweep that runs early — or is cut short — must leave the
+/// first and never the second. Running after the index is written makes
+/// that so whatever happens: what is swept is exactly what the published
+/// tree does not name, and an interrupted sweep leaves a directory that is
+/// merely larger.
+///
+/// Both layouts are considered: the sharded [`payload_path`] and the
+/// pre-shard [`legacy_payload_path`]. A loose file for a cell the tree
+/// *does* name is kept, being the payload a reader falls back to — bringing
+/// those forward is [`reshard_cells`]'s work, and this must not stand in
+/// for it by deleting them.
+///
+/// `apply` false counts and removes nothing, which is what `galos-index
+/// sweep` reports before it is asked to act.
+pub fn sweep_payloads(
+    dir: &Path,
+    index: &Index,
+    apply: bool,
+) -> io::Result<Swept> {
+    let root = dir.join(PAYLOAD_DIR);
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(Swept::default());
+        }
+        Err(e) => return Err(e),
+    };
+    let mut swept = Swept { removed: apply, ..Swept::default() };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            for shard in fs::read_dir(entry.path())? {
+                orphan(&shard?, index, apply, &mut swept)?;
+            }
+        } else {
+            orphan(&entry, index, apply, &mut swept)?;
+        }
+    }
+    Ok(swept)
+}
+
+/// One payload file weighed against the tree, and removed where the tree
+/// does not name its cell.
+fn orphan(
+    entry: &fs::DirEntry,
+    index: &Index,
+    apply: bool,
+    swept: &mut Swept,
+) -> io::Result<()> {
+    let name = entry.file_name();
+    let Some(name) = name.to_str() else { return Ok(()) };
+    // Anything that is not a payload is somebody else's: a `.tmp` from a
+    // write that did not finish is the writer's to replace, and a file this
+    // cannot read the name of is not one to delete on a guess.
+    let Some(id) = payload_cell(name) else { return Ok(()) };
+    if index.get(id).is_some() {
+        return Ok(());
+    }
+    swept.orphans += 1;
+    swept.bytes += entry.metadata()?.len();
+    if apply {
+        match fs::remove_file(entry.path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// The cell a payload file is named for, sharded or loose: `LL-<morton>.bin`
+/// in both layouts, so one reading serves them.
+fn payload_cell(name: &str) -> Option<CellId> {
+    let rest = name.strip_suffix(".bin")?;
+    let (level, morton) = rest.split_once('-')?;
+    let level: u8 = level.parse().ok()?;
+    let morton = u64::from_str_radix(morton, 16).ok()?;
+    let (x, y, z) = crate::geometry::morton_decode(morton);
+    Some(CellId { level, x, y, z })
+}
+
 impl Snapshot {
-    /// Write the whole tree to a directory: the index file and one payload file
-    /// per cell that owns any systems. Existing files are overwritten; a
-    /// cell that has emptied is not cleaned up here — a full write goes to a
-    /// fresh directory, and [`write_diff`](Self::write_diff) names the files
-    /// an incremental publish must touch.
+    /// Write the whole tree to a directory: the index file and one payload
+    /// file per cell that owns any systems. Existing files are overwritten,
+    /// and a cell the previous tree had and this one does not is left
+    /// standing — this writes what it holds and reads nothing.
+    ///
+    /// That "a full write goes to a fresh directory" was the assumption,
+    /// and directories are not fresh: a rebuild over a published one left
+    /// 200,248 payloads and 4.9 GB of a tree nothing refers to. Sweeping
+    /// them is [`sweep_payloads`], which a build calls once its index file
+    /// stands; [`write_diff`](Self::write_diff) is the incremental publish,
+    /// which removes what it is told went.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
         self.write_payloads(dir)?;
         self.index.write(dir)
@@ -547,6 +657,66 @@ mod tests {
             let payload = Index::read_payload(&scratch.0, cell.id).unwrap();
             assert_eq!(payload, built.payload(cell.id));
         }
+    }
+
+    /// A sweep removes the payloads of cells the index does not name, and
+    /// only those
+    ///
+    /// What a whole-directory rebuild leaves behind: the tree that stood
+    /// there before wrote payloads for cells the new one has no record of,
+    /// and nothing ever removed them — 200,248 files and 4.9 GB of them on
+    /// a directory rebuilt from the database over one built from a dump.
+    ///
+    /// Both layouts are checked, because a directory that has not been
+    /// resharded holds its payloads at [`legacy_payload_path`] and an
+    /// orphan there weighs exactly as much.
+    #[test]
+    fn a_sweep_removes_the_payloads_no_cell_names() {
+        let scratch = Scratch::new();
+        let built = Snapshot::build(&systems(9000), &BuildParams::default());
+        built.write(&scratch.0).unwrap();
+        let index = Index::read(&scratch.0).unwrap();
+        let live: Vec<CellId> = index.cells().map(|cell| cell.id).collect();
+
+        // Two cells no tree here holds: one filed as a build files them,
+        // one where a build before the sharding would have put it.
+        let sharded = CellId { level: 11, x: 3, y: 4, z: 5 };
+        let loose = CellId { level: 12, x: 6, y: 7, z: 8 };
+        assert!(index.get(sharded).is_none() && index.get(loose).is_none());
+        write_payload(&scratch.0, sharded, vec![0u8; 64]).unwrap();
+        let flat = legacy_payload_path(&scratch.0, loose);
+        fs::write(&flat, vec![0u8; 32]).unwrap();
+
+        // Counted and left alone until it is asked.
+        let looked = sweep_payloads(&scratch.0, &index, false).unwrap();
+        assert_eq!(looked.orphans, 2);
+        assert_eq!(looked.bytes, 96);
+        assert!(!looked.removed);
+        assert!(payload_path(&scratch.0, sharded).exists());
+        assert!(flat.exists());
+
+        let swept = sweep_payloads(&scratch.0, &index, true).unwrap();
+        assert_eq!(swept.orphans, 2);
+        assert!(swept.removed);
+        assert!(!payload_path(&scratch.0, sharded).exists());
+        assert!(!flat.exists());
+
+        // And every cell the index does name still reads what it held, which
+        // is the half that matters: an orphan left behind costs bytes, a
+        // payload swept by mistake costs the systems in it.
+        for id in live {
+            assert_eq!(
+                Index::read_payload(&scratch.0, id).unwrap(),
+                built.payload(id),
+                "{id:?} lost its payload to the sweep",
+            );
+        }
+
+        // Idempotent: a directory already swept has nothing left to find.
+        assert_eq!(
+            sweep_payloads(&scratch.0, &index, true).unwrap().orphans,
+            0,
+        );
     }
 
     /// A cell that owns nothing has no file, and asking for it reads back empty

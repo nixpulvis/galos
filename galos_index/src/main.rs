@@ -63,6 +63,15 @@ enum Command {
         #[arg(default_value = ".galos_index")]
         dir: PathBuf,
     },
+    /// Remove the payloads of cells the index no longer names.
+    Sweep {
+        /// The index directory to sweep.
+        #[arg(default_value = ".galos_index")]
+        dir: PathBuf,
+        /// Delete them. Without this the orphans are only counted.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Fold a directory's MessagePack names chunks into the mapped table.
     FoldNames {
         /// The index directory to fold.
@@ -114,11 +123,81 @@ fn main() {
             diff(&a, &b, Compare { bodies, detail, limit })
         }
         Command::Pack { dir } => pack(&dir),
+        Command::Sweep { dir, apply } => sweep(&dir, apply),
         Command::FoldNames { dir } => fold_names(&dir),
         Command::Upgrade { dir } => upgrade(&dir),
         Command::Sectors { dir, out, force } => {
             sectors(&dir, out.as_deref(), force)
         }
+    }
+}
+
+/// Count, and on request remove, the payloads of cells the published tree
+/// does not name.
+///
+/// What a whole-directory rebuild leaves behind: it writes its own cells
+/// and knows nothing of the tree that stood before it, so the old tree's
+/// are still there, referred to by nothing. Measured at 200,248 files and
+/// 4.9 GB on a directory rebuilt from the database over one built from a
+/// dump.
+///
+/// A build sweeps for itself now — `galos_index::store::sweep_payloads`,
+/// run once the new index file stands — so this is for the directories
+/// rebuilt before it did, and for looking before acting. Reporting is the
+/// default because deleting from a served directory on a typo is not.
+fn sweep(dir: &Path, apply: bool) {
+    let lock = held(dir);
+    let index = match galos_index::Index::read(dir) {
+        Ok(index) => index,
+        Err(err) => {
+            eprintln!("{}: {err}", dir.display());
+            leave(Some(lock), 1);
+        }
+    };
+    let at = std::time::Instant::now();
+    match galos_index::sweep_payloads(dir, &index, apply) {
+        Ok(swept) if swept.orphans == 0 => {
+            println!(
+                "{}: every payload belongs to a cell of the {} the index \
+                 names",
+                dir.display(),
+                index.len(),
+            );
+        }
+        Ok(swept) => {
+            let one = swept.orphans == 1;
+            println!(
+                "{}: {} payload{} {}, {}, in {:.1?}",
+                dir.display(),
+                swept.orphans,
+                if one { "" } else { "s" },
+                if one { "names no cell" } else { "name no cell" },
+                match apply {
+                    true => format!("removed ({})", size(swept.bytes)),
+                    false => format!("holding {}", size(swept.bytes)),
+                },
+                at.elapsed(),
+            );
+            if !apply {
+                println!("pass --apply to remove them");
+            }
+        }
+        Err(err) => {
+            eprintln!("{}: {err}", dir.display());
+            leave(Some(lock), 1);
+        }
+    }
+}
+
+/// Bytes in the unit a person would have said them in.
+fn size(bytes: u64) -> String {
+    const KB: f64 = 1e3;
+    let bytes = bytes as f64;
+    match bytes {
+        b if b >= 1e9 => format!("{:.1} GB", b / 1e9),
+        b if b >= 1e6 => format!("{:.1} MB", b / 1e6),
+        b if b >= KB => format!("{:.1} kB", b / KB),
+        b => format!("{b:.0} bytes"),
     }
 }
 

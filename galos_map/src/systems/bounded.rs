@@ -262,6 +262,10 @@ pub struct Blobs(pub(crate) Vec<Blob>);
 /// One merged mark: where it stands and what it stands for.
 #[derive(Copy, Clone)]
 pub(crate) struct Blob {
+    /// The average of the marks it stands for, in linear light, and the
+    /// fade the filters leave it: see [`super::merged::Standing`].
+    pub(crate) light: Vec3,
+    pub(crate) fade: f32,
     /// The cell it stands for, which is what names it: the system a merged
     /// mark is pointed at is read out of this cell's own payload. See
     /// [`super::merged`].
@@ -893,6 +897,7 @@ pub(crate) fn reconcile(
     view_mode: Res<View>,
     selection: Res<crate::systems::selection::Selection>,
     filtering: Filtering,
+    standing: Res<crate::systems::merged::Standing>,
     cut: Res<Cut>,
     scale_population: Res<ScalePopulation>,
     mut worked: Worked,
@@ -1224,8 +1229,23 @@ pub(crate) fn reconcile(
         if !drawn {
             continue;
         }
+        // What it stands for and what the filters make of it. Excluded is
+        // dimmed where an excluded system would be dimmed and dropped
+        // where one would be dropped, the merged mark answering the
+        // filters exactly as the marks it replaces do; see
+        // [`super::merged::Standing`].
+        let (light, admitted) = standing
+            .of(offer)
+            .unwrap_or((Vec3::splat(f32::NAN), true));
+        let fade = match admitted {
+            true => 1.,
+            false if fill => filtering.dim.opacity(),
+            false => continue,
+        };
         behind += blob.count;
         blobs.0.push(Blob {
+            light,
+            fade,
             id: blob.id,
             count: blob.count,
             at: blob.at,
@@ -1839,7 +1859,8 @@ mod tests {
         app.init_resource::<Republished>();
         app.init_resource::<Keeping>();
         app.init_resource::<Sampled>();
-            app.init_resource::<Blobs>();
+        app.init_resource::<Blobs>();
+        app.init_resource::<crate::systems::merged::Standing>();
         app.init_resource::<crate::systems::aggregate::Drawn>();
         app.insert_resource(crate::ResidentIndex(galos_index::Index::default()));
         app.insert_resource(Populated::default());
@@ -2272,6 +2293,72 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             0,
             "a cell that admits nothing was offered whole"
+        );
+    }
+
+    /// A merged mark the filters exclude is dimmed, and dropped below the dim
+    ///
+    /// **A merged mark answers the filters as the marks it replaces do.**
+    /// Before this it answered nothing: at galaxy scale nearly every mark
+    /// on the map is a merged one, so a faction filter dimmed the handful
+    /// of drawn stars and left the galaxy standing at full strength. What
+    /// it can be asked is whether anything under it is admitted — see
+    /// [`crate::systems::merged::Standing`] — and the verdict is spent here
+    /// exactly as a system's is: dimmed while the excluded are drawn,
+    /// dropped when they are not.
+    #[test]
+    fn a_merged_mark_the_filters_exclude_is_dimmed_then_dropped() {
+        use crate::systems::filter::{DimTo, Filter, Filters};
+
+        let merged = |id: CellId| galos_index::BlobRef {
+            id,
+            count: 4_000,
+            blend: 1.,
+            at: id.bounds().center(),
+            newest: 0,
+            m_min: Some(2.),
+        };
+        let held = CellId::of_point([0., 0., 0.], 6);
+
+        let standing = |app: &mut App, admitted: bool| {
+            app.insert_resource(crate::systems::merged::Standing::weighed(
+                vec![(Vec3::splat(0.25), admitted)],
+            ));
+        };
+
+        let mut app = walking();
+        app.insert_resource(Planned(galos_index::Needed {
+            mode: galos_index::Mode::Shell,
+            marks: Vec::new(),
+            blobs: vec![merged(held)],
+            splats: Vec::new(),
+        }));
+        // A filter is being asked, and what it excludes is still drawn.
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Faction { id: 9_999, name: "Nobody".into() });
+        app.insert_resource(DimTo(0.5));
+
+        standing(&mut app, true);
+        app.update();
+        let drawn = &app.world().resource::<Blobs>().0;
+        assert_eq!(drawn.len(), 1, "an admitted merged mark was not drawn");
+        assert_eq!(drawn[0].fade, 1., "an admitted mark was dimmed");
+
+        standing(&mut app, false);
+        app.update();
+        let drawn = &app.world().resource::<Blobs>().0;
+        assert_eq!(drawn.len(), 1, "an excluded mark should still be drawn");
+        let dim = app.world().resource::<DimTo>().opacity();
+        assert_eq!(drawn[0].fade, dim, "an excluded mark was not dimmed");
+
+        // And below the dim it goes, as an excluded system does.
+        app.insert_resource(DimTo(0.));
+        standing(&mut app, false);
+        app.update();
+        assert!(
+            app.world().resource::<Blobs>().0.is_empty(),
+            "an excluded merged mark was drawn below the dim",
         );
     }
 

@@ -812,33 +812,51 @@ fn composition(
 ) -> (Vec3, f32) {
     let mut light = Vec3::ZERO;
     let mut weight = 0.0;
-    let mut lay = |hue: Hue, count: u32| {
-        if count == 0 {
-            return;
-        }
+    political(held, color_by, |hue, count| {
         let gain = if hue == Hue::Grey { unaligned } else { 1.0 };
         let w = count as f32 * gain;
         light += hue.light() * w;
         weight += w;
+    });
+    (light, weight)
+}
+
+/// Walk a cell's political histogram along the axis the map is coloured by,
+/// handing each bucket's colour and count over
+///
+/// The axis is read through the very mapping a mark is painted by, so the
+/// field, a merged mark and a drawn system cannot disagree about what a
+/// colour means. Shared with [`super::merged`], which paints a merged mark
+/// as the average of the marks it stands for and needs the same walk.
+///
+/// Empty buckets are skipped, most of the eight being empty for most cells.
+pub(crate) fn political(
+    held: &Inhabited,
+    color_by: ColorBy,
+    mut lay: impl FnMut(Hue, u32),
+) {
+    let mut over = |hue: Hue, count: u32| {
+        if count > 0 {
+            lay(hue, count);
+        }
     };
     match color_by {
         ColorBy::Allegiance => {
             for (bucket, count) in held.allegiance().iter().enumerate() {
-                lay(allegiance_hue(allegiance_at(bucket)), *count);
+                over(allegiance_hue(allegiance_at(bucket)), *count);
             }
         }
         ColorBy::Government => {
             for (bucket, count) in held.government().iter().enumerate() {
-                lay(government_hue(government_at(bucket)), *count);
+                over(government_hue(government_at(bucket)), *count);
             }
         }
         ColorBy::Security => {
             for (bucket, count) in held.security().iter().enumerate() {
-                lay(security_hue(security_at(bucket)), *count);
+                over(security_hue(security_at(bucket)), *count);
             }
         }
     }
-    (light, weight)
 }
 
 /// Rebuild the field from the cells the walk said to splat

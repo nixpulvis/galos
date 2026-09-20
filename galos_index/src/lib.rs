@@ -86,7 +86,7 @@ pub use serialization::{Codec, Decode, Encode, FixedCodec, INDEX_VERSION};
 pub use sidecars::{Rows, Sidecars};
 pub use sky::{Node, Sky};
 pub use source::{FsSource, Migrated, Part, Resharded, Source, Stamp, migrate};
-pub use store::Payload;
+pub use store::{Payload, Swept, sweep_payloads};
 pub use tree::{BuildParams, Dirtied, Snapshot, System, Tree};
 pub use walk::{
     BlobRef, Index, MERGE_PX, Mode, MarkRef, Needed, Reach, STAR_MERGE_PX, SplatRef,

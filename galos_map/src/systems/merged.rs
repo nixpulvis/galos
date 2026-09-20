@@ -42,6 +42,15 @@ use rustc_hash::FxHashMap;
 pub fn plugin(app: &mut App) {
     app.init_resource::<PointedBlob>();
     app.init_resource::<Prominent>();
+    app.init_resource::<Standing>();
+    // Before the draw reads it, and in the phase that builds the drawn set:
+    // what a merged mark stands for is settled per plan, not per frame.
+    app.add_systems(
+        Update,
+        weigh_blobs
+            .in_set(MapSet::Populate)
+            .before(super::bounded::reconcile),
+    );
     app.add_systems(
         Update,
         (point_at_blobs, name_blobs, click_blobs)
@@ -376,9 +385,80 @@ mod tests {
     use bevy::window::{PrimaryWindow, Window, WindowResolution};
     use galos_index::meta::StarKind;
 
+    /// A merged mark over `count` systems, of which `colonies` are
+    /// imperial: what the aggregate's political histogram would say.
+    fn inhabited(colonies: u32) -> galos_index::Inhabited {
+        use elite_journal::prelude::Allegiance;
+        let mut held = galos_index::Inhabited::ZERO;
+        for n in 0..colonies {
+            held = held.merge(galos_index::Inhabited::of_system(
+                [f64::from(n), 0., 0.],
+                Some(Allegiance::Empire),
+                None,
+                None,
+            ));
+        }
+        held
+    }
+
+    /// A merged mark is the average of the marks it stands for
+    ///
+    /// **The merge boundary is the test.** A cell that splits as the camera
+    /// comes in must not change colour as it splits, so the one mark it was
+    /// drawn as has to be what its systems' own marks come to — summed as
+    /// light, divided by how many there are. A cell painted by its loudest
+    /// colony would flip colour at the boundary; a cell painted grey
+    /// whatever it holds — which is what this did — is the field tinted by
+    /// a region's politics with grey marks standing over it.
+    #[test]
+    fn a_merged_mark_averages_the_marks_it_stands_for() {
+        use crate::systems::spawn::{ColorBy, Hue};
+        let gains = super::super::glow::Gains::default();
+        let grey = Hue::Grey.light()
+            * super::super::glow::mark_light(Hue::Grey, false, &gains);
+
+        // A cell with nothing living in it is painted exactly what a merged
+        // mark was always painted: the palette's grey at an uninhabited
+        // system's level.
+        let empty = average_mark(None, 10_000, ColorBy::Allegiance, &gains);
+        assert!(
+            (empty - grey).length() < 1e-9,
+            "a cell with no colonies moved: {empty:?} against {grey:?}",
+        );
+
+        // A cell that is nothing but imperial colonies is painted the
+        // imperial mark's own colour.
+        let all = inhabited(8);
+        let imperial = average_mark(
+            Some(&all),
+            8,
+            ColorBy::Allegiance,
+            &gains,
+        );
+        assert!(
+            imperial.length() > empty.length(),
+            "a cell of colonies came out no brighter than empty sky",
+        );
+        assert!(
+            imperial.x > imperial.z * 1.2 || imperial.z > imperial.x * 1.2,
+            "a cell of colonies came out neutral: {imperial:?}",
+        );
+
+        // And a dozen colonies in ten thousand systems is nearly grey,
+        // because that is what the ten thousand marks look like.
+        let trace =
+            average_mark(Some(&inhabited(12)), 10_000, ColorBy::Allegiance, &gains);
+        assert!(
+            (trace - grey).length() < (imperial - grey).length() * 0.05,
+            "a trace of colonies painted the whole cell: {trace:?}",
+        );
+    }
+
     /// A merged mark standing `at`, of a cell at `level`.
     fn blob(at: [f64; 3], level: u8) -> Blob {
         Blob {
+            light: Vec3::splat(0.1),
+            fade: 1.,
             id: CellId::of_point(at, level),
             count: 1_240,
             at,
@@ -575,4 +655,236 @@ mod tests {
             "the answer was forgotten, so it would be asked again",
         );
     }
+}
+
+/// What each merged mark of the plan stands for: the colour it is painted in
+/// and whether the filters admit anything under it
+///
+/// **A merged mark is the marks it replaces, and it has to behave like
+/// them.** Before this it was painted the palette's grey whatever it stood
+/// over and ignored the filters outright, so at galaxy scale — where nearly
+/// every mark on the map is a merged one — the colour axis and every filter
+/// stopped at the frontier: the field behind the marks was tinted by the
+/// politics of a region while the marks in front of it were grey, and a
+/// faction filter dimmed the handful of drawn stars and left the galaxy
+/// standing.
+///
+/// **Once a plan, not once a frame.** Both answers are functions of the
+/// plan, the political table, the colour axis and the filters, none of
+/// which a still camera changes; the plan itself is rebuilt only when the
+/// eye moves enough to change it. Measured over `.index/full`, a wide view
+/// holds some twenty thousand merged marks, and a lookup apiece in the
+/// political table every frame is the kind of per-frame probe that cost
+/// seven milliseconds a frame when the blobs read their own centroids that
+/// way.
+///
+/// Indexed by the plan's own blob order, so a reader walks the two
+/// together.
+#[derive(Resource, Default)]
+pub struct Standing {
+    marks: Vec<Mark>,
+    /// The filter revision these were weighed against.
+    revision: u32,
+}
+
+/// One merged mark, weighed.
+#[derive(Copy, Clone, Default)]
+struct Mark {
+    /// The average of the marks it stands for, in linear light: already
+    /// premultiplied, as a system's own mark colour is.
+    light: Vec3,
+    /// Whether the filters admit anything under it.
+    admitted: bool,
+}
+
+impl Standing {
+    /// Weighed by hand, for a test that is checking what the draw does with
+    /// the verdict rather than how it was reached.
+    #[cfg(test)]
+    pub(crate) fn weighed(marks: Vec<(Vec3, bool)>) -> Standing {
+        Standing {
+            marks: marks
+                .into_iter()
+                .map(|(light, admitted)| Mark { light, admitted })
+                .collect(),
+            revision: 0,
+        }
+    }
+
+    /// The light the plan's `offer`th merged mark is painted at, and whether
+    /// the filters admit anything under it
+    ///
+    /// Nothing where it has not been weighed, which is the frame a plan
+    /// lands on: the draw takes the mark as admitted and grey for that one
+    /// frame rather than dropping it, a mark blinking out for a frame as
+    /// the eye moves being worse than a mark a frame behind on its colour.
+    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, bool)> {
+        self.marks.get(offer).map(|mark| (mark.light, mark.admitted))
+    }
+}
+
+/// Weigh every merged mark of the plan: its colour, and the filters' verdict
+///
+/// Skipped whole where nothing it reads has moved. The filters are watched
+/// by revision rather than by change detection: `Filters` is written by the
+/// panel every frame it is open, and a rebuild a frame while a form is up is
+/// twenty thousand lookups for an answer nobody changed.
+pub(crate) fn weigh_blobs(
+    planned: Res<crate::systems::aggregate::Planned>,
+    settled: Res<crate::Settled>,
+    index: Res<crate::ResidentIndex>,
+    populated: Res<Populated>,
+    names: Res<Names>,
+    filtering: super::filter::Filtering,
+    color_by: Res<crate::systems::spawn::ColorBy>,
+    gains: Res<super::glow::Gains>,
+    mut standing: ResMut<Standing>,
+    mut picked: Local<PickedCells>,
+) {
+    let revision = filtering.filters.revision();
+    let moved = planned.is_changed()
+        || settled.is_changed()
+        || color_by.is_changed()
+        || gains.is_changed()
+        || revision != standing.revision;
+    if !moved {
+        return;
+    }
+    if picked.revision != revision {
+        picked.rebuild(
+            revision,
+            &filtering.filters,
+            &index.0,
+            &populated,
+            &names,
+        );
+    }
+
+    let asking = filtering.filters.asking();
+    standing.revision = revision;
+    standing.marks.clear();
+    standing.marks.extend(planned.0.blobs.iter().map(|blob| Mark {
+        light: average_mark(
+            settled.0.get(blob.id),
+            blob.count,
+            *color_by,
+            &gains,
+        ),
+        admitted: !asking
+            || filtering
+                .filters
+                .admits_merged(blob.newest, picked.holds(blob.id)),
+    }));
+}
+
+/// The cells that hold a system the picking filters name
+///
+/// **A faction, a route and a hand-picked set each name a set of
+/// addresses**, and every one of those addresses sits in a known place, so
+/// the cells that hold them are the tree's own descent from the root to
+/// each: [`galos_index::Index::descend`]. That is the whole of what a
+/// merged mark can be asked about them, and it is exact — a mark is
+/// admitted if and only if something it stands for is.
+///
+/// Built once a filter revision. A faction of a few thousand systems is a
+/// few thousand descents of a dozen steps; the alternative is a set of
+/// addresses no merged mark could ever be weighed against, which is what
+/// the map did.
+#[derive(Default)]
+pub struct PickedCells {
+    cells: rustc_hash::FxHashSet<CellId>,
+    revision: u32,
+}
+
+impl PickedCells {
+    fn rebuild(
+        &mut self,
+        revision: u32,
+        filters: &super::filter::Filters,
+        index: &galos_index::Index,
+        populated: &Populated,
+        names: &Names,
+    ) {
+        let _zone = info_span!("picked cells").entered();
+        self.revision = revision;
+        self.cells.clear();
+        let mut hold = |at: [f64; 3]| {
+            index.descend(at, |id| {
+                self.cells.insert(id);
+            });
+        };
+        for filter in filters.picking() {
+            match filter {
+                super::filter::Filter::Faction { id, .. } => {
+                    for system in populated.0.values() {
+                        if system.factions.contains(&id) {
+                            hold([
+                                f64::from(system.position[0]),
+                                f64::from(system.position[1]),
+                                f64::from(system.position[2]),
+                            ]);
+                        }
+                    }
+                }
+                super::filter::Filter::Route { systems, .. }
+                | super::filter::Filter::Systems { systems, .. } => {
+                    for &address in systems {
+                        let at = match populated.get(address) {
+                            Some(known) => [
+                                f64::from(known.position[0]),
+                                f64::from(known.position[1]),
+                                f64::from(known.position[2]),
+                            ],
+                            None => names.placed(address).into(),
+                        };
+                        hold(at);
+                    }
+                }
+                // Answered off the aggregate's own age column instead; see
+                // [`super::filter::Filters::admits_merged`].
+                super::filter::Filter::Recency { .. } => {}
+            }
+        }
+    }
+
+    /// Whether this cell holds anything the picking filters name.
+    fn holds(&self, id: CellId) -> bool {
+        self.cells.contains(&id)
+    }
+}
+
+/// The average of the marks a merged mark stands for, in linear light
+///
+/// **A merged mark is one mark because everything under it falls inside
+/// one, so what it is painted is what those marks come to.** Summed as
+/// light and divided by the count: a cell of ten thousand systems with a
+/// dozen imperial colonies in it is grey with a trace of imperial in it,
+/// which is what the same patch looks like when the camera comes in far
+/// enough to draw the ten thousand. The merge boundary is the test, and it
+/// is the reason this is an average and not the dominant bucket — a cell
+/// painted by its loudest colony would change colour the moment it split.
+///
+/// Reduces to exactly what a merged mark was painted before — the palette's
+/// grey at an uninhabited system's level — for a cell with no colonies in
+/// it, which is most of the galaxy.
+fn average_mark(
+    held: Option<&galos_index::Inhabited>,
+    count: u64,
+    color_by: crate::systems::spawn::ColorBy,
+    gains: &super::glow::Gains,
+) -> Vec3 {
+    let mut light = Vec3::ZERO;
+    let mut peopled = 0u64;
+    if let Some(held) = held {
+        super::glow::political(held, color_by, |hue, systems| {
+            light += hue.light()
+                * super::glow::mark_light(hue, true, gains)
+                * systems as f32;
+            peopled += u64::from(systems);
+        });
+    }
+    let alone = count.saturating_sub(peopled) as f32;
+    let grey = crate::systems::spawn::Hue::Grey;
+    light += grey.light() * super::glow::mark_light(grey, false, gains) * alone;
+    light / count.max(1) as f32
 }

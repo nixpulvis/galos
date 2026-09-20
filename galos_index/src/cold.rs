@@ -21,7 +21,7 @@ use crate::names;
 use crate::region::{self, Crown, Offer};
 use crate::source::{read_meta, write_meta};
 use crate::spill::Spilled;
-use crate::store::INDEX_FILE;
+use crate::store::{INDEX_FILE, Swept};
 use crate::tree::{BuildParams, Snapshot, System};
 use crate::walk::Index;
 use chrono::NaiveDateTime;
@@ -447,6 +447,14 @@ impl<'a> Build<'a> {
         let index = region::joined(&crown, indexes.iter().skip(1));
         let published = step("the names table", names.finish())?;
         step("the index file", index.write(&dir))?;
+        // The cells of whatever tree stood here before this one, which this
+        // build neither wrote nor named: see `store::sweep_payloads`. After
+        // the index file and never before it, so an interrupted sweep
+        // leaves a directory that is merely larger.
+        let swept = step(
+            "the sweep of the old cells",
+            crate::store::sweep_payloads(&dir, &index, true),
+        )?;
         // Last, and only where the caller said where it had read to: the
         // mark stands for a published directory, so it goes out behind the
         // index file rather than in front of it.
@@ -465,6 +473,7 @@ impl<'a> Build<'a> {
             regions,
             over_budget,
             Pass { taken: named, named: published },
+            swept,
             &index,
         )))
     }
@@ -556,6 +565,10 @@ pub struct ColdReport {
     pub named: usize,
     /// Rows pushed into the names table as the galaxy was read.
     pub named_rows: usize,
+    /// Payload files of cells the published tree does not name, removed
+    /// after it was written: whatever the tree that stood here before held
+    /// and this one does not. See [`crate::store::sweep_payloads`].
+    pub swept: Swept,
 }
 
 impl ColdReport {
@@ -569,6 +582,7 @@ impl ColdReport {
         regions: usize,
         over_budget: usize,
         pass: Pass,
+        swept: Swept,
         index: &Index,
     ) -> ColdReport {
         let leaves = index.cells().filter(|c| c.is_leaf()).count();
@@ -591,6 +605,7 @@ impl ColdReport {
             over_budget,
             named: pass.named,
             named_rows: pass.taken,
+            swept,
         }
     }
 
@@ -605,7 +620,7 @@ impl fmt::Display for ColdReport {
         write!(
             f,
             "{} systems -> {} cells ({} leaves, {} internal), \
-             deepest level {}, largest leaf {} systems, {} placed{}{}",
+             deepest level {}, largest leaf {} systems, {} placed{}{}{}",
             self.systems,
             self.cells,
             self.leaves,
@@ -617,6 +632,13 @@ impl fmt::Display for ColdReport {
             match self.over_budget {
                 0 => String::new(),
                 n => format!(", {n} regions over budget"),
+            },
+            match self.swept.orphans {
+                0 => String::new(),
+                n => format!(
+                    ", swept {n} orphaned payloads ({} MB)",
+                    self.swept.bytes / 1_000_000
+                ),
             },
         )
     }

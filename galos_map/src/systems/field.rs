@@ -497,13 +497,23 @@ pub(crate) fn build_field(
         };
         let radius = SMALLEST;
         let color = match *view {
+            // The average of the marks it stands for, worked out once a
+            // plan by [`super::merged::Standing`] — the palette reaches a
+            // merged mark, so a region's politics tint the marks over it
+            // and not only the field behind them. Grey where the walk has
+            // just moved and it has not been weighed yet; see
+            // [`super::merged::Standing::of`].
             View::Map => {
-                let level = crate::systems::glow::mark_light(
-                    crate::systems::spawn::Hue::Grey,
-                    false,
-                    &gains,
-                );
-                let c = crate::systems::spawn::Hue::Grey.light() * level;
+                let grey = crate::systems::spawn::Hue::Grey;
+                let c = match blob.light.is_finite() {
+                    true => blob.light,
+                    false => {
+                        grey.light()
+                            * crate::systems::glow::mark_light(
+                                grey, false, &gains,
+                            )
+                    }
+                } * blob.fade;
                 [c.x, c.y, c.z, 1.]
             }
             View::Realistic => {
@@ -518,7 +528,8 @@ pub(crate) fn build_field(
                     mag_step(apparent),
                     exposure.factor(),
                 );
-                [e.red, e.green, e.blue, 1.]
+                let fade = blob.fade;
+                [e.red * fade, e.green * fade, e.blue * fade, 1.]
             }
         };
         let cx = at.x - half.x;

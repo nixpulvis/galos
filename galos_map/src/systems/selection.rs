@@ -1107,6 +1107,8 @@ mod tests {
         app.world_mut()
             .resource_mut::<crate::systems::merged::PointedBlob>()
             .0 = Some(crate::systems::bounded::Blob {
+            light: Vec3::splat(0.1),
+            fade: 1.,
             id: galos_index::CellId::ROOT,
             count: 12,
             at: [0.; 3],

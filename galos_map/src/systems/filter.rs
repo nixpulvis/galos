@@ -997,6 +997,71 @@ impl Filters {
         picked.unwrap_or(true)
     }
 
+    /// Whether these filters admit anything a merged mark stands for
+    ///
+    /// **The same question [`Self::admits`] asks of a system, asked of a
+    /// whole subtree** — which is all a merged mark is. A blob has no
+    /// payload and stands for thousands of systems, so it cannot be asked
+    /// about any one of them; what it can answer is whether *something*
+    /// under it is admitted, and that is the honest verdict for a mark that
+    /// stands for the lot.
+    ///
+    /// Two facts answer it, neither of them a lookup. `newest` is the
+    /// newest Recency bucket anything under the cell falls in
+    /// ([`galos_index::Aggregate::newest_age`]), which settles a span to
+    /// the day where a drawn system is settled to the second. `holds` is
+    /// whether the cell contains an address any of the picking filters
+    /// names, worked out once a revision from the tree's own descent; see
+    /// [`super::merged::PickedCells`].
+    ///
+    /// The same shape as [`Self::admits`]: a span must pass, the pickers
+    /// are taken together, and a span asked on its own admits whatever it
+    /// reaches.
+    ///
+    /// No clock, where [`Self::admits`] takes one. A payload carries the
+    /// second a system was written and is compared against now; a cell
+    /// carries the bucket it fell in **when the index was built**, so the
+    /// axis a merged mark is weighed on is as old as the directory. A
+    /// day-old index reads "the last day" as "the day before it was
+    /// built", which is a day of slack on an axis whose narrowest bucket is
+    /// a day wide, and the only alternative is a column of moments per
+    /// cell.
+    pub(crate) fn admits_merged(&self, newest: u8, holds: bool) -> bool {
+        let mut picked = None;
+        for active in self.asked.iter().filter(|active| active.enabled) {
+            match &active.filter {
+                Filter::Recency { span, .. } => {
+                    // Days, because the aggregate counts days. A span
+                    // shorter than one is bucket zero either way: the cell
+                    // says "something here was written today" and the
+                    // payload says which second.
+                    let days = span.num_days().max(0);
+                    if u32::from(newest) > galos_index::derive::age_bucket(days)
+                    {
+                        return false;
+                    }
+                }
+                _ => *picked.get_or_insert(false) |= holds,
+            }
+        }
+        picked.unwrap_or(true)
+    }
+
+    /// The filters that pick systems out by address, which is every kind
+    /// but a span
+    ///
+    /// What [`Self::admits`] calls the picking filters, handed over so the
+    /// cells holding what they name can be gathered once a revision. A
+    /// span picks nothing out: what it admits is scattered over the whole
+    /// galaxy and moves with the clock.
+    pub(crate) fn picking(&self) -> impl Iterator<Item = &Filter> {
+        self.asked
+            .iter()
+            .filter(|active| active.enabled)
+            .map(|active| &active.filter)
+            .filter(|filter| !matches!(filter, Filter::Recency { .. }))
+    }
+
     /// The filters with their address lookups built, for a pass that asks
     /// about many systems
     ///
@@ -1596,6 +1661,80 @@ mod tests {
         let mut system = system(address);
         system.factions = factions.to_vec();
         system
+    }
+
+    /// A merged mark is weighed on what its whole subtree can say
+    ///
+    /// A blob has no payload and stands for thousands of systems, so the
+    /// question is whether *anything* under it is admitted. Two facts
+    /// answer it and neither is a lookup: the newest Recency bucket the
+    /// cell holds anything in, and whether the cell contains an address a
+    /// picking filter names.
+    #[test]
+    fn a_merged_mark_is_admitted_by_what_it_holds() {
+        // Nothing asked admits every merged mark, as it admits every system.
+        let filters = Filters::default();
+        assert!(filters.admits_merged(7, false));
+
+        // A span is answered off the cell's own age column. `AGE_EDGES`
+        // puts a day at bucket 1 and a week at bucket 2, so a fortnight
+        // reaches bucket 2 and a cell whose freshest system is a year old
+        // — bucket 4 — is out.
+        let mut span = Filters::default();
+        span.add(Filter::Recency {
+            label: "A fortnight".into(),
+            span: Duration::days(14),
+        });
+        assert!(span.admits_merged(0, false), "a cell written today");
+        assert!(span.admits_merged(2, false), "a cell written this week");
+        assert!(!span.admits_merged(4, false), "a cell a year stale");
+        assert!(
+            !span.admits_merged(galos_index::aggregate::AGE_BUCKETS as u8, false),
+            "a cell holding nothing at all",
+        );
+
+        // A picking filter is answered by whether the cell holds one of the
+        // systems it names, and nothing else about the cell matters.
+        let mut picked = Filters::default();
+        picked.add(faction(7));
+        assert!(picked.admits_merged(7, true), "a cell holding a member");
+        assert!(!picked.admits_merged(0, false), "a cell holding none");
+
+        // Both asked: the span must pass and the picker must find
+        // something, exactly as a system is weighed.
+        let mut both = Filters::default();
+        both.add(faction(7));
+        both.add(Filter::Recency {
+            label: "A fortnight".into(),
+            span: Duration::days(14),
+        });
+        assert!(both.admits_merged(0, true));
+        assert!(!both.admits_merged(4, true), "a stale cell passed a span");
+        assert!(!both.admits_merged(0, false), "a cell with no member passed");
+    }
+
+    /// Only the filters that name systems are gathered into cells; a span
+    /// names none
+    ///
+    /// What a span admits is scattered over the whole galaxy and moves with
+    /// the clock, so there is no set of cells to gather for it — it is
+    /// answered off the aggregate instead.
+    #[test]
+    fn a_span_picks_no_cells_out() {
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.add(within(60));
+        filters.add(Filter::Systems {
+            label: "Picked".into(),
+            systems: vec![1, 2],
+        });
+        let picking: Vec<&Filter> = filters.picking().collect();
+        assert_eq!(picking.len(), 2, "a span was gathered: {picking:?}");
+        assert!(
+            !picking
+                .iter()
+                .any(|filter| matches!(filter, Filter::Recency { .. })),
+        );
     }
 
     /// A question nobody has asked is answered by nothing at all
