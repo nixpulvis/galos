@@ -397,18 +397,26 @@ impl Flight {
     }
 }
 
-/// Reading the sky as populations draws the busiest systems in view
+/// Reading the sky as populations draws every system that has a patch of
+/// screen to itself
 ///
-/// **Every cell of the plan answers with its whole subtree's people, and
-/// the marked cells nest**: the root, every cell down to the frontier,
-/// each drawing its own marks. So without taking each system once the
-/// same busiest handful is offered over and over and nothing further
-/// down is ever reached. Reported as `ALPHA CENTAURI` vanishing when the
-/// scale was turned on — a hundred thousand people four light years from
-/// the camera — while the pass spent 2,496 marks where the ordinary sky
-/// spent 2,562.
+/// **Every cell of the plan answers with its whole subtree's populated
+/// systems, and the marked cells nest**: the root, every cell down to
+/// the frontier, each drawing its own marks. So without taking each
+/// system once the same busiest handful is offered over and over and
+/// nothing further down is ever reached. Reported as `ALPHA CENTAURI`
+/// vanishing when the scale was turned on — a population of a hundred
+/// thousand four light years from the camera — while the pass spent
+/// 2,496 marks where the ordinary sky spent 2,562.
+///
+/// What may be missing is what a mark ahead of it already covers: two
+/// marks that would overlap are drawn as one, which is the rule the
+/// merge frontier applies to the payload draw and
+/// [`galos_index::screen::Crowded`] applies to this one. So the claim
+/// here is the rule itself — nothing is dropped from a patch of screen
+/// that is otherwise empty.
 #[test]
-fn the_populated_sky_draws_the_busiest_in_view() {
+fn the_populated_sky_draws_what_stands_alone() {
     let Some(dir) = measured() else { return };
     let mut flight = Flight::over(&dir);
     flight.app.insert_resource(ScalePopulation(true));
@@ -417,42 +425,60 @@ fn the_populated_sky_draws_the_busiest_in_view() {
         flight.frame(DVec3::ZERO, back);
     }
 
-    // Everyone living within a few light years of the camera, off the
-    // same table the draw takes from. Close in the share is generous and
-    // the cells are fine, so there is no thinning left to excuse a miss:
-    // whoever is here is drawn.
     let world = flight.app.world_mut();
-    let near: Vec<(u64, i64)> = world
+    let mut cameras = world.query::<(&OrbitCamera, &Camera)>();
+    let (orbit, camera) = cameras.single(world).expect("a camera");
+    let view = crate::systems::aggregate::view(orbit, camera)
+        .expect("the camera can see");
+
+    // What the frame drew, by the patch of screen each mark holds.
+    let mut systems = world.query::<&System>();
+    let drawn: Vec<&System> = systems.iter(world).collect();
+    let mut held = galos_index::screen::Crowded::over(&view);
+    for system in &drawn {
+        held.claim(&view, system.position);
+    }
+    let addresses: HashSet<i64> =
+        drawn.iter().map(|system| system.address).collect();
+
+    // Everyone within a few light years of the camera: close in there is
+    // no thinning left to excuse a miss except an overlap, and an
+    // overlap is what `Crowded` will own up to.
+    let near: Vec<(u64, i64, [f64; 3])> = world
         .resource::<Populated>()
         .0
         .values()
-        .filter(|system| {
-            DVec3::new(
-                f64::from(system.position[0]),
-                f64::from(system.position[1]),
-                f64::from(system.position[2]),
+        .map(|system| {
+            (
+                system.population,
+                system.address,
+                [
+                    f64::from(system.position[0]),
+                    f64::from(system.position[1]),
+                    f64::from(system.position[2]),
+                ],
             )
-            .length()
-                <= 25.
         })
-        .map(|system| (system.population, system.address))
+        .filter(|(_, _, at)| DVec3::from(*at).length() <= 25.)
         .collect();
-    assert!(near.len() > 5, "nobody lives within 25 ly of Sol: {near:?}");
+    assert!(near.len() > 5, "nobody lives within 25 ly of Sol");
 
-    let mut systems = world.query::<&System>();
-    let drawn: HashSet<i64> =
-        systems.iter(world).map(|system| system.address).collect();
     let missing: Vec<(u64, i64)> = near
         .iter()
-        .filter(|(_, address)| !drawn.contains(address))
-        .copied()
+        .filter(|(_, address, _)| !addresses.contains(address))
+        // Claiming answers true only where nothing holds the tile, so
+        // what is left is a system dropped from empty screen.
+        .filter(|(_, _, at)| held.claim(&view, *at))
+        .map(|&(population, address, _)| (population, address))
         .collect();
     assert!(
         missing.is_empty(),
-        "{} of the {} inhabited systems within 25 ly went undrawn from \
-         {back:.0} ly out: {missing:?}",
+        "{} of the {} populated systems within 25 ly went undrawn from \
+         {back:.0} ly out with nothing else on their patch of screen: \
+         {:?}",
         missing.len(),
         near.len(),
+        &missing[..missing.len().min(5)],
     );
 }
 

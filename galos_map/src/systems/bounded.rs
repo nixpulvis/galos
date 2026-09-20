@@ -40,7 +40,7 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
-use galos_index::screen::{Empty, frame_marks, share, wanted};
+use galos_index::screen::{Crowded, Empty, frame_marks, share, wanted};
 use galos_index::{
     CellId, Inhabited, Part, Point, Resident, Stamp,
 };
@@ -1225,6 +1225,13 @@ pub(crate) fn reconcile(
     // cell takes the busiest of its own the pass has not reached yet,
     // which over the nest comes to the busiest first and then down.
     let mut took_populated: FxHashSet<i64> = FxHashSet::default();
+    // And which patches of screen they have claimed. The merge frontier
+    // thins the marks taken out of a payload and cannot thin these: it
+    // merges a cell when everything *it* holds falls inside one mark,
+    // where what this draws is the one system in forty-four with a
+    // population, and around the bubble those alone run to tens of
+    // thousands overlapping into a white sheet. See [`Crowded`].
+    let mut crowded = Crowded::over(&view);
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`super::spawn::PendingSpawns`].
@@ -1295,24 +1302,48 @@ pub(crate) fn reconcile(
             if here.is_empty() {
                 continue;
             }
-            let fresh: Vec<i64> =
+            // Busiest first and each taken once, and a mark that would
+            // land where one already has is not drawn — so what stands
+            // alone is drawn whole and what would pile up is one mark.
+            // The tile is not spent out of the ask: a mark that was not
+            // drawn is not a mark the cell has had.
+            let mut fresh: Vec<(i64, [f64; 3])> = Vec::new();
+            for &address in
                 populated_first(here, &asked_for, &populated, wall, fill)
-                    .filter(|address| !took_populated.contains(address))
-                    .take(asked)
-                    .copied()
-                    .collect();
-            for address in fresh {
+            {
+                if fresh.len() >= asked {
+                    break;
+                }
+                if took_populated.contains(&address) {
+                    continue;
+                }
                 let Some(system) = populated.get(address) else { continue };
+                let at = [
+                    f64::from(system.position[0]),
+                    f64::from(system.position[1]),
+                    f64::from(system.position[2]),
+                ];
+                // The bubble before the tile. A cell answers with its
+                // whole subtree and the subtree runs past the spyglass,
+                // so a system the frame will not draw would otherwise
+                // claim a patch of screen and leave it empty — measured
+                // over `.index/full` from two hundred light years out,
+                // 45 of the 165 populated systems within twenty-five
+                // light years of the camera were shut out of screen
+                // nothing was drawn on.
+                if bubble.is_some_and(|radius| {
+                    orbit.center().distance(DVec3::from(at)) > radius
+                }) {
+                    continue;
+                }
+                if !crowded.claim(&view, at) {
+                    continue;
+                }
+                fresh.push((address, at));
+            }
+            for (address, at) in fresh {
                 took_populated.insert(address);
-                taken.push((
-                    address,
-                    [
-                        f64::from(system.position[0]),
-                        f64::from(system.position[1]),
-                        f64::from(system.position[2]),
-                    ],
-                    None,
-                ));
+                taken.push((address, at, None));
             }
         } else {
             let Some(cell) = resident.0.cell(id) else { continue };
@@ -2410,10 +2441,21 @@ mod tests {
         use galos_index::meta::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
+        // In front of the camera, where [`placed`] puts the rest of the
+        // fixtures level with it. The populated draw takes one mark to a
+        // mark's worth of *screen* ([`Crowded`]), so a system the camera
+        // cannot see claims nothing and is not drawn — which is right,
+        // and makes a fixture sitting on the eye's own plane a fixture
+        // nothing is drawn from.
+        let in_view = |id: i64| {
+            let at = placed(id);
+            [at[0], at[1], -25.]
+        };
+
         let inputs: Vec<galos_index::System> = (1..=5)
             .map(|id| galos_index::System {
                 id64: id as u64,
-                position: placed(id as i64),
+                position: in_view(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
@@ -2438,7 +2480,7 @@ mod tests {
                     // — the same place `system_at` builds one at — so a
                     // fixture that disagrees with its index is testing
                     // two galaxies.
-                    position: placed(address).map(|it| it as f32),
+                    position: in_view(address).map(|it| it as f32),
                     population,
                     security: None,
                     government: None,

@@ -163,6 +163,65 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
     if len == 0.0 { v } else { [v[0] / len, v[1] / len, v[2] / len] }
 }
 
+/// One mark to a mark's worth of screen, for a draw whose marks are not
+/// thinned by the merge frontier
+///
+/// **The frontier merges on the whole sky, and one draw does not draw
+/// the whole sky.** A cell merges when everything it holds falls inside
+/// one mark, which is the right question for the marks taken out of a
+/// payload — and the wrong one for the populated draw, where what is
+/// drawn is the one system in forty-four anybody lives in. A cell wide
+/// enough to stay split can hold ten thousand systems and fifty
+/// colonies, and those fifty are drawn at whatever separation *they*
+/// have, which around the bubble is none: measured over `.index/full`,
+/// the inhabited sky within the reach runs to tens of thousands of
+/// systems overlapping into a white sheet.
+///
+/// So the same rule is applied where the frontier cannot reach it: a
+/// mark claims a tile [`MERGE_PX`] across, and the next one that would
+/// land in it is not drawn. What stands alone is drawn whole — which is
+/// the half of this the merge frontier was always for — and what would
+/// pile up is one mark instead of forty.
+///
+/// **Whoever claims first keeps it**, so the order the caller offers in
+/// is the order that survives: the populated draw offers busiest first,
+/// and shallower cells before deeper, so the mark that holds a crowded
+/// tile is the largest thing in it.
+#[derive(Default)]
+pub struct Crowded {
+    taken: Vec<bool>,
+    across: usize,
+    down: usize,
+}
+
+impl Crowded {
+    /// A grid over `view`, one entry to [`MERGE_PX`] squared — which is
+    /// [`frame_marks`] of them, the frame's own capacity in marks.
+    pub fn over(view: &View) -> Crowded {
+        let [width, height] = frame(view);
+        let across = (width / MERGE_PX).ceil().max(1.0) as usize;
+        let down = (height / MERGE_PX).ceil().max(1.0) as usize;
+        Crowded { taken: vec![false; across * down], across, down }
+    }
+
+    /// Whether a mark at `at` is the first to want that patch of screen.
+    ///
+    /// Off the frame is [`false`]: nothing there is drawn, and a mark
+    /// behind the eye has no tile to claim.
+    pub fn claim(&mut self, view: &View, at: [f64; 3]) -> bool {
+        let Some([x, y]) = view.project(at) else { return false };
+        if x < 0.0 || y < 0.0 {
+            return false;
+        }
+        let (column, row) = ((x / MERGE_PX) as usize, (y / MERGE_PX) as usize);
+        if column >= self.across || row >= self.down {
+            return false;
+        }
+        let tile = &mut self.taken[row * self.across + column];
+        !std::mem::replace(tile, true)
+    }
+}
+
 /// One tile of the screen: what landed on it, and the best thing there is
 /// to light it with if nothing did.
 #[derive(Clone, Copy, Default)]
