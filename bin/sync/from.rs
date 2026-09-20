@@ -27,6 +27,14 @@ pub enum Source {
     /// The live feed, over ZMQ. `--remote` says where, `--stall` says how
     /// long it may carry nothing before the connection is replaced.
     Eddn,
+    /// A recorded feed, replayed off disk: the same messages in the same
+    /// order, read from a directory `eddn record` is writing. See
+    /// [`eddn::spool`].
+    ///
+    /// Where in it to start rides the source, the way every other
+    /// source's argument does: `spool=DIR`, `spool=DIR,from=earliest`,
+    /// `spool=DIR,since=2026-09-19T12:00:00Z`.
+    Spool(PathBuf, eddn::spool::Start),
     /// A journal directory, or one file in one. `--user` overrides whose the
     /// files say it is; `--watch` keeps following it.
     Journal(PathBuf),
@@ -52,7 +60,7 @@ impl Source {
     /// read out by the time it finishes.
     pub fn follows(&self, watching: bool) -> bool {
         match self {
-            Source::Eddn => true,
+            Source::Eddn | Source::Spool(..) => true,
             Source::Journal(_) => watching,
             Source::Edsm(_)
             | Source::EdsmApi(_)
@@ -86,19 +94,69 @@ impl FromStr for Source {
             ("eddn", Some(_)) => Err("`eddn` takes no path; the feed is \
                                       wherever --remote says"
                 .to_string()),
+            ("spool", arg) => spool(named(arg)?),
             ("journal", arg) => Ok(Source::Journal(path(named(arg)?))),
             ("edsm", arg) => Ok(Source::Edsm(path(named(arg)?))),
             ("edsm-api", arg) => Ok(Source::EdsmApi(named(arg)?)),
             ("eddb", arg) => Ok(Source::Eddb(path(named(arg)?))),
             ("spansh", arg) => Ok(Source::Spansh(path(named(arg)?))),
             (other, _) => Err(format!(
-                "unknown source `{other}`; expected `eddn`, \
+                "unknown source `{other}`; expected `eddn`, `spool=DIR`, \
                  `journal=PATH`, `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` \
                  or `spansh=PATH`"
             )),
         }
     }
 }
+
+/// `DIR`, and where in it to start: `DIR,from=earliest|latest|cursor` or
+/// `DIR,since=RFC3339`.
+///
+/// The default is this consumer's own cursor, which is a fresh follower
+/// following and a restarted one taking up where it stopped. `earliest`
+/// is the replay — a recorded hour read as a fixture — and `since` is
+/// the one an operator reaches for after an outage they can name the
+/// start of.
+fn spool(said: String) -> Result<Source, String> {
+    let mut parts = said.split(',');
+    let dir = path(parts.next().unwrap_or_default().to_owned());
+    let mut start = eddn::spool::Start::Cursor(CONSUMER.to_owned());
+    for qualifier in parts {
+        let (key, value) = qualifier.split_once('=').ok_or_else(|| {
+            format!("`{qualifier}` is not `from=…` or `since=…`")
+        })?;
+        start = match (key.trim(), value.trim()) {
+            ("from", "earliest") => eddn::spool::Start::Earliest,
+            ("from", "latest") => eddn::spool::Start::Latest,
+            ("from", "cursor") => {
+                eddn::spool::Start::Cursor(CONSUMER.to_owned())
+            }
+            ("from", other) => {
+                return Err(format!(
+                    "`from={other}`: expected `earliest`, `latest` or \
+                     `cursor`"
+                ));
+            }
+            ("since", moment) => eddn::spool::Start::Since(
+                moment
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .map_err(|err| format!("`since={moment}`: {err}"))?,
+            ),
+            (other, _) => {
+                return Err(format!(
+                    "`{other}=`: a spool takes `from=` and `since=`"
+                ));
+            }
+        };
+    }
+    Ok(Source::Spool(dir, start))
+}
+
+/// What this run calls itself in a spool's `cursors/` directory.
+///
+/// One name per consumer, so `galos-db` and `galos-index` keep their own
+/// places in the same spool and neither can move the other's.
+pub const CONSUMER: &str = "galos-sync";
 
 /// A path as written, with a leading `~` standing for the home directory.
 ///
@@ -141,6 +199,7 @@ impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Source::Eddn => write!(f, "eddn"),
+            Source::Spool(path, _) => write!(f, "spool={}", path.display()),
             Source::Journal(path) => write!(f, "journal={}", path.display()),
             Source::Edsm(path) => write!(f, "edsm={}", path.display()),
             Source::EdsmApi(name) => write!(f, "edsm-api={name}"),
@@ -209,7 +268,7 @@ mod tests {
         );
     }
 
-    /// The six ways in, each naming what it takes
+    /// The seven ways in, each naming what it takes
     #[test]
     fn a_source_is_named_with_what_it_takes() {
         assert_eq!("eddn".parse(), Ok(Source::Eddn));
@@ -233,6 +292,45 @@ mod tests {
             "spansh=galaxy.json".parse(),
             Ok(Source::Spansh(PathBuf::from("galaxy.json"))),
         );
+        assert_eq!(
+            "spool=/var/lib/galos/spool".parse(),
+            Ok(Source::Spool(
+                PathBuf::from("/var/lib/galos/spool"),
+                eddn::spool::Start::Cursor("galos-sync".to_owned()),
+            )),
+        );
+    }
+
+    /// A spool says where in itself to start, and refuses what it cannot
+    ///
+    /// The default is the consumer's own cursor — a restart takes up
+    /// where it stopped, and a first run follows rather than replaying
+    /// two days at somebody who asked to be current. The other two are
+    /// asked for on purpose, which is why a misspelling of either is a
+    /// refusal rather than a quiet fall back to the default.
+    #[test]
+    fn a_spool_says_where_in_itself_to_start() {
+        let since = "2026-09-19T12:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .expect("a moment");
+        let dir = PathBuf::from("/spool");
+        assert_eq!(
+            "spool=/spool,from=earliest".parse(),
+            Ok(Source::Spool(dir.clone(), eddn::spool::Start::Earliest)),
+        );
+        assert_eq!(
+            "spool=/spool,from=latest".parse(),
+            Ok(Source::Spool(dir.clone(), eddn::spool::Start::Latest)),
+        );
+        assert_eq!(
+            "spool=/spool,since=2026-09-19T12:00:00Z".parse(),
+            Ok(Source::Spool(dir, eddn::spool::Start::Since(since))),
+        );
+
+        assert!("spool=".parse::<Source>().is_err(), "a spool with no dir");
+        assert!("spool=/spool,from=start".parse::<Source>().is_err());
+        assert!("spool=/spool,since=lunchtime".parse::<Source>().is_err());
+        assert!("spool=/spool,retain=48h".parse::<Source>().is_err());
     }
 
     /// A drive letter is part of the path, not a second separator

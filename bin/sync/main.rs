@@ -98,7 +98,7 @@ use std::io::{stderr, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 mod derive;
 mod eddb;
@@ -132,9 +132,14 @@ const IMPORTING: &str = "Importing what is already there";
 #[derive(Parser)]
 #[command(name = "galos-sync", version, about)]
 struct Cli {
-    /// Where to read from: `eddn`, `journal=PATH`, `edsm=PATH`,
-    /// `edsm-api=NAME`, `eddb=PATH` or `spansh=PATH`. Repeatable; each is
-    /// read once.
+    /// Where to read from: `eddn`, `spool=DIR`, `journal=PATH`,
+    /// `edsm=PATH`, `edsm-api=NAME`, `eddb=PATH` or `spansh=PATH`.
+    /// Repeatable; each is read once.
+    ///
+    /// A spool is a recorded feed — see `eddn record`. It is followed
+    /// from this run's own cursor unless it is told otherwise:
+    /// `spool=DIR,from=earliest` replays what is held, and
+    /// `spool=DIR,since=2026-09-19T12:00:00Z` starts at an hour.
     #[arg(long = "from", value_name = "SOURCE")]
     from: Vec<Source>,
 
@@ -542,6 +547,7 @@ fn refused(cli: &Cli) -> Result<(), String> {
             Source::Journal(path)
             | Source::Edsm(path)
             | Source::Eddb(path)
+            | Source::Spool(path, _)
             | Source::Spansh(path) => path,
             Source::Eddn | Source::EdsmApi(_) => continue,
         };
@@ -992,9 +998,17 @@ async fn collect(
 ) -> bool {
     let read = match source {
         Source::Eddn => {
-            let eddn = eddn::Eddn { url: options.remote, stall: options.stall };
-            eddn.read(&mut fan, &shutdown).await
+            eddn::Eddn::live(&options.remote, options.stall)
+                .read(&mut fan, &shutdown)
+                .await
         }
+        Source::Spool(dir, start) => match eddn::Eddn::spooled(&dir, start) {
+            Ok(spool) => spool.read(&mut fan, &shutdown).await,
+            Err(err) => {
+                error!(error = %err, "the spool could not be opened");
+                false
+            }
+        },
         Source::Journal(path) => {
             let journal = journal::Journal {
                 path,

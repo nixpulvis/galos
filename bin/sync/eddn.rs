@@ -13,20 +13,27 @@
 //!
 //! ## Why it is the one source with a thread
 //!
-//! `eddn::subscribe` hands back an iterator that parks the OS thread it is
-//! called on: `recv_timeout` on a ZMQ socket parks it for the stall window,
-//! and a subscription being replaced sleeps five seconds before it tries
-//! again. Neither yields to an executor, so a `for` loop over it inside an
-//! async task stops every other task on that thread — the journal follower,
-//! the index worker's channel, the timers.
+//! A live [`Feed`] parks the OS thread it is read on: `recv_timeout` on a
+//! ZMQ socket parks it for the stall window, and a subscription being
+//! replaced sleeps five seconds before it tries again. Neither yields to
+//! an executor, so a `for` loop over it inside an async task stops every
+//! other task on that thread — the journal follower, the index worker's
+//! channel, the timers.
 //!
 //! So the loop gets a thread of its own and the envelopes cross to the async
 //! side through a bounded channel. The sink stays where it was: on the async
 //! side, owned by the task that reads the channel, never handed to the
 //! thread.
+//!
+//! ## Why it holds a `Box<dyn Feed>`
+//!
+//! Nothing below this line knows whether the messages came off the wire or
+//! off a disk. A live subscription and a recorded one are the same messages
+//! in the same order, so which one a run reads is a constructor argument —
+//! see `doc/PLAN-EDDN-SPOOL.md`. The alternative is this whole file twice.
 
 use async_channel::{Receiver, TrySendError};
-use eddn::{subscribe, Envelope, Message};
+use eddn::{Envelope, Feed, Message};
 use galos::sink::{Reporter, Sink};
 use galos::Shutdown;
 use std::sync::Arc;
@@ -63,20 +70,59 @@ const WAITING: usize = 10_000;
 /// paid on the way out: it is how long Ctrl-C takes to be noticed here.
 const TICK: Duration = Duration::from_millis(250);
 
-/// The live feed, and what it takes to reach it.
+/// A feed of everyone else's game, and where it is being read from.
 pub struct Eddn {
-    /// ZMQ remote address, from `--remote`.
-    pub url: String,
-    /// Seconds of silence before the connection is replaced, from `--stall`,
-    /// and [`None`] where it was told to leave the connection alone.
-    pub stall: Option<Duration>,
+    /// Where the messages come from: a live subscription today, and a
+    /// spool replayed off disk once there is one. Nothing below cares.
+    pub feed: Box<dyn Feed>,
+    /// What to call it in the opening line, the feed itself no longer
+    /// being something to ask.
+    pub from: String,
 }
 
 impl Eddn {
+    /// The live subscription, which is what `--from eddn` is.
+    pub fn live(url: &str, stall: Option<Duration>) -> Eddn {
+        Eddn {
+            feed: Box::new(eddn::Network::open(url, stall)),
+            from: url.to_owned(),
+        }
+    }
+
+    /// A recorded feed replayed off disk, which is what `--from
+    /// spool=DIR` is.
+    ///
+    /// **Followed from this consumer's own cursor by default**, so a
+    /// restart takes up where it left off inside the retention window
+    /// rather than replaying the spool or skipping the gap — and a first
+    /// run with no cursor follows rather than replaying two days
+    /// unasked. `from=earliest` and `since=` are how an operator asks
+    /// for the replay on purpose.
+    ///
+    /// The cursor is not *committed* yet: doing that honestly means
+    /// writing it after the publish it covers is durable, which is a
+    /// position carried to the sink's beat rather than known here. See
+    /// `PLAN-EDDN-SPOOL.md` §11, which is where that authority is being
+    /// settled.
+    pub fn spooled(
+        dir: &std::path::Path,
+        start: eddn::spool::Start,
+    ) -> Result<Eddn, String> {
+        let spool =
+            eddn::spool::Spool::open(dir, start, eddn::spool::Replay::Follow)
+                .map_err(|err| format!("{}: {err}", dir.display()))?
+                // Named however it was started, so a run told
+                // `from=earliest` keeps its place from there on rather
+                // than only a run that started from a cursor.
+                .named(crate::from::CONSUMER);
+        Ok(Eddn { feed: Box::new(spool), from: dir.display().to_string() })
+    }
+
     /// Follow the feed until it ends or the run is asked to stop.
-    pub async fn read(&self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
-        let envelopes = feed(self.url.clone(), self.stall, shutdown.clone());
-        info!(url = %self.url, "subscribed to EDDN");
+    pub async fn read(self, sink: &mut dyn Sink, shutdown: &Shutdown) -> bool {
+        let from = self.from;
+        let envelopes = feed(self.feed, shutdown.clone());
+        info!(from = %from, "reading EDDN");
 
         loop {
             match async_std::future::timeout(TICK, envelopes.recv()).await {
@@ -113,18 +159,14 @@ impl Eddn {
 /// durable state, notices the closed channel on its next message, and the
 /// process exits either way once the halves that *do* hold state have been
 /// closed out.
-fn feed(
-    url: String,
-    stall: Option<Duration>,
-    shutdown: Shutdown,
-) -> Receiver<Envelope> {
+fn feed(source: Box<dyn Feed>, shutdown: Shutdown) -> Receiver<Envelope> {
     let (sender, receiver) = async_channel::bounded(WAITING);
     std::thread::Builder::new()
         .name("eddn".to_string())
         .spawn(move || {
             let mut dropped: u64 = 0;
-            for result in subscribe(&url, stall) {
-                match result {
+            for result in source {
+                match result.map(|reading| reading.envelope) {
                     Ok(envelope) => match sender.try_send(envelope) {
                         Ok(()) => {}
                         // The async side is not keeping up, which means the
