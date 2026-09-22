@@ -176,11 +176,12 @@ async fn main() -> ExitCode {
     }
 }
 
-/// The filter this run listens with, which one verb has an opinion about.
+/// The filter this run listens with, which two verbs have an opinion about.
 fn heard(command: &Command) -> String {
     match command {
         #[cfg(feature = "db")]
         Command::Db(it) => it.heard(),
+        Command::Ingest(it) => it.heard(),
         _ => HEARD.to_string(),
     }
 }

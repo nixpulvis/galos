@@ -244,7 +244,10 @@ cargo run --bin galos -- index status -i .galos_index
 ```
 
 `RUST_LOG` selects what a run logs (e.g. `RUST_LOG=debug`), info and above
-by default.
+by default. A run deriving a directory from the rows silences `sqlx`'s
+slow-statement alert, those reads being the whole galaxy by definition and
+the alert being four pages of SQL above the one line that matters;
+`RUST_LOG` is how to see it anyway.
 
 ## Database Backup and Restore
 

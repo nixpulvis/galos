@@ -385,6 +385,34 @@ impl Cli {
         self.from.iter().any(|it| matches!(it, Source::Database))
     }
 
+    /// Whether this run derives a directory out of the rows.
+    ///
+    /// Both ways into it: the rows read into a directory on their own, and
+    /// the handoff a run writing both stores starts with.
+    #[cfg(feature = "db")]
+    fn deriving(&self) -> bool {
+        self.from_db() || (self.db && self.index.is_some())
+    }
+
+    /// What `RUST_LOG` falls back to for the run these flags describe.
+    ///
+    /// [`crate::HEARD`], less `sqlx`'s slow-statement alert where this run
+    /// derives a directory from the rows. That derive **is** four reads of
+    /// the whole galaxy — every system, every star, every body, every
+    /// barycenter — so every one of them trips the one-second alert and
+    /// prints its whole statement, on a run where nothing is wrong. An
+    /// alert about the thing the operator asked for is noise, and here it
+    /// is the only thing in the log. `galos db verify` silences it for the
+    /// same reason; `RUST_LOG` still overrides this, which is how to see
+    /// it.
+    pub fn heard(&self) -> String {
+        #[cfg(feature = "db")]
+        if self.deriving() {
+            return format!("{},sqlx::query=error", crate::HEARD);
+        }
+        crate::HEARD.to_string()
+    }
+
     /// The dump this run would build a directory from, where it is one.
     ///
     /// The regional build, and the four things that make a run it: one
