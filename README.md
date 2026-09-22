@@ -171,6 +171,17 @@ cargo run --release --bin galos -- \
 # The directory is brought level with the rows first, then goes live.
 cargo run --release --bin galos -- ingest --from eddn --db --index
 
+# A spool is the feed recorded to disk — segments an hour long, and one
+# cursor per consumer — written by the `eddn` binary beside this one. What
+# it buys is a run that can be stopped, changed and started again without
+# losing the hours it was down for, since the cursor is where this consumer
+# left off rather than wherever the socket is now.
+cargo run --release -p eddn --features cli --bin eddn -- \
+    record --to /srv/eddn --retain 7d
+cargo run --release --bin galos -- ingest --from spool=/srv/eddn --db
+cargo run --release --bin galos -- \
+    ingest --from spool=/srv/eddn,from=earliest --index
+
 # A galaxy-sized dump into a directory takes the regional route: one region
 # held at a time, rather than a tree of every system read so far. No flag
 # asks for it and the run says when it does it.
