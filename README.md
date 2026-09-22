@@ -211,6 +211,11 @@ full build has nothing published to keep: asked to stop, it leaves the
 directory as it found it and the next run builds it again. A second Ctrl-C
 stops it where it stands.
 
+A run that reads the galaxy says where it has got to: a bar per step on a
+terminal — every positioned system, then everything ever scanned, then the
+changed set of each pass — and a line every thirty seconds where the output
+is redirected and a bar would be a file of overwritten lines.
+
 ```sh
 # Query from the CLI.
 cargo run --bin galos -- --help

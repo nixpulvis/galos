@@ -19,7 +19,7 @@
 
 use crate::barycenters::Barycenter;
 use crate::bodies::{ancestry, composition, Body, Surface};
-use crate::index::Parts;
+use crate::index::{step, Parts, Progress, Told, TOLD_EVERY};
 use crate::stars::Star;
 use crate::systems::System;
 use crate::{orbit, Database, Result};
@@ -286,16 +286,26 @@ pub(super) async fn write_parts(
     db: &Database,
     dir: &Path,
     parts: Parts,
+    told: &Told<'_>,
 ) -> Result<MetaReport> {
     let mut report = MetaReport::default();
 
     if parts.populated {
+        // One query and one write, but a query over every system with a
+        // population and the factions of each: seconds, and seconds of a
+        // terminal saying nothing are what this is here to stop.
+        told(Progress { step: step::POPULATED, done: 0, of: None });
         let populated: HashMap<i64, meta::PopulatedSystem> =
             populated_of(db, None)
                 .await?
                 .into_iter()
                 .map(|system| (system.address, system))
                 .collect();
+        told(Progress {
+            step: step::POPULATED,
+            done: populated.len() as u64,
+            of: Some(populated.len() as u64),
+        });
         report.populated = Some(write_populated(dir, &populated)?);
     }
 
@@ -306,7 +316,7 @@ pub(super) async fn write_parts(
         let mut reaches = HashMap::new();
         let mut boosts = HashMap::new();
         let mut body_files = 0;
-        each_scanned(db, |scanned| {
+        each_scanned(db, told, |scanned| {
             if parts.reaches {
                 if let Some(reach) = scanned.inside.extent(scanned.address) {
                     reaches.insert(scanned.address, reach);
@@ -339,8 +349,14 @@ pub(super) async fn write_parts(
     }
 
     if parts.factions {
+        told(Progress { step: step::FACTIONS, done: 0, of: None });
         let factions = factions_above(db, 0).await?;
         write_meta(&source::factions_path(dir), &factions)?;
+        told(Progress {
+            step: step::FACTIONS,
+            done: factions.len() as u64,
+            of: Some(factions.len() as u64),
+        });
         report.factions = Some(factions.len());
     }
 
@@ -749,7 +765,11 @@ impl<'a, T> ByAddress<'a, T> {
 /// A watch pass still reads its chunk through [`bodies_of`]: it is bounded
 /// by the chunk, and it needs the whole group to say which addresses came
 /// back with *nothing*.
-async fn each_scanned<F>(db: &Database, mut each: F) -> Result<()>
+async fn each_scanned<F>(
+    db: &Database,
+    told: &Told<'_>,
+    mut each: F,
+) -> Result<()>
 where
     F: FnMut(Scanned) -> Result<()>,
 {
@@ -793,6 +813,11 @@ where
     .await?;
 
     let mut boostable = Vec::new();
+    // No total: what this merge yields is the union of four cursors, and
+    // the only query that counts it is this read. So it says how many
+    // systems it has been through and how fast, and the bar it draws is a
+    // spinner rather than a percentage.
+    let mut seen = 0u64;
     loop {
         // By value and not `into_iter`, this crate being on the 2018
         // edition, where an array's `into_iter` is the reference's.
@@ -804,7 +829,10 @@ where
         ])
         .flatten()
         .min();
-        let Some(address) = next else { return Ok(()) };
+        let Some(address) = next else {
+            told(Progress { step: step::SCANNED, done: seen, of: Some(seen) });
+            return Ok(());
+        };
 
         let mut inside = meta::SystemBodies::default();
         stars.take(address, &mut inside.stars).await?;
@@ -822,6 +850,10 @@ where
             position: eligible.map(|&(_, position)| position),
             routed: eligible.and_then(|(routed, _)| routed.clone()),
         })?;
+        seen += 1;
+        if seen % TOLD_EVERY == 0 {
+            told(Progress { step: step::SCANNED, done: seen, of: None });
+        }
     }
 }
 
@@ -1383,7 +1415,7 @@ mod tests {
         // thing there is, handed over a system at a time. The place comes
         // back beside the class, both being published.
         let mut whole: HashMap<i64, meta::SystemBoost> = HashMap::new();
-        each_scanned(&db, |system| {
+        each_scanned(&db, crate::index::untold(), |system| {
             if let Some(row) = system.boost() {
                 whole.insert(row.address, row);
             }
@@ -1535,7 +1567,7 @@ mod tests {
         // What a full build reads, and what a watch pass reads: the same
         // system, and the same order within it.
         let mut built = meta::SystemBodies::default();
-        each_scanned(&db, |system| {
+        each_scanned(&db, crate::index::untold(), |system| {
             if system.address == address {
                 built = system.inside;
             }

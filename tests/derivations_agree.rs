@@ -362,9 +362,18 @@ async fn from_the_database(db: &Database, dir: &Path, checkpoint: &Path) {
     sink.flush().await.expect("the database sink flushes");
 
     let stop = || false;
-    galos_db::index::catch_up(db, dir, checkpoint, Parts::ALL, false, &stop)
-        .await
-        .expect("the index should build");
+    let told = galos_db::index::untold();
+    galos_db::index::catch_up(
+        db,
+        dir,
+        checkpoint,
+        Parts::ALL,
+        false,
+        &stop,
+        told,
+    )
+    .await
+    .expect("the index should build");
 }
 
 /// The same readings, accumulated and published with no database.

@@ -46,7 +46,7 @@ use indicatif::{
     HumanCount, MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle,
 };
 use std::io::{self, stderr, IsTerminal, Write};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tracing::info;
 use tracing_subscriber::fmt::MakeWriter;
@@ -353,6 +353,183 @@ impl Import {
             HumanCount(self.skipped),
         )
     }
+}
+
+/// How often a run with no terminal says where a step has got to
+///
+/// A bar is redrawn several times a second and costs nothing but the
+/// screen it is already on. A log line is kept, shipped and read, so a run
+/// under a service manager gets one of these and not three hundred.
+const SAID_EVERY: Duration = Duration::from_secs(30);
+
+/// The step a long read is on, drawn as one bar or said in the log
+///
+/// What a directory derived from the database goes through: every
+/// positioned system, then everything ever scanned in one, then the
+/// changed set of each pass. One at a time and in that order, so one bar
+/// is drawn and its step re-read rather than a line left on the screen per
+/// step that has finished.
+///
+/// Where there is no terminal — a service manager, a redirected run —
+/// there is no bar and the step says where it has got to in the log
+/// instead, [`SAID_EVERY`] apart. The alternative on such a run is what it
+/// was: an hour of nothing at all, and a report at the end.
+pub struct Steps {
+    at: Mutex<Option<Step>>,
+}
+
+/// The step being drawn now, and what is drawing it.
+struct Step {
+    /// What the step calls itself. A different one is a different step.
+    name: String,
+    /// The bar drawing it, where a bar is worth drawing.
+    bar: Option<ProgressBar>,
+    /// When this step began, which its rate is measured over.
+    ///
+    /// Its own rather than `indicatif`'s `{per_sec}`, which renders four
+    /// decimal places of a rate and an eight-figure one for the first
+    /// reading of a step, the elapsed time it divides by being nearly
+    /// zero. [`per_second`] is what the import line already uses.
+    started: Instant,
+    /// When the log last said where this step was, where there is no bar.
+    said: Instant,
+}
+
+impl Default for Steps {
+    fn default() -> Steps {
+        Steps::new()
+    }
+}
+
+impl Steps {
+    /// Nothing drawing yet, which is a run that has not started a step.
+    pub fn new() -> Steps {
+        Steps { at: Mutex::new(None) }
+    }
+
+    /// `done` of `of` through `step`, as far as anything can see it.
+    ///
+    /// The whole of the caller's side: a step it has not seen before takes
+    /// the screen from the one before it, and a total that only arrives at
+    /// the end of a step — a merge nothing counts up front — lands on the
+    /// bar as a length the moment it does, so the line finishes full
+    /// rather than part way along.
+    pub fn at(&self, step: &str, done: u64, of: Option<u64>) {
+        let mut held = self.at.lock().expect("no panic holds this");
+        let now = Instant::now();
+        if held.as_ref().is_none_or(|at| at.name != step) {
+            if let Some(before) = held.take() {
+                before.clear();
+            }
+            let bar = worth_drawing().then(|| drawing(step, of));
+            match &bar {
+                // The first frame is drawn here and not left to the next
+                // reading: the readings are ten thousand records apart,
+                // and a bar that showed nothing until the second of them
+                // is a step that says zero for as long as it takes to read
+                // twenty thousand systems.
+                Some(bar) => bar.set_position(done),
+                None => info!(done, "{step}"),
+            }
+            *held = Some(Step {
+                name: step.to_owned(),
+                bar,
+                started: now,
+                said: now,
+            });
+            return;
+        }
+
+        let at = held.as_mut().expect("just filled");
+        let rate = per_second(done, now.duration_since(at.started));
+        match &at.bar {
+            Some(bar) => {
+                // A length that arrives late, and one that was an estimate
+                // the read has now overtaken: a bar at 103 % of the
+                // planner's guess is worse than one that moves its post.
+                match of {
+                    Some(total) if bar.length() != Some(total) => {
+                        bar.set_length(total);
+                    }
+                    // A step with no total draws a count and a rate, and
+                    // the rate is this crate's own; see [`Step::started`].
+                    None => bar.set_message(format!(
+                        "({}/s) {}",
+                        HumanCount(rate),
+                        at.name,
+                    )),
+                    Some(_) => {}
+                }
+                bar.set_position(done);
+            }
+            None if now.duration_since(at.said) >= SAID_EVERY => {
+                at.said = now;
+                match of {
+                    Some(total) => {
+                        info!(done, of = total, per_sec = rate, "{}", at.name)
+                    }
+                    None => info!(done, per_sec = rate, "{}", at.name),
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Nothing is being read any more: whatever is on the screen comes off.
+    ///
+    /// The steps are done when the build is, and a bar left behind at the
+    /// end of a run is a line the shell prompt lands on.
+    pub fn finished(&self) {
+        if let Some(at) = self.at.lock().expect("no panic holds this").take() {
+            at.clear();
+        }
+    }
+}
+
+impl Step {
+    /// Take this step's line off the screen, where it drew one.
+    fn clear(self) {
+        if let Some(bar) = self.bar {
+            bar.finish_and_clear();
+            BARS.remove(&bar);
+        }
+    }
+}
+
+/// The bar one step draws: a proportion where the total is known, and a
+/// count and a rate where it is not.
+///
+/// A merge of four cursors has no total until it ends — see
+/// `galos_db::index::Progress::of` — and a bar drawn against a total
+/// somebody guessed at is a percentage that lies. It says how far it has
+/// got and how fast instead, which is what a reader watching one needs.
+fn drawing(step: &str, of: Option<u64>) -> ProgressBar {
+    let bar = match of {
+        Some(total) => {
+            let bar = ProgressBar::new(total);
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        &[BEFORE, "{human_pos}/{human_len}", AFTER].concat(),
+                    )
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
+            bar
+        }
+        None => {
+            let bar = ProgressBar::new_spinner();
+            bar.set_style(
+                ProgressStyle::default_spinner()
+                    .template("[{elapsed_precise}] {spinner} {human_pos} {msg}")
+                    .unwrap(),
+            );
+            bar.enable_steady_tick(Duration::from_millis(120));
+            bar
+        }
+    };
+    bar.set_message(step.to_owned());
+    BARS.add(bar)
 }
 
 /// Systems a minute, which is the rate a long read is watched by

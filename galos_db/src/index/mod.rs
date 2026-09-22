@@ -241,7 +241,12 @@ async fn build_cells(
     budget: u64,
     now: chrono::NaiveDateTime,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<Built> {
+    // Before the read rather than during it: what a bar is drawn against
+    // has to be there when the first row arrives, and this is one index
+    // scan of `pg_class`.
+    let of = estimated(db, "systems").await;
     let asked = || stop();
     let mut build =
         Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
@@ -265,9 +270,14 @@ async fn build_cells(
     .fetch(&db.pool);
 
     let mut scanned: Vec<(f64, f64)> = Vec::new();
+    let mut read = 0u64;
     while let Some(row) = rows.next().await {
         let row = row?;
         let address: i64 = row.try_get("address")?;
+        read += 1;
+        if read % TOLD_EVERY == 0 {
+            told(Progress { step: step::SYSTEMS, done: read, of });
+        }
         scanned.clear();
         while let Some((at, magnitude, temperature)) = ahead {
             // A star of a system this read will never reach: one whose
@@ -288,6 +298,7 @@ async fn build_cells(
             break;
         }
     }
+    told(Progress { step: step::SYSTEMS, done: read, of: Some(read) });
     Ok(build.finish(By::Database, Some(now), Ending::Abandon)?)
 }
 
@@ -410,6 +421,7 @@ pub async fn build_to_dir(
     checkpoint: &Path,
     parts: Parts,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<Reached<BuildReport>> {
     migrate(dir, stop)?;
     let since = db.now().await?.naive_utc();
@@ -421,9 +433,10 @@ pub async fn build_to_dir(
         false => None,
         true => {
             let budget = galos_index::region_budget();
-            let built =
-                build_cells(db, dir, checkpoint, params, budget, since, stop)
-                    .await?;
+            let built = build_cells(
+                db, dir, checkpoint, params, budget, since, stop, told,
+            )
+            .await?;
             let report = match built {
                 Built::Index(report) => report,
                 Built::Stopped(abandoned) => {
@@ -443,10 +456,10 @@ pub async fn build_to_dir(
     // The names table alone, for a repair that wants it and not the tree:
     // one streamed read, and the rows sorted on disk rather than in memory.
     if parts.names && !parts.cells {
-        write_names(db, dir).await?;
+        write_names(db, dir, told).await?;
     }
 
-    let meta = metadata::write_parts(db, dir, parts).await?;
+    let meta = metadata::write_parts(db, dir, parts, told).await?;
     Ok(Reached::End(BuildReport { cells, meta }))
 }
 
@@ -457,16 +470,27 @@ pub async fn build_to_dir(
 /// is `ORDER BY address`, which is the order the table wants, so the
 /// writer's external sort has nothing to do but merge one already ordered
 /// run.
-async fn write_names(db: &Database, dir: &Path) -> Result<usize> {
+async fn write_names(
+    db: &Database,
+    dir: &Path,
+    told: &Told<'_>,
+) -> Result<usize> {
+    let of = estimated(db, "systems").await;
     let mut names = galos_index::names::Writer::writing(dir)?;
     let query = format!(
         "{} WHERE position IS NOT NULL ORDER BY address",
         metadata::NAMES_SELECT
     );
     let mut rows = sqlx::query(&query).fetch(&db.pool);
+    let mut read = 0u64;
     while let Some(row) = rows.next().await {
         names.push(metadata::name_from_row(&row?)?)?;
+        read += 1;
+        if read % TOLD_EVERY == 0 {
+            told(Progress { step: step::NAMES, done: read, of });
+        }
     }
+    told(Progress { step: step::NAMES, done: read, of: Some(read) });
     Ok(names.finish()?)
 }
 
@@ -532,17 +556,18 @@ pub async fn catch_up(
     parts: Parts,
     rebuild: bool,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<Reached<chrono::NaiveDateTime>> {
     if parts != Parts::ALL {
         let since = db.now().await?.naive_utc();
-        return Ok(build_to_dir(db, dir, checkpoint, parts, stop).await?.map(
-            |report| {
+        return Ok(build_to_dir(db, dir, checkpoint, parts, stop, told)
+            .await?
+            .map(|report| {
                 info!(dir = %dir.display(), %report, "index parts derived");
                 since
-            },
-        ));
+            }));
     }
-    Ok(bring_level(db, dir, checkpoint, rebuild, stop)
+    Ok(bring_level(db, dir, checkpoint, rebuild, stop, told)
         .await?
         .map(|it| it.cursor))
 }
@@ -592,6 +617,94 @@ pub fn never() -> &'static Stop<'static> {
     &|| false
 }
 
+/// How far a step that takes minutes has got.
+///
+/// The steps here are reads of the whole galaxy: a cold build is every
+/// positioned system and then everything ever scanned in one of them, and
+/// on a database the size of the one this is written for that is an hour
+/// in which nothing happens that a terminal can see. A run nobody can tell
+/// from a hung one is the complaint; this is what answers it.
+///
+/// Told rather than drawn, for the same reason [`Stop`] is asked rather
+/// than installed: what a bar looks like, and whether there is a terminal
+/// to draw one on at all, is the binary's business. See `galos::bar`.
+#[derive(Copy, Clone, Debug)]
+pub struct Progress<'a> {
+    /// What is being read or written, in the words an operator reads.
+    pub step: &'a str,
+    /// How much of it is behind this: systems, addresses or files.
+    pub done: u64,
+    /// How much there is altogether, where something cheap knows it.
+    ///
+    /// The planner's row estimate for a read of a whole table, the length
+    /// of the changed set for a pass, and [`None`] for a merge of four
+    /// cursors, whose count no query answers without reading it first.
+    pub of: Option<u64>,
+}
+
+/// Where a long step says how far it has got.
+pub type Told<'a> = dyn Fn(Progress<'_>) + Send + Sync + 'a;
+
+/// Nobody is watching, which is what a test and a one-shot caller want.
+pub fn untold() -> &'static Told<'static> {
+    &|_| {}
+}
+
+/// How many records a read gets through between what it says.
+///
+/// Ten thousand is a few hundred lines over a galaxy of systems and a
+/// tenth of a second at the rate a cold read holds, which is more often
+/// than a terminal is redrawn and far less often than a row arrives.
+const TOLD_EVERY: u64 = 10_000;
+
+/// The steps a build and a pass are made of, as an operator reads them.
+///
+/// Named here rather than written at each call because the binary groups
+/// what it draws by the step it is told, and two spellings of one step are
+/// two bars for one read.
+pub mod step {
+    /// Every positioned system, which the cell tree and the names table
+    /// are both built from.
+    pub const SYSTEMS: &str = "reading every system";
+    /// The same read, where only the names table is wanted.
+    pub const NAMES: &str = "reading every system's name";
+    /// The populated table, which is one query and one write.
+    pub const POPULATED: &str = "reading the populated systems";
+    /// Everything ever scanned: the stars, bodies and barycenters of every
+    /// system with any of them, merged in address order.
+    pub const SCANNED: &str = "reading everything scanned";
+    /// The faction names, which is one query and one write.
+    pub const FACTIONS: &str = "reading the faction names";
+    /// The systems a pass found changed, applied a chunk at a time.
+    pub const CHANGED: &str = "applying what changed";
+}
+
+/// The planner's estimate of how many rows `table` holds.
+///
+/// For a bar to draw against. `count(*)` over `systems` is a read of the
+/// table this is about to read anyway, so the estimate `galos db status`
+/// reports is what a total comes from here too: it is wrong by whatever
+/// has arrived since the last `ANALYZE`, which moves a bar's last percent
+/// and nothing else.
+async fn estimated(db: &Database, table: &str) -> Option<u64> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "SELECT CASE WHEN c.reltuples < 0 \
+                     THEN COALESCE(s.n_live_tup, 0) \
+                     ELSE c.reltuples::bigint END \
+           FROM pg_class c \
+           JOIN pg_namespace n ON n.oid = c.relnamespace \
+           LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid \
+          WHERE n.nspname = 'public' AND c.relkind = 'r' \
+            AND c.relname = $1",
+    )
+    .bind(table)
+    .fetch_optional(&db.pool)
+    .await
+    .ok()
+    .flatten();
+    row.map(|(rows,)| rows.max(0) as u64).filter(|rows| *rows > 0)
+}
+
 /// Bring `dir` level with the database, then keep it there as the feed
 /// writes, publishing what each round of changes touched.
 ///
@@ -610,9 +723,10 @@ pub async fn watch(
     interval: Duration,
     rebuild: bool,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<()> {
     let Reached::End(mut level) =
-        bring_level(db, dir, checkpoint, rebuild, stop).await?
+        bring_level(db, dir, checkpoint, rebuild, stop, told).await?
     else {
         info!(
             dir = %dir.display(),
@@ -633,7 +747,7 @@ pub async fn watch(
         if stop() {
             break;
         }
-        pass(db, dir, checkpoint, &mut level).await?;
+        pass(db, dir, checkpoint, &mut level, told).await?;
     }
     info!(dir = %dir.display(), "asked to stop watching");
     Ok(())
@@ -679,6 +793,7 @@ async fn bring_level(
     checkpoint: &Path,
     rebuild: bool,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<Reached<Level>> {
     // Before the migration, which is the first thing here that touches the
     // directory. A refusal that arrives after a layout migration has moved
@@ -716,7 +831,7 @@ async fn bring_level(
             if stop() {
                 return Ok(Reached::Stopped(Abandoned::unstarted()));
             }
-            match build_level(db, dir, checkpoint, stop).await? {
+            match build_level(db, dir, checkpoint, stop, told).await? {
                 Reached::End(level) => level,
                 Reached::Stopped(abandoned) => {
                     return Ok(Reached::Stopped(abandoned));
@@ -725,8 +840,9 @@ async fn bring_level(
         }
     };
     while !stop()
-        && pass(db, dir, checkpoint, &mut level).await? >= CHANGED_CHUNK
-    {}
+        && pass(db, dir, checkpoint, &mut level, told).await? >= CHANGED_CHUNK
+    {
+    }
     Ok(Reached::End(level))
 }
 
@@ -740,6 +856,7 @@ async fn build_level(
     dir: &Path,
     checkpoint: &Path,
     stop: &Stop<'_>,
+    told: &Told<'_>,
 ) -> Result<Reached<Level>> {
     info!(dir = %dir.display(), "building initial index (reading every system)");
     let start = Instant::now();
@@ -747,13 +864,14 @@ async fn build_level(
     // directory and the resume point. A watch needs a tree, so it
     // gets one the way a restart would: by resuming from what the
     // build just left.
-    let report =
-        match build_to_dir(db, dir, checkpoint, Parts::ALL, stop).await? {
-            Reached::End(report) => report,
-            Reached::Stopped(abandoned) => {
-                return Ok(Reached::Stopped(abandoned));
-            }
-        };
+    let report = match build_to_dir(db, dir, checkpoint, Parts::ALL, stop, told)
+        .await?
+    {
+        Reached::End(report) => report,
+        Reached::Stopped(abandoned) => {
+            return Ok(Reached::Stopped(abandoned));
+        }
+    };
     info!(%report, elapsed = ?start.elapsed(), "initial index built");
     match resume(dir, checkpoint, &BuildParams::default()) {
         Resume::Level(tree, meta, cursor) => {
@@ -808,6 +926,7 @@ async fn pass(
     dir: &Path,
     checkpoint: &Path,
     level: &mut Level,
+    told: &Told<'_>,
 ) -> Result<usize> {
     let now = db.now().await?.naive_utc();
     let touched = changed_addresses(db, level.cursor - CURSOR_OVERLAP).await?;
@@ -823,6 +942,12 @@ async fn pass(
     // files are one per system, so that one is summed.
     let mut body_files = 0;
     let mut applied: Vec<System> = Vec::new();
+    // A catch-up's first passes are the week the directory was behind by,
+    // which is chunks of ten thousand and minutes of them. Addresses asked
+    // about rather than systems found: an address with no positioned row
+    // still costs the chunk it was read in.
+    let of = Some(touched.len() as u64);
+    let mut asked = 0u64;
     for chunk in touched.chunks(CHANGED_CHUNK) {
         let inputs = inputs_for(db, chunk).await?;
         level.tree.apply(&inputs);
@@ -830,6 +955,8 @@ async fn pass(
         moved.absorb(chunk_moved);
         body_files += wrote;
         applied.extend(inputs);
+        asked += chunk.len() as u64;
+        told(Progress { step: step::CHANGED, done: asked, of });
     }
     level.tree.publish(dir)?;
     let report = level.meta.publish_pass(db, dir, moved, body_files).await?;
@@ -1326,12 +1453,19 @@ mod tests {
         .await
         .expect("the system should write");
 
-        let cursor =
-            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
-                .await
-                .expect("the catch-up should run")
-                .end()
-                .expect("nothing asked it to stop");
+        let cursor = catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::ALL,
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the catch-up should run")
+        .end()
+        .expect("nothing asked it to stop");
         assert!(
             cursor > before,
             "a cursor at {} is behind the write at {} it covered, so whoever \
@@ -1356,12 +1490,19 @@ mod tests {
                 .expect("a modification time");
         async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
 
-        let again =
-            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
-                .await
-                .expect("the second catch-up should run")
-                .end()
-                .expect("nothing asked it to stop");
+        let again = catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::ALL,
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the second catch-up should run")
+        .end()
+        .expect("nothing asked it to stop");
         assert!(again >= cursor, "the cursor went backwards");
         let after =
             std::fs::metadata(galos_index::source::populated_path(&dir))
@@ -1429,7 +1570,7 @@ mod tests {
         // A directory brought level, and then a system written after it
         // was: the pass that publishes this one is what has to leave the
         // resume point standing for it.
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
             .await
             .expect("the first catch-up should run");
         let system = elite_journal::system::System {
@@ -1458,7 +1599,7 @@ mod tests {
         Pending::append(&checkpoint, None, &[input(RECORDED, [7.0, 8.0, 9.0])])
             .expect("a pending log should write");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never())
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
             .await
             .expect("the second catch-up should run");
 
@@ -1518,8 +1659,16 @@ mod tests {
         let checkpoint = dir.with_extension("checkpoint");
         let _ = std::fs::remove_file(&checkpoint);
 
-        let stopped =
-            catch_up(&db, &dir, &checkpoint, Parts::ALL, false, &|| true).await;
+        let stopped = catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::ALL,
+            false,
+            &|| true,
+            untold(),
+        )
+        .await;
         assert_eq!(
             stopped.expect("a stop is not a failure"),
             Reached::Stopped(Abandoned::unstarted()),

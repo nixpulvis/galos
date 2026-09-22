@@ -42,6 +42,8 @@
 //! all, and both sit behind the `db` feature with everything else that
 //! does.
 
+#[cfg(feature = "db")]
+use crate::bar;
 use crate::sink::relay::{Dropped, Live, Reading};
 use crate::sink::{Clock, Index, Sink};
 use crate::Shutdown;
@@ -222,6 +224,13 @@ impl Derive {
             return Ok(Levelled::Ready(None));
         };
 
+        // One set of steps for every round of the handoff: the rounds are
+        // one read after another and never two at once, so the second
+        // round takes the screen back from the first.
+        let steps = bar::Steps::new();
+        let told = |progress: index::Progress| {
+            steps.at(progress.step, progress.done, progress.of);
+        };
         for round in 1.. {
             // Cleared before the round rather than after it, so what is
             // counted is what was dropped while this round ran.
@@ -233,9 +242,12 @@ impl Derive {
                 Parts::ALL,
                 self.rebuild,
                 stop,
+                &told,
             )
             .await
-            .map_err(|err| format!("{err}"))?;
+            .map_err(|err| format!("{err}"));
+            steps.finished();
+            let levelled = levelled?;
             let cursor = match levelled {
                 Reached::End(cursor) => cursor,
                 Reached::Stopped(abandoned) => {
@@ -420,16 +432,26 @@ pub async fn from_database(
     // killed, and a catch-up over a galaxy is an hour of not hearing the
     // question.
     let stop = || shutdown.asked();
-    match watch {
-        Some(every) => index::watch(db, dir, checkpoint, every, rebuild, &stop)
-            .await
-            .map_err(|err| format!("{err}")),
+    // Every step of a build or a pass draws here, one at a time. Cleared
+    // on the way out whichever way the run ended, a bar left on the screen
+    // being the line the shell prompt lands on.
+    let steps = bar::Steps::new();
+    let told = |progress: index::Progress| {
+        steps.at(progress.step, progress.done, progress.of);
+    };
+    let ran = match watch {
+        Some(every) => {
+            index::watch(db, dir, checkpoint, every, rebuild, &stop, &told)
+                .await
+                .map_err(|err| format!("{err}"))
+        }
         None => {
-            let levelled =
-                index::catch_up(db, dir, checkpoint, parts, rebuild, &stop)
-                    .await
-                    .map_err(|err| format!("{err}"))?;
-            match levelled {
+            let levelled = index::catch_up(
+                db, dir, checkpoint, parts, rebuild, &stop, &told,
+            )
+            .await
+            .map_err(|err| format!("{err}"));
+            levelled.map(|levelled| match levelled {
                 Reached::End(cursor) => {
                     info!(
                         cursor = %cursor,
@@ -446,10 +468,11 @@ pub async fn from_database(
                          start",
                     );
                 }
-            }
-            Ok(())
+            })
         }
-    }
+    };
+    steps.finished();
+    ran
 }
 
 #[cfg(test)]
