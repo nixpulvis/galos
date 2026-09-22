@@ -202,7 +202,7 @@ pub fn run(cli: Cli, forced: bool) -> ExitCode {
 static ASKED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Take Ctrl-C, so a pass over a galaxy can be stopped and say so.
+/// Take an interrupt, so a pass over a galaxy can be stopped and say so.
 ///
 /// **The default action is to die where it stands**, which for a sweep is
 /// a directory part way through one — recoverable, since every pass here
@@ -211,13 +211,15 @@ static ASKED: std::sync::atomic::AtomicBool =
 /// checked between shards, so a stop lands in the time one shard takes
 /// and the command reports what it reclaimed before it was stopped.
 ///
-/// A *second* Ctrl-C leaves at once, which is the answer for a pass that
-/// is somehow not reaching its next flag check.
+/// A *second* interrupt leaves at once, which is the answer for a pass
+/// that is somehow not reaching its next flag check.
 ///
 /// Through `ctrlc`, which is what the filling verbs install as well — one
 /// mechanism, rather than a hand-rolled `sigaction` here and a crate
-/// there. What differs is only what is asked to stop: a pass has a flag,
-/// and a run that follows a feed has a `Shutdown` several tasks read.
+/// there. SIGTERM and SIGHUP land here too, so a verb stopped by a service
+/// manager gives its directory's lock back the way a Ctrl-C does. What
+/// differs is only what is asked to stop: a pass has a flag, and a run
+/// that follows a feed has a `Shutdown` several tasks read.
 fn asking_to_stop() {
     let installed = ctrlc::set_handler(|| {
         if ASKED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -226,13 +228,13 @@ fn asking_to_stop() {
         }
         eprintln!(
             "stopping at the end of this shard, which takes a moment. \
-             Ctrl-C again to stop now."
+             Interrupt again to stop now."
         );
     });
     if let Err(err) = installed {
         eprintln!(
-            "no signal handler; Ctrl-C will stop this pass where it \
-                   stands: {err}"
+            "no signal handler; an interrupt will stop this pass where it \
+             stands: {err}"
         );
     }
 }

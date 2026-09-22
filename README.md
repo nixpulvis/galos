@@ -206,10 +206,18 @@ process per directory: a run writing one takes `<dir>.lock` and a second is
 refused.
 
 Ctrl-C asks the run to stop rather than killing it, so the last publish, the
-whole directory and its resume point are written before it exits. A first
-full build has nothing published to keep: asked to stop, it leaves the
-directory as it found it and the next run builds it again. A second Ctrl-C
-stops it where it stands.
+whole directory and its resume point are written before it exits. SIGTERM
+and SIGHUP are the same ask, which is what `systemctl stop`, `docker stop`
+and `kill` send: a run stopped by a service manager gives the directory's
+lock back the way an interactive one does, and the restart behind it is not
+refused. A first full build has nothing published to keep: asked to stop, it
+leaves the directory as it found it and the next run builds it again. A
+second interrupt stops it where it stands.
+
+A run that reads the galaxy says where it has got to: a bar per step on a
+terminal — every positioned system, then everything ever scanned, then the
+changed set of each pass — and a line every thirty seconds where the output
+is redirected and a bar would be a file of overwritten lines.
 
 A run that reads the galaxy says where it has got to: a bar per step on a
 terminal — every positioned system, then everything ever scanned, then the

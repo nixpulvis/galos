@@ -72,7 +72,13 @@ async-channel = "2"
 # resume point rather than in a killed process, which is a handler rather
 # than the default action. Both store groups install it, and the `index`
 # group's one-pass verbs read the same flag between shards.
-ctrlc = "3"
+#
+# `termination` is SIGTERM and SIGHUP as well as SIGINT, which is how a run
+# is stopped when nobody is at a terminal: `systemctl stop`, `docker stop`
+# and a plain `kill` all send TERM, and without this they killed the
+# process mid-publish and left the directory's lock file behind for the
+# next start to refuse.
+ctrlc = { version = "3", features = ["termination"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

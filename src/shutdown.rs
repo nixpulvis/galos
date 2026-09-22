@@ -33,15 +33,22 @@ impl Shutdown {
     }
 }
 
-/// Ask the run to stop on Ctrl-C, and kill it on the second one.
+/// Ask the run to stop on an interrupt, and kill it on the second one.
 ///
 /// The whole reason there is a handler at all: the default action for
 /// SIGINT is to die where it stands, and where it stands is usually
 /// mid-publish, with a directory serving systems no resume point knows
 /// about. Asking instead costs whatever is left of the current publish. A
-/// second Ctrl-C is somebody who has decided that is too long, and it is
-/// theirs to have — the directory is what it was before the run started
+/// second interrupt is somebody who has decided that is too long, and it
+/// is theirs to have — the directory is what it was before the run started
 /// publishing over it.
+///
+/// **SIGTERM and SIGHUP as well as SIGINT**, which is the `termination`
+/// feature of `ctrlc` and is how a run with nobody at a terminal is
+/// stopped: `systemctl stop`, `docker stop` and a plain `kill` all send
+/// TERM. Taking only Ctrl-C meant a service manager killed the ingest
+/// mid-publish and left `<dir>.lock` behind, so the restart it was on its
+/// way to refused the directory until somebody passed `--force-lock`.
 ///
 /// Here rather than in a binary because both ingests want it, and a
 /// handler that half the tools install is a tool that kills a directory.
@@ -53,14 +60,15 @@ pub fn on_interrupt(shutdown: Shutdown) {
         }
         eprintln!(
             "stopping: the last publish and the resume point still have to \
-             be written, so this takes a moment. Ctrl-C again to stop now."
+             be written, so this takes a moment. Interrupt again to stop \
+             now."
         );
         shutdown.ask();
     });
     if let Err(err) = installed {
         tracing::warn!(
             error = %err,
-            "no signal handler; Ctrl-C will kill this run mid-publish",
+            "no signal handler; an interrupt will kill this run mid-publish",
         );
     }
 }
