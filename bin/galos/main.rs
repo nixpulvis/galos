@@ -64,17 +64,6 @@ mod search;
 struct Cli {
     #[command(subcommand)]
     command: Command,
-
-    /// Clear a lock left behind by a builder that was killed, and take it.
-    ///
-    /// The refusal names the pid holding the directory. Check it first: a
-    /// lock cleared while its builder is merely slow to answer is two
-    /// writers over one directory, which is what the lock is for.
-    ///
-    /// Global rather than per-verb: it is a judgement about the directory,
-    /// and every verb that writes one can meet the same refusal.
-    #[arg(long, global = true)]
-    force_lock: bool,
 }
 
 #[derive(Subcommand)]
@@ -141,9 +130,8 @@ async fn main() -> ExitCode {
         )
         .init();
 
-    let forced = cli.force_lock;
     match cli.command {
-        Command::Ingest(it) => match ingest::run(it, forced).await {
+        Command::Ingest(it) => match ingest::run(it).await {
             Ok(true) => ExitCode::SUCCESS,
             Ok(false) => ExitCode::FAILURE,
             Err(said) => {
@@ -151,7 +139,7 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Command::Index(it) => index::run(it, forced),
+        Command::Index(it) => index::run(it),
         #[cfg(feature = "db")]
         Command::Db(it) => match db::run(it).await {
             Ok(true) => ExitCode::SUCCESS,

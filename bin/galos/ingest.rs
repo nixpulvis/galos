@@ -282,6 +282,17 @@ pub struct Cli {
     /// Take everything within this many light years of it instead.
     #[arg(long, short, value_name = "LY", help_heading = API)]
     sphere: Option<u32>,
+
+    /// Clear a lock left behind by a builder that was killed, and take it.
+    ///
+    /// The refusal names the pid holding the directory. Check it first: a
+    /// lock cleared while its builder is merely slow to answer is two
+    /// writers over one directory, which is what the lock is for.
+    ///
+    /// Here and on the `index` verbs, which are the two that write a
+    /// directory and so the two that can meet the refusal.
+    #[arg(long, help_heading = SINKS)]
+    force_lock: bool,
 }
 
 /// One part of what a built index directory holds
@@ -400,12 +411,12 @@ impl Cli {
 
 /// Read every named source into every named sink, and close them out.
 ///
-/// A supervisor: it installs the SIGINT handler, holds the shutdown token
-/// both halves read, and joins them before it answers — so a Ctrl-C ends in
-/// the last publish, the whole-directory [`Sink::finish`] and a resume
-/// point, rather than in a killed process and a directory nothing can
-/// reopen.
-pub async fn run(cli: Cli, forced: bool) -> Result<bool, String> {
+/// A supervisor: it installs the signal handler, holds the shutdown token
+/// both halves read, and joins them before it answers — so a Ctrl-C or a
+/// SIGTERM ends in the last publish, the whole-directory [`Sink::finish`]
+/// and a resume point, rather than in a killed process and a directory
+/// nothing can reopen.
+pub async fn run(cli: Cli) -> Result<bool, String> {
     refused(&cli)?;
 
     let shutdown = Shutdown::new();
@@ -416,7 +427,7 @@ pub async fn run(cli: Cli, forced: bool) -> Result<bool, String> {
     // downstream can notice and no resume point can repair.
     let _lock = match &cli.index {
         Some(dir) => Some(
-            match forced {
+            match cli.force_lock {
                 true => galos_index::Lock::force(dir),
                 false => galos_index::Lock::take(dir),
             }

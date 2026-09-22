@@ -45,6 +45,20 @@ use std::process::ExitCode;
 pub struct Cli {
     #[command(subcommand)]
     pub(super) command: Command,
+
+    /// Clear a lock left behind by a builder that was killed, and take it.
+    ///
+    /// The refusal names the pid holding the directory. Check it first: a
+    /// lock cleared while its builder is merely slow to answer is two
+    /// writers over one directory, which is what the lock is for.
+    ///
+    /// Global to this group rather than to the whole command line: it is a
+    /// judgement about a directory, and `db`, `search` and `route` have
+    /// none to judge. Every verb here that writes one can meet the
+    /// refusal, so it is taken before or after the verb: `galos index
+    /// --force-lock sweep` and `galos index sweep --force-lock` both.
+    #[arg(long, global = true)]
+    pub(super) force_lock: bool,
 }
 
 #[derive(Subcommand)]
@@ -165,16 +179,16 @@ fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
 
 /// Answer one `galos index` verb.
 ///
-/// `forced` is the top-level `--force-lock`: it is asked once, above every
-/// verb group, because clearing a lock a killed builder left behind is a
-/// judgement about the *directory* rather than about the verb that met the
-/// refusal.
-pub fn run(cli: Cli, forced: bool) -> ExitCode {
+/// `--force-lock` is asked once for the group rather than per verb,
+/// because clearing a lock a killed builder left behind is a judgement
+/// about the *directory* rather than about the verb that met the refusal.
+pub fn run(cli: Cli) -> ExitCode {
     // Every verb here is one pass over the directory, stopped between
     // shards by the flag [`stopping`] reads. A run that *fills* one has a
     // publish and a resume point to close out and installs a handler of
     // its own; see `crate::ingest`.
     asking_to_stop();
+    let forced = cli.force_lock;
     match cli.command {
         Command::Status { dir } => status(&dir),
         Command::Diff { a, b, bodies, detail, limit } => {
