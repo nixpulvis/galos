@@ -190,7 +190,9 @@ pub struct Cli {
     /// rewriting to say nothing new.
     ///
     /// Refused with `--watch`, which would repair one part forever while
-    /// the rest of the directory aged behind it.
+    /// the rest of the directory aged behind it, and refused where the
+    /// directory is not built: one part written into an empty directory is
+    /// a table with no tree over it, which nothing can open.
     #[cfg(feature = "db")]
     #[arg(
         long,

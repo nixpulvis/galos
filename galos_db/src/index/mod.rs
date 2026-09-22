@@ -543,7 +543,11 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 ///
 /// `parts` narrower than [`Parts::ALL`] is the repair case: a one-shot
 /// [`build_to_dir`] of those parts, and the cursor answered is the clock
-/// read before the build read anything.
+/// read before the build read anything. It is a *repair*, so it is refused
+/// where there is nothing to repair — a directory serving nothing, written
+/// one part at a time, is a galaxy of reaches with no tree over them, and
+/// the run that wrote it read the whole database to say "the index is
+/// level" over a directory `galos index status` cannot open.
 ///
 /// A run asked to stop before the directory was level at all — which is a
 /// cold build cut short, every other step leaving a directory that can be
@@ -559,6 +563,19 @@ pub async fn catch_up(
     told: &Told<'_>,
 ) -> Result<Reached<chrono::NaiveDateTime>> {
     if parts != Parts::ALL {
+        // Before the clock and before any read: what this costs otherwise
+        // is the whole galaxy, and what it leaves cannot be opened.
+        if serving(dir).is_none() {
+            return Err(std::io::Error::other(format!(
+                "{}: nothing is published here, and one part alone is a \
+                 repair of a directory that is already built. Build it \
+                 first, which writes every part:\n  galos ingest --from \
+                 database -i {}",
+                dir.display(),
+                dir.display(),
+            ))
+            .into());
+        }
         let since = db.now().await?.naive_utc();
         return Ok(build_to_dir(db, dir, checkpoint, parts, stop, told)
             .await?
@@ -1514,6 +1531,85 @@ mod tests {
             "a catch-up rebuilt a directory it had just brought level, so its \
              own resume point was refused",
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
+
+        db.done().await;
+    }
+
+    /// One part alone is a repair, and a directory serving nothing has
+    /// nothing to repair
+    ///
+    /// What this stops: a run asked for `--only reaches` against a
+    /// directory nobody had built yet read the whole database, wrote a
+    /// `reaches.bin` with no cell tree over it, and reported that the
+    /// index was level. `galos index status` could not open what it left.
+    ///
+    /// The second half is the other side of the same rule: the same
+    /// narrowed call against a directory that *is* built is the repair
+    /// case, and it goes through.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_narrowed_derive_wants_a_directory_to_repair() {
+        let Some(db) = Scratch::new().await else { return };
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_only_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let _ = std::fs::remove_file(&checkpoint);
+
+        let one = Parts { reaches: true, ..Parts::NONE };
+        let refused =
+            catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
+                .await;
+        let Err(said) = refused else {
+            panic!("a part alone was derived into a directory with no tree")
+        };
+        let said = format!("{said}");
+        assert!(
+            said.contains("galos ingest"),
+            "a refusal should say how to build it: {said}",
+        );
+        assert!(
+            !galos_index::source::reaches_path(&dir).exists(),
+            "the refusal came after the read it was there to save",
+        );
+
+        // Something to build a directory out of, so the repair below has
+        // one to repair.
+        let mut conn = db.acquire().await.expect("a connection");
+        let system = elite_journal::system::System {
+            pos: Some(elite_journal::system::Coordinate {
+                x: 7.0,
+                y: 8.0,
+                z: 9.0,
+            }),
+            ..elite_journal::system::System::new(CAUGHT, "TEST CAUGHT SYSTEM")
+        };
+        crate::systems::System::from_journal(
+            &mut conn,
+            chrono::Utc::now(),
+            "test",
+            &system,
+        )
+        .await
+        .expect("the system should write");
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
+            .await
+            .expect("the build should run")
+            .end()
+            .expect("nothing asked it to stop");
+
+        catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
+            .await
+            .expect("a built directory is the repair case")
+            .end()
+            .expect("nothing asked it to stop");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&checkpoint);
