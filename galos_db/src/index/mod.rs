@@ -1573,7 +1573,8 @@ mod tests {
         let said = format!("{said}");
         assert!(
             said.contains("galos ingest"),
-            "a refusal should say how to build it: {said}",
+            "a refusal should say how to build it: {}",
+            said,
         );
         assert!(
             !galos_index::source::reaches_path(&dir).exists(),
@@ -1618,15 +1619,24 @@ mod tests {
     }
 
     /// A catch-up leaves a resume point standing for what the directory
-    /// serves
+    /// serves, however many frames the log holds for one system
     ///
     /// Nothing replays for the caller of a catch-up: it opens the directory
     /// for editing against the checkpoint beside it, and a checkpoint short
     /// of what is served cannot be opened at all.
     ///
-    /// The pending log goes with it: one written here holds everything the
-    /// log held, so a log left standing would be replayed over a directory
-    /// that already has it.
+    /// The pending log goes with it. A system reported again is published
+    /// again and logged again — the look-back alone is enough for that, a
+    /// pass reading back [`CURSOR_OVERLAP`] past its own cursor — so the
+    /// log holds two frames naming one system, and what replaying them
+    /// must land on is that one system and not two.
+    ///
+    /// **The frames are behind the publish and never ahead of it**, which
+    /// is what [`pass`] writes in that order for: a frame stands for
+    /// systems the directory already serves, and a resume point larger
+    /// than the directory beneath it is one [`resume`] refuses rather than
+    /// opens. So this appends nothing by hand; it reports the system twice
+    /// and lets the passes log what they published.
     ///
     /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
     /// down without one.
@@ -1689,15 +1699,27 @@ mod tests {
         .await
         .expect("the system should write");
 
-        // A frame from an earlier run, still in the log because nothing has
-        // compacted since. The pass below appends behind it, so replaying
-        // both must land on one system and not two.
-        Pending::append(&checkpoint, None, &[input(RECORDED, [7.0, 8.0, 9.0])])
-            .expect("a pending log should write");
-
         catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
             .await
             .expect("the second catch-up should run");
+
+        // The same system reported again, which the pass below publishes
+        // and logs a second frame for, behind the frame the pass above
+        // left. Written rather than waited for: the look-back would carry
+        // it anyway, and a test should not turn on how long it took to get
+        // here.
+        crate::systems::System::from_journal(
+            &mut conn,
+            chrono::Utc::now(),
+            "test",
+            &system,
+        )
+        .await
+        .expect("the system should be reported again");
+
+        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
+            .await
+            .expect("the third catch-up should run");
 
         let served = Index::read(&dir)
             .expect("the index should read")
@@ -1707,6 +1729,15 @@ mod tests {
             .count();
         let written = Checkpoint::read(&checkpoint)
             .expect("the resume point should read");
+        // Two records over one system, which is what makes the replay
+        // below worth asserting: `deltas` is every frame's records, in the
+        // order the passes logged them.
+        assert!(
+            written.deltas().len() > 1,
+            "the log holds {} record(s), so nothing here replays two over \
+             one system",
+            written.deltas().len(),
+        );
         // The tree a restart would rebuild: the base in one batch and the
         // log over it, which is `resume`'s own two moves.
         let params = BuildParams::default();
