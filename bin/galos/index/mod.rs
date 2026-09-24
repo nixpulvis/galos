@@ -6,6 +6,8 @@
 //! galos index sweep -i .index/full --bodies --apply
 //! galos index migrate            # -i defaults, or GALOS_INDEX says
 //! galos index diff .index/from_dump .index/from_db
+//! galos index backup -i .index/full --to /backups/full-2026-09-22
+//! galos index merge -i .index/full --from .index/caught_up
 //! ```
 //!
 //! **Filling a directory is not here** — that is `galos ingest --index
@@ -26,6 +28,28 @@
 //! is asked to act, because the passes are minutes over a galaxy and a
 //! silent terminal is not a run anybody can judge. Ctrl-C is answered
 //! between shards; a second one kills.
+//!
+//! ## The three that are about a *pair* of directories
+//!
+//! `backup`, `restore` and `merge` are what a production failure needs,
+//! and they are here rather than in a runbook because each of them has a
+//! rule in it that a `cp` and a wish do not have.
+//!
+//! `backup` and `restore` are one operation said in the two directions an
+//! operator says it: a copy of the directory **and the resume point
+//! beside it**, taken in an order that makes a copy of a directory a feed
+//! is publishing into safe — the publish log before the base it may have
+//! been folded into, and `index.bin` last of all, so the copy holds at
+//! worst payloads its tree does not name. What comes out is an index
+//! directory like any other: `status` reads it, `diff` checks it, `ingest
+//! --watch` carries on from it. There is no archive format here.
+//!
+//! `merge` is the third step of the failure that is otherwise a
+//! re-import: collection is pointed at a fresh directory so the feed
+//! keeps landing somewhere, the original is seen to, and the two are made
+//! one. The union is taken at full precision out of the two resume
+//! points, newest `updated_at` winning, and the tree is raised again off
+//! it — the same cold build a dump gets. See [`galos_index::absorb`].
 
 use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
@@ -92,6 +116,75 @@ pub(super) enum Command {
         /// How many differing rows to name before counting the rest.
         #[arg(long, default_value_t = 5)]
         limit: usize,
+    },
+    /// Copy a directory and the resume point beside it somewhere else.
+    ///
+    /// A backup of an index directory **is** an index directory: `galos
+    /// index status -i DEST` reads it, `galos index diff DIR DEST` says
+    /// whether it is still the same derivation, and `galos ingest --index
+    /// DEST --watch` carries on from it. There is no archive format here
+    /// to learn or to be unable to read in a year.
+    Backup {
+        /// The index directory to copy.
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
+        dir: PathBuf,
+        /// Where the copy goes. Its three resume-point siblings go beside
+        /// it, as they sit beside the original.
+        #[arg(long, value_name = "DEST")]
+        to: PathBuf,
+        /// Replace whatever already stands at the destination.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Copy a backup back over an index directory.
+    ///
+    /// [`Backup`](Command::Backup) with the arguments the other way round,
+    /// and the same one refusal: a destination that already holds
+    /// something is not written without `--force`.
+    Restore {
+        /// The backup to copy back.
+        #[arg(long, value_name = "SRC")]
+        from: PathBuf,
+        /// Where it goes.
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
+        dir: PathBuf,
+        /// Replace whatever already stands there.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Fold one index directory into another, newest record winning.
+    ///
+    /// What a failure needs and a re-import is not: collection is pointed
+    /// at a fresh directory so the feed keeps landing somewhere, the
+    /// original is seen to, and the two are then made one. The result is
+    /// what one run that had seen both feeds would hold.
+    ///
+    /// Both directories need the resume point beside them. Everything a
+    /// directory *serves* is a lossy projection — the payload downcasts
+    /// the magnitude, buckets the temperature and drops the age — so a
+    /// merge that read the directories rather than their resume points
+    /// would coarsen every system it carried, and is refused instead.
+    Merge {
+        /// The directory the other is folded into, and the only one this
+        /// run writes.
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
+        dir: PathBuf,
+        /// The directory to fold in. Read, never written.
+        #[arg(long, value_name = "DIR")]
+        from: PathBuf,
+        /// The destination's resume point, where `ingest --checkpoint`
+        /// put it somewhere other than `<DIR>.checkpoint`.
+        #[arg(long, value_name = "PATH")]
+        checkpoint: Option<PathBuf>,
+        /// The source's resume point, on the same terms.
+        #[arg(long, value_name = "PATH")]
+        from_checkpoint: Option<PathBuf>,
+        /// Weigh it and report what it would carry; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Walk a directory's loose body files into the packed shard files.
     Pack {
@@ -194,6 +287,26 @@ pub fn run(cli: Cli) -> ExitCode {
         Command::Diff { a, b, bodies, detail, limit } => {
             diff(&a, &b, Compare { bodies, detail, limit })
         }
+        Command::Backup { dir, to, force } => {
+            carry(&dir, &to, force, forced, "backup")
+        }
+        Command::Restore { from, dir, force } => {
+            carry(&from, &dir, force, forced, "restore")
+        }
+        Command::Merge {
+            dir,
+            from,
+            checkpoint,
+            from_checkpoint,
+            dry_run,
+        } => merge(
+            &dir,
+            &from,
+            checkpoint.as_deref(),
+            from_checkpoint.as_deref(),
+            dry_run,
+            forced,
+        ),
         Command::Pack { dir } => pack(&dir, forced),
         Command::Sweep { dir, bodies, apply } => {
             sweep(&dir, bodies, apply, forced)
@@ -747,6 +860,204 @@ fn pack(dir: &Path, forced: bool) {
         Err(e) => {
             eprintln!("cannot pack {}: {e}", dir.display());
             leave(Some(lock), 2);
+        }
+    }
+}
+
+/// Copy a directory and its resume point, which is both `backup` and
+/// `restore`.
+///
+/// **One function, because they are one operation.** A backup of an index
+/// directory is an index directory and nothing else: no archive, no
+/// manifest, no format to be unable to read in a year. `galos index
+/// status` reads the copy, `galos index diff` says whether it is still
+/// the same derivation, and `galos ingest --index` carries on from it.
+/// What the two verbs differ in is which way round the operator says it,
+/// and a runbook reads better for having both.
+///
+/// The lock is taken on the **destination**, which is the only side
+/// written. The source needs none: [`galos_index::copy`] takes the
+/// publish log before the base it may have been folded into, and
+/// `index.bin` last of all, so a copy taken across a live publish holds
+/// at worst payloads the copied tree does not name — which `sweep`
+/// reclaims — and never a cell the tree names with no payload under it,
+/// which is a galaxy quietly missing a piece.
+///
+/// `what` is the verb's own name, for the one line this prints and for
+/// the refusals: "restore" and "backup" are the same sentence about
+/// different directories, and an operator reading a refusal wants to see
+/// the word they typed.
+fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
+    if !from.is_dir() {
+        eprintln!(
+            "cannot {what} {}: there is no directory there",
+            from.display()
+        );
+        std::process::exit(2);
+    }
+    let standing = galos_index::copy::occupied(to);
+    if standing && !force {
+        eprintln!(
+            "{} already holds an index directory or a resume point; pass \
+             --force to replace it",
+            to.display()
+        );
+        std::process::exit(2);
+    }
+    if let Some(parent) = to.parent().filter(|it| !it.as_os_str().is_empty())
+    {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            eprintln!("cannot {what} into {}: {err}", to.display());
+            std::process::exit(2);
+        }
+    }
+
+    // The lock first, then the clearing: what `--force` replaces is a
+    // directory, and a directory somebody is writing is not one to
+    // replace out from under them.
+    let lock = held(to, forced);
+    if standing {
+        if let Err(err) = galos_index::copy::discard(to) {
+            eprintln!("cannot clear {}: {err}", to.display());
+            leave(Some(lock), 2);
+        }
+    }
+
+    let start = std::time::Instant::now();
+    let stop = stopping();
+    let mut said = |run: &galos_index::copy::Copied| {
+        eprint!(
+            "\r{} files, {}, {:.0?}",
+            run.files,
+            size(run.bytes),
+            start.elapsed()
+        );
+    };
+    let done = galos_index::copy::copy(from, to, &stop, &mut said);
+    // Padded before the carriage return: the report that follows is
+    // shorter than the progress line it lands on.
+    eprint!("\r{:<48}\r", "");
+    match done {
+        Ok(copied) => {
+            println!("{} -> {}", from.display(), to.display());
+            println!("  {copied}");
+            println!("  in {:.1?}", start.elapsed());
+            if stop() {
+                println!(
+                    "  stopped before the end: {} holds no index.bin and \
+                     reads as nothing, so run this again over it",
+                    to.display()
+                );
+                leave(Some(lock), 1);
+            }
+        }
+        Err(err) => {
+            eprintln!("cannot {what} {}: {err}", from.display());
+            leave(Some(lock), 2);
+        }
+    }
+}
+
+/// Fold one directory into another, and say what crossed.
+///
+/// Both directories are locked — the destination because it is rewritten
+/// whole and the source because a merge reading a directory somebody is
+/// publishing into would take half of one publish and half of the next.
+/// The destination is taken first, so two merges pointed at each other
+/// refuse rather than interleave.
+///
+/// Three exits rather than two, as [`diff`] has, and the difference
+/// between the last two is **whether the directory has to be come back
+/// to**:
+///
+/// - **0**, it merged, or `--dry-run` weighed it.
+/// - **1**, it refused the pair, or was stopped before the union
+///   landed: a directory with no resume point, two derivations that
+///   mean different things by a cursor, two faction tables that number
+///   a faction differently, a format this build does not read. Each
+///   says what to run instead. A stop in the bodies pass is also a 1 —
+///   that pass writes, but it only ever *adds* body records, so what it
+///   leaves is a directory serving everything it served and a little
+///   more.
+/// - **2**, it was stopped or something broke **after** the merged
+///   resume point had landed. The directory then holds the union at
+///   full precision with no `index.bin` over it, which reads as nothing
+///   at all and is what [`galos_index::absorb`] leaves on purpose:
+///   running the merge again finishes it, and so does `galos ingest
+///   --index DIR`. A 2 is therefore "come back to this", not "it is
+///   lost".
+///
+/// The rebuild does not answer an interrupt — `cold::Build::finish` says
+/// why, a stop in the middle of it being payloads with no index over
+/// them — so the second Ctrl-C is what ends one, and it lands in the
+/// same recoverable state.
+fn merge(
+    dir: &Path,
+    from: &Path,
+    checkpoint: Option<&Path>,
+    from_checkpoint: Option<&Path>,
+    dry_run: bool,
+    forced: bool,
+) {
+    use galos::sink::index::Index as Sink;
+
+    let into_point = Sink::checkpoint(dir, checkpoint);
+    let from_point = Sink::checkpoint(from, from_checkpoint);
+    if dir == from {
+        eprintln!("{} cannot be folded into itself", dir.display());
+        std::process::exit(2);
+    }
+
+    let lock = held(dir, forced);
+    let source = match dry_run {
+        // Nothing is written on either side, and refusing a dry run
+        // because a feed is live is refusing the one reading an operator
+        // would do *while* deciding.
+        true => None,
+        false => Some(held(from, forced)),
+    };
+
+    let start = std::time::Instant::now();
+    let stop = stopping();
+    // Padded, because a phase's line is shorter than the one before it —
+    // "the rebuild" follows "systems 12345678/200071629" — and a bare
+    // `\r` would leave the tail of the longer one standing.
+    let mut said = |step: &galos_index::absorb::Folding| {
+        eprint!("\r{step:<48}");
+    };
+    let done = galos_index::absorb::absorb(
+        dir,
+        &into_point,
+        from,
+        &from_point,
+        dry_run,
+        &stop,
+        &mut said,
+    );
+    eprint!("\r{:<48}\r", "");
+    drop(source);
+    match done {
+        Ok(absorbed) => {
+            println!("{} <- {}", dir.display(), from.display());
+            println!("  {absorbed}");
+            println!("  in {:.1?}", start.elapsed());
+        }
+        // A refusal about the *pair* leaves both directories exactly as
+        // they stood and is 1. A stop or a failure past the point the
+        // merged resume point landed leaves the destination holding the
+        // union with no index over it — recoverable by running this
+        // again, and not a directory to walk away from — and is 2.
+        Err(refused) => {
+            let touched = matches!(
+                refused,
+                galos_index::absorb::Refused::Failed { .. }
+                    | galos_index::absorb::Refused::Stopped {
+                        committed: true,
+                        ..
+                    }
+            );
+            eprintln!("{refused}");
+            leave(Some(lock), if touched { 2 } else { 1 });
         }
     }
 }

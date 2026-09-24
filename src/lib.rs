@@ -79,16 +79,29 @@
 //! rows read back out into a directory, which is how one is rebuilt
 //! rather than maintained.
 //!
-//! ### `galos index <status|diff|pack|sweep|verify|migrate|sectors> …`
+//! ### `galos index <status|diff|verify|backup|restore|merge|pack|sweep|migrate|sectors> …`
 //!
 //! Everything done *to* an index directory that already exists: report on
 //! it, compare two of them, repair one, or take one apart. None of it
 //! needs a database.
 //!
-//! ### `galos db <status|migrate|verify|catalog|stats> …`
+//! Three of them are about a *pair* of directories. `backup` and
+//! `restore` copy a directory and the resume point beside it, in an order
+//! that makes a copy taken across a live publish safe; what comes out is
+//! an index directory like any other. `merge` folds one directory into
+//! another, newest record winning, which is what a production failure
+//! needs and a re-import is not: collection is pointed at a fresh
+//! directory while the original is seen to, and the two are then made
+//! one.
+//!
+//! ### `galos db <status|migrate|verify|catalog|stats|backup|restore|merge> …`
 //!
 //! The same shape over Postgres: what it is, what is wrong with it, and
-//! what it holds.
+//! what it holds — and the same three about a pair of them. `backup` and
+//! `restore` are `pg_dump` and `pg_restore` with the flags that matter
+//! already right; `merge` folds another database into this one by the
+//! rule every write path already holds, a guarded upsert keyed by a
+//! natural key and stamped.
 //!
 //! The write path is here rather than in `bin/`: [`sink`] is the seam
 //! the sources write through and it is what an integration test has to be

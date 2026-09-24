@@ -86,6 +86,24 @@ struct Mark {
 pub struct LeftOff(Mark);
 
 impl LeftOff {
+    /// A resume that says nothing about where the read behind it got to.
+    ///
+    /// What a directory with **no mark** resumes as, and every directory
+    /// a database built is one: a database read has no place in its own
+    /// source to write down, so [`left_off`] answers [`None`] for it and
+    /// [`Start::Resuming`] could not be spelled at all.
+    ///
+    /// [`Start::Fresh`] is not the substitute it looks like. It removes
+    /// the mark and opens the names table with `names::Writer::writing`,
+    /// which starts a table from nothing — so a caller that already holds
+    /// the systems and wants the names carried forward has to resume, and
+    /// this is how. [`Build::finish`] writes no mark unless
+    /// [`Build::mark`] was called, so resuming this way leaves whatever
+    /// mark stands exactly as it was found.
+    pub fn nowhere() -> LeftOff {
+        LeftOff(Mark::default())
+    }
+
     /// Where the caller had read to, in the caller's own terms.
     pub fn cursor(&self) -> &[u8] {
         &self.0.cursor
@@ -138,7 +156,11 @@ pub fn left_off(checkpoint: &Path) -> Option<LeftOff> {
 /// Where the mark sits: beside the resume point, which is what it stands
 /// with. The build's scratch is cleared by the publish that writes this,
 /// so it cannot live there.
-fn mark_path(checkpoint: &Path) -> PathBuf {
+///
+/// Public because a copy of a directory has to carry it — see
+/// [`crate::copy`] — and one spelling of `.mark` is the only way that
+/// copy and this build agree about which file it is.
+pub fn mark_path(checkpoint: &Path) -> PathBuf {
     let mut name = checkpoint.as_os_str().to_owned();
     name.push(".mark");
     PathBuf::from(name)
@@ -541,7 +563,11 @@ fn offers(formed: &Formed, params: &BuildParams) -> io::Result<Vec<Offer>> {
 ///
 /// Beside the resume point rather than in the served directory: scratch,
 /// the size of the galaxy, and no client may see them.
-fn spill_dir(checkpoint: &Path) -> PathBuf {
+///
+/// Public for the same reason [`mark_path`] is: a copy of a directory
+/// has to know this is scratch so that it skips it rather than carrying
+/// a galaxy of spills nobody will read — see [`crate::copy`].
+pub fn spill_dir(checkpoint: &Path) -> PathBuf {
     let mut name = checkpoint.as_os_str().to_owned();
     name.push(".regions");
     PathBuf::from(name)

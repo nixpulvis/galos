@@ -74,6 +74,29 @@ impl By {
     }
 }
 
+/// What a resume point is named beside the directory it resumes.
+///
+/// Beside the directory rather than inside it: the file holds every
+/// system at full precision, which no client should be served. One
+/// spelling, here, because four things need it and three of them are not
+/// this module — [`Pending::path`] and [`crate::cold::mark_path`] hang
+/// their own suffixes off it, [`crate::copy`] has to carry the whole
+/// family across, and `galos::sink::index` re-exports this rather than
+/// spelling it again.
+pub const SUFFIX: &str = ".checkpoint";
+
+/// The resume point that stands beside `dir`.
+///
+/// What a directory's resume point is called where nothing has said
+/// otherwise — `galos ingest --checkpoint PATH` is the caller that says
+/// otherwise, and `galos::sink::index::Index::checkpoint` is where that
+/// choice is made.
+pub fn beside(dir: &Path) -> PathBuf {
+    let mut name = dir.as_os_str().to_owned();
+    name.push(SUFFIX);
+    PathBuf::from(name)
+}
+
 /// Bytes one system occupies in the base and in the log alike.
 const RECORD: usize = std::mem::size_of::<System>();
 

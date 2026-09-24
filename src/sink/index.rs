@@ -65,7 +65,12 @@ pub const INDEX_DIR: &str = ".galos_index";
 /// Derived from the directory, the file carrying the whole editable tree of
 /// *that* directory; beside it rather than inside it, holding every system
 /// at full precision, which no client should be served.
-pub const CHECKPOINT_SUFFIX: &str = ".checkpoint";
+///
+/// The string itself is [`galos_index::checkpoint::SUFFIX`] and is
+/// re-exported rather than spelled again: the log, the mark and the copy
+/// that carries all three hang off the same suffix, and two spellings of
+/// it is a backup that silently leaves one of them behind.
+pub use galos_index::checkpoint::SUFFIX as CHECKPOINT_SUFFIX;
 
 /// Whether there is anything to edit a published directory from.
 ///

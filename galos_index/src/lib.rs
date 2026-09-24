@@ -22,12 +22,14 @@
 //! Pure and dependency-light on purpose. Physics is [`galos_photometry`];
 //! nothing here knows the database or how the galaxy is drawn.
 
+pub mod absorb;
 pub mod aggregate;
 pub mod bodies;
 pub mod bucket;
 pub mod cache;
 pub mod checkpoint;
 pub mod cold;
+pub mod copy;
 pub mod derive;
 pub mod galaxy;
 pub mod geometry;

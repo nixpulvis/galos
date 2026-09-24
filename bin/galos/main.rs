@@ -5,7 +5,9 @@
 //! galos ingest --from spansh=galaxy.json --index   # a galaxy, region by region
 //! galos ingest --from database --index --watch 5   # the rows into a directory
 //! galos index status -i .index/full       # what a directory holds
+//! galos index merge -i .index/full --from .index/caught_up
 //! galos db verify                            # what is wrong in there
+//! galos db merge --from postgresql://host/caught_up
 //! galos search -s 'Sol*'                     # ask about it
 //! ```
 //!

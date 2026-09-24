@@ -2015,7 +2015,12 @@ impl Writer {
 
 /// Where a build's rows and runs live: inside the names directory, so the
 /// sections it writes are renamed within one filesystem and never copied.
-fn scratch_dir(dir: &Path) -> PathBuf {
+///
+/// Public because a copy of a directory has to skip it: a build's scratch
+/// is gigabytes of sort runs that mean nothing anywhere else, and one
+/// spelling of `.building` is what keeps the copy and the writer agreeing
+/// about which directory that is. See [`crate::copy`].
+pub fn scratch_dir(dir: &Path) -> PathBuf {
     names_dir(dir).join(".building")
 }
 

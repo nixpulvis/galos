@@ -273,6 +273,25 @@ impl Sidecars {
         self.populated.get(&address)
     }
 
+    /// How far a system reaches, where the directory publishes a row.
+    ///
+    /// [`Self::published`]'s twin, and for the same caller: a merge has to
+    /// tell a directory that holds no reach for a system from one that
+    /// holds a different reach, and the setters cannot say — [`Self::reach`]
+    /// answers whether a write *changed* something, which is `true` in both
+    /// cases. Reading the table off the disk again instead would double the
+    /// hold on rows already in hand, and `reaches.bin` is 2.6 GB and 76 M
+    /// rows over a galaxy.
+    pub fn reach_of(&self, address: i64) -> Option<f32> {
+        self.reaches.get(&address).copied()
+    }
+
+    /// What a system can supercharge a drive by, where the directory
+    /// publishes a row. [`Self::reach_of`]'s twin, for the same caller.
+    pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
+        self.boosts.get(&address).copied()
+    }
+
     /// Put a populated system's row in the table, answering whether that
     /// changed it.
     ///
