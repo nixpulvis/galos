@@ -37,6 +37,12 @@ galos_catalog/data/*
 # is several again the moment a new thread starts.
 /TODO.md
 TODO-*
+PLAN-*
+NOTE-*
+
+# Downloaded reference imagery from edastro.com: pretty maps to compare a
+# render against, not inputs to anything the workspace builds.
+/edastro-galaxy-maps/
 
 # `galos-sky`'s default output. The figure file it draws from is *not* here:
 # `galos_sky/figures.fab` is a fixture like `bright.csv` and tracked beside
