@@ -132,6 +132,7 @@ pub(crate) fn plan(
     index: Res<ResidentIndex>,
     view_mode: Res<View>,
     spyglass: Res<crate::systems::Spyglass>,
+    exposure: Res<crate::systems::spawn::StarExposure>,
     mut planned: ResMut<Planned>,
     mut last: Local<Option<(DVec3, Mode, UVec2, Option<(DVec3, f32)>)>>,
 ) {
@@ -139,7 +140,10 @@ pub(crate) fn plan(
     let Some(view) = view(orbit, camera) else { return };
     let mode = match *view_mode {
         View::Map => Mode::Shell,
-        View::Realistic => Mode::Real,
+        // The sky is cut at the exposure's own zero point, so opening the
+        // exposure asks the index for the fainter stars it now draws rather
+        // than only enlarging the ones already in hand.
+        View::Realistic => Mode::Real { limit: exposure.zero_point() },
     };
     let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
     // The spyglass is a clamp on the walk and not a filter after it: a
@@ -263,6 +267,7 @@ mod tests {
             splats: Vec::new(),
         }));
         app.insert_resource(View::Map);
+        app.init_resource::<crate::systems::spawn::StarExposure>();
         app.insert_resource(ResidentIndex(galos_index::Index::default()));
         app.world_mut()
             .spawn((OrbitCamera::default(), crate::systems::tests::seeing()));
@@ -345,6 +350,7 @@ mod tests {
             splats: Vec::new(),
         }));
         app.insert_resource(View::Map);
+        app.init_resource::<crate::systems::spawn::StarExposure>();
         app.insert_resource(ResidentIndex(built.index.clone()));
         app.init_resource::<Walks>();
         let camera = app

@@ -24,6 +24,10 @@ use super::spawn::{Shell, StarExposure};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::{CellCoord, Grid};
+use galos_photometry::psf::{
+    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind,
+    Psf,
+};
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -598,31 +602,41 @@ pub fn size_marks(
     }
 }
 
-/// How fast a star's drawn radius grows with brightness, in screen pixels per
-/// e-fold of flux
+/// How wide a star's core must be to be sampled steadily, in **device** pixels
 ///
-/// A star is a point; what reaches the screen is the instrument's point spread,
-/// the same shape ([`super::spawn::star_psf`]) for every star. A brighter star
-/// is not drawn wider — it clears more of that one fixed shape above the eye's
-/// floor. That cleared radius grows with the *logarithm* of brightness, the
-/// law the eye reads by and the one that never runs away: each doubling of
-/// flux adds a fixed step, so even the sky's most luminous stars stay a
-/// bounded glint with no cap to impose. Tuned against a long exposure of a
-/// real sky.
-const PSF_GROWTH: f64 = 0.45;
+/// **A star narrower than this does not draw dimmer, it draws at random.** The
+/// glint is the point spread sampled once per pixel centre, so a core under a
+/// pixel has at most one sample in it and which part of the profile that
+/// sample lands on depends on where the star falls between pixel centres. The
+/// light it lays down then swings with its sub-pixel position and any camera
+/// motion at all makes it twinkle. Measured over the shipped profile, sliding
+/// a star one pixel across the grid:
+///
+/// | core | deposit swing | in stops |
+/// |---|---|---|
+/// | 0.6 px | 1.74x | 0.80 |
+/// | 1.0 px | 1.33x | 0.41 |
+/// | **1.5 px** | **1.23x** | **0.30** |
+/// | 2.0 px | 1.16x | 0.22 |
+///
+/// Against a measured 0.4 stops a frame, a quarter of the sky over a full
+/// stop, on the build that drew sub-pixel cores.
+///
+/// **Device pixels, because that is what the GPU samples.** The field is laid
+/// out in logical pixels and the target is the window's framebuffer, so on a
+/// display at two device pixels to the logical one a core sized here in
+/// logical pixels comes out twice as wide as it needs to be — which is what
+/// made every star a fat dot. [`stable_radius`] does the conversion.
+const CORE_PX: f32 = 1.5;
 
-/// The smallest a drawn star may be, as a radius in screen pixels
+/// The smallest a star's quad may be drawn, as a radius in logical pixels
 ///
-/// A star that clears the floor is drawn at least this large so it lands as a
-/// stable dot rather than a sub-pixel speck that flickers as the camera moves:
-/// under a pixel, the share of one a dot covers changes with where it falls
-/// on the grid, so it twinkles from the camera's motion alone. The smallest
-/// mark that draws stably is the display's to set rather than the sky's, which
-/// is why the floor is a radius in pixels. Most of the sky sits here — a field
-/// of tiny dots — with only the brighter stars grown past it by their point
-/// spread. Not a cap: the floor is the pixel grid, and brightness above it
-/// still grows the star.
-const DOT_RADIUS: f32 = 0.6;
+/// [`CORE_PX`] in the caller's own units: a star at the floor is its core and
+/// nothing else, and anything fainter is dimmed rather than shrunk — see
+/// [`psf_draw`].
+pub(crate) fn stable_radius(scaling: f32) -> f32 {
+    CORE_PX / scaling.max(1.)
+}
 
 /// The size a star below the flux floor shrinks to, as a fraction of a pixel
 ///
@@ -649,44 +663,106 @@ const DOT_RADIUS: f32 = 0.6;
 /// an exact zero surviving two float operations.
 ///
 /// A thousandth of a pixel puts it three orders under the smallest star that
-/// draws ([`DOT_RADIUS`]), which is the room the test wants on both sides:
+/// draws ([`stable_radius`]), which is the room the test wants on both sides:
 /// nothing that survives the round trip lands near the threshold. What it may
-/// not be is anything approaching twice [`DOT_RADIUS`] — a star that cleared
-/// the floor is at least that wide, so at `1.2` the `UNSEEN * 0.5` test would
-/// begin dropping stars that did clear it.
+/// not be is anything approaching twice that floor — a star that cleared the
+/// exposure's own floor is at least that wide, so the `UNSEEN * 0.5` test
+/// would begin dropping stars that did clear it.
 pub(crate) const UNSEEN: f32 = 1e-3;
 
-/// The visible radius of a star's point spread, in screen pixels
+/// The energy per pixel under which this pipeline shows nothing
 ///
-/// A star's image is its exposed `energy` —
-/// [`galos_photometry::Magnitude::exposure`] of its apparent magnitude, the
-/// same law `galos_sky` sizes by — spread over a fixed point spread, and the
-/// disc that shows is where that clears the eye's floor. The cleared radius is
-/// [`PSF_GROWTH`]` · ln(energy)`, zero where the energy is under one (a star
-/// fainter than the zero point), so a star too faint to see has no size and is
-/// not drawn. The logarithm is the whole of the bound: brightness climbs it a
-/// fixed step per e-fold, so the sky's most luminous stars — Elite's procedural
-/// O and B supergiants run past a million suns — stay a glint a few pixels wide
-/// rather than a disc, with no cap to impose.
-//
-// TODO(psf): the profile and its `β` are now [`galos_photometry::psf::Moffat`],
-// cut to a texture by [`super::spawn::star_psf`] and stretched to this radius
-// on a billboard. The stretch is the approximation left to remove: the plan is
-// a custom billboard material that evaluates the Moffat per fragment at a fixed
-// core width, integrated over each pixel's footprint so a star crossing a pixel
-// boundary does not shimmer, its above-floor radius falling out of the profile
-// itself. The shape is the instrument's — one profile for every star, and only
-// the exposure between them — so stretching one cut texture to each star's
-// radius makes the core width a per-star number instead: a bright star is
-// drawn through a wider instrument rather than through more of the same one,
-// and the light its mark lays down follows its drawn area rather than its
-// flux. It reads well enough on screen to pass for finished, which is how it
-// gets left. DO NOT FORGET THIS.
-fn psf_radius(energy: f64) -> f32 {
-    if energy <= 1. {
-        return 0.;
-    }
-    ((PSF_GROWTH * energy.ln()) as f32).max(DOT_RADIUS)
+/// The one part of the point spread that is a renderer's own rather than the
+/// instrument's: it follows from the tone curve, and `galos_sky`'s film
+/// response and this pipeline's HDR tonemapper do not have the same one.
+/// Theirs is `galos_sky::FLOOR`, `1e-4`, against a curve that saturates near
+/// unit energy; this sits two decades above it because a fragment carrying
+/// less than a hundredth of a unit tonemaps under a display step.
+///
+/// **It is the dial that sets how large the sky draws**, since a star's disc
+/// is exactly where its own light crosses this. Over the shipped stack with a
+/// 1.5 px core:
+///
+/// | floor | star at the zero point | ×10 | ×1000 |
+/// |---|---|---|---|
+/// | 1e-4 | 20.7 px | 46 px | off the frame |
+/// | 1e-3 | 7.5 px | 20.7 px | 100 px |
+/// | **1e-2** | **under the core** | **7.5 px** | **46 px** |
+/// | 3e-2 | not drawn at all | 3 px | 32 px |
+///
+/// A hundredth: a star at the zero point is a bare core — the faint field of
+/// dots a sky is mostly made of — and brightness past that buys a disc.
+pub(crate) const FLOOR: f64 = 1e-2;
+
+/// How many core widths of profile the star texture holds
+///
+/// [`super::spawn::star_psf`] cuts the Moffat with its core at an eighth of
+/// the texture's half-width, so the texture reaches eight core widths out.
+/// That ratio fixes the texel-to-pixel scale the field draws at: a star's
+/// quad takes the share of the texture its own radius covers — `radius /
+/// (CORE_WIDTHS · core)` — so every star wears one instrument, the same core
+/// in pixels, and a brighter one shows more of the wings rather than a wider
+/// core. Stretching the whole texture onto every quad instead is what left
+/// the core at 0.19 px under a 1.5 px quad, and the twinkle exactly where it
+/// was.
+///
+/// It is also the cap on how large a star may be drawn: see [`psf_draw`].
+pub(crate) const CORE_WIDTHS: f64 = 32.0;
+
+/// The instrument every star in the sky is drawn through
+///
+/// `galos_sky`'s own stack, which is the benchmark this view is read against:
+/// a seeing core of `core` pixels and the reference aureole laid behind it at
+/// [`AUREOLE_WEIGHT`] of the light. One profile for the whole sky — what
+/// differs between two stars is their energy and nothing else.
+pub(crate) fn instrument(kind: ProfileKind, core: f32) -> Psf {
+    let core = f64::from(core);
+    let psf = Psf::new(kind, core);
+    let width = core * AUREOLE_WIDTH;
+    let halo = match kind {
+        ProfileKind::Moffat => Kernel::moffat(width, AUREOLE_BETA),
+        ProfileKind::Gaussian => Kernel::gaussian(width),
+    };
+    psf.with_layer(Layer::new(halo, AUREOLE_WEIGHT / (1.0 - AUREOLE_WEIGHT)))
+}
+
+/// What a star is painted as: the radius its disc reaches, in pixels, and the
+/// energy it lays on its centre.
+///
+/// **Both come off the profile rather than off a curve fitted to it.** The
+/// radius is where the star's own light falls under [`FLOOR`]
+/// ([`Profile::radius`]), which for a Moffat grows as a power of the energy —
+/// so a bright star really is a disc and a faint one really is a dot — and the
+/// centre value is [`Profile::peak`], the normalization that makes the disc sum
+/// to the energy put in. Between them they are the whole of the dynamic range:
+/// a magnitude of exposure is two and a half times the light, in the picture
+/// as in the sky.
+///
+/// What stood here instead was `PSF_GROWTH · ln(energy)` for the radius and a
+/// flux compressed by an exponent for the level, which flattened a ten-decade
+/// sky into a field of one-size dots — the reported complaint, and visibly
+/// unlike `galos_sky`'s render of the same stars.
+///
+/// Floored at the core width, since a disc narrower than the instrument's own
+/// core is not a smaller star but an unsampleable one: it is drawn at the core
+/// and its [`Profile::peak`] is what says how faint it is. [`None`] is a star
+/// whose own centre is under the floor, drawn by nobody.
+///
+/// **And capped at [`CORE_WIDTHS`] of it**, which is how much profile
+/// [`super::spawn::star_psf`] actually cut. Past that the quad has no texture
+/// left to show and the sampler stretches what it has — which put a ten-pixel
+/// core on Sirius and drew the brightest stars as flat saturated discs with a
+/// hard rim, the reported look. A star brighter than the cut reach does not
+/// grow; it goes on climbing in [`Profile::peak`], which saturates the core
+/// and blooms, exactly as an overexposed source does on a real detector.
+pub(crate) fn psf_draw(
+    psf: &Psf,
+    energy: f64,
+    core: f32,
+) -> Option<(f32, f32)> {
+    let reach = f64::from(core) * CORE_WIDTHS;
+    let radius = psf.radius(energy, FLOOR)?.clamp(f64::from(core), reach);
+    Some((radius as f32, psf.peak(energy) as f32))
 }
 
 /// Size each system by its point spread, for the realistic view
@@ -706,6 +782,7 @@ fn psf_radius(energy: f64) -> f32 {
 pub(crate) fn size_photometrically(
     camera: Query<(&OrbitCamera, &Camera)>,
     exposure: Res<StarExposure>,
+    profile: Res<crate::systems::spawn::StarProfile>,
     mut shells: Query<(&mut Drawn, &System, &Visibility), With<Shell>>,
 ) {
     let Ok((orbit, camera)) = camera.single() else {
@@ -716,6 +793,10 @@ pub(crate) fn size_photometrically(
     };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
     let zero_point = exposure.zero_point();
+    // The core is a size on the *detector*, so it is worked out in the
+    // display's own pixels rather than the logical ones this lays out in.
+    let core = stable_radius(camera.target_scaling_factor().unwrap_or(1.));
+    let psf = instrument(profile.0, core);
     for (mut drawn, system, visible) in shells.iter_mut() {
         if *visible == Visibility::Hidden {
             continue;
@@ -724,7 +805,8 @@ pub(crate) fn size_photometrically(
             Distance::light_years(orbit.eye().distance(system.position())),
         );
         let energy = apparent.exposure(Magnitude(zero_point)).0;
-        let radius = psf_radius(energy);
+        let radius =
+            psf_draw(&psf, energy, core).map_or(0., |(radius, _)| radius);
         let away = crate::space::metres(orbit.eye_from(system.position()))
             .length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
@@ -1410,6 +1492,7 @@ mod tests {
     fn descended() -> App {
         let mut app = sky();
         app.init_resource::<StarExposure>();
+        app.init_resource::<crate::systems::spawn::StarProfile>();
         app.add_systems(Update, (size_by_distance, size_photometrically));
         app.world_mut().spawn((
             reaching(1, 5., 2.1e15),
@@ -1421,30 +1504,58 @@ mod tests {
         app
     }
 
-    /// A star is sized by the radius its point spread clears, and vanishes at
-    /// the zero point
+    /// A star is drawn at the radius its own light clears the display floor
+    /// at, and vanishes when its centre falls under it
     ///
-    /// The size law the map keeps for its billboard: the radius is
-    /// `PSF_GROWTH·ln(energy)` over the exposed energy
-    /// ([`galos_photometry::Magnitude::exposure`]), so it grows with the
-    /// logarithm of brightness (a hundredfold brighter is a few pixels larger,
-    /// never a hundredfold, and self-bounding with no cap) and is zero once the
-    /// energy is under one — a star fainter than the zero point is not seen.
+    /// The law is the instrument's ([`instrument`], the stack `galos_sky`
+    /// renders with) rather than a curve fitted to it: [`psf_draw`] answers
+    /// where the star's profile falls under [`FLOOR`] and what it lays on its
+    /// centre. A brighter star is a wider disc *and* a hotter centre, which
+    /// is the dynamic range a sky has and the log-radius law this replaced
+    /// flattened away.
     #[test]
-    fn a_star_is_sized_by_the_radius_its_point_spread_clears() {
-        assert_eq!(psf_radius(0.5), 0., "under the zero point has no size");
-        assert_eq!(psf_radius(1.), 0., "at the zero point has no size");
-        assert!(psf_radius(10.) > 0., "over the zero point is drawn");
+    fn a_star_is_drawn_at_the_radius_its_light_clears() {
+        let core = 1.5;
+        let psf = instrument(ProfileKind::Moffat, core);
+        let draw = |energy| psf_draw(&psf, energy, core);
+
+        assert!(draw(1e-9).is_none(), "a star under the floor is not drawn");
+
+        let (dim_r, dim_peak) = draw(1.).expect("a star at the zero point");
+        let (bright_r, bright_peak) = draw(100.).expect("a bright star");
+        assert!(bright_r > dim_r, "a brighter star is a wider disc");
+        assert!(bright_peak > dim_peak, "and a hotter centre");
+
+        // Linear in energy at the centre, which is what carries the sky's
+        // range: a hundredfold brighter star lays a hundred times the light
+        // on its centre pixel, where the radius grows only as a power of it.
         assert!(
-            psf_radius(100.) > psf_radius(10.),
-            "a brighter star is drawn larger"
+            (f64::from(bright_peak / dim_peak) - 100.).abs() < 1.,
+            "the centre is linear in energy: {bright_peak} to {dim_peak}"
         );
-        let dim = psf_radius(100.) as f64;
-        let bright = psf_radius(10_000.) as f64;
-        assert!(bright > dim, "a hundredfold brighter is larger");
         assert!(
-            bright < 5. * dim,
-            "a hundredfold brighter is a few times larger, not a hundredfold"
+            f64::from(bright_r / dim_r) < 10.,
+            "the disc grows far slower than the light in it"
         );
+    }
+
+    /// Nothing is drawn narrower than the instrument's core
+    ///
+    /// A disc under the core is not a smaller star but an unsampleable one —
+    /// a sub-pixel core is what made the whole sky twinkle with the camera's
+    /// own motion — so it is drawn at the core and its faintness is carried
+    /// by the centre value instead.
+    #[test]
+    fn a_faint_star_is_dimmer_rather_than_smaller() {
+        let core = 1.5;
+        let psf = instrument(ProfileKind::Moffat, core);
+        let (faint_r, faint_peak) =
+            psf_draw(&psf, 0.3, core).expect("a faint star still draws");
+        let (fainter_r, fainter_peak) =
+            psf_draw(&psf, 0.15, core).expect("a fainter star still draws");
+
+        assert_eq!(faint_r, core, "held at the core");
+        assert_eq!(fainter_r, core, "and no narrower");
+        assert!(fainter_peak < faint_peak, "the fainter one is dimmer");
     }
 }

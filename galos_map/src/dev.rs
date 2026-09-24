@@ -480,7 +480,7 @@ fn diagnostics(
                         "mode",
                         match planned.0.mode {
                             galos_index::Mode::Shell => "shell",
-                            galos_index::Mode::Real => "real",
+                            galos_index::Mode::Real { .. } => "real",
                         },
                         "Shell is the map's balls over a political field on a \
                          point budget; Real is the photometric sky.",

@@ -44,6 +44,7 @@ use galos_index::screen::{
     Crowded, Empty, crowded_marks, frame_marks, share, wanted,
 };
 use galos_index::{CellId, Inhabited, Part, Point, Resident, Stamp};
+use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -424,6 +425,8 @@ pub(crate) fn fetch(
     // as in [`reconcile`] and lets the two agree without either of them
     // touching the index.
     let share = share(population(&planned.0), frame_marks(&view));
+    // Whether this is the photometric sky, whose reads are whole cells.
+    let real = matches!(planned.0.mode, galos_index::Mode::Real { .. });
     // The two halves of the frame's flat cost, measured apart: the set
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
@@ -440,7 +443,16 @@ pub(crate) fn fetch(
                 continue;
             }
             let slice = mark.slice as usize;
-            let want = if whole {
+            // **The sky reads a cell whole.** Which of a cell draws is
+            // decided per star against the exposure's floor
+            // ([`reconcile`]), and a star's magnitude is a fact only its
+            // payload point carries — so a prefix sized off a share is a
+            // cell whose fainter half cannot be weighed at all. It is what
+            // left 33 of the 184 naked-eye stars in a frustum undrawn: not
+            // rationed away, never read. The walk has already dropped every
+            // subtree that cannot clear the floor, so the cells reaching
+            // here are few and what they hold is what the sky is made of.
+            let want = if whole || real {
                 slice
             } else {
                 (wanted(share, slice, id) * READ_SLACK)
@@ -1180,6 +1192,25 @@ pub(crate) fn reconcile(
     // moves by a frame's worth in a frame.
     let wall = Utc::now();
 
+    // **The sky needs no budget, and the map's would be wrong for it.** A
+    // share of the population is how the political map says density: there
+    // every mark is the same size, so how many there are is the only thing
+    // that can carry it. In the photometric sky the density says itself —
+    // a crowded region deposits a thousand stars' flux — and the cut that
+    // bounds the frame is the one the eye already has: apparent magnitude
+    // against the exposure's floor. Rationing on top of it drew a uniform
+    // sample of the galaxy instead of the sky, spending its marks on the
+    // dwarfs of crowded cells while the naked-eye stars of coarse ones went
+    // undrawn: measured over `.index/full` standing at Sol at a thousand
+    // light years of reach, 47,670 stars of median apparent magnitude
+    // **10.55**, 250 of them naked-eye, and not one star of the Big Dipper.
+    //
+    // So the share is the Shell mode's alone, and [`Mode::Real`] carries
+    // the limit each star is weighed against instead.
+    let limit = match planned.0.mode {
+        galos_index::Mode::Real { limit } => Some(limit),
+        galos_index::Mode::Shell => None,
+    };
     // What the frame has to spend and what it is spread over. A share of
     // the population is a share of every *other* marked cell's too, so the
     // whole has to be known before any of it is spent — which is a sum
@@ -1211,7 +1242,13 @@ pub(crate) fn reconcile(
     // covers, so this can call a tile dark that one of them landed in —
     // which lights one mark that was not needed, of the at most one a tile
     // this may light at all.
-    let lit: Vec<u32> = {
+    // Nothing to light in the sky: a tile is dark there because nothing in
+    // it clears the floor, which is the honest answer and not a hole to
+    // fill. The promotion is also a *screen* lattice, so its tiles sweep
+    // the sky as the camera turns — see [`Crowded::about`].
+    let lit: Vec<u32> = if limit.is_some() {
+        Vec::new()
+    } else {
         let _zone = info_span!("dark tiles").entered();
         let mut lighting = Empty::over(&view);
         for (offer, mark) in planned.0.marks.iter().enumerate() {
@@ -1309,8 +1346,15 @@ pub(crate) fn reconcile(
         // brightest it holds, which is the head of its payload. See
         // [`Empty`] — and the payload is in hand for it, every marked cell
         // in reach being read to [`READ_LEAST`] whatever its share.
-        let asked = wanted(share, mark.slice as usize, id)
-            .max(usize::from(is_lit(offer as u32)));
+        // In the sky the ask is the cell's whole slice: which of it draws is
+        // per star, against the floor, just below. The walk has already
+        // dropped every subtree whose brightest cannot clear it
+        // (`node_visible`), so a cell reaching here holds at least one.
+        let asked = match limit {
+            Some(_) => mark.slice as usize,
+            None => wanted(share, mark.slice as usize, id)
+                .max(usize::from(is_lit(offer as u32))),
+        };
         if asked == 0 {
             continue;
         }
@@ -1324,7 +1368,32 @@ pub(crate) fn reconcile(
         let refreshed;
         {
             let Some(cell) = resident.0.cell(id) else { continue };
-            let target = asked.min(cell.points.len());
+            // How far down the cell's magnitude order the floor reaches. A
+            // payload is in ascending absolute magnitude, so the stars that
+            // can clear the floor are a prefix of it: measured at the
+            // *nearest* face of the cell, which is the most generous
+            // distance modulus anything in it can have, so the prefix never
+            // cuts a star the exact test below would have kept. Without it
+            // a wide view would walk every point of every marked cell —
+            // tens of millions — to find the few thousand that draw.
+            let target = match limit {
+                None => asked.min(cell.points.len()),
+                Some(limit) => {
+                    let near = id.bounds().distance_to(orbit.eye().to_array());
+                    let faintest = match near > 0.0 {
+                        true => {
+                            limit
+                                - Magnitude(0.0)
+                                    .apparent(Distance::light_years(near))
+                                    .0
+                        }
+                        false => f64::INFINITY,
+                    };
+                    cell.points.partition_point(|point| {
+                        f64::from(point.magnitude) <= faintest
+                    })
+                }
+            };
             if target == 0 {
                 continue;
             }
@@ -1348,6 +1417,19 @@ pub(crate) fn reconcile(
             };
             for index in order {
                 let point = &cell.points[index];
+                // And in the sky, a star that does not clear the floor from
+                // where the eye stands is not drawn at all. The prefix above
+                // is the cell's best case; this is the star's own.
+                if let Some(limit) = limit
+                    && Magnitude(f64::from(point.magnitude))
+                        .apparent(Distance::light_years(
+                            orbit.eye().distance(DVec3::from(point.pos)),
+                        ))
+                        .0
+                        > limit
+                {
+                    continue;
+                }
                 taken.push((point.id64 as i64, point.pos, Some(index as u32)));
             }
         }
@@ -1365,6 +1447,7 @@ pub(crate) fn reconcile(
             {
                 continue;
             }
+
             took_all += 1;
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would

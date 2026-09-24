@@ -116,13 +116,19 @@ pub const GLOW_OPENING_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 /// Not the same as the walks: `Real` runs two of them at once, since discrete
 /// stars and the glow are one photometric quantity split at the visibility
 /// floor rather than a choice between them.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Mode {
     /// Translucent balls over a political field.
     Shell,
     /// The sky: discrete stars over the glow, on the photometric limit and the
     /// opening angle together.
-    Real,
+    ///
+    /// `limit` is the faintest apparent magnitude the eye behind this view
+    /// draws — the exposure's own zero point, not a constant. It is what the
+    /// photometric cut measures against, so opening the exposure deepens the
+    /// sky the walk answers with rather than only enlarging the stars already
+    /// in it. See [`crate::Magnitude::EYE_LIMIT`] for where it rests.
+    Real { limit: f64 },
 }
 
 /// A viewpoint in light years: where the eye is, which way it looks, and the
@@ -650,11 +656,11 @@ impl Index {
     ) -> Needed {
         match mode {
             Mode::Shell => self.walk_screen(view, within),
-            Mode::Real => {
+            Mode::Real { limit } => {
                 let (marks, blobs) =
-                    self.frontier(view, STAR_MERGE_PX, true, within);
+                    self.frontier(view, STAR_MERGE_PX, Some(limit), within);
                 Needed {
-                    mode: Mode::Real,
+                    mode: Mode::Real { limit },
                     marks,
                     blobs,
                     splats: self.glow_field(view, within),
@@ -697,14 +703,16 @@ impl Index {
     /// would otherwise collapse into an unnamed blob at any distance, when it
     /// is exactly one mark and the map should draw it as itself.
     ///
-    /// `photometric` is the sky's cut: a subtree whose brightest star cannot
-    /// clear the eye's limit from here is dropped whole, which is what keeps
-    /// [`Mode::Real`] from drawing the dwarfs the glow already carries.
+    /// `photometric` is the sky's cut, and the magnitude in it is the eye's
+    /// own: a subtree whose brightest star cannot clear that limit from here
+    /// is dropped whole, which is what keeps [`Mode::Real`] from drawing the
+    /// dwarfs the glow already carries. [`None`] asks for no cut at all,
+    /// which is [`Mode::Shell`].
     fn frontier(
         &self,
         view: &View,
         merge_px: f64,
-        photometric: bool,
+        photometric: Option<f64>,
         within: Option<Reach>,
     ) -> (Vec<MarkRef>, Vec<BlobRef>) {
         let mut marks = Vec::new();
@@ -718,7 +726,8 @@ impl Index {
             if within.is_some_and(|reach| !reach.holds(node.id)) {
                 continue;
             }
-            if photometric && !node_visible(view, node) {
+            if photometric.is_some_and(|limit| !node_visible(view, node, limit))
+            {
                 continue;
             }
             let alpha = splitting(view, node, merge_px);
@@ -780,7 +789,7 @@ impl Index {
     /// figures rather than working them out: **23 ms to 1.5 ms**, the same
     /// marks and the same field.
     pub fn walk_screen(&self, view: &View, within: Option<Reach>) -> Needed {
-        let (marks, blobs) = self.frontier(view, MERGE_PX, false, within);
+        let (marks, blobs) = self.frontier(view, MERGE_PX, None, within);
         Needed {
             mode: Mode::Shell,
             marks,
@@ -885,7 +894,22 @@ impl Index {
 
 /// Whether any star a cell holds could clear the visibility limit, measured
 /// to the nearest point of the cell so the test never drops a visible star.
-fn node_visible(view: &View, node: &Node) -> bool {
+///
+/// `limit` is the faintest apparent magnitude the eye draws, which is the
+/// exposure's zero point rather than a constant: a cut frozen at
+/// [`Magnitude::EYE_LIMIT`] while the client's floor moved with the exposure
+/// meant opening the exposure could not deepen the sky, only fatten the stars
+/// already in it.
+///
+/// A bare threshold, with no hysteresis band behind it. One was tried, on
+/// the ground that an orbit drag translates the eye and a cell on the
+/// threshold would cross it repeatedly: measured over `.index/full` turning
+/// at two thousand light years back, six hundred frames, half a magnitude of
+/// band changed the drawn set by one line of churn and left the count of
+/// stars that left and came back at **zero either way**. What made the sky
+/// blink was never this cut; it was the mark ration on top of it, which is
+/// no longer there.
+fn node_visible(view: &View, node: &Node, limit: f64) -> bool {
     let Some(m_min) = node.m_min else {
         return false;
     };
@@ -894,7 +918,7 @@ fn node_visible(view: &View, node: &Node) -> bool {
         return true;
     }
     Magnitude(m_min as f64).apparent(Distance::light_years(d_min))
-        <= Magnitude::EYE_LIMIT
+        <= Magnitude(limit)
 }
 
 /// Straight-line distance between two points, light years.
@@ -978,6 +1002,12 @@ fn splitting(view: &View, node: &Node, merge_px: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::aggregate::Aggregate;
+
+    /// The sky read at the eye's own limit, which is where the exposure
+    /// rests.
+    fn real() -> Mode {
+        Mode::Real { limit: Magnitude::EYE_LIMIT.0 }
+    }
 
     /// The cell ids of a plan's splats, for the tests that only care which
     /// cells the field drew and not what weight each carried.
@@ -1414,7 +1444,7 @@ mod tests {
 
         let (bright, _p, kids) = small_tree(10, 10, -1.0);
         let near = eye_out(parent, 4.0);
-        let seen = bright.needed(&near, Mode::Real, None);
+        let seen = bright.needed(&near, real(), None);
         assert!(mark_ids(&seen).contains(&kids[0]));
         // Real also carries the glow beneath the stars.
         assert!(!seen.splats.is_empty());
@@ -1423,9 +1453,7 @@ mod tests {
         // cells cannot clear the limit, so the walk never reaches the leaves.
         let (dim, _p, kids) = small_tree(10, 10, 15.0);
         let far = eye_out(parent, 30_000.0);
-        assert!(
-            !mark_ids(&dim.needed(&far, Mode::Real, None)).contains(&kids[0])
-        );
+        assert!(!mark_ids(&dim.needed(&far, real(), None)).contains(&kids[0]));
     }
 
     /// The glow walk refines a cell that fills the view down to its leaves, and
@@ -1437,7 +1465,7 @@ mod tests {
         // Close in, the 16 ly parent subtends far more than half a degree and
         // refines to its leaves, which splat.
         let near = eye_out(CellId::of_point(HERE, 13), 2.0);
-        let close = splat_ids(&index.needed(&near, Mode::Real, None));
+        let close = splat_ids(&index.needed(&near, real(), None));
         assert!(close.contains(&kids[0]));
         assert!(close.contains(&kids[1]));
         assert!(!close.contains(&CellId::ROOT));
@@ -1446,7 +1474,7 @@ mod tests {
         // root itself splats.
         let far = eye_out(CellId::ROOT, 20_000_000.0);
         assert!(
-            splat_ids(&index.needed(&far, Mode::Real, None))
+            splat_ids(&index.needed(&far, real(), None))
                 .contains(&CellId::ROOT)
         );
     }
@@ -1456,7 +1484,7 @@ mod tests {
     fn an_empty_index_needs_nothing() {
         let index = Index::default();
         let view = eye_out(CellId::ROOT, 1.0);
-        for mode in [Mode::Shell, Mode::Real] {
+        for mode in [Mode::Shell, real()] {
             let needed = index.needed(&view, mode, None);
             assert!(needed.marks.is_empty());
             assert!(needed.blobs.is_empty());

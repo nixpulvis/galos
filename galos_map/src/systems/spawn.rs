@@ -34,8 +34,8 @@ use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::aggregate::bucket_temperature;
 use galos_index::meta::Economies;
 use galos_index::name::SystemName;
-use galos_photometry::psf::{ProfileKind, Psf};
-use galos_photometry::{Magnitude, Temperature};
+use galos_photometry::Temperature;
+use galos_photometry::psf::ProfileKind;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Deref,
@@ -70,48 +70,6 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-/// The apparent-magnitude range the palette resolves brightness over
-///
-/// Wide enough that no star a real vantage shows is clamped at either end: the
-/// bright end is past the brightest apparent magnitude anything reaches, the
-/// faint end past what any exposure draws. Not a cap on a star — the range only
-/// sets how finely the ramp between them is stepped.
-const MAG_HI: f64 = -6.;
-const MAG_LO: f64 = 12.;
-
-/// How finely the brightness ramp is stepped, in handles across the range
-const MAG_STEPS: usize = 90;
-
-/// How hard flux is compressed onto the display, as an exponent
-///
-/// A star's core is its flux raised to this. Flux spans ten powers of ten
-/// across a sky, more than a display holds, so it is compressed toward the
-/// eye's own near-logarithmic response: below one it lifts the faint end up out
-/// of the floor and pulls the bright end down out of a uniform white, so the
-/// whole range reads. A smooth curve, not a clamp — every star keeps its order,
-/// the brightest simply does not run away.
-const GAMMA: f64 = 0.4;
-
-/// How bright a magnitude-zero star's core is emitted, at exposure zero
-///
-/// The reference the compressed ramp hangs from: a magnitude-zero star (flux
-/// one) is emitted at this, and [`StarExposure`] lifts or lowers the whole ramp
-/// by stops from there.
-///
-/// High because the field draws this level through the point-spread profile
-/// (see [`super::field`]), which piles the light into a tight core and lets it
-/// fall to dim wings — most of a mark is wing. A flat mark of the same peak
-/// spread its whole level across the disc and read far brighter, so it sat near
-/// eight; the profile deposits a fraction of that, so the reference climbs to
-/// meet it. Set by eye, roughly five stops up.
-const BRIGHT: f32 = 256.;
-
-/// Which brightness step an apparent magnitude falls on, clamped to the range
-pub(crate) fn mag_step(apparent: f64) -> usize {
-    let f = (apparent - MAG_HI) / (MAG_LO - MAG_HI);
-    (f.clamp(0., 1.) * MAG_STEPS as f64).round() as usize
-}
-
 /// The apparent magnitude that fills a pixel at exposure zero: the realistic
 /// view's zero point, the dial `galos_sky` calls `exposure`.
 ///
@@ -142,11 +100,6 @@ impl Default for StarExposure {
 }
 
 impl StarExposure {
-    /// The linear gain the stops come to: a doubling per stop.
-    pub(crate) fn factor(&self) -> f32 {
-        2f32.powf(self.0)
-    }
-
     /// The zero point the stops come to, an apparent magnitude.
     ///
     /// A stop is a factor of two in energy, which is `2.5·log₁₀2 ≈ 0.75`
@@ -159,63 +112,83 @@ impl StarExposure {
     }
 }
 
-/// The emission a photometric star of temperature `bucket` and brightness
-/// `step` is drawn at, at exposure `factor`
+/// The emission a photometric star of temperature `bucket` deposits at its
+/// centre, given the peak its point spread came to
 ///
 /// The one place the realistic view's color is worked out — the field's
 /// per-vertex glint reads it (see [`super::field`]). The tint is the bucket's
-/// blackbody color; the strength is the step's flux compressed by [`GAMMA`],
-/// lifted by [`BRIGHT`] and the exposure, so a bright star's core outshines a
-/// faint one's.
-pub(crate) fn photometric_emissive(
-    bucket: usize,
-    step: usize,
-    factor: f32,
-) -> LinearRgba {
+/// blackbody color, normalized to unit luminance so hue carries no brightness
+/// of its own, and `peak` is
+/// [`galos_photometry::psf::Profile::peak`] — the energy the star lays on its
+/// centre pixel, which the texture's unit-peak shape then falls away from.
+///
+/// **No compression of its own.** What stood here raised flux to [`GAMMA`]
+/// and lifted it by a reference level, on top of a radius that was the log of
+/// the same energy — so brightness was compressed twice and the sky came out
+/// a field of near-identical dots. The law is now the one `galos_sky` renders
+/// with: linear energy through the profile, and the tonemapper is what
+/// compresses it. See [`super::scale::psf_draw`].
+pub(crate) fn photometric_emissive(bucket: usize, peak: f32) -> LinearRgba {
     let tint = Temperature(bucket_temperature(bucket)).color();
-    let mag = MAG_HI + (step as f64 / MAG_STEPS as f64) * (MAG_LO - MAG_HI);
-    let level = BRIGHT * Magnitude(mag).flux().0.powf(GAMMA) as f32 * factor;
-    LinearRgba::rgb(tint[0] * level, tint[1] * level, tint[2] * level)
+    LinearRgba::rgb(tint[0] * peak, tint[1] * peak, tint[2] * peak)
 }
 
 /// How wide the point spread is cut, in texels a side
-const PSF_TEXELS: u32 = 128;
+///
+/// Wide enough that the core still has texels to spare once the cut reaches
+/// [`super::scale::CORE_WIDTHS`] out: at 256 across and 32 core widths of
+/// reach, a core is four texels of radius and the wings have the rest.
+const PSF_TEXELS: u32 = 256;
 
-/// The star point spread: [`galos_photometry::psf::Moffat`], cut to a texture
+/// The star point spread: the whole [`galos_photometry::psf::Psf`] stack, cut
+/// to a texture
 ///
 /// The one shared profile, sampled from the crate so the map and `galos_sky`
 /// wear the same instrument — the map cuts its shape into a texture once, the
-/// sky evaluates it per pixel, but the `β` and the falloff are one definition.
-/// A bright core with power-law wings falling to nothing by the edge; a
-/// brighter star clears more of it above the eye's floor (see
-/// [`super::scale::size_photometrically`]), so brightness reads as size with no
-/// disc ever drawn. Linear rather than sRGB, so it multiplies the emissive
-/// straight; the channels carry the shape and the tint is the material's.
+/// sky evaluates it per pixel, but the `β`, the falloff and the halo behind
+/// them are one definition.
+///
+/// **The stack and not the core alone.** What stood here cut
+/// `Psf::new(profile, alpha)`, the bare seeing core, and left out the aureole
+/// every one of `galos_sky`'s bright stars wears: eight core widths out the
+/// core alone is 2.4e-4 of peak where the stack is 3.0e-2, a hundred and
+/// twenty-five fold, and that difference *is* the glow around a bright star.
+/// Without it the map drew its brightest stars as bare discs and nothing in
+/// the exposure or the sizing could put the halo back.
+///
+/// **And in float, not eight bits.** A halo is faint by construction: the
+/// core-only profile is already under a step of 255 four core widths out, so
+/// an 8-bit cut quantizes every wing to black however much light the star
+/// carries. `Rgba32Float` holds the whole range, and the emissive it
+/// multiplies is HDR anyway.
 pub(crate) fn star_psf(profile: ProfileKind) -> Image {
     let n = PSF_TEXELS;
-    let centre = (n as f32 - 1.) / 2.;
-    // A compact core: a tenth of its peak a fifth of the way out, all but gone
-    // by the edge.
-    let alpha = n as f32 / 16.;
-    let psf = Psf::new(profile, alpha as f64);
-    let shape = |r: f32| psf.shape(r as f64) as f32;
+    let centre = (f64::from(n) - 1.) / 2.;
+    // The core in texels, so that the cut reaches `CORE_WIDTHS` of them —
+    // which is the reach `super::field` maps onto a star's quad and
+    // `super::scale::psf_draw` caps a disc at.
+    let alpha = f64::from(n) / 2. / crate::systems::scale::CORE_WIDTHS;
+    let psf = crate::systems::scale::instrument(profile, alpha as f32);
     // Subtracted so the corner reaches exactly zero and no square edge shows.
-    let floor = shape(centre);
-    let mut data = Vec::with_capacity((n * n * 4) as usize);
+    let floor = psf.shape(centre);
+    let mut data = Vec::with_capacity((n * n * 16) as usize);
     for y in 0..n {
         for x in 0..n {
-            let r = ((x as f32 - centre).powi(2) + (y as f32 - centre).powi(2))
-                .sqrt();
-            let v = ((shape(r) - floor) / (1. - floor)).clamp(0., 1.);
-            let b = (v * 255.) as u8;
-            data.extend_from_slice(&[b, b, b, b]);
+            let r = ((f64::from(x) - centre).powi(2)
+                + (f64::from(y) - centre).powi(2))
+            .sqrt();
+            let v =
+                (((psf.shape(r) - floor) / (1. - floor)).clamp(0., 1.)) as f32;
+            for _ in 0..4 {
+                data.extend_from_slice(&v.to_le_bytes());
+            }
         }
     }
     let mut image = Image::new(
         Extent3d { width: n, height: n, depth_or_array_layers: 1 },
         TextureDimension::D2,
         data,
-        TextureFormat::Rgba8Unorm,
+        TextureFormat::Rgba32Float,
         RenderAssetUsages::RENDER_WORLD,
     );
     image.sampler = ImageSampler::linear();

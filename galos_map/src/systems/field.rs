@@ -37,8 +37,7 @@ use crate::systems::filter::{DimTo, Filtered};
 use crate::systems::labels::{screen_position, world_per_pixel};
 use crate::systems::scale::{Drawn, UNSEEN, View};
 use crate::systems::spawn::{
-    ColorBy, Shell, StarExposure, StarSprite, hue, mag_step,
-    photometric_emissive,
+    ColorBy, Shell, StarExposure, StarSprite, hue, photometric_emissive,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
@@ -317,8 +316,14 @@ fn tune_field(
         return;
     }
     let realistic = matches!(*view, View::Realistic);
+    // `GALOS_NO_BLOOM=1` draws the sky with no bloom at all, which is the one
+    // bisect a picture can answer: bloom is a mip chain over the whole target
+    // and a small bright dot aliases through it, so a twinkle that survives
+    // the point spread's own sampling and stops when this is set is the
+    // bloom's, and one that does not is not.
+    let blooming = std::env::var("GALOS_NO_BLOOM").is_err();
     if let Ok(entity) = field.single() {
-        if realistic {
+        if realistic && blooming {
             commands.entity(entity).insert(STAR_BLOOM);
         } else {
             commands.entity(entity).remove::<Bloom>();
@@ -354,6 +359,7 @@ pub(crate) fn build_field(
     view: Res<View>,
     scale_population: Res<crate::systems::scale::ScalePopulation>,
     exposure: Res<StarExposure>,
+    profile: Res<crate::systems::spawn::StarProfile>,
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     gains: Res<crate::systems::glow::Gains>,
@@ -373,6 +379,15 @@ pub(crate) fn build_field(
     // Whether a mark may be painted under a pixel, which is the population
     // scale's to say; see [`floor`].
     let floor = floor(scale_population.0);
+    // The magnitude a pixel is filled at, which is what a star's drawn
+    // energy — and so its quad and its gain — is measured against.
+    let zero_point = exposure.zero_point();
+    // The core's own width in the units this lays out in, which is what the
+    // quad's share of the texture is measured against.
+    let core = crate::systems::scale::stable_radius(
+        camera.target_scaling_factor().unwrap_or(1.),
+    );
+    let psf = crate::systems::scale::instrument(profile.0, core);
 
     let half = viewport * 0.5;
     for (system, drawn, visibility, strength, filtered, thinned) in &shells {
@@ -433,20 +448,26 @@ pub(crate) fn build_field(
                 let c = tone.light() * level;
                 [c.x, c.y, c.z, 1.]
             }
-            // A photometric glint: the blackbody tint at its HDR level, spread
-            // by the bloom, added rather than blended so the fade scales the
-            // emission, not an alpha.
+            // A photometric glint: the blackbody tint at the energy the star's
+            // point spread lays on its centre pixel, spread by the bloom,
+            // added rather than blended so the fade scales the emission and
+            // not an alpha.
+            //
+            // Linear energy, with no compression of its own: the exposure is
+            // already in it (the zero point the energy is measured against)
+            // and the tonemapper is what brings ten decades of sky onto a
+            // display. See [`super::scale::psf_draw`].
             View::Realistic => {
-                let apparent = Magnitude(system.absolute_magnitude())
-                    .apparent(Distance::light_years(
-                        orbit.eye().distance(position),
-                    ))
-                    .0;
-                let e = photometric_emissive(
-                    system.temp_bucket(),
-                    mag_step(apparent),
-                    exposure.factor(),
+                let apparent = Magnitude(system.absolute_magnitude()).apparent(
+                    Distance::light_years(orbit.eye().distance(position)),
                 );
+                let energy = apparent.exposure(Magnitude(zero_point)).0;
+                let Some((_, peak)) =
+                    crate::systems::scale::psf_draw(&psf, energy, core)
+                else {
+                    continue;
+                };
+                let e = photometric_emissive(system.temp_bucket(), peak);
                 [e.red * fade, e.green * fade, e.blue * fade, 1.]
             }
         };
@@ -456,11 +477,33 @@ pub(crate) fn build_field(
         let cx = at.x - half.x;
         let cy = half.y - at.y;
         let base = positions.len() as u32;
+        // **How much of the profile the quad shows, rather than the whole of
+        // it stretched to fit.** [`super::spawn::star_psf`] cuts the Moffat
+        // with its core at an eighth of the texture's half-width, so a quad
+        // that samples the whole texture has a core an eighth of its own
+        // radius: at the 1.5 px floor that is a core 0.19 px across, which
+        // one sample per pixel cannot resolve, and the star's brightness
+        // then depends on where it falls between pixel centres. Measured off
+        // a drag, that was a median 0.4 stops a frame with a quarter of the
+        // sky moving more than a full stop.
+        //
+        // One instrument means one core width in *pixels* for every star, so
+        // the texel-to-pixel scale is fixed at [`PROFILE_PX`] and the quad
+        // takes the share of the texture its own radius covers. A faint star
+        // shows the core alone, a bright one shows the wings out to where its
+        // energy clears the floor, and the core is the same size in both.
+        let reach = crate::systems::scale::CORE_WIDTHS as f32 * core;
+        let span = (radius / reach).min(1.);
+        let (lo, hi) = (0.5 - 0.5 * span, 0.5 + 0.5 * span);
+        let (lo, hi) = match *view {
+            View::Map => (0., 1.),
+            View::Realistic => (lo, hi),
+        };
         for (dx, dy, u, v) in [
-            (-radius, -radius, 0., 1.),
-            (radius, -radius, 1., 1.),
-            (radius, radius, 1., 0.),
-            (-radius, radius, 0., 0.),
+            (-radius, -radius, lo, hi),
+            (radius, -radius, hi, hi),
+            (radius, radius, hi, lo),
+            (-radius, radius, lo, lo),
         ] {
             positions.push([cx + dx, cy + dy, -1.]);
             uvs.push([u, v]);
@@ -517,17 +560,20 @@ pub(crate) fn build_field(
                 [c.x, c.y, c.z, 1.]
             }
             View::Realistic => {
+                // The brightest star the cell holds, drawn as itself: one
+                // mark for a whole subtree is still a star, so it is painted
+                // through the same instrument as one.
                 let Some(m_min) = blob.m_min else { continue };
-                let apparent = Magnitude(f64::from(m_min))
-                    .apparent(Distance::light_years(
-                        orbit.eye().distance(position),
-                    ))
-                    .0;
-                let e = photometric_emissive(
-                    0,
-                    mag_step(apparent),
-                    exposure.factor(),
+                let apparent = Magnitude(f64::from(m_min)).apparent(
+                    Distance::light_years(orbit.eye().distance(position)),
                 );
+                let energy = apparent.exposure(Magnitude(zero_point)).0;
+                let Some((_, peak)) =
+                    crate::systems::scale::psf_draw(&psf, energy, core)
+                else {
+                    continue;
+                };
+                let e = photometric_emissive(0, peak);
                 let fade = blob.fade;
                 [e.red * fade, e.green * fade, e.blue * fade, 1.]
             }

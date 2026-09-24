@@ -270,7 +270,7 @@ mod tests {
         let mut cache = Resident::default();
         cache.insert(s, vec![point(1)]);
         let needed = Needed {
-            mode: Mode::Real,
+            mode: Mode::Real { limit: 8.0 },
             marks: vec![],
             blobs: vec![BlobRef {
                 id: s,
