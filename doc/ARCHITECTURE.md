@@ -280,6 +280,21 @@ names is a server: each test gets a migrated database of its own from
 `galos_db::testing`, a copy of the `galos_test_template` the migrations are
 run into once, and drops it as it ends.
 
+**A pair of databases.** `merge.rs` and `dump.rs`, which is what `galos db
+{backup,restore,merge}` are. `dump.rs` spawns `pg_dump`/`pg_restore` —
+the only `std::process::Command` in the workspace, and justified in its
+header: a dump nothing else can restore is not a backup. `merge.rs` folds
+one database into another by **generating** the guarded-upsert clause from
+the catalog rather than restating it: the columns and the natural key come
+out of `information_schema`/`pg_constraint`, the FK order is a topological
+sort of `pg_constraint`, and rows cross by `COPY … TO STDOUT` into `COPY …
+FROM STDIN` over a temp table of the same shape, so no type is named in
+Rust. Faction ids are remapped by `lower(name)` first, the list-valued
+tables are replaced whole by `listed_at`, and the whole run is one
+transaction — `--dry-run` is that transaction rolled back. The property is
+"what one database that had seen both streams would hold", and
+`galos_db/tests/merge.rs` builds the third database and compares.
+
 ## 3. Deriving the index from the rows, and the seam
 
 `galos_db/src/index/` is where the derived index meets the authoritative
@@ -467,6 +482,20 @@ first because everything else leans on it.
   accumulate them into `System` records and the metadata sidecars (§5).
 - **Residency.** `cache.rs`: `Resident` and the set arithmetic `missing()` /
   `evictable()` against a `Needed`.
+- **A pair of directories.** `copy.rs` and `absorb.rs`, which is what
+  `galos index {backup,restore,merge}` are. Both rest on the same fact:
+  what a directory *serves* is lossy — the payload downcasts the
+  magnitude, buckets the temperature and drops the age — so the resume
+  point beside it is not an optional extra. `copy.rs` carries the
+  directory **and its three siblings**, payloads before `index.bin` and
+  the publish log before the base, which is what makes a copy taken
+  across a live publish hold orphans and never holes. `absorb.rs` takes
+  the union of two directories out of their resume points at full
+  precision, newest `System::updated_at` winning, and raises the tree
+  again off it through `cold.rs`; names and sidecar rows follow the
+  system record, bodies merge per body by their own stamp, nothing is
+  withdrawn, and a directory with no resume point is refused rather than
+  coarsened. `galos_db::merge` is the same shape over Postgres.
 
 Two large modules are easy to mistake for map code and are not.
 `inside.rs` (1,057) and `orbit.rs` (1,172) are the shared Kepler and

@@ -126,9 +126,10 @@ map has no Postgres on it: built with `--no-default-features` the binary is
 `ingest --index` and the `index` group, and carries no database client at
 all.
 
-`galos db` has `status migrate verify catalog stats`; `galos index` has
-`status diff pack sweep verify migrate sectors`. Neither of them fills
-anything. What used to be two fill verbs — a live one and a regional one, and
+`galos db` has `status migrate verify catalog stats backup restore merge`;
+`galos index` has `status diff verify backup restore merge pack sweep
+migrate sectors`. Neither of them fills anything. What used to be two fill
+verbs — a live one and a regional one, and
 which to reach for was a question about memory — is one verb that answers the
 memory question from what the run *is*. The index sink holds a live tree,
 because something may be reading the directory while it is written; the
@@ -260,12 +261,58 @@ slow-statement alert, those reads being the whole galaxy by definition and
 the alert being four pages of SQL above the one line that matters;
 `RUST_LOG` is how to see it anyway.
 
-## Database Backup and Restore
+## Backup, restore, and making two stores one
+
+Both stores have the same three verbs, and they exist for one run of
+events: a problem is noticed in production, collection is pointed at a
+fresh database and a fresh directory so the feed keeps landing somewhere,
+the original is seen to, and the two are then made one. Without that last
+step a restore of a galaxy is hours during which EDDN does not wait.
 
 ```sh
-# Create a backup.
-pg_dump -Fc galos_development > latest.dump
+# Write the database out, and read it back. pg_dump and pg_restore with
+# the flags that matter already right; --jobs selects the directory
+# format, because a custom-format dump is one stream. `restore` writes
+# *into* the database DATABASE_URL names rather than creating one, so a
+# typo cannot leave a galaxy somewhere nobody will look for it — make it
+# first, and pass --clean to restore over one that already holds a
+# galaxy.
+galos db backup --to latest.dump
+createdb galos_restored && DATABASE_URL=postgresql:///galos_restored \
+  galos db restore --from latest.dump
 
-# Restore from backup.
-pg_restore -Cd postgres < latest.dump
+# Copy an index directory *and the resume point beside it*. What comes
+# out is an index directory like any other, so `status` reads it and
+# `diff` checks it. Safe to take while a feed is publishing into the
+# original.
+galos index backup -i .index/full --to /backups/full-2026-09-22
+galos index restore --from /backups/full-2026-09-22 -i .index/full
+
+# Fold what was collected meanwhile back in. Newest record wins, nothing
+# is withdrawn, and running it twice leaves what running it once did.
+galos db merge --from postgresql://localhost/galos_caught_up --dry-run
+galos db merge --from postgresql://localhost/galos_caught_up
+galos index merge -i .index/full --from .index/caught_up
 ```
+
+**`pg_dump` is the portable backup, not the cheap one.** Over a seeded
+galaxy it is hundreds of gigabytes and the restore rebuilds every index.
+What it is *for* is moving a database to a machine whose Postgres is a
+different major version. The cheap backup is a file-level copy of
+`PGDATA` with the postmaster stopped — on a copy-on-write filesystem
+(APFS, btrfs, ZFS) that is seconds and no bytes, and restoring is
+pointing `PGDATA` at the clone. `pg_basebackup` is the same thing against
+a running server. That is a runbook step rather than a verb, because
+stopping the postmaster is not something this should do behind an
+operator's back.
+
+**An index backup must carry the siblings.** A published directory is a
+lossy projection — the payload downcasts the magnitude, buckets the
+temperature and drops the age — and the full-precision inputs live in
+`<dir>.checkpoint` beside it. A copy of the directory alone cannot be
+resumed by `ingest --watch` and cannot be merged. `galos index backup`
+takes all three siblings; a `cp -r` of the directory does not.
+
+After a restore, `galos db verify` is the thing to run: a faction row
+with no faction under it is what `pg_restore --disable-triggers` leaves
+behind, and it is the one count `verify` calls unsound.
