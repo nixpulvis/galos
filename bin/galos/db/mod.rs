@@ -6,11 +6,34 @@
 //! galos db verify                                 # what is wrong in here
 //! galos db catalog hygdata_v41.csv                # a survey from Earth
 //! galos db stats                                  # what the galaxy holds
+//! galos db backup --to latest.dump                # write it out
+//! galos db merge --from postgresql://…/caught_up  # and make two one
 //! ```
 //!
 //! Filling it is `galos ingest --db`, which is one verb for both stores
 //! because it is one reading of one publisher — see `crate::ingest`. What
 //! is here is everything else the database is asked or told.
+//!
+//! ## Backup, restore, and the merge that makes a failure survivable
+//!
+//! Stated by how a failure actually goes: a problem is noticed,
+//! collection is pointed at a fresh database so the feed keeps landing
+//! somewhere, the backup is restored beside it, and the two are then made
+//! one. Without the third step a restore of a galaxy is hours during
+//! which EDDN does not wait, and what it carried is lost.
+//!
+//! `merge` is that third step, and the rule in it already exists: every
+//! write path in `galos_db` is a guarded upsert keyed by a natural key
+//! and stamped, so folding one database into another is that same
+//! statement with the values coming from a table instead of from a
+//! message. See [`galos_db::merge`].
+//!
+//! `backup` and `restore` are `pg_dump` and `pg_restore`, and the module
+//! doc on [`galos_db::dump`] says what that costs on a seeded galaxy and
+//! what the cheap alternative is. They are verbs rather than a README
+//! recipe because the flags that matter — the format `--jobs` forces,
+//! `--no-owner`, and a `--clean` an operator must ask for — are the part
+//! that is got wrong by hand.
 //!
 //! ## Why the stores are two groups, and the writing is not
 //!
@@ -61,7 +84,13 @@ impl Cli {
     /// overrides this, which is how to see it.
     pub fn heard(&self) -> String {
         match self.command {
-            Command::Verify => format!("{HEARD},sqlx::query=error"),
+            // A merge is two `COPY`s and one `INSERT … SELECT` a table,
+            // every one of them over as much of a galaxy as the other
+            // database holds. They are slow because they are the verb,
+            // and the alert would print each statement above the report.
+            Command::Verify | Command::Merge { .. } => {
+                format!("{HEARD},sqlx::query=error")
+            }
             _ => HEARD.to_string(),
         }
     }
@@ -108,6 +137,77 @@ pub(super) enum Command {
 
     /// What the galaxy in here is made of, and what it costs to keep.
     Stats,
+
+    /// Write this database out to a file `pg_restore` can read back.
+    ///
+    /// A logical dump, which is the portable answer and not the cheap
+    /// one: over a seeded galaxy it is hundreds of gigabytes and the
+    /// restore rebuilds every index. What that is *for* is moving a
+    /// database to a machine whose Postgres is a different major
+    /// version. The cheap backup is a file-level copy of `PGDATA` with
+    /// the postmaster stopped — seconds on a copy-on-write filesystem —
+    /// and it is a runbook step rather than a verb because stopping the
+    /// server is not something this should do behind an operator's back.
+    Backup {
+        /// Where the dump goes. Refused where something already stands
+        /// there: overwriting a backup is the mistake with no recovery.
+        #[arg(long, value_name = "PATH")]
+        to: PathBuf,
+        /// Dump on this many connections at once. More than one needs —
+        /// and so selects — the directory format, a custom-format dump
+        /// being one stream.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
+    },
+
+    /// Read a dump back into the database `DATABASE_URL` names.
+    Restore {
+        /// The dump to read, in either format [`Backup`] writes.
+        #[arg(long, value_name = "PATH")]
+        from: PathBuf,
+        /// Restore on this many connections at once, which the directory
+        /// format allows and a custom-format dump does not.
+        #[arg(long, default_value_t = 1, value_name = "N")]
+        jobs: u32,
+        /// Drop each object before recreating it.
+        ///
+        /// Off by default. A restore over a database that already holds
+        /// a galaxy is the mistake here with the worst blast radius, and
+        /// this is what makes an operator say it out loud.
+        #[arg(long)]
+        clean: bool,
+    },
+
+    /// Fold another database into this one, newest record winning.
+    ///
+    /// What a failure needs and a re-import is not: collection is
+    /// pointed at a fresh database so the feed keeps landing somewhere,
+    /// the backup is restored beside it, and the two are then made one.
+    /// The answer is what one database that had seen both streams would
+    /// hold, which is the property the merge is tested against.
+    ///
+    /// The rule is the one every write path already holds — a guarded
+    /// upsert keyed by a natural key, stamped, where the newer report
+    /// wins a column and a blank never contradicts one. Nothing is
+    /// deleted from this database by a merge.
+    Merge {
+        /// The database to fold in, as a connection URL. Read, never
+        /// written.
+        #[arg(long, value_name = "URL")]
+        from: String,
+        /// Carry only rows changed at or after this, as
+        /// `2026-09-14T12:00:00`. The whole of the other database
+        /// otherwise.
+        #[arg(long, value_name = "WHEN")]
+        since: Option<chrono::NaiveDateTime>,
+        /// Weigh it and report what would cross; write nothing.
+        ///
+        /// The whole merge runs in one transaction either way, so this
+        /// is that transaction rolled back rather than a second code
+        /// path guessing at what the first would do.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Answer one `galos db` verb.
@@ -126,6 +226,13 @@ pub async fn run(cli: Cli) -> Result<bool, String> {
         Command::Verify => verify().await,
         Command::Catalog { file } => catalog(&file).await,
         Command::Stats => stats().await,
+        Command::Backup { to, jobs } => backup(&to, jobs).await,
+        Command::Restore { from, jobs, clean } => {
+            restore(&from, jobs, clean).await
+        }
+        Command::Merge { from, since, dry_run } => {
+            merge(&from, since, dry_run).await
+        }
     }
 }
 
@@ -227,6 +334,90 @@ async fn stats() -> Result<bool, String> {
     let db = open(false).await?;
     print!("{}", galos_db::report::stats(&db).await.map_err(said)?);
     Ok(true)
+}
+
+/// Write the database out, saying what it cost.
+///
+/// The pool is opened and dropped before `pg_dump` is spawned, for one
+/// reason: it is what reads `.env`, and it is what says *now* rather than
+/// three minutes in that nothing answers on `DATABASE_URL`. Nothing here
+/// holds a connection while the child runs — a dump of a galaxy is hours
+/// and five idle connections held across it are five an operator cannot
+/// use.
+async fn backup(to: &Path, jobs: u32) -> Result<bool, String> {
+    let url = reachable().await?;
+    println!("dumping {} to {}", talking_to(), to.display());
+    let done = galos_db::dump::backup(&url, to, jobs).map_err(said)?;
+    println!("{done}");
+    Ok(true)
+}
+
+/// Read a dump back, saying what it cost.
+///
+/// The database has to exist and be reachable: this restores *into* one
+/// rather than creating one, because `DATABASE_URL` is what says which,
+/// and a verb that quietly created the database named by a typo is a
+/// galaxy restored where nobody will look for it.
+async fn restore(
+    from: &Path,
+    jobs: u32,
+    clean: bool,
+) -> Result<bool, String> {
+    let url = reachable().await?;
+    println!("restoring {} into {}", from.display(), talking_to());
+    let done = galos_db::dump::restore(&url, from, jobs, clean)
+        .map_err(said)?;
+    // `Restored`'s own line already names `galos db verify` and says what
+    // the count means, so nothing is added here.
+    println!("{done}");
+    Ok(true)
+}
+
+/// Fold another database into this one, saying what crossed.
+///
+/// Two pools at once, which nothing else in this program opens: the one
+/// `DATABASE_URL` names is written and the one `--from` names is read.
+/// They are told apart in every line this prints, because a merge run the
+/// wrong way round is not a thing an operator finds out about later.
+async fn merge(
+    from: &str,
+    since: Option<chrono::NaiveDateTime>,
+    dry_run: bool,
+) -> Result<bool, String> {
+    let into = open(false).await?;
+    let source = galos_db::Database::from_url(from)
+        .await
+        .map_err(|err| format!("no database at {}: {err}", named(from)))?;
+
+    println!("folding {} into {}", named(from), talking_to());
+    if let Some(since) = since {
+        println!("  rows changed at or after {since}");
+    }
+    let mut said_table = |table: &galos_db::merge::Table| {
+        println!("  {table}");
+    };
+    let done =
+        galos_db::merge::merge(&into, &source, since, dry_run, &mut said_table)
+            .await
+            .map_err(said)?;
+    print!("{done}");
+    if dry_run {
+        println!("nothing was written: this was --dry-run");
+    }
+    Ok(true)
+}
+
+/// The connection string the child tools are given, having made sure
+/// something answers on it.
+///
+/// Opening the pool is what loads `.env`, so the URL cannot be read
+/// before it and be sure of the answer — see [`Database::new`]. It is
+/// dropped straight away: what wants the string is a child process, not
+/// this one.
+async fn reachable() -> Result<String, String> {
+    drop(open(false).await?);
+    std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL names no database".to_string())
 }
 
 /// How many connections a bulk import may hold open
