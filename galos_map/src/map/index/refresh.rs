@@ -47,8 +47,12 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::meta::{Faction, PopulatedSystem, SystemBoost, SystemReach};
-use galos_index::{CellId, Delta, Index, Inhabitance, Part, Point, Stamp};
+use galos_index::read::inhabited::Inhabitance;
+use galos_index::records::{
+    Faction, PopulatedSystem, SystemBoost, SystemReach,
+};
+use galos_index::store::names::Delta;
+use galos_index::{CellId, Index, Part, Point, Stamp};
 use galos_route::Boosts;
 use galos_route::graph::Jumps;
 use std::collections::HashMap;
@@ -465,9 +469,8 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::{
-        BuildParams, FsSource, NameEntry, Snapshot, Source as IndexSource,
-    };
+    use galos_index::records::NameEntry;
+    use galos_index::{BuildParams, FsSource, Snapshot, Source as IndexSource};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch published directory, removed when the guard drops
@@ -524,7 +527,7 @@ mod tests {
 
     /// Write `entries` as `dir`'s mapped base, the way a build's writer does
     fn publish_base(dir: &std::path::Path, entries: &[NameEntry]) {
-        let mut writing = galos_index::names::Writer::writing(dir)
+        let mut writing = galos_index::store::names::Writer::writing(dir)
             .expect("the writer should open");
         for entry in entries {
             writing.push(entry.clone()).expect("the row should write");
@@ -769,9 +772,10 @@ mod tests {
     /// had just read to find nothing had moved.
     #[test]
     fn startup_stamps_every_part_it_read() {
-        use galos_index::source::{
-            factions_path, populated_path, reaches_path, write_meta,
+        use galos_index::format::layout::{
+            factions_path, populated_path, reaches_path,
         };
+        use galos_index::format::msgpack::write_meta;
 
         let dir = Scratch::new();
         publish(&dir.0, &[input(1, 0.0)]);
@@ -881,7 +885,7 @@ mod tests {
         // is on the wire, as a source switch does.
         app.update();
         app.world_mut().resource_mut::<ResidentCells>().0 =
-            galos_index::Resident::default();
+            galos_index::read::resident::Resident::default();
         app.world_mut().resource_mut::<Held>().clear();
 
         for _ in 0..40 {
@@ -1005,7 +1009,8 @@ mod tests {
         // The log folded into a new base, as a log grown long is.
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert_eq!(
-            galos_index::names::compact(&dir.0).expect("the fold should write"),
+            galos_index::store::names::compact(&dir.0)
+                .expect("the fold should write"),
             2,
             "both systems should be in the base the fold wrote",
         );

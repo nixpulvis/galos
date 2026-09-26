@@ -16,7 +16,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::{Response, Ui};
-use galos_index::meta::Faction as DbFaction;
+use galos_index::records::Faction as DbFaction;
 
 /// The name the time control's own `Ui` is spelled out under
 ///

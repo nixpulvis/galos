@@ -138,8 +138,8 @@
 //! 1.07–2.31 ms. Nothing above touches that half; it is the next thing in
 //! the way.
 
-use galos_index::walk::{Mode, View};
-use galos_index::{FixedCodec as _, FsSource, Index, Point, Source as _};
+use galos_index::core::codec::FixedCodec as _;
+use galos_index::{FsSource, Index, Mode, Point, Source as _, View};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 

@@ -22,9 +22,10 @@
 //! inside it — so once it is built there is nothing left to ask it.
 
 use crate::read::spansh;
-use galos_index::{
-    region_budget, Build, BuildParams, Built, By, Ending, Rows, Start,
-};
+use galos_index::build::cold::{region_budget, Build, Built, OnStop, Start};
+use galos_index::format::checkpoint::Provenance;
+use galos_index::store::sidecars::TableWriter;
+use galos_index::BuildParams;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{info, warn};
@@ -38,15 +39,14 @@ use tracing::{info, warn};
 /// the galaxy — never a live tree over the sky, which is the whole reason
 /// this path is not the sink one.
 ///
-/// The resume point says [`By::Events`] and carries no cursor. A cursor is a
-/// database clock — what a delta pass reads `received_at` against — and a
+/// The resume point says [`Provenance::Events`] and carries no cursor. A cursor
+/// is a database clock — what a delta pass reads `received_at` against — and a
 /// file published last Tuesday has none to offer; a dump's own newest
 /// `updateTime` is a time out in the galaxy and not a time this program's
-/// database wrote a row, so recording it as one would have the next
-/// catch-up read back from a clock nothing here ever kept. `By::Events`
-/// says the directory was derived from records rather than from the
-/// database, which is what makes `galos_db::index` rebuild rather than
-/// resume from it.
+/// database wrote a row, so recording it as one would have the next catch-up
+/// read back from a clock nothing here ever kept. `Provenance::Events` says the
+/// directory was derived from records rather than from the database, which is
+/// what makes `galos_db::index` rebuild rather than resume from it.
 ///
 /// Ctrl-C during the read is a clean exit that keeps its place: the builder
 /// publishes nothing — no cells, no names table, no resume point — but the
@@ -80,7 +80,9 @@ pub fn cold(
     // this same file. The clock comes back with it: a build ages every
     // system against one moment, and a run carrying on with its own would
     // bin half the galaxy's Recency against another.
-    let (taking_up, place) = match galos_index::left_off(checkpoint) {
+    let (taking_up, place) = match galos_index::build::cold::resume_mark(
+        checkpoint,
+    ) {
         Some(left) => match spansh::Place::of(&left, &source.path) {
             Some(place) => {
                 info!(
@@ -116,8 +118,8 @@ pub fn cold(
     // what the read before it derived.
     let spill = rows_dir(checkpoint);
     let mut rows = match carrying_on {
-        true => Rows::onto(&spill, dir),
-        false => Rows::writing(&spill),
+        true => TableWriter::onto(&spill, dir),
+        false => TableWriter::writing(&spill),
     }
     .map_err(failed)?;
     source.read(&mut build, &mut rows, place).map_err(failed)?;
@@ -127,7 +129,7 @@ pub fn cold(
     // open it while the rest of the file is still to come. The mark the
     // publish leaves is what the next run carries on from.
     let report = match build
-        .finish(By::Events, None, Ending::Publish)
+        .finish(Provenance::Events, None, OnStop::Publish)
         .map_err(failed)?
     {
         Built::Index(report) => report,
@@ -184,7 +186,7 @@ pub fn cold(
 /// as the build's own scratch is.
 ///
 /// A run starting over opens them at zero bytes, which is the clearing,
-/// and [`Rows::finish`] removes them once the tables have been written.
+/// and [`TableWriter::finish`] removes them once the tables have been written.
 pub fn rows_dir(checkpoint: &Path) -> PathBuf {
     let mut name = checkpoint.as_os_str().to_owned();
     name.push(".rows");

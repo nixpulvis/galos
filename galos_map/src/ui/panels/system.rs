@@ -15,7 +15,9 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::Ui;
 use elite_journal::body::{Composition, Material, Orbit, Spin};
-use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
+use galos_index::records::{
+    Body as DbBody, Economies, Star as DbStar, Surface,
+};
 use galos_photometry::{Distance, Magnitude};
 
 /// Everything the map knows about one system

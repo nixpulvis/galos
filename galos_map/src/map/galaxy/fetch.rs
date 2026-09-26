@@ -315,7 +315,7 @@ pub(crate) mod tests {
     /// cell payloads where they lie, so the built index has to outlive every
     /// route the app plots over it.
     fn plotting() -> (App, crate::testing::Scratch) {
-        use galos_index::NameEntry;
+        use galos_index::records::NameEntry;
         // Addresses minted from the places, so the names table and the
         // built sky agree about where these three systems are: the table
         // answers with the middle of the boxel an address names, and the

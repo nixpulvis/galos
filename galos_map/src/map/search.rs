@@ -5,8 +5,8 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future::poll_once;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::meta::NameEntry;
-use galos_index::names::MIN_PREFIX;
+use galos_index::records::NameEntry;
+use galos_index::store::names::MIN_PREFIX;
 use galos_route::graph::{Drive, Routing};
 use std::time::{Duration, Instant};
 
@@ -420,7 +420,7 @@ fn entry_pos(entry: &NameEntry) -> DVec3 {
 /// asked, and the two have to be told apart. What is picked out is left alone.
 ///
 /// A query the table will not search — shorter than
-/// [`galos_index::names::MIN_PREFIX`] — is said as itself. It found nothing
+/// [`galos_index::store::names::MIN_PREFIX`] — is said as itself. It found nothing
 /// because nothing was looked for, and "no system named S" would be a claim
 /// about the galaxy rather than about the query.
 fn answered(

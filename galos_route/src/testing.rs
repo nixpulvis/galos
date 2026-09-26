@@ -79,7 +79,10 @@ fn built(
 }
 
 /// The same over places given as the names table carries them, `f32`.
-pub fn sky_of(dir: &Path, entries: &[galos_index::NameEntry]) -> Arc<Sky> {
+pub fn sky_of(
+    dir: &Path,
+    entries: &[galos_index::records::NameEntry],
+) -> Arc<Sky> {
     let places: Vec<(i64, [f64; 3])> = entries
         .iter()
         .map(|entry| {

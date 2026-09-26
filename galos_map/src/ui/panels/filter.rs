@@ -915,8 +915,8 @@ mod tests {
     /// says nothing about its star rather than guessing at a spectrum.
     #[test]
     fn a_stop_that_can_supercharge_says_so() {
-        use galos_index::SystemBoost;
-        use galos_index::meta::Boost;
+        use galos_index::Boost;
+        use galos_index::records::SystemBoost;
 
         let route = route_through("SOL -> LAVE", &[1, 2, 3]);
         let systems: Vec<System> = (1..=3).map(system).collect();

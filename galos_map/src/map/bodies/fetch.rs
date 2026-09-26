@@ -15,7 +15,7 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::meta::SystemBodies;
+use galos_index::records::SystemBodies;
 use std::time::Instant;
 
 pub fn plugin(app: &mut App) {

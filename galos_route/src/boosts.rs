@@ -1,6 +1,6 @@
 //! Where a drive can be supercharged: the published boost table, held.
 
-use galos_index::meta::Boost;
+use galos_index::Boost;
 use std::sync::Arc;
 
 /// Which systems can supercharge a drive, where they are, and on what — in
@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// measures hundreds of candidates, so the twenty-odd compares are noise
 /// beside it.
 ///
-/// The place comes with the row ([`galos_index::SystemBoost`]) and that is
+/// The place comes with the row ([`galos_index::records::SystemBoost`]) and that is
 /// the whole of why routing no longer touches the names table: finding
 /// where four million cones sat used to mean walking the names table's
 /// address column, 4 GB of mapping faulted and 7.9 s before a galactic
@@ -38,7 +38,7 @@ use std::sync::Arc;
 #[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct Boosts {
     /// The rows, ascending by address.
-    rows: Arc<Vec<galos_index::SystemBoost>>,
+    rows: Arc<Vec<galos_index::records::SystemBoost>>,
     /// Whether the index published the table this came from
     published: bool,
 }
@@ -55,7 +55,7 @@ impl Boosts {
     /// Sorted here rather than trusted: the builder writes it in address
     /// order and the lookup is a binary search, which is wrong rather than
     /// slow if a file says otherwise.
-    pub fn of(rows: Vec<galos_index::SystemBoost>) -> Boosts {
+    pub fn of(rows: Vec<galos_index::records::SystemBoost>) -> Boosts {
         let mut rows = rows;
         if !rows.windows(2).all(|pair| pair[0].address <= pair[1].address) {
             rows.sort_unstable_by_key(|row| row.address);
@@ -79,7 +79,7 @@ impl Boosts {
 
     /// The rows, for the coarse graph [`crate::highway`] sorts
     /// them into.
-    pub fn table(&self) -> &[galos_index::SystemBoost] {
+    pub fn table(&self) -> &[galos_index::records::SystemBoost] {
         &self.rows
     }
 }

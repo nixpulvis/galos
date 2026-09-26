@@ -12,15 +12,18 @@
 use crate::{Database, Result};
 use async_std::stream::StreamExt;
 use futures_core::stream::BoxStream;
-use galos_index::{
-    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport,
-    Ending, Index, Pending, Start, System, Taking, Tree,
+use galos_index::build::cold::{
+    Abandoned, Build, Built, OnStop, Start, Summary,
 };
+use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::records::derive;
+use galos_index::{BuildParams, Index, System, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
 use sqlx::Row;
 use std::collections::HashMap;
 use std::fmt;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -144,8 +147,8 @@ async fn stars_by_system(
 /// `primary_star_class` and `updated_at`; `now` dates the Recency reading
 /// and `scanned` is this system's stars.
 ///
-/// Both derived facts are [`galos_index::derive`]'s, so a system built from
-/// a row and one built from a journal entry land in the same place.
+/// Both derived facts are [`galos_index::records::derive`]'s, so a system built
+/// from a row and one built from a journal entry land in the same place.
 fn input_from_row(
     row: &sqlx::postgres::PgRow,
     scanned: &[(f64, f64)],
@@ -228,7 +231,7 @@ async fn changed_addresses(
 /// inside [`Build::finish`]. A build that was stopped published nothing:
 /// see [`Built`].
 ///
-/// Always [`Start::Fresh`] and [`Ending::Abandon`]: the directory this
+/// Always [`Start::Fresh`] and [`OnStop::Abandon`]: the directory this
 /// publishes stands for every row Postgres has, so a read cut short must
 /// not replace it with the prefix it reached — and a read taken up again
 /// is a re-read of the cursors, which is minutes over a database where it
@@ -293,13 +296,13 @@ async fn build_cells(
         if build.push(
             input_from_row(&row, &scanned, now)?,
             metadata::name_from_row(&row)?,
-        )? == Taking::Stopped
+        )? == ControlFlow::Break(())
         {
             break;
         }
     }
     told(Progress { step: step::SYSTEMS, done: read, of: Some(read) });
-    Ok(build.finish(By::Database, Some(now), Ending::Abandon)?)
+    Ok(build.finish(Provenance::Database, Some(now), OnStop::Abandon)?)
 }
 
 /// The next star of the ordered read, as [`star_light`] reads one, skipping
@@ -315,13 +318,14 @@ async fn next_star(
     Ok(None)
 }
 
-/// Say what [`galos_index::migrate`] moved in `dir`, on this side's log.
+/// Say what [`galos_index::ops::migrate::migrate`] moved in `dir`, on this
+/// side's log.
 ///
 /// The migration itself is shared with the sink's own open, which says the
 /// same lines; what is here is the saying of them.
 fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
     let asked = || stop();
-    let done = galos_index::migrate(dir, &asked)?;
+    let done = galos_index::ops::migrate::migrate(dir, &asked)?;
     // Nothing was moved and nothing can be until the payloads are brought
     // forward, which is not something an open does: said at `warn` rather
     // than `info` because every read after this one fails, and the message
@@ -391,8 +395,8 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
 /// nowhere. A narrowed build writes none.
 ///
 /// A cold build is regional: [`build_cells`] pushes every row into [`Build`]
-/// under [`galos_index::region_budget`]. Nothing here holds a [`Tree`] — a
-/// watch gets one by resuming from the resume point it leaves.
+/// under [`galos_index::build::cold::region_budget`]. Nothing here holds a
+/// [`Tree`] — a watch gets one by resuming from the resume point it leaves.
 ///
 /// `stop` reaches every step: [`migrate`], which leaves what it has not
 /// moved for a later open, and the build, which is asked per row and per
@@ -432,7 +436,7 @@ pub async fn build_to_dir(
     let cells = match parts.cells {
         false => None,
         true => {
-            let budget = galos_index::region_budget();
+            let budget = galos_index::build::cold::region_budget();
             let built = build_cells(
                 db, dir, checkpoint, params, budget, since, stop, told,
             )
@@ -476,7 +480,7 @@ async fn write_names(
     told: &Told<'_>,
 ) -> Result<usize> {
     let of = estimated(db, "systems").await;
-    let mut names = galos_index::names::Writer::writing(dir)?;
+    let mut names = galos_index::store::names::Writer::writing(dir)?;
     let query = format!(
         "{} WHERE position IS NOT NULL ORDER BY address",
         metadata::NAMES_SELECT
@@ -909,7 +913,7 @@ async fn build_level(
 ///
 /// The whole write, and so the expensive one: a pass appends what it moved
 /// and asks for this only when the log has grown against the base — see
-/// [`Pending::append`] — or when there is no base at all.
+/// [`pending::append`] — or when there is no base at all.
 ///
 /// The base is written before the log is dropped, so a kill between the two
 /// replays systems the base already holds rather than losing them.
@@ -918,7 +922,12 @@ fn record(
     cursor: chrono::NaiveDateTime,
     systems: impl IntoIterator<Item = System>,
 ) -> Result<()> {
-    Checkpoint::compact(checkpoint, Some(cursor), By::Database, systems)?;
+    Checkpoint::compact(
+        checkpoint,
+        Some(cursor),
+        Provenance::Database,
+        systems,
+    )?;
     Ok(())
 }
 
@@ -981,7 +990,7 @@ async fn pass(
     // What the directory now serves and the cursor it is current as of, in
     // one frame. The answer is whether the log has grown far enough against
     // the base to be worth folding in.
-    let folding = Pending::append(checkpoint, Some(now), &applied)?;
+    let folding = pending::append(checkpoint, Some(now), &applied)?;
     if folding {
         record(checkpoint, now, level.tree.inputs())?;
     }
@@ -1024,7 +1033,7 @@ enum Resume {
 /// count, and replacing it unasked is the thing being prevented. So it
 /// answers "some", loudly, rather than zero.
 fn serving(dir: &Path) -> Option<u64> {
-    if !dir.join(galos_index::store::INDEX_FILE).exists() {
+    if !dir.join(galos_index::format::layout::INDEX_FILE).exists() {
         return None;
     }
     match Index::read(dir) {
@@ -1077,7 +1086,7 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
             ));
         }
     };
-    if checkpoint.by != By::Database {
+    if checkpoint.by != Provenance::Database {
         return Some(format!(
             "{} serves {}, derived from {:?}, and this run would replace \
              them with what the database holds. Nothing has been written.\
@@ -1131,7 +1140,7 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
     let Ok(checkpoint) = Checkpoint::read(path) else {
         return Resume::Build;
     };
-    if checkpoint.by != By::Database {
+    if checkpoint.by != Provenance::Database {
         info!(
             by = ?checkpoint.by,
             checkpoint = %path.display(),
@@ -1180,7 +1189,7 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
 #[derive(Copy, Clone, Debug)]
 pub struct BuildReport {
     /// The cell tree, where this build wrote one.
-    pub cells: Option<ColdReport>,
+    pub cells: Option<Summary>,
     /// The metadata sidecars written beside the tree.
     pub meta: MetaReport,
 }
@@ -1315,11 +1324,11 @@ mod tests {
             .collect();
         let mut tree = Tree::build(&inputs, &params);
         tree.write(&dir).expect("the tree should write");
-        let mut names = galos_index::names::Writer::writing(&dir)
+        let mut names = galos_index::store::names::Writer::writing(&dir)
             .expect("the names writer should open");
         for system in &inputs {
             names
-                .push(galos_index::meta::NameEntry {
+                .push(galos_index::records::NameEntry {
                     address: system.id64 as i64,
                     name: format!("TEST {}", system.id64).into(),
                     position: [system.position[0] as f32, 0.0, 0.0],
@@ -1329,11 +1338,11 @@ mod tests {
         names.finish().expect("the names should publish");
         let empty: Vec<u8> = Vec::new();
         for table in [
-            galos_index::source::populated_path(&dir),
-            galos_index::source::reaches_path(&dir),
-            galos_index::source::factions_path(&dir),
+            galos_index::format::layout::populated_path(&dir),
+            galos_index::format::layout::reaches_path(&dir),
+            galos_index::format::layout::factions_path(&dir),
         ] {
-            galos_index::source::write_meta(&table, &empty)
+            galos_index::format::msgpack::write_meta(&table, &empty)
                 .expect("a table should write");
         }
 
@@ -1343,7 +1352,7 @@ mod tests {
         Checkpoint::compact(
             &path,
             Some(cursor),
-            By::Database,
+            Provenance::Database,
             inputs.iter().copied(),
         )
         .expect("a resume point should write");
@@ -1361,7 +1370,7 @@ mod tests {
         Checkpoint::compact(
             &path,
             Some(cursor),
-            By::Events,
+            Provenance::Events,
             inputs.iter().copied(),
         )
         .expect("a resume point should write");
@@ -1500,11 +1509,12 @@ mod tests {
 
         // Past the look-back, so a pass has nothing to ask for rather than the
         // overlap's worth of what it just read.
-        let published =
-            std::fs::metadata(galos_index::source::populated_path(&dir))
-                .expect("the populated table should stand")
-                .modified()
-                .expect("a modification time");
+        let published = std::fs::metadata(
+            galos_index::format::layout::populated_path(&dir),
+        )
+        .expect("the populated table should stand")
+        .modified()
+        .expect("a modification time");
         async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
 
         let again = catch_up(
@@ -1521,11 +1531,12 @@ mod tests {
         .end()
         .expect("nothing asked it to stop");
         assert!(again >= cursor, "the cursor went backwards");
-        let after =
-            std::fs::metadata(galos_index::source::populated_path(&dir))
-                .expect("the populated table should stand")
-                .modified()
-                .expect("a modification time");
+        let after = std::fs::metadata(
+            galos_index::format::layout::populated_path(&dir),
+        )
+        .expect("the populated table should stand")
+        .modified()
+        .expect("a modification time");
         assert_eq!(
             published, after,
             "a catch-up rebuilt a directory it had just brought level, so its \
@@ -1577,7 +1588,7 @@ mod tests {
             said,
         );
         assert!(
-            !galos_index::source::reaches_path(&dir).exists(),
+            !galos_index::format::layout::reaches_path(&dir).exists(),
             "the refusal came after the read it was there to save",
         );
 
@@ -1650,7 +1661,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         let checkpoint = dir.with_extension("checkpoint");
         let _ = std::fs::remove_file(&checkpoint);
-        let _ = Pending::clear(&checkpoint);
+        let _ = pending::clear(&checkpoint);
 
         // Something for the first build to publish: a build over no systems
         // writes a directory nothing can resume from, and what this test is
@@ -1801,7 +1812,7 @@ mod tests {
             Reached::Stopped(Abandoned::unstarted()),
         );
         assert!(
-            !dir.join(galos_index::store::INDEX_FILE).exists(),
+            !dir.join(galos_index::format::layout::INDEX_FILE).exists(),
             "a build ran anyway",
         );
         assert!(!checkpoint.exists(), "a resume point was written");

@@ -9,7 +9,7 @@
 //! itself the answer to the 47 GB of `Vec<NameEntry>` and
 //! `HashMap<i64, usize>` it replaced.
 //!
-//! **The packing is now the published file.** [`galos_index::names`] writes
+//! **The packing is now the published file.** [`galos_index::store::names`] writes
 //! those same arrays as the sections of a generation — `addr.bin`,
 //! `span.bin`, `text.bin`, and a `byname.bin` the resident packing never
 //! had, and no positions at all since a name became a function of an
@@ -26,7 +26,7 @@
 //! They are published as one MessagePack table (`reaches.bin`) and not as a
 //! mapped one, and they cover a fifth of the index rather than all of it.
 
-use galos_index::meta::SystemReach;
+use galos_index::records::SystemReach;
 
 /// How far each scanned system reaches, in metres, by address.
 ///

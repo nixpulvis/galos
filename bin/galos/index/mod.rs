@@ -49,15 +49,17 @@
 //! keeps landing somewhere, the original is seen to, and the two are made
 //! one. The union is taken at full precision out of the two resume
 //! points, newest `updated_at` winning, and the tree is raised again off
-//! it — the same cold build a dump gets. See [`galos_index::absorb`].
+//! it — the same cold build a dump gets. See [`galos_index::ops::absorb`].
 
 use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
-use galos_index::geometry::MAX_LEVEL;
-use galos_index::{
-    source, store, Bodies, Cell, Index, NameEntry, Names, PopulatedSystem,
-    Published, SystemBoost, SystemReach,
+use galos_index::accumulate::bodies::{Bodies, OnDisk};
+use galos_index::core::geometry::MAX_LEVEL;
+use galos_index::records::{
+    NameEntry, PopulatedSystem, SystemBoost, SystemReach,
 };
+use galos_index::store::cells;
+use galos_index::{Cell, Index, Names};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::io;
@@ -237,8 +239,8 @@ pub(super) enum Command {
                env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
     },
-    /// Write the sector dictionary `galos_index::procedural` derives names
-    /// through, learned from a built directory.
+    /// Write the sector dictionary `galos_index::core::procedural` derives
+    /// names through, learned from a built directory.
     Sectors {
         /// The index directory to learn from.
         #[arg(short = 'i', long = "index", value_name = "DIR",
@@ -293,20 +295,16 @@ pub fn run(cli: Cli) -> ExitCode {
         Command::Restore { from, dir, force } => {
             carry(&from, &dir, force, forced, "restore")
         }
-        Command::Merge {
-            dir,
-            from,
-            checkpoint,
-            from_checkpoint,
-            dry_run,
-        } => merge(
-            &dir,
-            &from,
-            checkpoint.as_deref(),
-            from_checkpoint.as_deref(),
-            dry_run,
-            forced,
-        ),
+        Command::Merge { dir, from, checkpoint, from_checkpoint, dry_run } => {
+            merge(
+                &dir,
+                &from,
+                checkpoint.as_deref(),
+                from_checkpoint.as_deref(),
+                dry_run,
+                forced,
+            )
+        }
         Command::Pack { dir } => pack(&dir, forced),
         Command::Sweep { dir, bodies, apply } => {
             sweep(&dir, bodies, apply, forced)
@@ -385,7 +383,7 @@ fn stopping() -> impl Fn() -> bool + Sync {
 ///   appends a fresh record for every system and the one behind it is
 ///   dead. Measured on a re-imported galaxy at 161.1 GB.
 ///
-/// A build sweeps both for itself now — `store::sweep_payloads` and
+/// A build sweeps both for itself now — `cells::sweep_payloads` and
 /// `pack::sweep_bodies`, run once the new index file stands — so this is
 /// for the directories written before it did, and for looking before
 /// acting. **Reporting is the default**, because acting on a served
@@ -405,7 +403,11 @@ fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
         }
     };
     let at = std::time::Instant::now();
-    match galos_index::sweep_payloads(dir, &index, apply) {
+    match galos_index::store::cells::sweep_payloads(
+        dir,
+        &|id| index.get(id).is_some(),
+        apply,
+    ) {
         Ok(swept) if swept.orphans == 0 => {
             println!(
                 "{}: every payload belongs to a cell of the {} the index \
@@ -455,7 +457,7 @@ fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
 fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
     let stop = stopping();
     let at = std::time::Instant::now();
-    let weighed = galos_index::pack::weigh(dir, &stop)?;
+    let weighed = galos_index::store::bodies::weigh(dir, &stop)?;
     println!(
         "{}: {} shards, {} systems, {} live, {} dead, in {:.1?}",
         dir.display(),
@@ -486,7 +488,7 @@ fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
     // Said before the wait and not after it: this is the minutes.
     println!("reclaiming {} ...", size(weighed.reclaimable));
     let from = std::time::Instant::now();
-    let said = |run: &galos_index::Reclaimed| {
+    let said = |run: &galos_index::store::bodies::Reclaimed| {
         eprint!(
             "\r{} shards, {} reclaimed, {:.0?}",
             run.shards,
@@ -494,7 +496,7 @@ fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
             from.elapsed(),
         );
     };
-    let swept = galos_index::pack::sweep_bodies(dir, &stop, &said);
+    let swept = galos_index::store::bodies::sweep_bodies(dir, &stop, &said);
     eprintln!();
     let swept = swept?;
     println!(
@@ -578,7 +580,7 @@ fn verify(dir: &Path, bodies: bool) {
         if n % 4096 == 0 {
             eprint!("\r  payloads    {n} of {} read", owners.len());
         }
-        match store::Payload::open(dir, cell.id) {
+        match cells::Payload::open(dir, cell.id) {
             Ok(Some(payload)) => {
                 held += payload.len() as u64;
                 short += usize::from(payload.len() as u64 != cell.slice_len());
@@ -590,7 +592,11 @@ fn verify(dir: &Path, bodies: bool) {
             }
         }
     }
-    let orphans = match galos_index::sweep_payloads(dir, &index, false) {
+    let orphans = match galos_index::store::cells::sweep_payloads(
+        dir,
+        &|id| index.get(id).is_some(),
+        false,
+    ) {
         Ok(swept) => swept,
         Err(err) => {
             eprintln!("\n{}: {err}", dir.display());
@@ -606,7 +612,7 @@ fn verify(dir: &Path, bodies: bool) {
         at.elapsed(),
     );
 
-    match galos_index::pack::weigh(dir, &stop) {
+    match galos_index::store::bodies::weigh(dir, &stop) {
         Ok(weighed) => {
             println!(
                 "  bodies      {} shards, {} systems, {} live, {} dead \
@@ -678,7 +684,7 @@ fn strays(
             println!("              stopped before the addresses were read");
             return;
         }
-        let Ok(Some(payload)) = store::Payload::open(dir, cell.id) else {
+        let Ok(Some(payload)) = cells::Payload::open(dir, cell.id) else {
             continue;
         };
         named.extend((0..payload.len()).map(|at| payload.id64_at(at)));
@@ -686,11 +692,12 @@ fn strays(
     named.sort_unstable();
 
     let mut strays = 0u64;
-    let walked = galos_index::pack::each_address(dir, stop, &mut |address| {
-        if named.binary_search(&(address as u64)).is_err() {
-            strays += 1;
-        }
-    });
+    let walked =
+        galos_index::store::bodies::each_address(dir, stop, &mut |address| {
+            if named.binary_search(&(address as u64)).is_err() {
+                strays += 1;
+            }
+        });
     match walked {
         Ok(true) => println!(
             "              {strays} of {records} body records are for \
@@ -716,8 +723,8 @@ fn size(bytes: u64) -> String {
 
 /// Bring a directory up to the format this build reads.
 ///
-/// What [`galos_index::store`]'s version refusal names, so an operator met
-/// by "rebuild the directory" has one thing to run. Three rewrites, in the
+/// What [`galos_index::store::cells`]'s version refusal names, so an operator
+/// met by "rebuild the directory" has one thing to run. Three rewrites, in the
 /// only order they can happen in:
 ///
 /// 1. **The names chunks are folded into the mapped table.** A build
@@ -750,7 +757,7 @@ fn migrate(dir: &Path, forced: bool) {
     // directory in a state the next run takes up, `index.bin` being
     // rewritten last.
     let stop = || false;
-    let mut said = |wrote: &galos_index::upgrade::Rewrote| {
+    let mut said = |wrote: &galos_index::ops::upgrade::Rewrote| {
         // The sweep first and the rewrite after it, which is the order they
         // happen in: a line about cells while the scan record is still
         // being read would be a line of zeroes.
@@ -770,7 +777,7 @@ fn migrate(dir: &Path, forced: bool) {
         }
     };
 
-    match galos_index::upgrade::rewrite(dir, &stop, &mut said) {
+    match galos_index::ops::upgrade::rewrite(dir, &stop, &mut said) {
         Ok(wrote) => {
             eprintln!();
             println!(
@@ -810,18 +817,18 @@ fn migrate(dir: &Path, forced: bool) {
 /// alone.
 fn names_forward(dir: &Path, lock: &galos_index::Lock) {
     let _ = lock;
-    match galos_index::names::version(dir) {
+    match galos_index::store::names::version(dir) {
         Ok(None) => {}
-        Ok(Some(version)) if version >= galos_index::names::writes() => {
+        Ok(Some(version)) if version >= galos_index::store::names::writes() => {
             println!("the names table is already version {version}");
         }
         Ok(Some(version)) => {
             let at = std::time::Instant::now();
             println!(
                 "rewriting the names table, version {version} to {}",
-                galos_index::names::writes(),
+                galos_index::store::names::writes(),
             );
-            match galos_index::names::compact(dir) {
+            match galos_index::store::names::compact(dir) {
                 Ok(count) => {
                     println!("{count} names rewritten in {:.1?}", at.elapsed())
                 }
@@ -846,7 +853,7 @@ fn names_forward(dir: &Path, lock: &galos_index::Lock) {
 fn pack(dir: &Path, forced: bool) {
     let lock = held(dir, forced);
     let start = std::time::Instant::now();
-    match galos_index::pack::pack(dir, &|| false) {
+    match galos_index::store::bodies::pack(dir, &|| false) {
         Ok(done) => println!(
             "{}: {} files packed in {:.1?}{}",
             dir.display(),
@@ -876,7 +883,7 @@ fn pack(dir: &Path, forced: bool) {
 /// and a runbook reads better for having both.
 ///
 /// The lock is taken on the **destination**, which is the only side
-/// written. The source needs none: [`galos_index::copy`] takes the
+/// written. The source needs none: [`galos_index::ops::copy`] takes the
 /// publish log before the base it may have been folded into, and
 /// `index.bin` last of all, so a copy taken across a live publish holds
 /// at worst payloads the copied tree does not name — which `sweep`
@@ -895,7 +902,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
         );
         std::process::exit(2);
     }
-    let standing = galos_index::copy::occupied(to);
+    let standing = galos_index::ops::copy::occupied(to);
     if standing && !force {
         eprintln!(
             "{} already holds an index directory or a resume point; pass \
@@ -904,8 +911,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
         );
         std::process::exit(2);
     }
-    if let Some(parent) = to.parent().filter(|it| !it.as_os_str().is_empty())
-    {
+    if let Some(parent) = to.parent().filter(|it| !it.as_os_str().is_empty()) {
         if let Err(err) = std::fs::create_dir_all(parent) {
             eprintln!("cannot {what} into {}: {err}", to.display());
             std::process::exit(2);
@@ -917,7 +923,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
     // replace out from under them.
     let lock = held(to, forced);
     if standing {
-        if let Err(err) = galos_index::copy::discard(to) {
+        if let Err(err) = galos_index::ops::copy::discard(to) {
             eprintln!("cannot clear {}: {err}", to.display());
             leave(Some(lock), 2);
         }
@@ -925,7 +931,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
 
     let start = std::time::Instant::now();
     let stop = stopping();
-    let mut said = |run: &galos_index::copy::Copied| {
+    let mut said = |run: &galos_index::ops::copy::Copied| {
         eprint!(
             "\r{} files, {}, {:.0?}",
             run.files,
@@ -933,7 +939,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
             start.elapsed()
         );
     };
-    let done = galos_index::copy::copy(from, to, &stop, &mut said);
+    let done = galos_index::ops::copy::copy(from, to, &stop, &mut said);
     // Padded before the carriage return: the report that follows is
     // shorter than the progress line it lands on.
     eprint!("\r{:<48}\r", "");
@@ -982,7 +988,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
 /// - **2**, it was stopped or something broke **after** the merged
 ///   resume point had landed. The directory then holds the union at
 ///   full precision with no `index.bin` over it, which reads as nothing
-///   at all and is what [`galos_index::absorb`] leaves on purpose:
+///   at all and is what [`galos_index::ops::absorb`] leaves on purpose:
 ///   running the merge again finishes it, and so does `galos ingest
 ///   --index DIR`. A 2 is therefore "come back to this", not "it is
 ///   lost".
@@ -1022,10 +1028,10 @@ fn merge(
     // Padded, because a phase's line is shorter than the one before it —
     // "the rebuild" follows "systems 12345678/200071629" — and a bare
     // `\r` would leave the tail of the longer one standing.
-    let mut said = |step: &galos_index::absorb::Folding| {
+    let mut said = |step: &galos_index::ops::absorb::Folding| {
         eprint!("\r{step:<48}");
     };
-    let done = galos_index::absorb::absorb(
+    let done = galos_index::ops::absorb::absorb(
         dir,
         &into_point,
         from,
@@ -1050,8 +1056,8 @@ fn merge(
         Err(refused) => {
             let touched = matches!(
                 refused,
-                galos_index::absorb::Refused::Failed { .. }
-                    | galos_index::absorb::Refused::Stopped {
+                galos_index::ops::absorb::Refused::Failed { .. }
+                    | galos_index::ops::absorb::Refused::Stopped {
                         committed: true,
                         ..
                     }
@@ -1078,7 +1084,7 @@ fn merge(
 fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
     let _ = lock;
     let start = std::time::Instant::now();
-    match galos_index::names::fold_chunks(dir) {
+    match galos_index::store::names::fold_chunks(dir) {
         Ok(Some(named)) => println!(
             "{}: {named} systems folded into the mapped table in {:.1?}",
             dir.display(),
@@ -1095,8 +1101,8 @@ fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
 
 /// Learn the sector dictionary from a directory's names table.
 ///
-/// What `galos_index::procedural` compiles in, and the only way to refresh
-/// it: a sector enters the dictionary when the first system in it is
+/// What `galos_index::core::procedural` compiles in, and the only way to
+/// refresh it: a sector enters the dictionary when the first system in it is
 /// reported, so the file is as complete as the galaxy anybody has imported.
 ///
 /// **A name that claims more than one sector coordinate is left out.**
@@ -1118,7 +1124,7 @@ fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
 /// Read-only on the directory, and takes no lock: it reads the published
 /// table and writes somewhere else entirely.
 fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
-    let table = match galos_index::names::Table::open(dir) {
+    let table = match galos_index::store::names::Table::open(dir) {
         Ok(table) => table,
         Err(e) => {
             eprintln!("cannot read the names table at {}: {e}", dir.display());
@@ -1134,7 +1140,7 @@ fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
     for row in 0..table.len() {
         let name = table.name_at(row);
         let Some(sector) = sector_words(&name) else { continue };
-        let key = galos_index::procedural::sector_key(
+        let key = galos_index::core::procedural::sector_key(
             elite_journal::Boxel::of(table.address_at(row)).sector,
         );
         let sector = sector.to_owned();
@@ -1155,7 +1161,7 @@ fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
         match settled {
             Some((name, _)) => {
                 written += 1;
-                match galos_index::procedural::sector_at(*key) {
+                match galos_index::core::procedural::sector_at(*key) {
                     Some(held) if held != name => {
                         changed.push((*key, held, name.clone()));
                     }
@@ -1173,7 +1179,7 @@ fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
     // ordinary case for anything but a full import. Dropping those entries
     // would put every name under them back into the text at the next fold,
     // so it is refused alongside the renames.
-    let lost = galos_index::procedural::sectors()
+    let lost = galos_index::core::procedural::sectors()
         .filter(|(key, _)| !votes.contains_key(key))
         .count();
 
@@ -1218,7 +1224,7 @@ fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
 /// one.
 ///
 /// The shape and nothing else: whether the address agrees is
-/// `galos_index::procedural`'s business, and this runs before there is a
+/// `galos_index::core::procedural`'s business, and this runs before there is a
 /// dictionary for it to agree through.
 fn sector_words(name: &str) -> Option<&str> {
     let (head, last) = name.rsplit_once(' ')?;
@@ -1318,9 +1324,13 @@ fn status(dir: &Path) {
     println!("  total flux    {:.3e}  (relative)", root.aggregate.total_flux());
 
     // On-disk footprint, straight off the filesystem.
-    if let Ok(meta) = std::fs::metadata(dir.join(store::INDEX_FILE)) {
+    if let Ok(meta) =
+        std::fs::metadata(dir.join(galos_index::format::layout::INDEX_FILE))
+    {
         print!("  on disk       index.bin ({:.2} MB)", mib(meta.len()));
-        let (count, bytes) = payload_footprint(&dir.join(store::PAYLOAD_DIR));
+        let (count, bytes) = payload_footprint(
+            &dir.join(galos_index::format::layout::PAYLOAD_DIR),
+        );
         print!(", {count} payload files ({:.2} MB)", mib(bytes));
         println!();
     }
@@ -1657,7 +1667,7 @@ fn aggregates(shared: &[(Cell, Cell)]) -> Verdict {
 /// question two `stat`s answer for most cells: a payload is written whole
 /// by one writer version, sorted by magnitude, so equal content is equal
 /// bytes — the same argument [`tables`] makes, and the crate's own
-/// cross-build test (`store::tests::assert_dirs_identical`) compares
+/// cross-build test (`cells::tests::assert_dirs_identical`) compares
 /// payloads by their bytes already.
 ///
 /// **The decoder keeps the last word.** Equal bytes are equal points and
@@ -1783,9 +1793,9 @@ fn payloads(
 /// directory keeps none for it.
 ///
 /// The sharded name first and the flat one after it, which is the order
-/// [`Index::read_payload`] reads them in: `store::payload_path` is the
-/// crate's own spelling of the pair and is `pub(crate)`, so they are
-/// spelled again here.
+/// [`Index::read_payload`] reads them in:
+/// `galos_index::format::layout::payload_path` is the crate's own spelling of
+/// the pair and is `pub(crate)`, so they are spelled again here.
 ///
 /// **A spelling that goes stale costs speed and not truth.** Where either
 /// side answers [`None`] the two payloads are read and decoded instead, by
@@ -1794,7 +1804,7 @@ fn payloads(
 /// again and never makes it wrong.
 fn payload_file(dir: &Path, cell: &Cell) -> io::Result<Option<(PathBuf, u64)>> {
     let morton = cell.id.morton();
-    let cells = dir.join(store::PAYLOAD_DIR);
+    let cells = dir.join(galos_index::format::layout::PAYLOAD_DIR);
     let name = format!("{:02}-{morton:016x}.bin", cell.id.level);
     let sharded = cells.join(format!("{:03x}", morton & 0xfff)).join(&name);
     for path in [sharded, cells.join(&name)] {
@@ -1942,12 +1952,13 @@ fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
 ///
 /// One generation directory a side, the same table version, and the four
 /// sections that carry the content equal byte for byte:
-/// [`ADDR_FILE`](galos_index::names::ADDR_FILE) is which systems are
-/// named, [`EXCEPTION_FILE`](galos_index::names::EXCEPTION_FILE) and
-/// [`SPAN_FILE`](galos_index::names::SPAN_FILE) are which of them stored
-/// a name and where it lies, and
-/// [`TEXT_FILE`](galos_index::names::TEXT_FILE) is the names themselves.
-/// Everything else a row can be asked is arithmetic over the address.
+/// [`ADDR_FILE`](galos_index::format::layout::ADDR_FILE) is which systems are
+/// named, [`EXCEPTION_FILE`](galos_index::format::layout::EXCEPTION_FILE) and
+/// [`SPAN_FILE`](galos_index::format::layout::SPAN_FILE) are which of them
+/// stored a name and where it lies, and
+/// [`TEXT_FILE`](galos_index::format::layout::TEXT_FILE) is the names
+/// themselves. Everything else a row can be asked is arithmetic over the
+/// address.
 ///
 /// **`byname.bin` is not read.** It is those four sorted by name — 800 MB
 /// of an answer they already hold — and this asks what the table says,
@@ -1973,16 +1984,17 @@ fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
     let (Some(x), Some(y)) = (generation(a), generation(b)) else {
         return false;
     };
-    let version = |dir: &Path| galos_index::names::version(dir).ok().flatten();
+    let version =
+        |dir: &Path| galos_index::store::names::version(dir).ok().flatten();
     let Some(held) = version(a) else { return false };
     if Some(held) != version(b) {
         return false;
     }
     let sections = [
-        galos_index::names::ADDR_FILE,
-        galos_index::names::SPAN_FILE,
-        galos_index::names::EXCEPTION_FILE,
-        galos_index::names::TEXT_FILE,
+        galos_index::format::layout::ADDR_FILE,
+        galos_index::format::layout::SPAN_FILE,
+        galos_index::format::layout::EXCEPTION_FILE,
+        galos_index::format::layout::TEXT_FILE,
     ];
     sections.iter().all(|file| {
         let (x, y) = (x.join(file), y.join(file));
@@ -2011,7 +2023,9 @@ fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
 /// takes the slow road rather than guess.
 fn generation(dir: &Path) -> Option<PathBuf> {
     let mut held: Option<PathBuf> = None;
-    for entry in std::fs::read_dir(source::names_dir(dir)).ok()? {
+    for entry in
+        std::fs::read_dir(galos_index::format::layout::names_dir(dir)).ok()?
+    {
         let entry = entry.ok()?;
         if !entry.file_type().ok()?.is_dir() {
             continue;
@@ -2122,7 +2136,7 @@ fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
         "populated",
         a,
         b,
-        source::populated_path,
+        galos_index::format::layout::populated_path,
         |it: &PopulatedSystem| it.address,
         how,
     );
@@ -2130,7 +2144,7 @@ fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
         "reaches",
         a,
         b,
-        source::reaches_path,
+        galos_index::format::layout::reaches_path,
         |it: &SystemReach| it.address,
         how,
     );
@@ -2138,7 +2152,7 @@ fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
         "boosts",
         a,
         b,
-        source::boosts_path,
+        galos_index::format::layout::boosts_path,
         |it: &SystemBoost| it.address,
         how,
     );
@@ -2180,12 +2194,12 @@ fn agree<T: DeserializeOwned + PartialEq>(
 
 /// How many rows a table file says it holds, off its head.
 ///
-/// `source::write_meta` writes a `Vec` through `rmp_serde`, and a
-/// MessagePack array says its length in its first one, three or five
-/// bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
-/// `0xdd` and a `u32`. So a count for the report is five bytes read rather
-/// than a table deserialised — `.index/full`'s `reaches.bin` opens
-/// `dd 04 88 58 64`, which is the 76,044,388 rows it holds.
+/// `galos_index::format::msgpack::write_meta` writes a `Vec` through
+/// `rmp_serde`, and a MessagePack array says its length in its first one, three
+/// or five bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
+/// `0xdd` and a `u32`. So a count for the report is five bytes read rather than
+/// a table deserialised — `.index/full`'s `reaches.bin` opens `dd 04 88 58 64`,
+/// which is the 76,044,388 rows it holds.
 fn counted(path: &Path) -> io::Result<usize> {
     use std::io::Read;
     let mut head = Vec::new();
@@ -2206,7 +2220,7 @@ fn counted(path: &Path) -> io::Result<usize> {
 /// An absent table is not an empty one: it says this index cannot tell,
 /// where an empty one says the galaxy has none.
 fn table<T: DeserializeOwned>(dir: &Path, path: &Path) -> Option<Vec<T>> {
-    match source::read_meta(path) {
+    match galos_index::format::msgpack::read_meta(path) {
         Ok(rows) => Some(rows),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => fatal(dir, e),
@@ -2307,8 +2321,8 @@ fn rows<T: PartialEq>(
 /// there is not always a file of its own on each side to compare.
 fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
     let at = std::time::Instant::now();
-    let left = Published::new(a).scanned();
-    let right = Published::new(b).scanned();
+    let left = OnDisk::new(a).scanned();
+    let right = OnDisk::new(b).scanned();
 
     let mut differing = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
@@ -2328,9 +2342,9 @@ fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
             }
             std::cmp::Ordering::Equal => {
                 let address = left[i];
-                let x = source::read_bodies(a, address)
+                let x = galos_index::store::bodies::read_bodies(a, address)
                     .unwrap_or_else(|e| fatal(a, e));
-                let y = source::read_bodies(b, address)
+                let y = galos_index::store::bodies::read_bodies(b, address)
                     .unwrap_or_else(|e| fatal(b, e));
                 if x != y {
                     differing.push(address);

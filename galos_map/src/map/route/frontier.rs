@@ -588,7 +588,8 @@ fn mark(at: Vec3, across: f32) -> [Vec3; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::{CellId, Node};
+    use galos_index::CellId;
+    use galos_index::read::sky::Node;
     use galos_route::graph::Frontier;
     use galos_route::graph::{BATCH, EDGE, STRIDE};
     use rustc_hash::FxHashMap;

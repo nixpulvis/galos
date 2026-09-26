@@ -175,7 +175,7 @@ struct SystemsParams {
 ///
 /// Fragment and fuzzy search live in the published names table, which holds
 /// every name whether stored or spelled
-/// (`galos_index::names::Table::matching`). Reaching it from here means
+/// (`galos_index::store::names::Table::matching`). Reaching it from here means
 /// giving this crate the index and a directory to open, and this crate is
 /// due a rewrite; `galos` the CLI does it that way already if you want to
 /// see the shape.

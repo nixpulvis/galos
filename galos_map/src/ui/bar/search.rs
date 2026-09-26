@@ -13,7 +13,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::Ui;
-use galos_index::meta::NameEntry;
+use galos_index::records::NameEntry;
 use galos_route::graph::{Drive, Routing, Tuning};
 
 /// The whole of the bar's searching
