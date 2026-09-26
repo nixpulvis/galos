@@ -6,7 +6,8 @@
 //! the rules both read — what a chord is, whether a field has the caret — are
 //! [`crate::input`]'s.
 
-use super::{AskMode, BarFields, KeysOpen, Panes};
+use super::bar::{AskMode, BarFields};
+use super::{KeysOpen, Panes};
 use crate::input::{Keyboard, bare, shifted};
 use crate::map::schedule::MapSet;
 use bevy::prelude::*;
@@ -60,7 +61,7 @@ fn toggle_keys(
 ///
 /// One box puts three questions and a key reaches each of them, so that a
 /// mode is not something only a tab knows about: `/` searches for a system,
-/// shift-F filters, shift-R plots a route. See [`crate::ui::AskMode`].
+/// shift-F filters, shift-R plots a route. See [`crate::ui::bar::AskMode`].
 ///
 /// The search has two ways in. `/` is where a reader who came from a browser
 /// or an editor will look for it, and shift-S is under a hand already resting

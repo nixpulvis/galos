@@ -295,7 +295,7 @@ impl Routing {
     /// does not draw it there.** `Expand nearest` is offered at an
     /// unpriced hop alone — a priced one takes long jumps and few of them
     /// — but the count the rail last held travelled along with the ask
-    /// (`galos_map`'s `traded`) and went on biting where nobody could see
+    /// (`galos_map`'s `ui::bar::tuning::traded`) and went on biting where nobody could see
     /// it. Measured over `.index/full` at 45 ly, least fuel at a 5% hop,
     /// the remembered 64 against the valve:
     ///

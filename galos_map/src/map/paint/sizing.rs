@@ -62,7 +62,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, size_marks.in_set(MapSet::Present));
 }
 
-#[derive(Resource, Debug, PartialEq)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub enum View {
     // TODO: Settle this one by eye. The size a shell is drawn at now falls
     // to the system's own extent rather than to a fixed floor, and nothing
