@@ -3,13 +3,6 @@
 Left over from the reorganization into `galos_map::{map, ui}`, `galos_route`
 and galos_index's layers.
 
-## `galos_index/src/store/bodies.rs`
-
-What was `pack.rs`, about 2,450 lines: the shard layout and index table, read,
-write and remove, reclaiming dead records and punching holes, weighing and
-sweeping, iteration, and the migration of loose files into shards. Split along
-those lines into `store/bodies/`.
-
 ## Naming the core types — needs discussion
 
 - `System`, `Index`, `Sky` and `Source` each mean something else nearby:
