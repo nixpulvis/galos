@@ -41,9 +41,9 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::Index;
 use galos_index::read::inhabited::Inhabitance;
-use galos_index::records::{Faction, PopulatedSystem, SystemBoost};
-use galos_route::Boosts;
+use galos_index::records::{Faction, PopulatedSystem};
 use galos_route::graph::Jumps;
+use galos_route::{BoostTable, Boosts, SystemBoost};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -252,7 +252,9 @@ async fn read(
     let reaches =
         names::Reaches::of(source.reaches().await.unwrap_or_default());
     at(Step::Boosts);
-    let boosts = source.boosts().await.unwrap_or_default();
+    let boosts = galos_index::read::source::table::<BoostTable>(&**source)
+        .await
+        .unwrap_or_default();
     at(Step::Factions);
     let factions = source.factions().await.unwrap_or_default();
 

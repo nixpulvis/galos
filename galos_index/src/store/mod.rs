@@ -2,9 +2,11 @@
 //!
 //! [`cells`] is the payload files, one a cell. [`bodies`] is every system's
 //! insides, packed a shard to a file. [`names`] is the names table, mapped
-//! and searched. [`sidecars`] holds the metadata tables open across a run.
+//! and searched. [`sidecars`] holds the metadata tables open across a run,
+//! each a [`tables::Keyed`] table, beside the ones dependents contribute.
 
 pub mod bodies;
 pub mod cells;
 pub mod names;
 pub mod sidecars;
+pub mod tables;

@@ -2,8 +2,8 @@
 //!
 //! The cells carry what the map *draws* — a system's exact position and its
 //! fixed-width photometry. These carry what a *click* and a *route* want: a
-//! populated system's political columns, how far a system reaches, what it
-//! can supercharge, a faction's name, and the name and place of every system
+//! populated system's political columns, how far a system reaches, a
+//! faction's name, and the name and place of every system
 //! for the search box and the router. What a system holds inside it is
 //! [`super::bodies`].
 //!
@@ -15,7 +15,6 @@
 //! so the tedium a fixed layout would trade for is not worth its speed here.
 
 use crate::core::name::SystemName;
-use crate::core::record::{Boost, StarKind};
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -57,44 +56,6 @@ pub struct SystemReach {
     pub address: i64,
     /// Metres from the arrival star to the far edge of what is on record
     pub reach: f32,
-}
-
-/// A system whose arrival star can supercharge a drive, where it is, and on
-/// what.
-///
-/// Its own table, as the reaches are and for the same reason: it is about
-/// every system rather than the populated few, it is a fact the feed reports
-/// (a system's main star class arrives with its first scan), and the router
-/// reads it over the whole galaxy without fetching anything. Two systems in a
-/// hundred are in it — 3,846,802 of 200,071,629.
-///
-/// **The place is in it because the router's question is where the cones
-/// are.** A table of addresses alone made the client join four million of
-/// them against the names table's address column to find out — 4 GB of
-/// mapping faulted and 7.9 s before a galactic route could begin planning,
-/// paid once a session and visible as a click that hung. Twelve bytes a row
-/// here is 46 MB over the table and nothing at all at read time, and it is
-/// what takes the names table out of the routing path altogether.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SystemBoost {
-    pub address: i64,
-    pub boost: Boost,
-    /// Where it sits, in light years, at the precision the names table
-    /// publishes: a route resolves a waypoint by descending to the place,
-    /// so a light year of rounding changes nothing.
-    pub position: [f32; 3],
-}
-
-impl SystemBoost {
-    /// The row for a system whose arrival star is `kind`, at `position`, or
-    /// [`None`] where that star has no jet cone to fly.
-    pub fn of(
-        address: i64,
-        kind: StarKind,
-        position: [f32; 3],
-    ) -> Option<Self> {
-        Some(SystemBoost { address, boost: kind.boost()?, position })
-    }
 }
 
 /// A name and where it is: the search index and the routing graph in one.

@@ -79,7 +79,7 @@ use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
 use crate::core::record::ExactSystem;
 use crate::records::{
-    NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
+    Arrival, NameEntry, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
 use crate::store::sidecars::TableWriter;
 use chrono::{DateTime, Utc};
@@ -401,12 +401,13 @@ impl Galaxy {
         self.inside.read(address).extent(address)
     }
 
-    /// What one system's arrival star can supercharge, and where it sits,
-    /// by [`derive::boost`].
-    pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
+    /// What a contributed table is handed about one system, by
+    /// [`derive::arrival`]: nothing for a system nothing has placed, or
+    /// whose arrival star nothing has said.
+    pub fn arrival_of(&self, address: i64) -> Option<Arrival> {
         let report = self.systems.get(&address)?;
         let at = report.placed()?;
-        derive::boost(
+        derive::arrival(
             address,
             Some(&self.inside.read(address)),
             report.star_class.as_deref(),
@@ -489,20 +490,6 @@ impl Galaxy {
         table
     }
 
-    /// Which systems can supercharge a drive, and on what.
-    ///
-    /// Off the arrival star's class, which is the one that matters: a ship
-    /// drops in at the main star and can reach its jet cone without crossing
-    /// the system. The arrival star is the scanned star standing nearest the
-    /// drop point; where nothing has been scanned the route file's class
-    /// stands in, that being a statement about the same star.
-    pub fn boosts(&self) -> Vec<SystemBoost> {
-        let mut table: Vec<SystemBoost> =
-            self.systems.keys().filter_map(|&a| self.boost_of(a)).collect();
-        table.sort_by_key(|it| it.address);
-        table
-    }
-
     /// The systems anybody lives in, with the political columns a colour and a
     /// filter are read from.
     ///
@@ -551,8 +538,8 @@ impl TableWriter {
         if let Some(reach) = galaxy.reach_of(address) {
             self.reach(address, reach)?;
         }
-        if let Some(row) = galaxy.boost_of(address) {
-            self.boost(row)?;
+        if let Some(arrival) = galaxy.arrival_of(address) {
+            self.arrive(&arrival)?;
         }
         Ok(())
     }
@@ -561,7 +548,7 @@ impl TableWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::Boost;
+    use crate::core::record::StarKind;
     use elite_journal::entry::Entry;
     use elite_journal::prelude::{Allegiance, Economy};
     use galos_photometry::ClassLight;
@@ -913,17 +900,26 @@ mod tests {
         assert_eq!(galaxy.populated().len(), 1, "the population was dropped");
     }
 
-    /// A jet cone is read off the star a ship drops in at
+    /// A table is asked about a system once something says what star a ship
+    /// drops in at, and not before
+    ///
+    /// A jump says nothing about the star, and asked then, a contributed
+    /// table would take out a row a richer source had published.
     #[test]
-    fn a_neutron_star_supercharges() {
+    fn an_arrival_is_the_star_a_ship_drops_in_at() {
         let mut galaxy = galaxy();
         galaxy.read(&entry(JUMP));
-        assert!(galaxy.boosts().is_empty(), "an unscanned system supercharged");
+        assert_eq!(galaxy.arrival_of(10477373803), None, "a jump said a star");
 
         galaxy.read(&entry(&star_scan("N", 12.0, 100_000.0)));
-        let boosts = galaxy.boosts();
-        assert_eq!(boosts.len(), 1);
-        assert_eq!(boosts[0].boost, Boost::Neutron);
+        assert_eq!(
+            galaxy.arrival_of(10477373803),
+            Some(Arrival {
+                address: 10477373803,
+                kind: StarKind::Neutron,
+                position: [0.0; 3],
+            }),
+        );
     }
 
     /// The class survives a trip through the byte a payload carries
@@ -936,8 +932,6 @@ mod tests {
     /// having been said rather than as some other star.
     #[test]
     fn a_star_kind_goes_through_a_byte_unchanged() {
-        use crate::core::record::StarKind;
-
         for class in [
             "O",
             "B",
@@ -975,15 +969,6 @@ mod tests {
         // the class string.
         assert!(StarKind::of("K").scoops());
         assert!(!StarKind::of("DA").scoops());
-        assert_eq!(
-            StarKind::of("N").boost(),
-            Some(crate::core::record::Boost::Neutron)
-        );
-        assert_eq!(
-            StarKind::of("DA").boost(),
-            Some(crate::core::record::Boost::WhiteDwarf)
-        );
-        assert_eq!(StarKind::of("G").boost(), None);
 
         // Nothing said reads as nothing said, and says nothing.
         assert_eq!(StarKind::of("").named(), None);
@@ -1080,8 +1065,8 @@ mod tests {
         assert_eq!(systems.len(), 1, "the route named nothing");
         assert_eq!(systems[0].position, [-101.0, 130.0, -21.0]);
         assert_eq!(
-            galaxy.boosts().first().map(|it| it.boost),
-            Some(Boost::Neutron),
+            galaxy.arrival_of(1044034375449).map(|it| it.kind),
+            Some(StarKind::Neutron),
             "the route's own class was not read",
         );
     }

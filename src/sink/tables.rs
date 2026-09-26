@@ -28,7 +28,7 @@
 //! See `galos_index::accumulate::galaxy`.
 
 use galos_index::accumulate::merge;
-use galos_index::store::sidecars::{Counts, Moved, Sidecars};
+use galos_index::store::sidecars::{Counts, Sidecars};
 use galos_index::Galaxy;
 use std::collections::HashSet;
 use std::io;
@@ -51,47 +51,40 @@ pub struct Wrote {
     /// and happens about monthly on the live feed, so it is reported rather
     /// than left silent. See `galos_index::store::names::compact`.
     pub folded: bool,
-    /// Which of the whole-file tables were rewritten.
-    pub tables: Moved,
 }
 
-impl Wrote {
-    /// Every table, whatever has changed.
-    pub const EVERYTHING: Wrote =
-        Wrote { name_rows: 0, folded: false, tables: Moved::EVERYTHING };
-}
-
-/// The metadata sidecars as this side of the program keeps them.
+/// The metadata sidecars as this side of the program keeps them, with the
+/// tables the program contributes ([`crate::tables`]) beside them.
 pub struct Tables {
     held: Sidecars,
-    /// Which whole-file tables the directory has no file for at all.
-    ///
-    /// A table nothing in a run happened to move is a table never written,
-    /// and a directory a follower has been filling for an hour can be
-    /// missing one that way. To a client that absence is not "nothing to
-    /// report": `galos_map` reads a missing supercharge table as "this
-    /// index cannot say where a jet cone is" and refuses to plot a route
-    /// for a drive that takes one. So the first write of a run writes
-    /// whatever the directory lacks, empty if that is what it comes to.
-    absent: Moved,
 }
 
 impl Tables {
     /// What `dir` already publishes, or empty tables where it publishes
     /// nothing.
+    ///
+    /// A table the directory has no file for at all is written by the
+    /// first write of the run, empty if that is what it comes to. A table
+    /// nothing in a run happened to move is a table never written, and a
+    /// directory a follower has been filling for an hour can be missing one
+    /// that way. To a client that absence is not "nothing to report":
+    /// `galos_map` reads a missing supercharge table as "this index cannot
+    /// say where a jet cone is" and refuses to plot a route for a drive
+    /// that takes one.
     pub fn resume(dir: &Path) -> io::Result<Tables> {
-        let (held, absent) = Sidecars::resume(dir)?;
+        let mut held = Sidecars::resume(dir, &crate::tables())?;
+        held.claim_absent();
         let counts = held.counts();
         debug!(
             names = counts.names,
             populated = counts.populated,
             reaches = counts.reaches,
-            boosts = counts.boosts,
+            tables = ?counts.contributed,
             factions = counts.factions,
             dir = %dir.display(),
             "resumed the metadata tables",
         );
-        Ok(Tables { held, absent })
+        Ok(Tables { held })
     }
 
     /// How many systems the names table holds.
@@ -136,31 +129,26 @@ impl Tables {
         orphans.len()
     }
 
-    /// Take what `galaxy` now says about `touched`, answering what moved.
+    /// Take what `galaxy` now says about `touched`.
     ///
     /// In memory. The tables that are single files are left for
-    /// [`Self::write`], which is what decides between "what moved" and "all
-    /// of it", and the per-system body files belong to the galaxy's own store
-    /// (`galos_index::accumulate::bodies`), which is what writes them.
+    /// [`Self::write`], and the per-system body files belong to the galaxy's
+    /// own store (`galos_index::accumulate::bodies`), which is what writes
+    /// them.
     ///
     /// A system the galaxy has nothing to say about is left exactly as the
     /// directory has it; see the module header.
-    pub fn patch(
-        &mut self,
-        galaxy: &Galaxy,
-        touched: &HashSet<i64>,
-    ) -> io::Result<Wrote> {
+    pub fn patch(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
         for &address in touched {
             if let Some(entry) = galaxy.name_of(address) {
                 self.held.name(entry);
             }
         }
-        let tables = self.patch_tables(galaxy, touched);
-        Ok(Wrote { name_rows: 0, folded: false, tables })
+        self.patch_tables(galaxy, touched);
     }
 
     /// Take what `galaxy` says about `touched` into the tables written
-    /// whole, leaving the names table alone, and answer what moved.
+    /// whole, leaving the names table alone.
     ///
     /// What a cold build patches through. That build writes its own names
     /// table straight to disk as it reads — sorted and swapped in at the
@@ -168,12 +156,7 @@ impl Tables {
     /// would be a kilobyte a system over the galaxy, the one thing that
     /// route exists not to hold, and would then be published over the
     /// base the build had just put in place.
-    pub fn patch_tables(
-        &mut self,
-        galaxy: &Galaxy,
-        touched: &HashSet<i64>,
-    ) -> Moved {
-        let mut moved = Moved::default();
+    pub fn patch_tables(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
         for &address in touched {
             if let Some(said) = galaxy.populated_of(address) {
                 // What an event says about a system, over what the directory
@@ -198,37 +181,39 @@ impl Tables {
                     Some(stood) => merge::populated_over(stood, said, true),
                     None => said,
                 };
-                moved.populated |= self.held.populate(row);
+                self.held.populate(row);
             }
 
             if let Some(reach) = galaxy.reach_of(address) {
-                moved.reaches |= self.held.reach(address, reach);
+                self.held.reach(address, reach);
             }
 
-            if let Some(row) = galaxy.boost_of(address) {
-                moved.boosts |= self.held.boost(row);
+            // A system nothing says the arrival star of is left as the
+            // directory has it, for the reason at the top of this module.
+            if let Some(arrival) = galaxy.arrival_of(address) {
+                self.held.arrive(&arrival);
             }
         }
-        moved
     }
 
-    /// Write the tables `moved` names, the ones the directory has no file
-    /// for at all, and whatever the names table has taken.
+    /// Write the tables that moved, the ones the directory has no file for
+    /// at all, and whatever the names table has taken.
     ///
     /// The names go to the delta log, which is an append of the changed
     /// rows rather than a rewrite of the table. The rewrite that does fold
     /// them into the base is asked for afterwards — never before, the fold
     /// reading the directory — and comes back in [`Wrote::folded`] because
     /// it is the one part of a publish that costs minutes.
-    ///
-    /// [`Wrote::EVERYTHING`] writes the lot, which is what a directory being
-    /// published from nothing wants.
-    pub fn write(&mut self, dir: &Path, moved: Wrote) -> io::Result<Wrote> {
-        let mut tables = moved.tables;
-        tables.absorb(self.absent);
-        let name_rows = self.held.write(dir, tables)?;
+    pub fn write(&mut self, dir: &Path) -> io::Result<Wrote> {
+        let name_rows = self.held.write(dir)?;
         let folded = self.held.compact_names(dir)?;
-        self.absent = Moved::default();
-        Ok(Wrote { name_rows, folded, tables })
+        Ok(Wrote { name_rows, folded })
+    }
+
+    /// [`Self::write`], every table whether it moved or not: what a
+    /// directory being published from nothing wants.
+    pub fn write_everything(&mut self, dir: &Path) -> io::Result<Wrote> {
+        self.held.touch_all();
+        self.write(dir)
     }
 }

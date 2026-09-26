@@ -17,6 +17,8 @@
 //! - [`spansh`] - A [Spansh](https://spansh.co.uk) galaxy dump reader
 //! - `galos_db` - PostgreSQL database and ORM, behind the `db` feature
 //! - [`galos_index`] - The index format, and the accumulator that fills it
+//! - [`galos_route`] - The router, and the supercharge table it publishes
+//!   beside the index's own ([`tables`])
 //!
 //! ## The `db` feature
 //!
@@ -117,3 +119,13 @@ pub mod sink;
 
 pub use shard::Shard;
 pub use shutdown::Shutdown;
+
+/// The tables this program contributes to every index directory it writes,
+/// beside the index's own.
+///
+/// One place, because every writer of a directory has to hold the same set:
+/// a table one writer left out is a table the next one resumes absent. The
+/// router's supercharge table is the one there is.
+pub fn tables() -> galos_index::TableSet {
+    galos_index::TableSet::new().with::<galos_route::BoostTable>()
+}

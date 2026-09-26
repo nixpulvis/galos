@@ -10,8 +10,8 @@
 
 use crate::Boosts;
 use crate::highway::Highway;
+use crate::{Boost, Fsd};
 use galos_index::read::sky::Node;
-use galos_index::{Boost, Fsd};
 use galos_index::{CellId, Sky};
 use glam::DVec3;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -700,7 +700,7 @@ pub enum Crossing {
 /// drive for one jump. What that multiplies the range by is a fact about the
 /// drive, not about the star: see [`Boost::factor`], which says what each
 /// [`Fsd`] takes off each. Where the boost can be had at all is
-/// [`galos_index::Boost`], published per system; this is only which drive,
+/// [`crate::Boost`], published per system; this is only which drive,
 /// if any, is fitted to take it.
 ///
 /// Asked per route rather than set once, for the reason a jump range is: the
@@ -3636,7 +3636,7 @@ mod tests {
     /// A published supercharge table naming `cones`, placed where the test
     /// put them
     ///
-    /// The published row carries the place ([`galos_index::records::SystemBoost`]),
+    /// The published row carries the place ([`crate::SystemBoost`]),
     /// which is what takes the names table out of routing — so a test's
     /// cones have to be systems the test actually placed.
     fn cones(entries: &[NameEntry], cones: &[(i64, Boost)]) -> Boosts {
@@ -3648,7 +3648,7 @@ mod tests {
                         .iter()
                         .find(|entry| entry.address == address)
                         .expect("a cone the test placed");
-                    galos_index::records::SystemBoost {
+                    crate::SystemBoost {
                         address,
                         boost,
                         position: placed.position,

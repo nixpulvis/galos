@@ -5,7 +5,7 @@
 //! otherwise, where the build has one.
 
 use clap::Args;
-use galos_index::{FsSource, Names, Sky, Source, SystemName};
+use galos_index::{FsSource, Names, Sky, SystemName};
 use galos_route::{Boosts, Drive, Jumps, Routing, Tuning};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -71,11 +71,9 @@ impl Cli {
         };
         let names = Names::open(dir).map_err(said("the names table"))?;
         let sky = Arc::new(Sky::open(dir).map_err(said("the cells"))?);
-        let boosts = FsSource::new(dir)
-            .boosts()
+        let boosts = Boosts::read(&FsSource::new(dir))
             .await
-            .map_err(said("the supercharge table"))?
-            .map_or_else(Boosts::absent, Boosts::of);
+            .map_err(said("the supercharge table"))?;
 
         let end = |name: &str| -> Result<(i64, [f64; 3]), String> {
             let address = names

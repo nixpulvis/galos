@@ -49,7 +49,7 @@
 //! first expansion: the supercharge table was addresses, and finding where
 //! four million cones sat meant walking the names table's address column.
 //! The place is in the published row now
-//! ([`galos_index::records::SystemBoost`]) and the highway is a 213 ms sort, so a
+//! ([`crate::SystemBoost`]) and the highway is a 213 ms sort, so a
 //! cold click costs what a warm one does:
 //!
 //! | | jumps | before | after |
@@ -647,7 +647,7 @@ use crate::Boosts;
 use crate::graph::{
     Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh,
 };
-use galos_index::{FsSource, Source as _};
+use galos_index::FsSource;
 use glam::DVec3;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -716,12 +716,8 @@ fn plotted(
 fn routing_stays_quick() {
     let Some(dir) = measured() else { return };
     let source = FsSource::new(&dir);
-    let boosts = match pollster::block_on(source.boosts())
-        .expect("the boosts should read")
-    {
-        Some(rows) => Boosts::of(rows),
-        None => Boosts::default(),
-    };
+    let boosts = pollster::block_on(Boosts::read(&source))
+        .expect("the boosts should read");
 
     // The two ends, chosen from the data rather than named: the system
     // nearest the origin, and the one nearest a point a thousand light

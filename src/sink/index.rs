@@ -39,7 +39,7 @@
 //! `galos_index::accumulate::bodies`. What is held is what has been scanned and
 //! not yet written, which [`Sink::flush`] clears as it publishes.
 
-use crate::sink::tables::{Tables, Wrote};
+use crate::sink::tables::Tables;
 use crate::sink::{Clock, Stop};
 use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
@@ -209,7 +209,8 @@ impl Index {
         // directory published before `bodies/` and `cells/` were sharded
         // still holds the flat files.
         let asked = || stop();
-        match galos_index::ops::migrate::migrate(dir, &asked) {
+        match galos_index::ops::migrate::migrate(dir, &crate::tables(), &asked)
+        {
             Ok(done) => {
                 if done.bodies.moved > 0 {
                     info!(
@@ -253,6 +254,14 @@ impl Index {
                         named = named,
                         dir = %dir.display(),
                         "folded the names chunks into a mapped table"
+                    );
+                }
+                for (table, rows) in done.tables {
+                    info!(
+                        table,
+                        rows,
+                        dir = %dir.display(),
+                        "brought a table forward"
                     );
                 }
             }
@@ -343,7 +352,7 @@ impl Index {
             tree.write(dir)
                 .map_err(failed("the cell tree could not be repaired"))?;
             tables
-                .write(dir, Wrote::EVERYTHING)
+                .write_everything(dir)
                 .map_err(failed("the metadata could not be repaired"))?;
             Checkpoint::compact(checkpoint, resumed_at, ours, tree.inputs())
                 .map_err(failed("the resume point could not be repaired"))?;
@@ -732,13 +741,10 @@ impl Index {
             .galaxy
             .settle_bodies()
             .map_err(failed("the body files could not be written"))?;
-        let moved = self
-            .tables
-            .patch(&self.galaxy, &touched)
-            .map_err(failed("the metadata could not be published"))?;
+        self.tables.patch(&self.galaxy, &touched);
         let wrote = self
             .tables
-            .write(&self.dir, moved)
+            .write(&self.dir)
             .map_err(failed("the metadata could not be published"))?;
 
         // What this publish put in the directory, at full precision, on the
@@ -812,13 +818,10 @@ impl Index {
         self.tree
             .write(&self.dir)
             .map_err(failed("the cell tree could not be written"))?;
-        let _ = self
-            .tables
-            .patch(&self.galaxy, &all)
-            .map_err(failed("the metadata could not be written"))?;
+        self.tables.patch(&self.galaxy, &all);
         let wrote = self
             .tables
-            .write(&self.dir, Wrote::EVERYTHING)
+            .write_everything(&self.dir)
             .map_err(failed("the metadata could not be written"))?;
         self.published_once = true;
 
@@ -1117,7 +1120,10 @@ mod tests {
 
         let read = FsSource::new(&dir);
         assert_eq!(
-            pollster::block_on(read.boosts()).expect("the table reads"),
+            pollster::block_on(galos_index::read::source::table::<
+                galos_route::BoostTable,
+            >(&read))
+            .expect("the table reads"),
             Some(Vec::new()),
             "a published empty table is an answer; a missing one is not",
         );
@@ -1637,9 +1643,7 @@ mod tests {
         // what drops its row.
         let mut tables = Tables::resume(&dir).expect("the tables resume");
         assert_eq!(tables.forget_names(|address| address != 10477373803), 1);
-        tables
-            .write(&dir, Wrote::EVERYTHING)
-            .expect("the damaged tables are written");
+        tables.write_everything(&dir).expect("the damaged tables are written");
 
         let reopened = opened(&dir, &checkpoint).expect("it reopens");
         assert_eq!(
@@ -1893,7 +1897,7 @@ mod tests {
         for path in [
             galos_index::format::layout::populated_path(&dir),
             galos_index::format::layout::reaches_path(&dir),
-            galos_index::format::layout::boosts_path(&dir),
+            galos_index::store::tables::path(&dir, "boosts"),
             galos_index::format::layout::factions_path(&dir),
             galos_index::format::layout::names_delta_path(&dir),
             dir.join(galos_index::format::layout::INDEX_FILE),

@@ -16,9 +16,9 @@ use galos_index::build::cold::{
 };
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::records::derive::{self, NearestStar};
-use galos_index::{BuildParams, ExactSystem, Index, Tree};
+use galos_index::{BuildParams, ExactSystem, Index, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
-use metadata::{Metadata, Moved};
+use metadata::Metadata;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::fmt;
@@ -36,28 +36,38 @@ pub use metadata::MetaReport;
 /// that part is derived wants. Each names a file or a set of them, and
 /// asking for one reads only what it needs. A part left out is left as it
 /// stands; nothing here removes a file.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+///
+/// The index's own parts stand without any other: a directory holding them
+/// and nothing contributed is one the map opens and draws, missing only
+/// what the contributions add. Each contributed table is a part of its own,
+/// named as it is written, so one is added to a built directory the way
+/// any part is repaired.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Parts {
     pub cells: bool,
     pub names: bool,
     pub populated: bool,
     pub reaches: bool,
-    pub boosts: bool,
     pub factions: bool,
     pub bodies: bool,
+    /// The contributed tables, by [`galos_index::Table::NAME`].
+    pub tables: Vec<&'static str>,
 }
 
 impl Parts {
-    /// Every part, which is what a build with nothing named writes
-    pub const ALL: Parts = Parts {
-        cells: true,
-        names: true,
-        populated: true,
-        reaches: true,
-        boosts: true,
-        factions: true,
-        bodies: true,
-    };
+    /// Every part, the index's own and each of `tables`: what a build with
+    /// nothing named writes
+    pub fn all(tables: &TableSet) -> Parts {
+        Parts {
+            cells: true,
+            names: true,
+            populated: true,
+            reaches: true,
+            factions: true,
+            bodies: true,
+            tables: tables.names().collect(),
+        }
+    }
 
     /// No part at all, to name them onto
     pub const NONE: Parts = Parts {
@@ -65,9 +75,9 @@ impl Parts {
         names: false,
         populated: false,
         reaches: false,
-        boosts: false,
         factions: false,
         bodies: false,
+        tables: Vec::new(),
     };
 
     /// Whether anything at all was asked for
@@ -80,7 +90,7 @@ impl Parts {
     /// One read serves all three: the body files are written from those rows,
     /// the reaches measured over them, the arrival star picked out of them.
     fn wants_bodies(&self) -> bool {
-        self.reaches || self.bodies || self.boosts
+        self.reaches || self.bodies || !self.tables.is_empty()
     }
 }
 
@@ -338,9 +348,9 @@ async fn build_cells(
 ///
 /// The migration itself is shared with the sink's own open, which says the
 /// same lines; what is here is the saying of them.
-fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
+fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
     let asked = || stop();
-    let done = galos_index::ops::migrate::migrate(dir, &asked)?;
+    let done = galos_index::ops::migrate::migrate(dir, tables, &asked)?;
     // Nothing was moved and nothing can be until the payloads are brought
     // forward, which is not something an open does: said at `warn` rather
     // than `info` because every read after this one fails, and the message
@@ -394,6 +404,9 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
             "folded the names chunks into a mapped base"
         );
     }
+    for (table, rows) in done.tables {
+        info!(table, rows, dir = %dir.display(), "brought a table forward");
+    }
     Ok(())
 }
 
@@ -401,7 +414,7 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
 /// cell tree the map draws from and the records a click reads, in one
 /// directory so a single transport serves both.
 ///
-/// [`Parts::ALL`] is a full build; anything narrower reads only what those
+/// [`Parts::all`] is a full build; anything narrower reads only what those
 /// parts need and leaves every other file as it stands.
 ///
 /// A build that read the whole galaxy writes `checkpoint` beside it and says
@@ -439,10 +452,11 @@ pub async fn build_to_dir(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    tables: &TableSet,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<BuildReport>> {
-    migrate(dir, stop)?;
+    migrate(dir, tables, stop)?;
     let since = db.now().await?.naive_utc();
     let params = BuildParams::default();
 
@@ -478,7 +492,7 @@ pub async fn build_to_dir(
         write_names(db, dir, told).await?;
     }
 
-    let meta = metadata::write_parts(db, dir, parts, told).await?;
+    let meta = metadata::write_parts(db, dir, parts, tables, told).await?;
     Ok(Reached::End(BuildReport { cells, meta }))
 }
 
@@ -563,7 +577,7 @@ async fn inputs_for(
 /// It leaves a whole resume point standing for exactly the systems the
 /// directory serves; one short of what is served cannot be opened at all.
 ///
-/// `parts` narrower than [`Parts::ALL`] is the repair case: a one-shot
+/// `parts` narrower than [`Parts::all`] is the repair case: a one-shot
 /// [`build_to_dir`] of those parts, and the cursor answered is the clock
 /// read before the build read anything. It is a *repair*, so it is refused
 /// where there is nothing to repair — a directory serving nothing, written
@@ -580,11 +594,12 @@ pub async fn catch_up(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    tables: &TableSet,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<chrono::NaiveDateTime>> {
-    if parts != Parts::ALL {
+    if parts != Parts::all(tables) {
         // Before the clock and before any read: what this costs otherwise
         // is the whole galaxy, and what it leaves cannot be opened.
         if serving(dir).is_none() {
@@ -599,14 +614,16 @@ pub async fn catch_up(
             .into());
         }
         let since = db.now().await?.naive_utc();
-        return Ok(build_to_dir(db, dir, checkpoint, parts, stop, told)
-            .await?
-            .map(|report| {
-                info!(dir = %dir.display(), %report, "index parts derived");
-                since
-            }));
+        return Ok(build_to_dir(
+            db, dir, checkpoint, parts, tables, stop, told,
+        )
+        .await?
+        .map(|report| {
+            info!(dir = %dir.display(), %report, "index parts derived");
+            since
+        }));
     }
-    Ok(bring_level(db, dir, checkpoint, rebuild, stop, told)
+    Ok(bring_level(db, dir, checkpoint, tables, rebuild, stop, told)
         .await?
         .map(|it| it.cursor))
 }
@@ -759,13 +776,14 @@ pub async fn watch(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     interval: Duration,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<()> {
     let Reached::End(mut level) =
-        bring_level(db, dir, checkpoint, rebuild, stop, told).await?
+        bring_level(db, dir, checkpoint, tables, rebuild, stop, told).await?
     else {
         info!(
             dir = %dir.display(),
@@ -830,6 +848,7 @@ async fn bring_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
@@ -842,9 +861,9 @@ async fn bring_level(
             return Err(std::io::Error::other(said).into());
         }
     }
-    migrate(dir, stop)?;
+    migrate(dir, tables, stop)?;
     let params = BuildParams::default();
-    let mut level = match resume(dir, checkpoint, &params) {
+    let mut level = match resume(dir, checkpoint, tables, &params) {
         Resume::Level(tree, meta, cursor) => {
             info!(
                 systems = tree.len(),
@@ -870,7 +889,7 @@ async fn bring_level(
             if stop() {
                 return Ok(Reached::Stopped(Abandoned::unstarted()));
             }
-            match build_level(db, dir, checkpoint, stop, told).await? {
+            match build_level(db, dir, checkpoint, tables, stop, told).await? {
                 Reached::End(level) => level,
                 Reached::Stopped(abandoned) => {
                     return Ok(Reached::Stopped(abandoned));
@@ -894,6 +913,7 @@ async fn build_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<Level>> {
@@ -903,8 +923,16 @@ async fn build_level(
     // directory and the resume point. A watch needs a tree, so it
     // gets one the way a restart would: by resuming from what the
     // build just left.
-    let report = match build_to_dir(db, dir, checkpoint, Parts::ALL, stop, told)
-        .await?
+    let report = match build_to_dir(
+        db,
+        dir,
+        checkpoint,
+        Parts::all(tables),
+        tables,
+        stop,
+        told,
+    )
+    .await?
     {
         Reached::End(report) => report,
         Reached::Stopped(abandoned) => {
@@ -912,7 +940,7 @@ async fn build_level(
         }
     };
     info!(%report, elapsed = ?start.elapsed(), "initial index built");
-    match resume(dir, checkpoint, &BuildParams::default()) {
+    match resume(dir, checkpoint, tables, &BuildParams::default()) {
         Resume::Level(tree, meta, cursor) => {
             Ok(Reached::End(Level { tree, meta, cursor }))
         }
@@ -981,9 +1009,8 @@ async fn pass(
     }
 
     let start = Instant::now();
-    let mut moved = Moved::default();
-    // The tables written whole are or-ed across a pass's chunks; the body
-    // files are one per system, so that one is summed.
+    // The tables written whole remember what moved until they are written;
+    // the body files are one per system, so those are summed.
     let mut body_files = 0;
     let mut applied: Vec<ExactSystem> = Vec::new();
     // A catch-up's first passes are the week the directory was behind by,
@@ -995,15 +1022,13 @@ async fn pass(
     for chunk in touched.chunks(CHANGED_CHUNK) {
         let inputs = inputs_for(db, chunk).await?;
         level.tree.apply(&inputs);
-        let (chunk_moved, wrote) = level.meta.patch(db, dir, chunk).await?;
-        moved.absorb(chunk_moved);
-        body_files += wrote;
+        body_files += level.meta.patch(db, dir, chunk).await?;
         applied.extend(inputs);
         asked += chunk.len() as u64;
         told(Progress { step: step::CHANGED, done: asked, of });
     }
     level.tree.publish(dir)?;
-    let report = level.meta.publish_pass(db, dir, moved, body_files).await?;
+    let report = level.meta.publish_pass(db, dir, body_files).await?;
 
     // What the directory now serves and the cursor it is current as of, in
     // one frame. The answer is whether the log has grown far enough against
@@ -1146,7 +1171,12 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
 /// [`Resume::Refuse`], which is the whole of the fix — the escalation from
 /// "cannot resume" to "replace the galaxy" was silent, and is now a
 /// sentence with `--rebuild` in it.
-fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
+fn resume(
+    dir: &Path,
+    path: &Path,
+    tables: &TableSet,
+    params: &BuildParams,
+) -> Resume {
     let served = serving(dir).unwrap_or(0);
     let refuse = |why: String| match served {
         0 => Resume::Build,
@@ -1176,7 +1206,8 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
     };
     let mut tree = Tree::build(checkpoint.base(), params);
     tree.apply(checkpoint.deltas());
-    let (Ok(index), Ok(meta)) = (Index::read(dir), Metadata::resume(dir))
+    let (Ok(index), Ok(meta)) =
+        (Index::read(dir), Metadata::resume(dir, tables))
     else {
         return refuse(format!(
             "{} serves {} and its tables will not read back, so this run \
@@ -1204,7 +1235,7 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
 ///
 /// Each part is what this build wrote rather than what stands in the
 /// directory, so a part it was not asked for says so.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct BuildReport {
     /// The cell tree, where this build wrote one.
     pub cells: Option<Summary>,
@@ -1235,6 +1266,12 @@ impl fmt::Display for BuildReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tables the program contributes, which a directory built here
+    /// holds beside the index's own.
+    fn tables() -> TableSet {
+        TableSet::new().with::<galos_route::BoostTable>()
+    }
     use crate::testing::Scratch;
 
     /// The address the write below writes
@@ -1375,7 +1412,10 @@ mod tests {
         )
         .expect("a resume point should write");
         assert!(
-            matches!(resume(&dir, &path, &params), Resume::Level(..)),
+            matches!(
+                resume(&dir, &path, &tables(), &params),
+                Resume::Level(..)
+            ),
             "a directory the database derived, matching its own resume point, \
              was refused",
         );
@@ -1397,7 +1437,8 @@ mod tests {
         // systems is neither resumed nor silently rebuilt over. Before this
         // the answer here was "build the galaxy afresh", and what it
         // replaced was every system the directory published.
-        let Resume::Refuse(said) = resume(&dir, &path, &params) else {
+        let Resume::Refuse(said) = resume(&dir, &path, &tables(), &params)
+        else {
             panic!("a resume point the event feed wrote was rebuilt over")
         };
         assert!(
@@ -1420,7 +1461,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&empty);
         std::fs::create_dir_all(&empty).expect("a scratch directory");
         assert_eq!(refusal(&empty, &path), None);
-        assert!(matches!(resume(&empty, &path, &params), Resume::Build));
+        assert!(matches!(
+            resume(&empty, &path, &tables(), &params),
+            Resume::Build
+        ));
         let _ = std::fs::remove_dir_all(&empty);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1501,7 +1545,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             never(),
             untold(),
@@ -1539,7 +1584,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             never(),
             untold(),
@@ -1593,9 +1639,17 @@ mod tests {
         let _ = std::fs::remove_file(&checkpoint);
 
         let one = Parts { reaches: true, ..Parts::NONE };
-        let refused =
-            catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
-                .await;
+        let refused = catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            one.clone(),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await;
         let Err(said) = refused else {
             panic!("a part alone was derived into a directory with no tree")
         };
@@ -1629,17 +1683,35 @@ mod tests {
         )
         .await
         .expect("the system should write");
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the build should run")
-            .end()
-            .expect("nothing asked it to stop");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the build should run")
+        .end()
+        .expect("nothing asked it to stop");
 
-        catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
-            .await
-            .expect("a built directory is the repair case")
-            .end()
-            .expect("nothing asked it to stop");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            one,
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("a built directory is the repair case")
+        .end()
+        .expect("nothing asked it to stop");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&checkpoint);
@@ -1705,9 +1777,18 @@ mod tests {
         // A directory brought level, and then a system written after it
         // was: the pass that publishes this one is what has to leave the
         // resume point standing for it.
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the first catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the first catch-up should run");
         let system = elite_journal::system::System {
             pos: Some(elite_journal::system::Coordinate {
                 x: 7.0,
@@ -1728,9 +1809,18 @@ mod tests {
         .await
         .expect("the system should write");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the second catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the second catch-up should run");
 
         // The same system reported again, which the pass below publishes
         // and logs a second frame for, behind the frame the pass above
@@ -1746,9 +1836,18 @@ mod tests {
         .await
         .expect("the system should be reported again");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the third catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the third catch-up should run");
 
         let served = Index::read(&dir)
             .expect("the index should read")
@@ -1782,7 +1881,10 @@ mod tests {
         );
         assert!(written.cursor.is_some(), "a resume point with no cursor");
         assert!(
-            matches!(resume(&dir, &checkpoint, &params), Resume::Level(..)),
+            matches!(
+                resume(&dir, &checkpoint, &tables(), &params),
+                Resume::Level(..)
+            ),
             "the resume point a catch-up left was refused by the resume it \
              was written for",
         );
@@ -1819,7 +1921,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             &|| true,
             untold(),
@@ -1942,6 +2045,106 @@ mod tests {
             assert_eq!(built(address), want, "the cold build, {address}");
             assert_eq!(paged.get(&address), Some(&want), "the paged read");
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
+        db.done().await;
+    }
+
+    /// The index's own parts stand alone, and a contributed table is a part
+    /// added to them like any other
+    ///
+    /// Built with nothing contributed, a directory holds every part of its
+    /// own and no contributed table — absent, which a reader tells apart
+    /// from empty — and it resumes as a whole directory. Asked for that
+    /// table by name afterwards, the repair adds it and nothing else: the
+    /// cells it stood beside are the files the first build wrote.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_contributed_table_is_added_to_a_directory_built_without_it() {
+        use galos_route::{BoostTable, SystemBoost};
+
+        let Some(db) = Scratch::new().await else { return };
+        let address = 0x0B00_5700_0000_0021_u64 as i64;
+        sqlx::query(
+            "INSERT INTO systems (address, name, position, updated_at, \
+                                  updated_by, primary_star_class) \
+             VALUES ($1, 'ADDED', ST_MakePoint(1, 2, 3)::geometry, now(), \
+                     'test', 'N')",
+        )
+        .bind(address)
+        .execute(&db.pool)
+        .await
+        .expect("the system should write");
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_additive_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let _ = std::fs::remove_file(&checkpoint);
+
+        let none = TableSet::new();
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&none),
+            &none,
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the core build should run");
+        let boosts = galos_index::store::tables::path(&dir, "boosts");
+        assert!(!boosts.exists(), "a table nothing contributed was written");
+        assert!(
+            matches!(
+                resume(&dir, &checkpoint, &none, &BuildParams::default()),
+                Resume::Level(..)
+            ),
+            "the index's own parts did not stand alone",
+        );
+        let cells = std::fs::metadata(
+            dir.join(galos_index::format::layout::INDEX_FILE),
+        )
+        .and_then(|it| it.modified())
+        .expect("the cells stand");
+
+        let only = Parts { tables: vec!["boosts"], ..Parts::NONE };
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            only,
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the table should be added");
+        assert_eq!(
+            galos_index::store::tables::read::<BoostTable>(&dir)
+                .expect("the added table reads"),
+            Some(vec![SystemBoost {
+                address,
+                boost: galos_route::Boost::Neutron,
+                position: [1.0, 2.0, 3.0],
+            }]),
+        );
+        assert_eq!(
+            std::fs::metadata(
+                dir.join(galos_index::format::layout::INDEX_FILE)
+            )
+            .and_then(|it| it.modified())
+            .expect("the cells stand"),
+            cells,
+            "adding a table rewrote the cells",
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&checkpoint);

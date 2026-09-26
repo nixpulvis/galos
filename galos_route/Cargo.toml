@@ -20,6 +20,11 @@ glam = "0.32"
 # choose collisions in.
 rustc-hash = "2"
 tracing = "0.1"
+# The supercharge table's rows, which the index writes beside its own as
+# MessagePack; `rmp-serde` reads the shape they had before they carried a
+# place, which only this crate knows.
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
 
 [dev-dependencies]
 elite_journal = { path = "../elite_journal" }

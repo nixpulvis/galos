@@ -34,6 +34,7 @@ use crate::format::payload::{
     INDEX_VERSION, index_version, legacy_payload_points, payload_bytes,
     payload_head,
 };
+use crate::store::tables::TableSet;
 use std::io;
 use std::path::Path;
 
@@ -55,17 +56,16 @@ pub struct Rewrote {
     pub classed: u64,
     /// How many cells were already columnar and left alone.
     pub kept: u64,
-    /// Supercharge rows given the place they had always implied, where the
-    /// table still wanted one
+    /// Rows the contributed tables' own upgrades rewrote
     ///
-    /// [`crate::ops::migrate::place_boosts`] is a step of an open rather than
+    /// [`crate::records::Table::upgrade`] is a step of an open rather than
     /// of a build, and an open over a stale directory does nothing at all —
     /// [`crate::ops::migrate::migrate`] sets `upgrade` and returns, having
     /// touched nothing. So a directory brought forward by this command alone
-    /// would still hold a two-field table, and anything reading it without
-    /// opening the galaxy first — the map's own perf guard did — fails to
-    /// decode a row rather than finding a jet cone.
-    pub placed: u64,
+    /// would still hold a table in its old shape, and anything reading it
+    /// without opening the galaxy first — the map's own perf guard did —
+    /// fails to decode a row.
+    pub upgraded: u64,
 }
 
 /// Every system's kind, by address, as one sorted pair of columns
@@ -136,6 +136,7 @@ impl Kinds {
 /// nothing reads the new payloads until it does.
 pub fn rewrite(
     dir: &Path,
+    tables: &TableSet,
     stop: &(dyn Fn() -> bool + Sync),
     said: &mut dyn FnMut(&Rewrote),
 ) -> io::Result<Rewrote> {
@@ -195,13 +196,15 @@ pub fn rewrite(
         }
     }
 
-    // The supercharge table, which an open would place but an open over a
-    // stale directory never reaches: `migrate` names this command and
-    // returns without touching anything. A directory this has finished
+    // The contributed tables, which an open would bring forward but an open
+    // over a stale directory never reaches: `migrate` names this command
+    // and returns without touching anything. A directory this has finished
     // with is one every reader can read, not one the next open has still
     // to finish.
-    let placed = crate::ops::migrate::place_boosts(dir)?;
-    wrote.placed = placed.unwrap_or(0) as u64;
+    wrote.upgraded = crate::ops::migrate::upgraded(dir, tables)?
+        .iter()
+        .map(|&(_, rows)| rows as u64)
+        .sum();
 
     // Last, so an interrupted run is told apart from a finished one by the
     // one file every reader checks first.
@@ -366,7 +369,7 @@ mod tests {
         }
         crate::store::bodies::write(&dir, rows);
 
-        let wrote = rewrite(&dir, &|| false, &mut |_| {})
+        let wrote = rewrite(&dir, &TableSet::new(), &|| false, &mut |_| {})
             .expect("the payloads rewrite");
         assert_eq!(wrote.systems, 3, "not every system was rewritten");
         assert_eq!(wrote.classed, 2, "the scan record was not joined on");
@@ -413,75 +416,53 @@ mod tests {
             Tree::build(&[system(7, [1.0, 2.0, 3.0])], &BuildParams::default());
         tree.write(&dir).expect("a written tree");
 
-        let again = rewrite(&dir, &|| false, &mut |_| {}).expect("a rewrite");
+        let again = rewrite(&dir, &TableSet::new(), &|| false, &mut |_| {})
+            .expect("a rewrite");
         assert_eq!(again.cells, 0, "a columnar payload was rewritten");
         assert!(again.kept > 0, "nothing was recognised as already columnar");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A rewrite brings the supercharge table forward as well
+    /// A rewrite brings the contributed tables forward as well
     ///
-    /// Nothing else will. An open over a directory this build cannot read does
-    /// *nothing* — [`crate::ops::migrate::migrate`] asks
+    /// Nothing else will. An open over a directory this build cannot read
+    /// does *nothing* — [`crate::ops::migrate::migrate`] asks
     /// [`crate::store::cells::stale`] first and returns having named this
-    /// command — so a table published before a row carried a place would still
-    /// be two fields wide after the payloads came forward, and a reader that
-    /// asks for the boosts without opening the galaxy first gets a decode error
-    /// rather than a jet cone. Which is how it was found: the map's perf guard
-    /// reported `invalid length 2, expected struct SystemBoost with 3 elements`
-    /// over a directory `galos index migrate` had just said it had finished
-    /// with.
+    /// command — so a table in a shape its owner has moved on from would
+    /// still be in it after the payloads came forward, and a reader that asks
+    /// for it without opening the galaxy first gets a decode error. Which is
+    /// how it was found: the map's perf guard failed to decode the router's
+    /// supercharge table over a directory `galos index migrate` had just said
+    /// it had finished with.
     #[test]
-    fn a_rewrite_places_the_supercharge_table() {
-        /// The row as it was published before it carried a place.
-        #[derive(serde::Serialize)]
-        struct Unplaced {
-            address: i64,
-            boost: crate::core::record::Boost,
+    fn a_rewrite_upgrades_the_contributed_tables() {
+        /// A table whose every upgrade rewrites three rows.
+        struct Stale;
+        impl crate::records::Table for Stale {
+            const NAME: &'static str = "stale";
+            const ABOUT: &'static str = "A table always behind.";
+            type Row = i64;
+            fn address(row: &i64) -> i64 {
+                *row
+            }
+            fn derive(_: &crate::records::Arrival) -> Option<i64> {
+                None
+            }
+            fn upgrade(_: &Path) -> io::Result<Option<usize>> {
+                Ok(Some(3))
+            }
         }
 
-        let dir = scratch("boosts");
-        let at = [1.0, 2.0, 3.0];
-        let mut tree = Tree::build(&[system(7, at)], &BuildParams::default());
-        tree.write(&dir).expect("a written tree");
+        let dir = scratch("tables");
+        let tree =
+            Tree::build(&[system(7, [1.0, 2.0, 3.0])], &BuildParams::default());
+        tree.clone().write(&dir).expect("a written tree");
 
-        // The names table, which is where a place comes from.
-        let mut names =
-            crate::store::names::Names::open(&dir).expect("a table");
-        names.name(crate::records::NameEntry {
-            address: 7,
-            name: crate::core::name::SystemName::new("SOL"),
-            position: [at[0] as f32, at[1] as f32, at[2] as f32],
-        });
-        names.publish(&dir).expect("a published name");
-
-        crate::format::msgpack::write_meta(
-            &crate::format::layout::boosts_path(&dir),
-            &vec![Unplaced {
-                address: 7,
-                boost: crate::core::record::Boost::Neutron,
-            }],
-        )
-        .expect("a table of the old shape");
-
-        let wrote = rewrite(&dir, &|| false, &mut |_| {}).expect("a rewrite");
-        assert_eq!(wrote.placed, 1, "the supercharge table stayed behind");
-
-        // And it reads as the row the router asks for, at the place the
-        // names table gave it.
-        let table: Vec<crate::records::SystemBoost> =
-            crate::format::msgpack::read_meta(
-                &crate::format::layout::boosts_path(&dir),
-            )
-            .expect("the table reads as placed rows");
-        assert_eq!(table.len(), 1);
-        assert_eq!(table[0].address, 7);
-        assert_eq!(table[0].position, [1.0, 2.0, 3.0]);
-
-        // Run again, there is nothing left to place.
-        let again = rewrite(&dir, &|| false, &mut |_| {}).expect("a rewrite");
-        assert_eq!(again.placed, 0, "a placed table was rewritten");
+        let tables = TableSet::new().with::<Stale>();
+        let wrote =
+            rewrite(&dir, &tables, &|| false, &mut |_| {}).expect("a rewrite");
+        assert_eq!(wrote.upgraded, 3, "the contributed table stayed behind");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

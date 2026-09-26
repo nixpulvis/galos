@@ -1,9 +1,10 @@
 //! The metadata tables that ride beside the cell tree, held as a directory
 //! holds them.
 //!
-//! Five files: the names, the populated systems, the reaches, the
-//! supercharges and the factions. Both derivations of the index keep all
-//! five open across a run and patch them per pass, through this.
+//! The names, the populated systems, the reaches and the factions, and
+//! whatever tables the program's dependents contribute
+//! ([`crate::store::tables::TableSet`]). Both derivations of the index keep
+//! them all open across a run and patch them per pass, through this.
 //!
 //! What differs between the two is not here:
 //!
@@ -21,186 +22,158 @@
 //! touches rather than rewrite millions of rows, and **keep an absence
 //! meaningful**: a system with nothing scanned has no reach, which is how
 //! the map tells "small" from "not on record".
+//!
+//! Each table remembers whether it has moved since it was written
+//! ([`Keyed`]), so a pass patches what it patches and [`Sidecars::write`]
+//! writes what that moved, however many chunks the pass ran in.
 
-use crate::format::layout::{
-    boosts_path, factions_path, populated_path, reaches_path,
-};
-use crate::format::msgpack::{read_meta, write_meta};
-use crate::format::rows::{self, RUN_BYTES, Sheet, Sorted};
+use crate::format::rows::{RUN_BYTES, Sheet};
 use crate::records::{
-    Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
+    Arrival, Faction, NameEntry, PopulatedSystem, SystemReach,
 };
 use crate::store::names::Names;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
-use std::marker::PhantomData;
+use crate::store::tables::{
+    Held, Keyed, Spill, TableSet, each_row, sort_table,
+};
+use std::io;
 use std::path::{Path, PathBuf};
 
-/// Which of the tables written whole a pass moved.
-///
-/// Three of them are written whole or not at all, so only *that* some chunk
-/// of a paged pass dirtied one is worth recording. A pass accumulates this
-/// and writes each table it names once, after its last chunk.
-///
-/// The names table is not among them: it is chunked and tracks its own dirty
-/// set, so [`Sidecars::write`] always asks it and it answers with the chunks
-/// that moved.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Moved {
-    pub populated: bool,
-    pub reaches: bool,
-    pub boosts: bool,
-    pub factions: bool,
+/// The populated table, `populated.bin`, held empty.
+pub fn populated() -> Keyed<PopulatedSystem> {
+    Keyed::new("populated", populated_key)
 }
 
-impl Moved {
-    /// Every table, which is what a directory published from nothing wants.
-    ///
-    /// A table that never moved was never written at all, and the factions
-    /// table can only ever be written this way by a derivation that cannot
-    /// mint an id.
-    pub const EVERYTHING: Moved =
-        Moved { populated: true, reaches: true, boosts: true, factions: true };
+/// The reaches table, `reaches.bin`, held empty.
+pub fn reaches() -> Keyed<SystemReach> {
+    Keyed::new("reaches", reach_key)
+}
 
-    /// Take in what a further chunk of the same pass moved.
-    ///
-    /// A table stays dirty once any chunk has dirtied it: a later chunk that
-    /// moved nothing cannot unsay what an earlier one changed, which would
-    /// leave the published table standing for a galaxy the table in memory
-    /// no longer agrees with.
-    pub fn absorb(&mut self, other: Moved) {
-        self.populated |= other.populated;
-        self.reaches |= other.reaches;
-        self.boosts |= other.boosts;
-        self.factions |= other.factions;
-    }
+/// The factions table, `factions.bin`, held empty: keyed by id, so written
+/// in id order.
+pub fn factions() -> Keyed<Faction> {
+    Keyed::new("factions", faction_key)
+}
 
-    /// Whether anything at all moved.
-    pub fn any(&self) -> bool {
-        self.populated || self.reaches || self.boosts || self.factions
-    }
+fn populated_key(row: &PopulatedSystem) -> i64 {
+    row.address
+}
+
+fn reach_key(row: &SystemReach) -> i64 {
+    row.address
+}
+
+fn faction_key(row: &Faction) -> i64 {
+    row.id as i64
 }
 
 /// How many rows each table holds, for whatever reports a publish.
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub names: usize,
     pub populated: usize,
     pub reaches: usize,
-    pub boosts: usize,
     pub factions: usize,
+    /// Each contributed table's, by name.
+    pub contributed: Vec<(&'static str, usize)>,
 }
 
-/// The five metadata tables, held open across a run.
+/// The metadata tables, held open across a run.
 ///
 /// Each is the authority on what stands in the published directory: a pass
 /// sets the changed systems' rows, and [`Self::write`] writes whichever
 /// tables moved. Held rather than re-derived, deriving any of them being a
 /// read of every system there is.
-///
-/// Keyed by address rather than kept as the sorted vectors that are written:
-/// a pass patches a handful of systems, and the sort is a write's own step,
-/// the order being the format's so that the same content is the same bytes.
 #[derive(Debug)]
 pub struct Sidecars {
     names: Names,
-    populated: HashMap<i64, PopulatedSystem>,
-    reaches: HashMap<i64, f32>,
-    boosts: HashMap<i64, SystemBoost>,
-    /// The faction names, in id order. Ids come from a sequence and a name is
-    /// never rewritten, so this only ever grows.
-    factions: Vec<Faction>,
+    populated: Keyed<PopulatedSystem>,
+    reaches: Keyed<SystemReach>,
+    /// The faction names. Ids come from a sequence and a name is never
+    /// rewritten, so this only ever grows.
+    factions: Keyed<Faction>,
+    contributed: Vec<Box<dyn Held>>,
 }
 
 impl Sidecars {
-    /// Nothing published yet.
-    pub fn empty() -> Sidecars {
-        Sidecars::over(Names::default())
-    }
-
-    fn over(names: Names) -> Sidecars {
+    /// Nothing published yet, with `tables` beside the index's own.
+    pub fn empty(tables: &TableSet) -> Sidecars {
         Sidecars {
-            names,
-            populated: HashMap::new(),
-            reaches: HashMap::new(),
-            boosts: HashMap::new(),
-            factions: Vec::new(),
+            names: Names::default(),
+            populated: populated(),
+            reaches: reaches(),
+            factions: factions(),
+            contributed: tables.iter().map(|it| it.held()).collect(),
         }
     }
 
-    /// What `dir` already publishes, and which of the tables it has no file
-    /// for at all.
+    /// What `dir` already publishes, with `tables` beside the index's own.
     ///
-    /// Each table stands alone: a directory built before the supercharge
-    /// table existed has every other part of it, and its absence is a thing
-    /// the format allows. A table that is there and will not decode is an
-    /// error — read as empty, it would be republished from the handful of
-    /// addresses one pass touches and the rows already published would be
-    /// gone.
+    /// Each table stands alone: a directory built before a table existed has
+    /// every other part of it, and its absence is a thing the format allows.
+    /// A table that is there and will not decode is an error — read as
+    /// empty, it would be republished from the handful of addresses one
+    /// pass touches and the rows already published would be gone.
     ///
-    /// What is absent comes back as a [`Moved`], the answer to an absent
-    /// table being to write it: no supercharge table means "this index
-    /// cannot say" to a client, and the map refuses a supercharged route
-    /// over it. A caller that expects all five to be there can refuse
-    /// instead.
-    pub fn resume(dir: &Path) -> io::Result<(Sidecars, Moved)> {
-        let names = Names::open(dir)?;
-        let populated: Option<Vec<PopulatedSystem>> =
-            optional(&populated_path(dir))?;
-        let reaches: Option<Vec<SystemReach>> = optional(&reaches_path(dir))?;
-        let boosts: Option<Vec<SystemBoost>> = optional(&boosts_path(dir))?;
-        let factions: Option<Vec<Faction>> = optional(&factions_path(dir))?;
+    /// An absent table is remembered, and written by a [`Self::write`] only
+    /// once [`Self::claim_absent`] has asked for it: no table means "this
+    /// index cannot say" to a client, and a caller decides whether it can
+    /// say better.
+    pub fn resume(dir: &Path, tables: &TableSet) -> io::Result<Sidecars> {
+        Ok(Sidecars {
+            names: Names::open(dir)?,
+            populated: Keyed::resume("populated", populated_key, dir)?,
+            reaches: Keyed::resume("reaches", reach_key, dir)?,
+            factions: Keyed::resume("factions", faction_key, dir)?,
+            contributed: tables
+                .iter()
+                .map(|it| it.resume(dir))
+                .collect::<io::Result<_>>()?,
+        })
+    }
 
-        let absent = Moved {
-            populated: populated.is_none(),
-            reaches: reaches.is_none(),
-            boosts: boosts.is_none(),
-            factions: factions.is_none(),
-        };
-        let held = Sidecars {
-            names,
-            populated: populated
-                .unwrap_or_default()
-                .into_iter()
-                .map(|it| (it.address, it))
-                .collect(),
-            reaches: reaches
-                .unwrap_or_default()
-                .into_iter()
-                .map(|it| (it.address, it.reach))
-                .collect(),
-            boosts: boosts
-                .unwrap_or_default()
-                .into_iter()
-                .map(|it| (it.address, it))
-                .collect(),
-            factions: factions.unwrap_or_default(),
-        };
-        Ok((held, absent))
+    /// Have the next write publish every table the directory had no file
+    /// for, empty if that is what it comes to.
+    pub fn claim_absent(&mut self) {
+        self.populated.claim();
+        self.reaches.claim();
+        self.factions.claim();
+        for table in &mut self.contributed {
+            table.claim();
+        }
+    }
+
+    /// Have the next write publish every table, moved or not: what a
+    /// directory published from nothing wants.
+    pub fn touch_all(&mut self) {
+        self.populated.touch();
+        self.reaches.touch();
+        self.factions.touch();
+        for table in &mut self.contributed {
+            table.touch();
+        }
+    }
+
+    /// Whether any table written whole has moved since it was written.
+    pub fn moved(&self) -> bool {
+        self.populated.moved()
+            || self.reaches.moved()
+            || self.factions.moved()
+            || self.contributed.iter().any(|it| it.moved())
     }
 
     /// Append what the names table has taken and write whichever whole
-    /// tables `moved` names, answering how many name rows were appended.
+    /// tables moved, answering how many name rows were appended.
     ///
     /// Everything else a caller needs for its own report is [`Self::counts`].
     /// The per-system body files are not here: one side writes them from the
     /// rows it read and the other from the store the galaxy keeps them in.
-    pub fn write(&mut self, dir: &Path, moved: Moved) -> io::Result<usize> {
+    pub fn write(&mut self, dir: &Path) -> io::Result<usize> {
         std::fs::create_dir_all(dir)?;
-        if moved.populated {
-            write_populated(dir, &self.populated)?;
-        }
-        if moved.reaches {
-            write_reaches(dir, &self.reaches)?;
-        }
-        if moved.boosts {
-            write_boosts(dir, &self.boosts)?;
-        }
-        if moved.factions {
-            write_meta(&factions_path(dir), &self.factions)?;
+        self.populated.publish(dir)?;
+        self.reaches.publish(dir)?;
+        self.factions.publish(dir)?;
+        for table in &mut self.contributed {
+            table.publish(dir)?;
         }
         self.names.publish(dir)
     }
@@ -231,8 +204,12 @@ impl Sidecars {
             names: self.names.len(),
             populated: self.populated.len(),
             reaches: self.reaches.len(),
-            boosts: self.boosts.len(),
             factions: self.factions.len(),
+            contributed: self
+                .contributed
+                .iter()
+                .map(|it| (it.name(), it.len()))
+                .collect(),
         }
     }
 
@@ -271,7 +248,7 @@ impl Sidecars {
     /// For a caller merging a thinner row over a richer one; see
     /// `galos::sink::tables`.
     pub fn published(&self, address: i64) -> Option<&PopulatedSystem> {
-        self.populated.get(&address)
+        self.populated.get(address)
     }
 
     /// How far a system reaches, where the directory publishes a row.
@@ -284,152 +261,87 @@ impl Sidecars {
     /// hold on rows already in hand, and `reaches.bin` is 2.6 GB and 76 M
     /// rows over a galaxy.
     pub fn reach_of(&self, address: i64) -> Option<f32> {
-        self.reaches.get(&address).copied()
-    }
-
-    /// What a system can supercharge a drive by, where the directory
-    /// publishes a row. [`Self::reach_of`]'s twin, for the same caller.
-    pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
-        self.boosts.get(&address).copied()
+        self.reaches.get(address).map(|it| it.reach)
     }
 
     /// Put a populated system's row in the table, answering whether that
     /// changed it.
-    ///
-    /// A row that reads exactly as the one held changes nothing and writes
-    /// nothing — the common case, a feed reporting the same systems over and
-    /// over.
     pub fn populate(&mut self, system: PopulatedSystem) -> bool {
-        match self.populated.get(&system.address) {
-            Some(held) if *held == system => false,
-            _ => {
-                self.populated.insert(system.address, system);
-                true
-            }
-        }
+        self.populated.put(system)
     }
 
     /// Take a system out of the populated table, answering whether it was
     /// there.
     pub fn depopulate(&mut self, address: i64) -> bool {
-        self.populated.remove(&address).is_some()
+        self.populated.remove(address)
     }
 
     /// Record how far a system reaches, answering whether that changed it.
     pub fn reach(&mut self, address: i64, reach: f32) -> bool {
-        match self.reaches.get(&address) {
-            Some(&held) if held == reach => false,
-            _ => {
-                self.reaches.insert(address, reach);
-                true
-            }
-        }
+        self.reaches.put(SystemReach { address, reach })
     }
 
     /// Take a system out of the reaches table, answering whether it was
     /// there.
     pub fn unreach(&mut self, address: i64) -> bool {
-        self.reaches.remove(&address).is_some()
+        self.reaches.remove(address)
     }
 
-    /// Record what a system can supercharge and where it is, answering
-    /// whether that changed either.
-    ///
-    /// The place is compared as the class is: a system corrected by a
-    /// later report is a row the table has to rewrite, and a system
-    /// reported again unchanged is not.
-    pub fn boost(&mut self, row: SystemBoost) -> bool {
-        match self.boosts.get(&row.address) {
-            Some(&held) if held == row => false,
-            _ => {
-                self.boosts.insert(row.address, row);
-                true
-            }
+    /// Take what each contributed table derives from a system's arrival,
+    /// answering whether any of them changed.
+    pub fn arrive(&mut self, arrival: &Arrival) -> bool {
+        let mut changed = false;
+        for table in &mut self.contributed {
+            changed |= table.arrive(arrival);
         }
+        changed
     }
 
-    /// Take a system out of the supercharge table, answering whether it was
-    /// there.
-    pub fn unboost(&mut self, address: i64) -> bool {
-        self.boosts.remove(&address).is_some()
+    /// Take a system out of every contributed table, answering whether any
+    /// held it.
+    pub fn unarrive(&mut self, address: i64) -> bool {
+        let mut changed = false;
+        for table in &mut self.contributed {
+            changed |= table.remove(address);
+        }
+        changed
+    }
+
+    /// Take the rows another directory's contributed tables publish, where
+    /// `take` says to, answering how many rows changed; see
+    /// [`Keyed::carry`].
+    pub fn carry_contributed(
+        &mut self,
+        from: &Path,
+        take: &dyn Fn(i64, bool) -> bool,
+    ) -> io::Result<u64> {
+        let mut changed = 0;
+        for table in &mut self.contributed {
+            changed += table.carry(from, take)?;
+        }
+        Ok(changed)
     }
 
     /// Add factions named since the last time, answering whether any were.
     ///
-    /// Appended rather than merged: ids come from a sequence and a name on
-    /// record is never rewritten, so the table only ever grows and the
-    /// caller reads past the highest id it has.
+    /// Ids come from a sequence and a name on record is never rewritten, so
+    /// the table only ever grows and the caller reads past the highest id
+    /// it has.
     pub fn add_factions(&mut self, named: Vec<Faction>) -> bool {
-        if named.is_empty() {
-            return false;
+        let mut changed = false;
+        for faction in named {
+            changed |= self.factions.put(faction);
         }
-        self.factions.extend(named);
-        true
+        changed
     }
 
     /// The highest faction id the table holds, or nought where it holds none.
     pub fn highest_faction(&self) -> i32 {
-        self.factions.iter().map(|it| it.id).max().unwrap_or(0)
+        self.factions.rows().map(|it| it.id).max().unwrap_or(0)
     }
 }
 
-/// A published table, or [`None`] where the directory has no such file.
-///
-/// A sidecar an older build never wrote is an absence rather than a failure,
-/// and everything beside it is still good.
-fn optional<T: serde::de::DeserializeOwned>(
-    path: &Path,
-) -> io::Result<Option<T>> {
-    match read_meta(path) {
-        Ok(table) => Ok(Some(table)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-/// Write `populated.bin`: the dynamic set the map colours and navigates by,
-/// in address order so the same table is always the same bytes.
-///
-/// Free of [`Sidecars`]: a build asked for one part alone holds none of the
-/// tables, reading that part fresh and writing it.
-pub fn write_populated(
-    dir: &Path,
-    populated: &HashMap<i64, PopulatedSystem>,
-) -> io::Result<usize> {
-    let mut table: Vec<&PopulatedSystem> = populated.values().collect();
-    table.sort_unstable_by_key(|system| system.address);
-    write_meta(&populated_path(dir), &table)?;
-    Ok(table.len())
-}
-
-/// Write `reaches.bin`: how far each scanned system reaches, in address order
-/// so the same table is always the same bytes.
-pub fn write_reaches(
-    dir: &Path,
-    reaches: &HashMap<i64, f32>,
-) -> io::Result<usize> {
-    let mut table: Vec<SystemReach> = reaches
-        .iter()
-        .map(|(&address, &reach)| SystemReach { address, reach })
-        .collect();
-    table.sort_unstable_by_key(|it| it.address);
-    write_meta(&reaches_path(dir), &table)?;
-    Ok(table.len())
-}
-
-/// Write `boosts.bin`: which systems can supercharge a drive, in address
-/// order so the same table is always the same bytes.
-pub fn write_boosts(
-    dir: &Path,
-    boosts: &HashMap<i64, SystemBoost>,
-) -> io::Result<usize> {
-    let mut table: Vec<SystemBoost> = boosts.values().copied().collect();
-    table.sort_unstable_by_key(|it| it.address);
-    write_meta(&boosts_path(dir), &table)?;
-    Ok(table.len())
-}
-
-/// The three tables a record can fill, written as the records arrive.
+/// The tables a record can fill, written as the records arrive.
 ///
 /// [`Sidecars`] holds every row, which is right for a run that patches tens
 /// of systems a pass and wrong for a build reading a galaxy: a row a
@@ -451,24 +363,29 @@ pub fn write_boosts(
 /// merge over a published one. That is the same argument
 /// [`crate::accumulate::bodies::OnDisk::raising`] makes: a build from nothing
 /// can only be told back what it has just said, and a dump names each system
-/// once.
+/// once. For the same reason a contributed table is only ever pushed to
+/// here, never taken from: there is nothing yet to take a row out of.
 pub struct TableWriter {
     dir: PathBuf,
     populated: Sheet,
     reaches: Sheet,
-    boosts: Sheet,
+    contributed: Vec<Box<dyn Spill>>,
 }
 
 impl TableWriter {
-    /// Write the rows of a build into `dir`, from nothing.
-    pub fn writing(dir: &Path) -> io::Result<TableWriter> {
+    /// Write the rows of a build into `dir`, from nothing, with `tables`
+    /// beside the index's own.
+    pub fn writing(dir: &Path, tables: &TableSet) -> io::Result<TableWriter> {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
         Ok(TableWriter {
             dir: dir.to_owned(),
             populated: Sheet::open(dir.join("populated.rows"))?,
             reaches: Sheet::open(dir.join("reaches.rows"))?,
-            boosts: Sheet::open(dir.join("boosts.rows"))?,
+            contributed: tables
+                .iter()
+                .map(|it| it.spill(dir))
+                .collect::<io::Result<_>>()?,
         })
     }
 
@@ -484,15 +401,22 @@ impl TableWriter {
     /// reaches are one array of tens of millions of rows, and decoding it
     /// into a `Vec` to walk it once would put the whole thing in memory
     /// for the length of the seeding.
-    pub fn onto(dir: &Path, served: &Path) -> io::Result<TableWriter> {
-        let mut rows = TableWriter::writing(dir)?;
-        each_row(&populated_path(served), |row: PopulatedSystem| {
+    pub fn onto(
+        dir: &Path,
+        served: &Path,
+        tables: &TableSet,
+    ) -> io::Result<TableWriter> {
+        let mut rows = TableWriter::writing(dir, tables)?;
+        each_row(&crate::store::tables::path(served, "populated"), |row| {
             rows.populate(&row)
         })?;
-        each_row(&reaches_path(served), |row: SystemReach| {
-            rows.reach(row.address, row.reach)
-        })?;
-        each_row(&boosts_path(served), |row: SystemBoost| rows.boost(row))?;
+        each_row(
+            &crate::store::tables::path(served, "reaches"),
+            |row: SystemReach| rows.reach(row.address, row.reach),
+        )?;
+        for table in &mut rows.contributed {
+            table.seed(served)?;
+        }
         Ok(rows)
     }
 
@@ -506,19 +430,25 @@ impl TableWriter {
         self.reaches.push(&SystemReach { address, reach })
     }
 
-    /// What one system's arrival star can supercharge, and where it is.
-    pub fn boost(&mut self, row: SystemBoost) -> io::Result<()> {
-        self.boosts.push(&row)
+    /// What each contributed table derives from one system's arrival.
+    pub fn arrive(&mut self, arrival: &Arrival) -> io::Result<()> {
+        for table in &mut self.contributed {
+            table.arrive(arrival)?;
+        }
+        Ok(())
     }
 
     /// Everything pushed, on disk.
     pub fn flush(&mut self) -> io::Result<()> {
         self.populated.flush()?;
         self.reaches.flush()?;
-        self.boosts.flush()
+        for table in &mut self.contributed {
+            table.flush()?;
+        }
+        Ok(())
     }
 
-    /// Sort the rows into the three tables and drop them.
+    /// Sort the rows into their tables and drop them.
     ///
     /// The last row for an address wins, which is what a build carrying on
     /// from a published table leaves: the table's row goes in first and
@@ -536,13 +466,12 @@ impl TableWriter {
     fn sorted(mut self, dir: &Path, budget: usize) -> io::Result<Counts> {
         let at = self.dir.clone();
         self.flush()?;
-        let counts = Counts {
-            names: 0,
+        let mut counts = Counts {
             populated: sort_table::<PopulatedSystem>(
                 self.populated.path(),
                 &at,
                 "populated",
-                &populated_path(dir),
+                &crate::store::tables::path(dir, "populated"),
                 |it| it.address,
                 budget,
             )?,
@@ -550,242 +479,111 @@ impl TableWriter {
                 self.reaches.path(),
                 &at,
                 "reaches",
-                &reaches_path(dir),
+                &crate::store::tables::path(dir, "reaches"),
                 |it| it.address,
                 budget,
             )?,
-            boosts: sort_table::<SystemBoost>(
-                self.boosts.path(),
-                &at,
-                "boosts",
-                &boosts_path(dir),
-                |it| it.address,
-                budget,
-            )?,
-            factions: 0,
+            ..Counts::default()
         };
+        for table in std::mem::take(&mut self.contributed) {
+            let name = table.name();
+            counts.contributed.push((name, table.finish(&at, dir, budget)?));
+        }
         drop(self);
         std::fs::remove_dir_all(&at)?;
         Ok(counts)
     }
 }
 
-/// Write one table from its rows, in address order, without the table ever
-/// being in memory.
-///
-/// An external sort: runs of `budget` bytes are read back, sorted and
-/// written out, and the runs are then merged. What it stands in for is a
-/// map of every row the read derived — 22.4 MiB over a seven-day slice and
-/// some 6 GiB over the galaxy, which was the last thing on this road that
-/// the whole sky had to fit in.
-///
-/// The last row an address has still wins, and that survives the split
-/// into runs: a run is a stretch of the row file, so every row in one is
-/// older than every row in the next, and a stable sort leaves the rows
-/// inside a run in the order they were written.
-fn sort_table<T: Serialize + DeserializeOwned>(
-    rows: &Path,
-    scratch: &Path,
-    name: &str,
-    table: &Path,
-    key: impl Fn(&T) -> i64,
-    budget: usize,
-) -> io::Result<usize> {
-    let sorted = rows::sorted::<T>(rows, scratch, name, &key, budget)?;
-    write_table::<T>(table, &sorted)?;
-    Ok(sorted.count())
-}
-
-/// Write a sorted run of rows as the MessagePack array a reader expects.
-///
-/// The bytes [`write_meta`] would write and by the same road — beside the
-/// file and renamed over it — but streamed: the array's length is known
-/// before its elements are, so nothing past one row is held.
-fn write_table<T: Serialize + DeserializeOwned>(
-    path: &Path,
-    sorted: &Sorted,
-) -> io::Result<()> {
-    use serde::Serializer as _;
-    use serde::ser::SerializeSeq;
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    let mut out =
-        rmp_serde::Serializer::new(BufWriter::new(File::create(&tmp)?));
-    let mut seq = out
-        .serialize_seq(Some(sorted.count()))
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if let Some(mut framed) = sorted.rows()? {
-        while let Some((row, _)) = framed.next::<T>()? {
-            seq.serialize_element(&row)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        }
-    }
-    seq.end().map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    out.into_inner().flush()?;
-    std::fs::rename(&tmp, path)
-}
-
-/// Read a published table back a row at a time.
-///
-/// A table is one MessagePack array, and `read_meta` decodes it into a
-/// `Vec`: fine for a pass that patches tens of systems, and a galaxy's
-/// worth of rows in memory for a run that only means to walk it once. This
-/// hands each row over as it is decoded instead. An absent table is no
-/// rows rather than a failure — a directory that has published no reaches
-/// has nothing to seed a resumed read with.
-fn each_row<T: DeserializeOwned>(
-    path: &Path,
-    take: impl FnMut(T) -> io::Result<()>,
-) -> io::Result<()> {
-    use serde::de::DeserializeSeed;
-
-    let file = match File::open(path) {
-        Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => return Err(err),
-    };
-    let mut failed = None;
-    let mut de = rmp_serde::Deserializer::new(BufReader::new(file));
-    let each = Each { take, failed: &mut failed, marker: PhantomData };
-    each.deserialize(&mut de)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    match failed {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-/// The seed [`each_row`] walks an array with.
-///
-/// A seed rather than a `Vec` because the point is not to have one. The
-/// caller's error rides out in `failed`: serde's own error type is the
-/// decoder's, and a row the caller could not write is not a row that
-/// failed to decode.
-struct Each<'a, T, F> {
-    take: F,
-    failed: &'a mut Option<io::Error>,
-    marker: PhantomData<fn() -> T>,
-}
-
-impl<'de, T, F> serde::de::DeserializeSeed<'de> for Each<'_, T, F>
-where
-    T: DeserializeOwned,
-    F: FnMut(T) -> io::Result<()>,
-{
-    type Value = ();
-
-    fn deserialize<D: serde::Deserializer<'de>>(
-        self,
-        de: D,
-    ) -> Result<(), D::Error> {
-        de.deserialize_seq(self)
-    }
-}
-
-impl<'de, T, F> serde::de::Visitor<'de> for Each<'_, T, F>
-where
-    T: DeserializeOwned,
-    F: FnMut(T) -> io::Result<()>,
-{
-    type Value = ();
-
-    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str("a table of rows")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(
-        mut self,
-        mut seq: A,
-    ) -> Result<(), A::Error> {
-        // The array is read to its end even after a write has failed: what
-        // is being read is a file the run still has to be able to say
-        // something about, and half a decode is not a state serde defines.
-        while let Some(row) = seq.next_element::<T>()? {
-            if self.failed.is_none() {
-                if let Err(err) = (self.take)(row) {
-                    *self.failed = Some(err);
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::Boost;
+    use crate::core::record::StarKind;
+    use crate::format::msgpack::read_meta;
+    use crate::store::tables::path;
+    use crate::store::tables::testing::{Cone, arriving, tables};
 
-    /// A table one chunk of a pass moved is still written for the pass
+    /// A table stays moved until it is written, and is not written again
+    /// until something moves it
     ///
     /// A pass over what changed runs in chunks and writes each whole table
-    /// once at the end, so what each chunk moved is accumulated. A later
-    /// chunk that moved nothing must not unsay an earlier one, which would
-    /// leave the published table standing for a galaxy the table in memory
-    /// no longer agrees with.
+    /// once at the end. A later chunk that moved nothing must not unsay an
+    /// earlier one, which would leave the published table standing for a
+    /// galaxy the table in memory no longer agrees with; and a write must
+    /// not leave a table standing moved, or every quiet pass rewrites it.
     #[test]
-    fn a_pass_keeps_every_table_one_of_its_chunks_moved() {
-        let mut pass = Moved::default();
-        pass.absorb(Moved { populated: true, ..Moved::default() });
-        pass.absorb(Moved { reaches: true, ..Moved::default() });
-        pass.absorb(Moved::default());
+    fn a_table_is_moved_from_a_change_until_it_is_written() {
+        let at = Scratch::new("moved");
+        let mut held = Sidecars::empty(&tables());
+        assert!(!held.moved(), "nothing had moved");
 
+        held.populate(populated(1));
+        held.populate(populated(1));
+        assert!(held.moved(), "a later chunk unsaid the first one's row");
+
+        held.write(&at.0).expect("the tables write");
+        assert!(!held.moved(), "a written table stood moved");
+        assert!(path(&at.0, "populated").exists());
         assert!(
-            pass.populated,
-            "a chunk that moved nothing unsaid the first chunk's populated row"
+            !path(&at.0, "reaches").exists(),
+            "a table nothing moved was written"
         );
-        assert!(
-            pass.reaches,
-            "a chunk that moved nothing unsaid the second chunk's reach"
-        );
-        assert!(!pass.boosts, "a table no chunk moved was written anyway");
-        assert!(!pass.factions, "a table no chunk moved was written anyway");
-        assert!(pass.any(), "a pass that moved two tables moved nothing");
     }
 
     /// A row that reads as the one held is not a change
     ///
     /// The common case by far: a feed reports the same systems over and
-    /// over, and the bytes already published must not be rewritten.
+    /// over, and the bytes already published must not be rewritten. The
+    /// contributed tables are held to the same rule, and an arrival their
+    /// table has nothing to say about takes out the row that stood.
     #[test]
     fn a_row_that_has_not_changed_moves_nothing() {
-        let mut held = Sidecars::empty();
-        let system = || PopulatedSystem {
-            address: 1,
-            name: "SOL".into(),
-            position: [0.0; 3],
-            population: 22_780_919_531,
-            security: None,
-            government: None,
-            allegiance: None,
-            primary_economy: None,
-            secondary_economy: None,
-            factions: Vec::new(),
-            body_count: None,
-            non_body_count: None,
-        };
+        let mut held = Sidecars::empty(&tables());
 
-        assert!(held.populate(system()), "the first row was not a change");
-        assert!(!held.populate(system()), "the same row read as a change");
+        assert!(held.populate(populated(1)), "the first row was not a change");
+        assert!(!held.populate(populated(1)), "the same row read as a change");
         assert!(held.reach(1, 4.0), "the first reach was not a change");
         assert!(!held.reach(1, 4.0), "the same reach read as a change");
-        let cone = SystemBoost {
-            address: 1,
-            boost: Boost::Neutron,
-            position: [1., 2., 3.],
-        };
-        assert!(held.boost(cone));
-        assert!(!held.boost(cone), "the same boost moved it");
+
+        let cone = arriving(1, StarKind::Neutron);
+        assert!(held.arrive(&cone));
+        assert!(!held.arrive(&cone), "the same arrival moved it");
         assert!(
-            held.boost(SystemBoost { position: [1., 2., 4.], ..cone }),
+            held.arrive(&Arrival { position: [1., 2., 4.], ..cone }),
             "a corrected place was not a change"
         );
+        assert!(
+            held.arrive(&arriving(1, StarKind::G)),
+            "a system that stopped qualifying kept its row"
+        );
+        assert!(!held.unarrive(1), "the row was still there to take");
 
         assert!(held.depopulate(1), "the row was not there to withdraw");
         assert!(!held.depopulate(1), "withdrawing nothing was a change");
+    }
+
+    /// An absent table is written only once a caller claims it
+    ///
+    /// No file says "this index cannot tell"; an empty one says "there are
+    /// none". A resumed run leaves the absence standing unless it asks, and
+    /// asked, writes the table even though no row of it moved.
+    #[test]
+    fn an_absent_table_is_written_once_claimed() {
+        let at = Scratch::new("absent");
+        let mut held =
+            Sidecars::resume(&at.0, &tables()).expect("a resume of nothing");
+        held.populate(populated(1));
+        held.write(&at.0).expect("the tables write");
+        assert!(!path(&at.0, "cones").exists(), "an absence was written over");
+
+        held.claim_absent();
+        held.write(&at.0).expect("the tables write");
+        let cones: Vec<Cone> =
+            read_meta(&path(&at.0, "cones")).expect("the claimed table");
+        assert!(cones.is_empty());
+
+        held.claim_absent();
+        assert!(!held.moved(), "a table written once was absent again");
     }
 
     /// Somewhere to spill rows, removed with the value.
@@ -830,29 +628,28 @@ mod tests {
     /// A build from records writes an empty table where it can and leaves
     /// out the one it cannot fill
     ///
-    /// The two say different things to a client: no supercharge table is
-    /// "this index cannot say where a jet cone is", where an empty one is
-    /// "there are none". A derivation from records can say the second of
-    /// the three tables it derives, and only the first of the factions,
-    /// whose ids are minted on a database write.
+    /// The two say different things to a client: no contributed table is
+    /// "this index cannot say", where an empty one is "there are none". A
+    /// derivation from records can say the second of every table it
+    /// derives, and only the first of the factions, whose ids are minted on
+    /// a database write.
     #[test]
     fn a_build_from_records_leaves_the_factions_table_absent() {
         let at = Scratch::new("derived");
         let dir = at.0.join("served");
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let rows = TableWriter::writing(&at.0.join("rows")).expect("rows");
+        let rows =
+            TableWriter::writing(&at.0.join("rows"), &tables()).expect("rows");
         let counts = rows.finish(&dir).expect("the tables write");
 
         assert_eq!(counts.populated, 0);
-        assert!(populated_path(&dir).exists(), "no populated table");
-        assert!(reaches_path(&dir).exists(), "no reaches table");
+        assert_eq!(counts.contributed, vec![("cones", 0)]);
+        assert!(path(&dir, "populated").exists(), "no populated table");
+        assert!(path(&dir, "reaches").exists(), "no reaches table");
+        assert!(path(&dir, "cones").exists(), "no contributed table");
         assert!(
-            boosts_path(&dir).exists(),
-            "no supercharge table, which the map reads as a refusal to plot"
-        );
-        assert!(
-            !factions_path(&dir).exists(),
+            !path(&dir, "factions").exists(),
             "an empty factions table says the galaxy has none"
         );
         assert!(
@@ -874,23 +671,20 @@ mod tests {
         let (spill, dir) = (at.0.join("rows"), at.0.join("served"));
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let mut rows = TableWriter::writing(&spill).expect("rows");
+        let mut rows = TableWriter::writing(&spill, &tables()).expect("rows");
         rows.populate(&populated(1)).expect("a row");
         rows.reach(1, 4.0).expect("a reach");
+        rows.arrive(&arriving(1, StarKind::Neutron)).expect("a cone");
         rows.populate(&populated(2)).expect("a row");
         let first = rows.finish(&dir).expect("the tables write");
         assert_eq!(first.populated, 2);
 
-        let mut rows =
-            TableWriter::onto(&spill, &dir).expect("the tables back");
+        let mut rows = TableWriter::onto(&spill, &dir, &tables())
+            .expect("the tables back");
         rows.populate(&populated(3)).expect("a row");
         rows.reach(3, 16.0).expect("a reach");
-        rows.boost(SystemBoost {
-            address: 3,
-            boost: Boost::Neutron,
-            position: [0., 0., 0.],
-        })
-        .expect("a boost");
+        rows.arrive(&arriving(3, StarKind::Neutron)).expect("a cone");
+        rows.arrive(&arriving(4, StarKind::G)).expect("no cone");
         // The same system again, as a resumed read re-deriving the line it
         // stopped on would: the newer row wins and there is still one of it.
         rows.reach(1, 5.0).expect("a reach");
@@ -898,17 +692,17 @@ mod tests {
 
         assert_eq!(counts.populated, 3, "the published rows were dropped");
         assert_eq!(counts.reaches, 2);
-        assert_eq!(counts.boosts, 1);
+        assert_eq!(counts.contributed, vec![("cones", 2)]);
 
         let table: Vec<PopulatedSystem> =
-            read_meta(&populated_path(&dir)).expect("the populated table");
+            read_meta(&path(&dir, "populated")).expect("the populated table");
         assert_eq!(
             table.iter().map(|it| it.address).collect::<Vec<_>>(),
             vec![1, 2, 3],
             "the table is not in address order",
         );
         let reaches: Vec<SystemReach> =
-            read_meta(&reaches_path(&dir)).expect("the reaches table");
+            read_meta(&path(&dir, "reaches")).expect("the reaches table");
         assert_eq!(
             reaches.iter().find(|it| it.address == 1).map(|it| it.reach),
             Some(5.0),
@@ -931,7 +725,8 @@ mod tests {
         let dir = at.0.join("served");
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let mut rows = TableWriter::writing(&at.0.join("rows")).expect("rows");
+        let mut rows =
+            TableWriter::writing(&at.0.join("rows"), &tables()).expect("rows");
         let pushed = [5i64, 3, 9, 3, 1, 9, 7, 3, 2, 8, 4, 6];
         for (n, &address) in pushed.iter().enumerate() {
             // The population says which push this row was, so the table
@@ -946,7 +741,7 @@ mod tests {
         assert_eq!(counts.reaches, 9);
 
         let table: Vec<PopulatedSystem> =
-            read_meta(&populated_path(&dir)).expect("the populated table");
+            read_meta(&path(&dir, "populated")).expect("the populated table");
         assert_eq!(
             table.iter().map(|it| it.address).collect::<Vec<_>>(),
             (1..=9).collect::<Vec<_>>(),
@@ -963,7 +758,7 @@ mod tests {
         assert_eq!(won(5), Some(0));
 
         let reaches: Vec<SystemReach> =
-            read_meta(&reaches_path(&dir)).expect("the reaches table");
+            read_meta(&path(&dir, "reaches")).expect("the reaches table");
         assert_eq!(
             reaches.iter().find(|it| it.address == 3).map(|it| it.reach),
             Some(7.0),
@@ -973,7 +768,7 @@ mod tests {
         // And what it wrote is what the whole-table writer would have: the
         // array is streamed a row at a time, so its header is the one
         // thing a reader could be handed differently.
-        let bytes = std::fs::read(populated_path(&dir)).expect("the table");
+        let bytes = std::fs::read(path(&dir, "populated")).expect("the table");
         assert_eq!(
             bytes,
             rmp_serde::to_vec(&table).expect("the table encodes"),

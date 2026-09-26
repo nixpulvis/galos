@@ -17,15 +17,16 @@ use crate::core::geometry::CellId;
 use crate::core::index::Index;
 use crate::core::record::Point;
 use crate::format::layout::{
-    boosts_path, factions_path, names_delta_path, names_head_path,
-    populated_path, reaches_path,
+    factions_path, names_delta_path, names_head_path, populated_path,
+    reaches_path,
 };
 use crate::format::msgpack::read_meta;
 use crate::records::{
-    Faction, PopulatedSystem, SystemBodies, SystemBoost, SystemReach,
+    Faction, PopulatedSystem, SystemBodies, SystemReach, Table,
 };
 use crate::store::bodies::read_bodies;
 use crate::store::names;
+use crate::store::tables;
 use async_trait::async_trait;
 use std::io;
 use std::path::PathBuf;
@@ -56,8 +57,8 @@ pub enum Part {
     Reaches,
     /// The factions table
     Factions,
-    /// The supercharge table
-    Boosts,
+    /// The contributed table of this name
+    Table(&'static str),
     /// The names table's base, `names/head.bin`
     ///
     /// Stamped by its head rather than by its sections: the head is written
@@ -127,17 +128,13 @@ pub trait Source: Send + Sync {
     /// on a fetch for it.
     async fn reaches(&self) -> io::Result<Vec<SystemReach>>;
 
-    /// Which systems can supercharge a drive, and on what
+    /// The bytes of the contributed table called `name`, or [`None`] where
+    /// the directory publishes no such table — one built before it existed,
+    /// or one whose builder has not reached it yet.
     ///
-    /// Held resident: the router weighs it at every step of a search, over
-    /// the whole galaxy rather than over what is drawn.
-    ///
-    /// [`None`] where the directory publishes no such table — one built
-    /// before it existed, or one whose builder has not reached it yet — and
-    /// told apart from an empty table: a route for a supercharging ship
-    /// cannot be answered without this, where an empty table would answer it
-    /// with the unaided route.
-    async fn boosts(&self) -> io::Result<Option<Vec<SystemBoost>>>;
+    /// Bytes because a transport does not know what a row is: the caller
+    /// that does decodes them, through [`table`].
+    async fn table(&self, name: &'static str) -> io::Result<Option<Vec<u8>>>;
 
     /// The bodies inside a system, fetched when a click opens it. Empty where
     /// the system has no scan on record.
@@ -163,6 +160,17 @@ pub trait Source: Send + Sync {
     /// A transport that cannot answer cheaply says so with an error, and the
     /// client leaves that part for the next pass rather than reading it.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>>;
+}
+
+/// The contributed table `T` as `source` publishes it, or [`None`] where it
+/// publishes no such table.
+pub async fn table<T: Table>(
+    source: &dyn Source,
+) -> io::Result<Option<Vec<T::Row>>> {
+    match source.table(T::NAME).await? {
+        Some(bytes) => Ok(Some(tables::decode::<T>(&bytes)?)),
+        None => Ok(None),
+    }
 }
 
 /// A [`Source`] over a build directory on the local filesystem.
@@ -219,9 +227,9 @@ impl Source for FsSource {
         read_meta(&reaches_path(&self.dir))
     }
 
-    async fn boosts(&self) -> io::Result<Option<Vec<SystemBoost>>> {
-        match read_meta(&boosts_path(&self.dir)) {
-            Ok(table) => Ok(Some(table)),
+    async fn table(&self, name: &'static str) -> io::Result<Option<Vec<u8>>> {
+        match std::fs::read(tables::path(&self.dir, name)) {
+            Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
@@ -255,7 +263,7 @@ impl Source for FsSource {
             Part::Populated => populated_path(&self.dir),
             Part::Reaches => reaches_path(&self.dir),
             Part::Factions => factions_path(&self.dir),
-            Part::Boosts => boosts_path(&self.dir),
+            Part::Table(name) => tables::path(&self.dir, name),
             Part::Names => names_head_path(&self.dir),
             Part::NamesDelta => names_delta_path(&self.dir),
         };
@@ -387,7 +395,7 @@ mod tests {
             .join(format!("galos_source_epoch_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
-        let path = super::boosts_path(&dir);
+        let path = super::tables::path(&dir, "cones");
         std::fs::write(&path, b"\x90").expect("an empty table");
 
         // Ten years before the epoch, which is a negative seconds count on
@@ -402,7 +410,7 @@ mod tests {
             .expect("a pre-epoch mtime");
         let source = FsSource::new(&dir);
         assert_eq!(
-            source.stamp(Part::Boosts).await.expect("a stat"),
+            source.stamp(Part::Table("cones")).await.expect("a stat"),
             Some(0),
             "a file that is there read as a part that is not"
         );

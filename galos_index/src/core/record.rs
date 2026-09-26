@@ -5,8 +5,7 @@
 //! sixty-four bytes, `repr(C)`, which is also what a resume point holds a
 //! galaxy of. A [`Point`] is the same system packed for a cell's payload,
 //! which is what the client draws and the router measures. A [`StarKind`] is
-//! the one byte both carry about the star a ship arrives at, and [`Boost`] is
-//! what that star can supercharge a drive by.
+//! the one byte both carry about the star a ship arrives at.
 //!
 //! **Where precision is needed.** Everything that *writes* the index works in
 //! [`ExactSystem`]: a cell's aggregate sums flux off the `f64` magnitude and
@@ -253,23 +252,6 @@ impl StarKind {
         )
     }
 
-    /// What it can supercharge a drive on, where it can
-    ///
-    /// Asked of the arrival star, which is the one that matters: a ship drops
-    /// in at the main star and can reach its jet cone without crossing the
-    /// system. A neutron star is class `N`; every white dwarf class begins
-    /// with `D` (`DA`, `DB`, `DC` and their variants). Nothing else has a jet
-    /// cone to fly — a black hole is class `H` and gives nothing, whatever it
-    /// looks like it should. The row a table publishes from this is
-    /// [`crate::records::derive::boost`].
-    pub fn boost(&self) -> Option<Boost> {
-        match self {
-            StarKind::WhiteDwarf => Some(Boost::WhiteDwarf),
-            StarKind::Neutron => Some(Boost::Neutron),
-            _ => None,
-        }
-    }
-
     /// What it is called, for a reader rather than for a router
     ///
     /// [`None`] where nothing has said, so a row can leave the column empty
@@ -341,75 +323,6 @@ impl FixedCodec for StarKind {
     const LEN: usize = 1;
 }
 
-/// What a system's arrival star can supercharge a frame shift drive by
-///
-/// Flying the jet cone of a neutron star or a white dwarf in supercruise, with
-/// a fuel scoop, charges the drive for one jump: four times the range off a
-/// neutron star, half again off a white dwarf, and more of both off a drive
-/// built for it. The charge is held until a jump spends it, so what it is
-/// worth is a fact about the system a ship is standing in and not about how it
-/// got there — which is what lets the router read it as a property of a place.
-///
-/// Which of the two, rather than the multiplier: the table is about the sky,
-/// and what a boost is worth depends on the drive taking it — see
-/// [`Boost::factor`] and [`Fsd`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Boost {
-    /// A white dwarf: half again, and a much larger exclusion zone to be
-    /// caught out by.
-    WhiteDwarf,
-    /// A neutron star: four times over, which is what a neutron highway is.
-    Neutron,
-}
-
-impl Boost {
-    /// What a jump out of here is multiplied by, on a drive of `fsd`
-    ///
-    /// Four times off a neutron star and half again off a white dwarf on a
-    /// standard drive; six and three on the Mk II, which is built for it.
-    /// The boost is what is worth having and the drive only how much of it
-    /// is taken, so the figure is the boost's to say.
-    pub fn factor(self, fsd: Fsd) -> f64 {
-        match (self, fsd) {
-            (Boost::WhiteDwarf, Fsd::MkI) => 1.5,
-            (Boost::Neutron, Fsd::MkI) => 4.,
-            (Boost::WhiteDwarf, Fsd::MkII) => 3.,
-            (Boost::Neutron, Fsd::MkII) => 6.,
-        }
-    }
-
-    /// The largest factor any boost gives on `fsd`: a neutron star's
-    pub fn widest(fsd: Fsd) -> f64 {
-        Boost::Neutron.factor(fsd)
-    }
-
-    /// What the star is called, for a reader rather than for a router
-    ///
-    /// The class is all this table keeps of a star — the index publishes
-    /// what can supercharge and on what, not a spectrum — so it is the one
-    /// thing a client can say about a star's kind without fetching the
-    /// system's bodies.
-    pub fn named(&self) -> &'static str {
-        match self {
-            Boost::Neutron => "neutron star",
-            Boost::WhiteDwarf => "white dwarf",
-        }
-    }
-}
-
-/// Which frame shift drive takes a jet cone's charge
-///
-/// What a [`Boost`] is worth depends on it, and nothing else about the ship
-/// does. A ship with no drive that can be supercharged is no `Fsd` at all.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Fsd {
-    /// A standard frame shift drive: four times off a neutron star, half
-    /// again off a white dwarf.
-    MkI,
-    /// The Mk II Supercharge Optimised drive: six times and three.
-    MkII,
-}
-
 /// Whether a ship can refuel at a star of this class
 ///
 /// A fuel scoop takes hydrogen out of a star's corona, and a star either has
@@ -469,31 +382,6 @@ mod tests {
             assert_eq!(back.temp_bucket, p.temp_bucket);
             assert_eq!(back.updated_at, p.updated_at);
             assert_eq!(back.magnitude, p.magnitude);
-        }
-    }
-
-    /// What a boost is worth is the boost's, told which drive takes it
-    #[test]
-    fn a_boost_says_what_it_multiplies_a_jump_by() {
-        assert_eq!(Boost::Neutron.factor(Fsd::MkI), 4.);
-        assert_eq!(Boost::WhiteDwarf.factor(Fsd::MkI), 1.5);
-        assert_eq!(Boost::Neutron.factor(Fsd::MkII), 6.);
-        assert_eq!(Boost::WhiteDwarf.factor(Fsd::MkII), 3.);
-        for fsd in [Fsd::MkI, Fsd::MkII] {
-            assert_eq!(Boost::widest(fsd), Boost::Neutron.factor(fsd));
-        }
-    }
-
-    /// A class supercharges off the one reading of it `scoopable` uses
-    #[test]
-    fn a_class_says_what_it_can_supercharge() {
-        let boost = |class| StarKind::of(class).boost();
-        assert_eq!(boost("N"), Some(Boost::Neutron));
-        for dwarf in ["D", "DA", "DAB", "DBV", "DC", "DQ", "DX"] {
-            assert_eq!(boost(dwarf), Some(Boost::WhiteDwarf), "{dwarf}");
-        }
-        for none in ["", "G", "K_OrangeGiant", "H", "MS", "TTS", "Neutron"] {
-            assert_eq!(boost(none), None, "{none}");
         }
     }
 }

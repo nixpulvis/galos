@@ -118,8 +118,8 @@ pub fn cold(
     // what the read before it derived.
     let spill = rows_dir(checkpoint);
     let mut rows = match carrying_on {
-        true => TableWriter::onto(&spill, dir),
-        false => TableWriter::writing(&spill),
+        true => TableWriter::onto(&spill, dir, &crate::tables()),
+        false => TableWriter::writing(&spill, &crate::tables()),
     }
     .map_err(failed)?;
     source.read(&mut build, &mut rows, place).map_err(failed)?;
@@ -167,7 +167,7 @@ pub fn cold(
         rows = report.named_rows,
         populated = counts.populated,
         reaches = counts.reaches,
-        boosts = counts.boosts,
+        tables = ?counts.contributed,
         elapsed = ?start.elapsed(),
         dir = %dir.display(),
         "index published",

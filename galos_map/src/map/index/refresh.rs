@@ -49,12 +49,11 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::read::inhabited::Inhabitance;
-use galos_index::records::{
-    Faction, PopulatedSystem, SystemBoost, SystemReach,
-};
+use galos_index::read::source::table;
+use galos_index::records::{Faction, PopulatedSystem, SystemReach};
 use galos_index::store::names::Delta;
-use galos_index::{CellId, Index, Part, Point, Stamp};
-use galos_route::Boosts;
+use galos_index::{CellId, Index, Part, Point, Stamp, Table};
+use galos_route::{BoostTable, Boosts, SystemBoost};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -133,7 +132,7 @@ impl Held {
             index: stamp(Part::Index).await,
             populated: stamp(Part::Populated).await,
             reaches: stamp(Part::Reaches).await,
-            boosts: stamp(Part::Boosts).await,
+            boosts: stamp(Part::Table(BoostTable::NAME)).await,
             factions: stamp(Part::Factions).await,
             names: stamp(Part::Names).await,
             delta: stamp(Part::NamesDelta).await,
@@ -292,8 +291,9 @@ fn poll(
 
         // A table gone as well as a table moved: an index rebuilt without one
         // takes the supercharging away, and the map has to stop claiming it.
-        let (moved_it, stamp) = moved(&source, Part::Boosts, boosts).await;
-        if moved_it && let Ok(read) = source.boosts().await {
+        let (moved_it, stamp) =
+            moved(&source, Part::Table(BoostTable::NAME), boosts).await;
+        if moved_it && let Ok(read) = table::<BoostTable>(&*source).await {
             found.boosts = Some((read, stamp));
         }
 
@@ -575,10 +575,8 @@ mod tests {
         // router's galaxy opened over the same directory the walk reads.
         let table = block_on(source.names()).expect("the names should open");
         let reaches = block_on(source.reaches()).unwrap_or_default();
-        let boosts = block_on(source.boosts())
-            .ok()
-            .flatten()
-            .map_or_else(Boosts::absent, Boosts::of);
+        let boosts = block_on(Boosts::read(&*source))
+            .unwrap_or_else(|_| Boosts::absent());
         let sky = Arc::new(
             galos_index::Sky::open(dir).expect("the galaxy should map"),
         );

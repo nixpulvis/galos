@@ -19,5 +19,5 @@ mod perf;
 #[cfg(test)]
 mod testing;
 
-pub use boosts::Boosts;
+pub use boosts::{Boost, BoostTable, Boosts, Fsd, SystemBoost};
 pub use graph::{Crossing, Drive, Jumps, Routing, Tuning, Weigh};

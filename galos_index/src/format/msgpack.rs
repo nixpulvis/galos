@@ -2,7 +2,7 @@
 //! path and renamed over it.
 //!
 //! Every sidecar the client reads beside the cells — the populated systems,
-//! the reaches, the supercharges, the factions — and every small record a
+//! the reaches, the factions, the contributed tables — and every small record a
 //! builder keeps beside its resume point is one of these. The writer half is
 //! [`write_meta`]; the reader half is [`read_meta`].
 
@@ -87,7 +87,7 @@ mod tests {
             .join(format!("galos_source_atomic_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
-        let path = crate::format::layout::boosts_path(&dir);
+        let path = crate::format::layout::reaches_path(&dir);
 
         let first: Vec<i64> = (0..1_000).collect();
         write_meta(&path, &first).expect("the first write");

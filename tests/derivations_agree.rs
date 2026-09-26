@@ -55,7 +55,8 @@ use galos_db::index::{never, Parts};
 use galos_db::testing::Scratch;
 use galos_db::Database;
 use galos_index::records::{PopulatedSystem, SystemBodies};
-use galos_index::{Boost, FsSource, Source as _};
+use galos_index::{FsSource, Source as _};
+use galos_route::{Boost, BoostTable};
 use spansh::System;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -330,8 +331,7 @@ impl Published {
             .filter(|it| ours(&it.address))
             .map(|it| (it.address, it.reach))
             .collect();
-        let boosts = source
-            .boosts()
+        let boosts = galos_index::read::source::table::<BoostTable>(&source)
             .await
             .expect("the boosts table")
             .expect("a published boosts table")
@@ -367,7 +367,8 @@ async fn from_the_database(db: &Database, dir: &Path, checkpoint: &Path) {
         db,
         dir,
         checkpoint,
-        Parts::ALL,
+        Parts::all(&galos::tables()),
+        &galos::tables(),
         false,
         &stop,
         told,

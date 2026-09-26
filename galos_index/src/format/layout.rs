@@ -60,9 +60,6 @@ pub const REACHES_FILE: &str = "reaches.bin";
 /// The faction id-to-name table, small and read whole.
 pub const FACTIONS_FILE: &str = "factions.bin";
 
-/// Which systems can supercharge a drive, resident for the router.
-pub const BOOSTS_FILE: &str = "boosts.bin";
-
 /// The populated table's path within a build directory.
 pub fn populated_path(dir: &Path) -> PathBuf {
     dir.join(POPULATED_FILE)
@@ -76,11 +73,6 @@ pub fn reaches_path(dir: &Path) -> PathBuf {
 /// The factions table's path within a build directory.
 pub fn factions_path(dir: &Path) -> PathBuf {
     dir.join(FACTIONS_FILE)
-}
-
-/// The supercharge table's path within a build directory.
-pub fn boosts_path(dir: &Path) -> PathBuf {
-    dir.join(BOOSTS_FILE)
 }
 
 // --- The names table --------------------------------------------------------

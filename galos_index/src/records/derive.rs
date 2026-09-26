@@ -16,7 +16,7 @@
 //! sides agree on.
 
 use crate::core::record::StarKind;
-use crate::records::{SystemBodies, SystemBoost};
+use crate::records::{Arrival, SystemBodies};
 use chrono::NaiveDateTime;
 use galos_photometry::{ClassLight, Flux, Magnitude};
 
@@ -184,23 +184,21 @@ pub fn arrival_kind(scanned: Option<&str>, routed: Option<&str>) -> StarKind {
     scanned.or(routed).map_or(StarKind::Unknown, StarKind::of)
 }
 
-/// One system's row in the supercharge table, by the one rule both
-/// derivations publish it by.
+/// What a contributed table is handed about a system: its arrival star by
+/// [`arrival_kind`], and where it sits.
 ///
-/// The arrival star is [`arrival_class`] over what has been scanned, and
-/// where nothing has, `routed`: the class a plotted route named, the only
-/// other statement about the same star (`systems.primary_star_class` on the
-/// database side, the route file's class on the journal side). A system
-/// nothing has placed has no row — the caller hands `position` over only
-/// where it has one — because a cone with no place is no waypoint.
-pub fn boost(
+/// [`None`] where nothing has said what the arrival star is — a system only
+/// ever jumped through. That is not the same as a star with nothing to say
+/// for itself: a table asked about it would take out a row a richer source
+/// had published, and an absence is not a statement.
+pub fn arrival(
     address: i64,
     inside: Option<&SystemBodies>,
     routed: Option<&str>,
     position: [f32; 3],
-) -> Option<SystemBoost> {
-    let class = inside.and_then(arrival_class).or(routed)?;
-    SystemBoost::of(address, StarKind::of(class), position)
+) -> Option<Arrival> {
+    let kind = arrival_kind(inside.and_then(arrival_class), routed);
+    (kind != StarKind::Unknown).then_some(Arrival { address, kind, position })
 }
 
 #[cfg(test)]

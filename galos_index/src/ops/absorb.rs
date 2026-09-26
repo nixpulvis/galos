@@ -29,8 +29,8 @@
 //!
 //! **Except what is a function of the system's whole contents.** Record over
 //! record is the wrong rule for a fact nobody reported — the kind of star a
-//! ship arrives at, the light of the system, how far it reaches, what it
-//! supercharges. Each of those was worked out from one side's bodies, and the
+//! ship arrives at, the light of the system, how far it reaches, and the
+//! rows contributed tables derive from its arrival. Each of those was worked out from one side's bodies, and the
 //! merged directory holds both sides', so each is worked out again over the
 //! merged contents by the calls [`crate::accumulate::galaxy`] makes. See
 //! [`Relit`], which names the directory that said two contradicting things
@@ -125,10 +125,11 @@ use crate::core::record::{ExactSystem, StarKind};
 use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::{layout, msgpack};
 use crate::records::{
-    Faction, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
+    Arrival, Faction, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
 use crate::store::names::Names;
-use crate::store::sidecars::{Moved, Sidecars};
+use crate::store::sidecars::Sidecars;
+use crate::store::tables::TableSet;
 use crate::store::{bodies, cells};
 use chrono::NaiveDateTime;
 use galos_photometry::{Magnitude, Temperature};
@@ -177,8 +178,8 @@ pub struct Absorbed {
     pub populated: u64,
     /// Rows of `reaches.bin` the fold changed.
     pub reaches: u64,
-    /// Rows of `boosts.bin` the fold changed.
-    pub boosts: u64,
+    /// Rows of the contributed tables the fold changed.
+    pub contributed: u64,
     /// Factions `INTO`'s table did not name and `FROM`'s did.
     pub factions: u64,
     /// Systems whose body records were folded together.
@@ -203,7 +204,7 @@ impl fmt::Display for Absorbed {
         write!(
             f,
             "{}{} held + {} taken -> {} systems ({} replaced, {} refused \
-             as older), {} names, {} populated, {} reaches, {} boosts, \
+             as older), {} names, {} populated, {} reaches, {} contributed, \
              {} factions, {} systems of bodies; current to {}{}",
             match self.dry_run {
                 true => "would fold: ",
@@ -217,7 +218,7 @@ impl fmt::Display for Absorbed {
             self.names,
             self.populated,
             self.reaches,
-            self.boosts,
+            self.contributed,
             self.factions,
             self.bodies,
             match self.cursor {
@@ -415,7 +416,8 @@ pub enum Phase {
     Systems,
     /// The names of the systems the incoming directory won.
     Names,
-    /// `populated.bin`, `reaches.bin`, `boosts.bin` and `factions.bin`.
+    /// `populated.bin`, `reaches.bin`, `factions.bin` and the contributed
+    /// tables.
     Sidecars,
     /// The body records, merged per body.
     Bodies,
@@ -480,11 +482,13 @@ impl fmt::Display for Folding {
 /// two long ones.
 ///
 /// `dry_run` counts and writes nothing.
+#[allow(clippy::too_many_arguments)]
 pub fn absorb(
     into: &Path,
     into_checkpoint: &Path,
     from: &Path,
     from_checkpoint: &Path,
+    tables: &TableSet,
     dry_run: bool,
     stop: &dyn Fn() -> bool,
     said: &mut dyn FnMut(&Folding),
@@ -527,8 +531,9 @@ pub fn absorb(
     drop(incoming);
 
     let names = carry_names(into, from, &union.won, dry_run, said)?;
-    let carried =
-        carry_sidecars(into, from, &union.won, &relit, fresh, dry_run, said)?;
+    let carried = carry_sidecars(
+        into, from, &union.won, &relit, fresh, tables, dry_run, said,
+    )?;
     let rebuilt = match dry_run {
         true => None,
         false => Some(rebuild(into, into_checkpoint, by, cursor, stop, said)?),
@@ -542,7 +547,7 @@ pub fn absorb(
         names,
         populated: carried.populated,
         reaches: carried.reaches,
-        boosts: carried.boosts,
+        contributed: carried.contributed,
         factions: carried.factions,
         bodies,
         cursor,
@@ -742,14 +747,14 @@ struct Union {
 /// Measured on two journal feeds of one system scanned with a different
 /// body id on each side: the merged directory held both stars — body 0 a G
 /// star, body 1 a neutron star — and carried the winner's derived columns
-/// whole, so its payload and its `boosts.bin` row described a neutron
+/// whole, so its payload and its supercharge row described a neutron
 /// arrival star while its own body file said body 0 was a G star at 4.83.
 /// One directory saying two contradicting things, which is exactly what
 /// `galos index verify` exists to catch.
 ///
 /// So these five are derived again, over the merged contents, by the same calls
 /// [`crate::accumulate::galaxy`] makes and not by arithmetic of this module's
-/// own — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::boost_of`. What
+/// own — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::arrival_of`. What
 /// stays the winner's is `age_bucket` and `updated_at`: those are about when
 /// the system was reported, not about what is in it.
 #[derive(Copy, Clone, Debug)]
@@ -762,9 +767,8 @@ struct Relit {
     reach: Option<f32>,
     /// Where the winning record puts the system, filled in by the union.
     ///
-    /// A supercharge row carries a place — a router's question is where the
-    /// cones are — and the place is the system's own, which only the
-    /// records know. [`None`] until the union has written the record, and
+    /// A contributed row is derived from an arrival, which carries a place,
+    /// and the place is the system's own, which only the records know. [`None`] until the union has written the record, and
     /// for an address neither resume point holds at all.
     position: Option<[f32; 3]>,
 }
@@ -805,8 +809,8 @@ fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
 /// One record as the merged directory holds it: the winner's own columns,
 /// with whatever [`Relit`] has to say about its contents laid over them.
 ///
-/// Also takes down where the winner puts the system, which is the place the
-/// supercharge row is written at.
+/// Also takes down where the winner puts the system, which is the place a
+/// contributed row is derived at.
 fn relight(
     record: &ExactSystem,
     relit: &mut HashMap<i64, Relit>,
@@ -983,8 +987,8 @@ fn walk(
                 base.push(relight(chosen, relit))
                     .map_err(failed("the merged resume point"))?;
             } else {
-                // A dry run writes nothing, but the supercharge rows it
-                // counts are written at the winning record's place.
+                // A dry run writes nothing, but the contributed rows it
+                // counts are derived at the winning record's place.
                 relight(chosen, relit);
             }
             done += 1;
@@ -1095,7 +1099,7 @@ fn carry_names(
 struct Carried {
     populated: u64,
     reaches: u64,
-    boosts: u64,
+    contributed: u64,
     factions: u64,
 }
 
@@ -1111,17 +1115,17 @@ struct Carried {
 /// **Nothing is withdrawn.** An address `FROM` won but publishes no reach
 /// for keeps `INTO`'s reach: a feed cannot tell a system whose scans were
 /// forgotten from one nobody has scanned, which is `src/sink/tables.rs`'s
-/// rule and is why the three tables are only ever added to here.
+/// rule and is why the tables are only ever added to here.
 ///
-/// **A reach and a supercharge row are not carried where the system's
+/// **A reach and a contributed row are not carried where the system's
 /// contents merged.** Both are a function of what is inside the system, so
 /// for every address [`Relit`] speaks for they are taken from the
 /// re-derivation over the merged contents rather than from either side's
 /// published table — see [`Relit`] for the directory that said two
 /// contradicting things before this did. Where the merged arrival star
-/// supercharges nothing the row is *removed*, which is not a withdrawal by
-/// silence: the merged contents state what the arrival star is, and a
-/// statement is not an absence.
+/// gives a contributed table nothing to say the row is *removed*, which is
+/// not a withdrawal by silence: the merged contents state what the arrival
+/// star is, and a statement is not an absence.
 ///
 /// The factions are the union of the two, the two having already been held
 /// against each other by [`agreed`].
@@ -1132,18 +1136,17 @@ fn carry_sidecars(
     won: &[i64],
     relit: &HashMap<i64, Relit>,
     fresh: Vec<Faction>,
+    tables: &TableSet,
     dry_run: bool,
     say: &mut dyn FnMut(&Folding),
 ) -> Result<Carried, Refused> {
     say(&Folding { phase: Phase::Sidecars, done: 0, total: 0 });
-    let (mut ours, absent) =
-        Sidecars::resume(into).map_err(failed("the sidecar tables"))?;
+    let mut ours =
+        Sidecars::resume(into, tables).map_err(failed("the sidecar tables"))?;
     let populated: Vec<PopulatedSystem> = table(&layout::populated_path(from))?;
     let reaches: Vec<SystemReach> = table(&layout::reaches_path(from))?;
-    let boosts: Vec<SystemBoost> = table(&layout::boosts_path(from))?;
 
     let newer = |address: i64| won.binary_search(&address).is_ok();
-    let mut moved = Moved::default();
     let mut carried = Carried::default();
 
     for row in populated {
@@ -1153,68 +1156,56 @@ fn carry_sidecars(
             None => row,
         };
         if ours.populate(merged) {
-            moved.populated = true;
             carried.populated += 1;
         }
     }
-    // A reach and a supercharge are one reading each, with nothing inside to
-    // fill in, so the weighing is the whole of the rule: the arriving
-    // reading where it is the newer, and where `INTO` has no reading at all.
-    // An address the relight speaks for is skipped here and answered below,
-    // neither side's published row being about the merged contents.
+    // A reach and a contributed row are one reading each, with nothing
+    // inside to fill in, so the weighing is the whole of the rule: the
+    // arriving reading where it is the newer, and where `INTO` has no
+    // reading at all. An address the relight speaks for is skipped here and
+    // answered below, neither side's published row being about the merged
+    // contents.
     for row in reaches {
         if relit.contains_key(&row.address) {
             continue;
         }
         let take = ours.reach_of(row.address).is_none() || newer(row.address);
         if take && ours.reach(row.address, row.reach) {
-            moved.reaches = true;
             carried.reaches += 1;
         }
     }
-    for row in boosts {
-        if relit.contains_key(&row.address) {
-            continue;
-        }
-        let take = ours.boost_of(row.address).is_none() || newer(row.address);
-        if take && ours.boost(row) {
-            moved.boosts = true;
-            carried.boosts += 1;
-        }
-    }
+    carried.contributed += ours
+        .carry_contributed(from, &|address, held| {
+            !relit.contains_key(&address) && (!held || newer(address))
+        })
+        .map_err(failed("the contributed tables"))?;
     for (&address, afresh) in relit {
         if let Some(reach) = afresh.reach
             && ours.reach(address, reach)
         {
-            moved.reaches = true;
             carried.reaches += 1;
         }
-        let row = afresh.position.and_then(|position| {
-            SystemBoost::of(address, afresh.kind, position)
-        });
-        let changed = match row {
-            Some(row) => ours.boost(row),
-            // The merged arrival star supercharges nothing, so a row
-            // saying it does is wrong rather than merely unheard.
-            None => ours.unboost(address),
+        let arrival = afresh
+            .position
+            .filter(|_| afresh.kind != StarKind::Unknown)
+            .map(|position| Arrival { address, kind: afresh.kind, position });
+        let changed = match arrival {
+            Some(arrival) => ours.arrive(&arrival),
+            None => ours.unarrive(address),
         };
         if changed {
-            moved.boosts = true;
-            carried.boosts += 1;
+            carried.contributed += 1;
         }
     }
     carried.factions = fresh.len() as u64;
-    if ours.add_factions(fresh) {
-        moved.factions = true;
-    }
+    ours.add_factions(fresh);
 
-    if !dry_run && moved.any() {
+    if !dry_run && ours.moved() {
         // A table this directory has no file for at all is written with the
         // ones that moved, for [`Sidecars::resume`]'s reason: a missing
-        // supercharge table says "this index cannot say" to a client, and
-        // the map refuses a supercharged route over one.
-        moved.absorb(absent);
-        ours.write(into, moved).map_err(failed("the sidecar tables"))?;
+        // table says "this index cannot say" to a client.
+        ours.claim_absent();
+        ours.write(into).map_err(failed("the sidecar tables"))?;
     }
     Ok(carried)
 }
@@ -1387,9 +1378,10 @@ fn rebuild(
 mod tests {
     use super::*;
     use crate::core::index::Index;
-    use crate::core::record::Boost;
-    use crate::records::{Body, NameEntry, Star};
-    use crate::store::sidecars::{write_boosts, write_reaches};
+    use crate::records::{Body, NameEntry, Star, Table};
+    use crate::store::sidecars::reaches;
+    use crate::store::tables::testing::{Cone, Cones, tables};
+    use crate::store::tables::{self, Keyed};
     use chrono::{DateTime, Utc};
     use elite_journal::body::{Orbit, Spin};
     use std::collections::BTreeMap;
@@ -1548,12 +1540,30 @@ mod tests {
         }
     }
 
+    /// A reaches table of `rows` published in `dir`.
+    fn write_reaches(dir: &Path, rows: &[(i64, f32)]) {
+        let mut table = reaches();
+        for &(address, reach) in rows {
+            table.put(SystemReach { address, reach });
+        }
+        table.write(dir).expect("the reaches table");
+    }
+
     fn folded(
         into: &(PathBuf, PathBuf),
         from: &(PathBuf, PathBuf),
         dry_run: bool,
     ) -> Result<Absorbed, Refused> {
-        absorb(&into.0, &into.1, &from.0, &from.1, dry_run, &never, &mut quiet)
+        absorb(
+            &into.0,
+            &into.1,
+            &from.0,
+            &from.1,
+            &tables(),
+            dry_run,
+            &never,
+            &mut quiet,
+        )
     }
 
     /// The oracle: a directory with another folded into it holds exactly
@@ -1695,22 +1705,12 @@ mod tests {
         bodies::write_each(&into.0, [(1i64, &stood)]).expect("what stood");
         bodies::write_each(&from.0, [(1i64, &arriving)]).expect("what arrived");
         // And the sidecar rows each side derived over its own star: the
-        // neutron one supercharges, so the arriving directory publishes a
-        // row the merged directory must not keep.
-        write_reaches(&into.0, &HashMap::from([(1i64, 10.0f32)]))
-            .expect("the standing reaches");
-        write_boosts(
-            &from.0,
-            &HashMap::from([(
-                1i64,
-                SystemBoost {
-                    address: 1,
-                    boost: Boost::Neutron,
-                    position: [0.0; 3],
-                },
-            )]),
-        )
-        .expect("the arriving boosts");
+        // neutron one has a row in the contributed table, so the arriving
+        // directory publishes a row the merged directory must not keep.
+        write_reaches(&into.0, &[(1, 10.0)]);
+        let mut cones = Keyed::new(Cones::NAME, Cones::address);
+        cones.put(Cone { address: 1, position: [0.0; 3] });
+        cones.write(&from.0).expect("the arriving cones");
 
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.replaced, 1, "the arriving record won the system");
@@ -1738,13 +1738,13 @@ mod tests {
             "two stars' light adds, so the pair outshines either",
         );
 
-        // A G star supercharges nothing, so the arriving row goes.
-        let boosts: Vec<SystemBoost> =
-            msgpack::read_meta(&layout::boosts_path(&into.0))
-                .expect("the merged boosts");
+        // A G star has no row in the table, so the arriving row goes.
+        let cones = tables::read::<Cones>(&into.0)
+            .expect("the merged cones")
+            .expect("a table was published");
         assert!(
-            boosts.iter().all(|row| row.address != 1),
-            "a supercharge row for a system that arrives at a G star",
+            cones.iter().all(|row| row.address != 1),
+            "a contributed row for a system that arrives at a G star",
         );
 
         // And the reach is over everything inside, not over one side's.
@@ -1851,10 +1851,8 @@ mod tests {
         let from =
             raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
-        write_reaches(&into.0, &HashMap::from([(1i64, 100.0f32)]))
-            .expect("the standing reaches");
-        write_reaches(&from.0, &HashMap::from([(2i64, 50.0f32)]))
-            .expect("the arriving reaches");
+        write_reaches(&into.0, &[(1, 100.0)]);
+        write_reaches(&from.0, &[(2, 50.0)]);
 
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.replaced, 2, "the arriving records won both");

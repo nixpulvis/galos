@@ -55,10 +55,9 @@ use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
 use galos_index::accumulate::bodies::{Bodies, OnDisk};
 use galos_index::core::geometry::MAX_LEVEL;
-use galos_index::records::{
-    NameEntry, PopulatedSystem, SystemBoost, SystemReach,
-};
+use galos_index::records::{NameEntry, PopulatedSystem, SystemReach};
 use galos_index::store::cells;
+use galos_index::store::tables::{agreement, path, Agreement};
 use galos_index::{Cell, Index, Names};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -777,7 +776,12 @@ fn migrate(dir: &Path, forced: bool) {
         }
     };
 
-    match galos_index::ops::upgrade::rewrite(dir, &stop, &mut said) {
+    match galos_index::ops::upgrade::rewrite(
+        dir,
+        &galos::tables(),
+        &stop,
+        &mut said,
+    ) {
         Ok(wrote) => {
             eprintln!();
             println!(
@@ -790,9 +794,9 @@ fn migrate(dir: &Path, forced: bool) {
                 at.elapsed(),
             );
             // Only where there was a table to bring forward, which is a
-            // directory built before the place rode in the published row.
-            if wrote.placed > 0 {
-                println!("{} supercharge rows given their place", wrote.placed,);
+            // directory built before its owner changed its shape.
+            if wrote.upgraded > 0 {
+                println!("{} contributed rows brought forward", wrote.upgraded);
             }
             names_forward(dir, &lock);
         }
@@ -1036,6 +1040,7 @@ fn merge(
         &into_point,
         from,
         &from_point,
+        &galos::tables(),
         dry_run,
         &stop,
         &mut said,
@@ -1427,7 +1432,7 @@ const DRIFT: f64 = 1e-9;
 /// - the names table, by the bytes of the base a generation at a time,
 ///   and by a merged walk that holds a row of each side where they
 ///   disagree;
-/// - `populated.bin`, `reaches.bin` and `boosts.bin`, by their bytes and
+/// - `populated.bin`, `reaches.bin` and the contributed tables, by their bytes and
 ///   row by row where the bytes differ, absent and empty told apart;
 /// - the body files, on `--bodies`, which is a file a scanned system.
 ///
@@ -2121,7 +2126,8 @@ impl<'n> Rows<'n> {
     }
 }
 
-/// The three tables a record can fill.
+/// The tables written whole beside the cells: the index's own, and the
+/// ones the program contributes ([`galos::tables`]).
 ///
 /// Each is written sorted by address by one writer version, so equal
 /// content is equal bytes and a length and a streamed read say what a row
@@ -2132,45 +2138,40 @@ impl<'n> Rows<'n> {
 /// Where the bytes *do* differ the rows are what can say which system, so
 /// that is the road taken then, and it is the road this always took.
 fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
-    let populated = agree(
-        "populated",
-        a,
-        b,
-        galos_index::format::layout::populated_path,
-        |it: &PopulatedSystem| it.address,
-        how,
-    );
-    let reaches = agree(
-        "reaches",
-        a,
-        b,
-        galos_index::format::layout::reaches_path,
-        |it: &SystemReach| it.address,
-        how,
-    );
-    let boosts = agree(
-        "boosts",
-        a,
-        b,
-        galos_index::format::layout::boosts_path,
-        |it: &SystemBoost| it.address,
-        how,
-    );
-    populated.and(reaches).and(boosts)
+    let mut verdict = agree("populated", a, b, how, || {
+        agreement(
+            table::<PopulatedSystem>(a, &path(a, "populated")),
+            table::<PopulatedSystem>(b, &path(b, "populated")),
+            |it| it.address,
+        )
+    });
+    verdict = verdict.and(agree("reaches", a, b, how, || {
+        agreement(
+            table::<SystemReach>(a, &path(a, "reaches")),
+            table::<SystemReach>(b, &path(b, "reaches")),
+            |it| it.address,
+        )
+    }));
+    for contributed in galos::tables().iter() {
+        verdict = verdict.and(agree(contributed.name(), a, b, how, || {
+            contributed.compare(a, b).unwrap_or_else(|e| fatal(a, e))
+        }));
+    }
+    verdict
 }
 
-/// Whether one of the three tables says the same thing in both
-/// directories: its bytes, and its rows where those differ.
-fn agree<T: DeserializeOwned + PartialEq>(
+/// Whether the table called `label` says the same thing in both
+/// directories: its bytes, and `rows` — its rows against each other —
+/// where those differ.
+fn agree(
     label: &str,
     a: &Path,
     b: &Path,
-    of: fn(&Path) -> PathBuf,
-    key: impl Fn(&T) -> i64,
     how: &Compare,
+    rows: impl FnOnce() -> Agreement,
 ) -> Verdict {
     let at = std::time::Instant::now();
-    let (x, y) = (of(a), of(b));
+    let (x, y) = (path(a, label), path(b, label));
     let weigh = |dir: &Path, path: &Path| match std::fs::metadata(path) {
         Ok(meta) => Some(meta.len()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -2189,7 +2190,7 @@ fn agree<T: DeserializeOwned + PartialEq>(
             return Verdict::Same;
         }
     }
-    rows(label, table::<T>(a, &x), table::<T>(b, &y), key, how, at)
+    said(label, rows(), how, at)
 }
 
 /// How many rows a table file says it holds, off its head.
@@ -2227,70 +2228,36 @@ fn table<T: DeserializeOwned>(dir: &Path, path: &Path) -> Option<Vec<T>> {
     }
 }
 
-/// Compare two tables of rows keyed by address.
+/// Say how two tables of rows keyed by address compared.
 ///
 /// The road for two files whose bytes differ, which is why "identical" is
 /// still one of its answers: two encodings of one table are the same
 /// table.
-fn rows<T: PartialEq>(
+fn said(
     label: &str,
-    a: Option<Vec<T>>,
-    b: Option<Vec<T>>,
-    key: impl Fn(&T) -> i64,
+    agreement: Agreement,
     how: &Compare,
     at: std::time::Instant,
 ) -> Verdict {
-    let (mut left, mut right) = match (a, b) {
-        (None, None) => {
+    let diff = match agreement {
+        Agreement::AbsentBoth => {
             println!("  {label:<13} absent from both, in {:.1?}", at.elapsed());
             return Verdict::Same;
         }
-        (Some(_), None) => {
+        Agreement::OnlyA => {
             println!("  {label:<13} only A holds one, in {:.1?}", at.elapsed());
             return Verdict::Differ;
         }
-        (None, Some(_)) => {
+        Agreement::OnlyB => {
             println!("  {label:<13} only B holds one, in {:.1?}", at.elapsed());
             return Verdict::Differ;
         }
-        (Some(left), Some(right)) => (left, right),
+        Agreement::Rows(diff) => diff,
     };
-    left.sort_by_key(&key);
-    right.sort_by_key(&key);
-
-    // Two sorted runs walked together: a row on one side and not the other
-    // is a missing system, and one on both that is not the same row is a
-    // system the two derivations say different things about.
-    let (mut i, mut j) = (0usize, 0usize);
-    let (mut only_left, mut only_right) = (0usize, 0usize);
-    let mut differing = Vec::new();
-    while i < left.len() && j < right.len() {
-        let (x, y) = (key(&left[i]), key(&right[j]));
-        match x.cmp(&y) {
-            std::cmp::Ordering::Less => {
-                only_left += 1;
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                only_right += 1;
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                if left[i] != right[j] {
-                    differing.push(x);
-                }
-                i += 1;
-                j += 1;
-            }
-        }
-    }
-    only_left += left.len() - i;
-    only_right += right.len() - j;
-
-    if only_left == 0 && only_right == 0 && differing.is_empty() {
+    if diff.same() {
         println!(
             "  {label:<13} {} rows, identical, in {:.1?}",
-            left.len(),
+            diff.a,
             at.elapsed(),
         );
         return Verdict::Same;
@@ -2298,15 +2265,15 @@ fn rows<T: PartialEq>(
     println!(
         "  {label:<13} {} rows in A, {} in B: {} only in A, {} only in B, \
          {} differ, in {:.1?}",
-        left.len(),
-        right.len(),
-        only_left,
-        only_right,
-        differing.len(),
+        diff.a,
+        diff.b,
+        diff.only_a,
+        diff.only_b,
+        diff.differing.len(),
         at.elapsed(),
     );
     if how.detail {
-        for address in differing.iter().take(how.limit) {
+        for address in diff.differing.iter().take(how.limit) {
             println!("                  {address}");
         }
     }

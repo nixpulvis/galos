@@ -239,7 +239,8 @@ impl Derive {
                 db,
                 &self.dir,
                 &self.checkpoint,
-                Parts::ALL,
+                Parts::all(&crate::tables()),
+                &crate::tables(),
                 self.rebuild,
                 stop,
                 &told,
@@ -440,14 +441,28 @@ pub async fn from_database(
         steps.at(progress.step, progress.done, progress.of);
     };
     let ran = match watch {
-        Some(every) => {
-            index::watch(db, dir, checkpoint, every, rebuild, &stop, &told)
-                .await
-                .map_err(|err| format!("{err}"))
-        }
+        Some(every) => index::watch(
+            db,
+            dir,
+            checkpoint,
+            &crate::tables(),
+            every,
+            rebuild,
+            &stop,
+            &told,
+        )
+        .await
+        .map_err(|err| format!("{err}")),
         None => {
             let levelled = index::catch_up(
-                db, dir, checkpoint, parts, rebuild, &stop, &told,
+                db,
+                dir,
+                checkpoint,
+                parts,
+                &crate::tables(),
+                rebuild,
+                &stop,
+                &told,
             )
             .await
             .map_err(|err| format!("{err}"));

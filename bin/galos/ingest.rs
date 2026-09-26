@@ -200,8 +200,9 @@ pub struct Cli {
         value_delimiter = ',',
         num_args = 1..,
         help_heading = ROWS,
+        value_parser = parts(),
     )]
-    only: Vec<Part>,
+    only: Vec<String>,
 
     /// Keep following what was named rather than exiting, SECS apart. A
     /// second where SECS is left off.
@@ -295,50 +296,58 @@ pub struct Cli {
     force_lock: bool,
 }
 
-/// One part of what a built index directory holds
+/// The index's own parts, each named on `--only` to rebuild it alone.
 ///
-/// Named on `--only` to rebuild that part alone. What each is derived from
-/// differs: `cells` and `names` come out of one read of every positioned
-/// system, `reaches` and `bodies` out of one read of every scanned thing,
-/// and `populated` and `factions` out of a query apiece. Asking for one
-/// reads only what that one needs.
+/// What each is derived from differs: `cells` and `names` come out of one
+/// read of every positioned system, `reaches` and `bodies` out of one read
+/// of every scanned thing, and `populated` and `factions` out of a query
+/// apiece. Asking for one reads only what that one needs.
 #[cfg(feature = "db")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Part {
-    /// The cell tree and its payloads, which the map draws the galaxy from.
-    Cells,
-    /// Every system's name and place: the search index and the routing graph.
-    Names,
-    /// The populated systems the map colors and filters by.
-    Populated,
-    /// How far each scanned system reaches, which every shell is sized by.
-    Reaches,
-    /// Which systems can supercharge a drive, which the router plots by.
-    Boosts,
-    /// The faction id-to-name table.
-    Factions,
-    /// One file per system of the stars, bodies and barycenters in it.
-    Bodies,
+const OWN_PARTS: [(&str, &str); 6] = [
+    ("cells", "The cell tree and its payloads, which the map draws the galaxy from."),
+    ("names", "Every system's name and place: the search index and the routing graph."),
+    ("populated", "The populated systems the map colors and filters by."),
+    ("reaches", "How far each scanned system reaches, which every shell is sized by."),
+    ("factions", "The faction id-to-name table."),
+    ("bodies", "One file per system of the stars, bodies and barycenters in it."),
+];
+
+/// What `--only` can name: the index's own parts, and each table the
+/// program contributes ([`galos::tables`]) by the name it is written under,
+/// read like the rest off the scanned things.
+#[cfg(feature = "db")]
+fn parts() -> clap::builder::PossibleValuesParser {
+    use clap::builder::PossibleValue;
+    let own =
+        OWN_PARTS.map(|(name, about)| PossibleValue::new(name).help(about));
+    let contributed: Vec<PossibleValue> = galos::tables()
+        .iter()
+        .map(|it| PossibleValue::new(it.name()).help(it.about()))
+        .collect();
+    IntoIterator::into_iter(own).chain(contributed).collect::<Vec<_>>().into()
 }
 
 /// The parts `named` comes to, which is every part where nothing was named
 #[cfg(feature = "db")]
-fn parts_of(named: &[Part]) -> galos_db::index::Parts {
+fn parts_of(named: &[String]) -> galos_db::index::Parts {
     use galos_db::index::Parts;
+    let tables = galos::tables();
     if named.is_empty() {
-        return Parts::ALL;
+        return Parts::all(&tables);
     }
 
     let mut parts = Parts::NONE;
     for part in named {
-        match part {
-            Part::Cells => parts.cells = true,
-            Part::Names => parts.names = true,
-            Part::Populated => parts.populated = true,
-            Part::Reaches => parts.reaches = true,
-            Part::Boosts => parts.boosts = true,
-            Part::Factions => parts.factions = true,
-            Part::Bodies => parts.bodies = true,
+        match part.as_str() {
+            "cells" => parts.cells = true,
+            "names" => parts.names = true,
+            "populated" => parts.populated = true,
+            "reaches" => parts.reaches = true,
+            "factions" => parts.factions = true,
+            "bodies" => parts.bodies = true,
+            // Past the parser, so a name that is no part of ours is one of
+            // the contributed tables.
+            name => parts.tables.extend(tables.get(name).map(|it| it.name())),
         }
     }
     parts
