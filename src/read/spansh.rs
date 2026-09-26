@@ -34,7 +34,7 @@
 //! one region's systems, read back off that region's spill and dropped when
 //! it has been built. That is what the cut buys: a region is disjoint, so
 //! once it is built nothing outside it has anything left to ask it.
-//! [`galos_index::region_budget`] is how many systems that is. See
+//! [`galos_index::build::cold::region_budget`] is how many systems that is. See
 //! [`main`](crate)'s routing for which run gets which.
 //!
 //! Both read the file through [`Reading`], which holds the reading itself —
@@ -47,8 +47,9 @@ use crate::sink::{Landed, Reporter, Sink, SystemName, SystemReport};
 use crate::{Shard, Shutdown};
 use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
-use galos_index::bodies::Shared;
-use galos_index::{Build, LeftOff, Rows, Taking};
+use galos_index::accumulate::bodies::Shared;
+use galos_index::build::cold::{Build, LeftOff, Taking};
+use galos_index::store::sidecars::Rows;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -485,7 +486,7 @@ impl Galaxy {
     /// nothing is read from the directory it is writing.
     ///
     /// The metadata tables ride in `rows`, which is the same
-    /// [`galos_index::Rows`] the mark is cut against: a row a system,
+    /// [`galos_index::store::sidecars::Rows`] the mark is cut against: a row a system,
     /// written as it is derived and made into the three tables when the
     /// read is over, so that neither the read nor a stop holds a galaxy's
     /// worth of them.
@@ -504,7 +505,7 @@ impl Galaxy {
         let by = crate::read::from::published("Spansh", &self.path);
         // One store for the whole read, though the accumulator is a line's.
         // What it holds is what makes the body records go out a shard at a
-        // time rather than one append a system; see `galos_index::pack` and
+        // time rather than one append a system; see `galos_index::store::bodies` and
         // [`Shared`].
         let store = Shared::raising(self.dir.as_path());
         loop {
@@ -576,7 +577,7 @@ impl Galaxy {
             // What the store has written since it was last asked. It holds
             // what it is told until [`Published::CARRIED`] systems have
             // piled up, so most lines add nothing here and the line that
-            // does adds a shard's worth at a time — see `galos_index::pack`.
+            // does adds a shard's worth at a time — see `galos_index::store::bodies`.
             bodies += store.written();
 
             // What the publish at the end of the read will record, kept

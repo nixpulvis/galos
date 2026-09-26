@@ -26,10 +26,11 @@ use crate::{orbit, Database, Result};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
-pub(super) use galos_index::sidecars::Moved;
-use galos_index::sidecars::Sidecars;
-use galos_index::source::write_meta;
-use galos_index::{derive, meta, source};
+use galos_index::format::msgpack::write_meta;
+use galos_index::records;
+use galos_index::records::derive;
+pub(super) use galos_index::store::sidecars::Moved;
+use galos_index::store::sidecars::Sidecars;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -37,12 +38,12 @@ use std::io;
 use std::path::Path;
 use tracing::info;
 
-/// The columns a [`meta::NameEntry`] is read from.
+/// The columns a [`records::NameEntry`] is read from.
 pub(super) const NAMES_SELECT: &str = "SELECT address, name, \
      ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
      FROM systems";
 
-/// The columns a [`meta::PopulatedSystem`] is read from.
+/// The columns a [`records::PopulatedSystem`] is read from.
 ///
 /// Only factions with a row in `factions` are carried: `system_factions`
 /// holds ids EDDN has reported but never named, which the client can neither
@@ -280,7 +281,7 @@ impl Metadata {
 ///
 /// The names table is not among them: it comes out of the same read of
 /// `systems` the cell tree does, streamed row by row into
-/// [`galos_index::names::Writer`], a galaxy of name entries held to be
+/// [`galos_index::store::names::Writer`], a galaxy of name entries held to be
 /// published afterwards being tens of gigabytes.
 pub(super) async fn write_parts(
     db: &Database,
@@ -295,7 +296,7 @@ pub(super) async fn write_parts(
         // population and the factions of each: seconds, and seconds of a
         // terminal saying nothing are what this is here to stop.
         told(Progress { step: step::POPULATED, done: 0, of: None });
-        let populated: HashMap<i64, meta::PopulatedSystem> =
+        let populated: HashMap<i64, records::PopulatedSystem> =
             populated_of(db, None)
                 .await?
                 .into_iter()
@@ -328,7 +329,7 @@ pub(super) async fn write_parts(
                 }
             }
             if parts.bodies && scanned.anything() {
-                galos_index::pack::write_each(
+                galos_index::store::bodies::write_each(
                     dir,
                     [(scanned.address, &scanned.inside)],
                 )?;
@@ -351,7 +352,10 @@ pub(super) async fn write_parts(
     if parts.factions {
         told(Progress { step: step::FACTIONS, done: 0, of: None });
         let factions = factions_above(db, 0).await?;
-        write_meta(&source::factions_path(dir), &factions)?;
+        write_meta(
+            &galos_index::format::layout::factions_path(dir),
+            &factions,
+        )?;
         told(Progress {
             step: step::FACTIONS,
             done: factions.len() as u64,
@@ -372,7 +376,7 @@ pub(super) async fn write_parts(
 async fn names_for(
     db: &Database,
     addresses: &[i64],
-) -> Result<Vec<meta::NameEntry>> {
+) -> Result<Vec<records::NameEntry>> {
     let rows = sqlx::query(&format!(
         "{NAMES_SELECT} WHERE address = ANY($1) AND position IS NOT NULL"
     ))
@@ -389,11 +393,11 @@ async fn names_for(
 /// The name comes through [`System::name_of`], so a row that stored none
 /// is published under the name its address spells. Which the names table
 /// then declines to store for the same reason -- it asks
-/// `galos_index::procedural` the same question on the way in -- and what
+/// `galos_index::core::procedural` the same question on the way in -- and what
 /// travels between the two is the name either way, not the absence of one.
-pub(super) fn name_from_row(row: &PgRow) -> Result<meta::NameEntry> {
+pub(super) fn name_from_row(row: &PgRow) -> Result<records::NameEntry> {
     let address: i64 = row.try_get("address")?;
-    Ok(meta::NameEntry {
+    Ok(records::NameEntry {
         address,
         name: System::name_of(address, row.try_get("name")?)?,
         position: place_from_row(row)?,
@@ -416,12 +420,12 @@ fn place_from_row(row: &PgRow) -> Result<[f32; 3]> {
 /// Every populated system with a place, or those of `addresses` alone.
 ///
 /// A population without a position is left out: the map colors only what it
-/// draws, so a [`meta::PopulatedSystem`] carries a fixed `[f32; 3]`. How far
+/// draws, so a [`records::PopulatedSystem`] carries a fixed `[f32; 3]`. How far
 /// a system reaches has its own table, [`write_reaches`].
 async fn populated_of(
     db: &Database,
     addresses: Option<&[i64]>,
-) -> Result<Vec<meta::PopulatedSystem>> {
+) -> Result<Vec<records::PopulatedSystem>> {
     let rows = match addresses {
         None => {
             sqlx::query(&format!(
@@ -446,7 +450,7 @@ async fn populated_of(
         .map(|row| {
             let address: i64 = row.try_get("address")?;
             let population: i64 = row.try_get("population")?;
-            Ok(meta::PopulatedSystem {
+            Ok(records::PopulatedSystem {
                 address,
                 name: System::name_of(address, row.try_get("name")?)?,
                 position: place_from_row(row)?,
@@ -471,7 +475,7 @@ async fn populated_of(
 async fn factions_above(
     db: &Database,
     above: i32,
-) -> Result<Vec<meta::Faction>> {
+) -> Result<Vec<records::Faction>> {
     let rows =
         sqlx::query("SELECT id, name FROM factions WHERE id > $1 ORDER BY id")
             .bind(above)
@@ -480,7 +484,7 @@ async fn factions_above(
 
     rows.iter()
         .map(|row| {
-            Ok(meta::Faction {
+            Ok(records::Faction {
                 id: row.try_get("id")?,
                 name: row.try_get("name")?,
             })
@@ -492,23 +496,24 @@ async fn factions_above(
 /// address order so the same table is always the same bytes.
 fn write_populated(
     dir: &Path,
-    populated: &HashMap<i64, meta::PopulatedSystem>,
+    populated: &HashMap<i64, records::PopulatedSystem>,
 ) -> Result<usize> {
-    let mut table: Vec<&meta::PopulatedSystem> = populated.values().collect();
+    let mut table: Vec<&records::PopulatedSystem> =
+        populated.values().collect();
     table.sort_unstable_by_key(|system| system.address);
-    write_meta(&source::populated_path(dir), &table)?;
+    write_meta(&galos_index::format::layout::populated_path(dir), &table)?;
     Ok(table.len())
 }
 
 /// Write `reaches.bin`: how far each scanned system reaches, in address order
 /// so the same table is always the same bytes.
 fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
-    let mut table: Vec<meta::SystemReach> = reaches
+    let mut table: Vec<records::SystemReach> = reaches
         .iter()
-        .map(|(&address, &reach)| meta::SystemReach { address, reach })
+        .map(|(&address, &reach)| records::SystemReach { address, reach })
         .collect();
     table.sort_unstable_by_key(|it| it.address);
-    write_meta(&source::reaches_path(dir), &table)?;
+    write_meta(&galos_index::format::layout::reaches_path(dir), &table)?;
     Ok(table.len())
 }
 
@@ -516,11 +521,11 @@ fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
 /// one sits, in address order so the same table is always the same bytes.
 fn write_boosts(
     dir: &Path,
-    boosts: &HashMap<i64, meta::SystemBoost>,
+    boosts: &HashMap<i64, records::SystemBoost>,
 ) -> Result<usize> {
-    let mut table: Vec<&meta::SystemBoost> = boosts.values().collect();
+    let mut table: Vec<&records::SystemBoost> = boosts.values().collect();
     table.sort_unstable_by_key(|it| it.address);
-    write_meta(&source::boosts_path(dir), &table)?;
+    write_meta(&galos_index::format::layout::boosts_path(dir), &table)?;
     Ok(table.len())
 }
 
@@ -536,7 +541,7 @@ fn write_boosts(
 /// Which star that is, is [`derive::arrival_class`] and not a query, over
 /// the rows the caller has already read for the body files and the reaches.
 /// SQL says only which systems are eligible: positioned, and with a class to
-/// read at all. The classification is [`meta::Boost::of`], so a class that
+/// read at all. The classification is [`galos_index::Boost::of`], so a class that
 /// supercharges nothing is left out and the caller takes such a system out
 /// of the table it stands in.
 ///
@@ -547,8 +552,8 @@ fn write_boosts(
 async fn boosts_of(
     db: &Database,
     addresses: &[i64],
-    grouped: &HashMap<i64, meta::SystemBodies>,
-) -> Result<Vec<meta::SystemBoost>> {
+    grouped: &HashMap<i64, records::SystemBodies>,
+) -> Result<Vec<records::SystemBoost>> {
     // The systems with nothing to say are dropped below rather than by the
     // query.
     let rows = sqlx::query(
@@ -567,16 +572,16 @@ async fn boosts_of(
         let inside = grouped.get(&address);
         let class =
             inside.and_then(derive::arrival_class).or(routed.as_deref());
-        if let Some(boost) = class.and_then(meta::Boost::of) {
+        if let Some(boost) = class.and_then(galos_index::Boost::of) {
             let position = place_from_row(&row)?;
-            boosts.push(meta::SystemBoost { address, boost, position });
+            boosts.push(records::SystemBoost { address, boost, position });
         }
     }
     Ok(boosts)
 }
 
 /// Group `bodies/<address>.bin`'s worth of rows for `addresses`: one
-/// [`meta::SystemBodies`] per system of them with anything on record.
+/// [`records::SystemBodies`] per system of them with anything on record.
 ///
 /// The three kinds are read in bulk, ordered by system and grouped in
 /// memory, so a system with a hundred bodies costs one row per body rather
@@ -589,8 +594,8 @@ async fn boosts_of(
 async fn bodies_of(
     db: &Database,
     addresses: &[i64],
-) -> Result<HashMap<i64, meta::SystemBodies>> {
-    let mut grouped: HashMap<i64, meta::SystemBodies> = HashMap::new();
+) -> Result<HashMap<i64, records::SystemBodies>> {
+    let mut grouped: HashMap<i64, records::SystemBodies> = HashMap::new();
     for star in all_stars(db, addresses).await? {
         grouped.entry(star.system_address).or_default().stars.push(star.into());
     }
@@ -616,23 +621,23 @@ async fn bodies_of(
 /// taken back stops reading as one that still has it. Only a pass knows
 /// which addresses it asked about.
 ///
-/// Both go through [`galos_index::pack`] and [`source::remove_bodies`]: a
+/// Both go through [`galos_index::store::bodies`] and [`galos_index::store::bodies::remove_bodies`]: a
 /// directory published by an older builder still holds loose files a read
 /// falls back onto, and a withdrawal has to clear those as well as the
 /// pack.
 fn write_bodies(
     dir: &Path,
-    grouped: &HashMap<i64, meta::SystemBodies>,
+    grouped: &HashMap<i64, records::SystemBodies>,
     addresses: &[i64],
 ) -> Result<usize> {
-    galos_index::pack::write_each(
+    galos_index::store::bodies::write_each(
         dir,
         grouped.iter().map(|(address, inside)| (*address, inside)),
     )?;
 
     for &address in addresses {
         if !grouped.contains_key(&address) {
-            source::remove_bodies(dir, address)?;
+            galos_index::store::bodies::remove_bodies(dir, address)?;
         }
     }
 
@@ -644,7 +649,7 @@ fn write_bodies(
 /// classify.
 struct Scanned {
     address: i64,
-    inside: meta::SystemBodies,
+    inside: records::SystemBodies,
     /// Where anything has placed this system, if anything has. A supercharge
     /// is published only for a system with a place, and the place is
     /// published beside the class; see [`boosts_of`].
@@ -666,12 +671,12 @@ impl Scanned {
     /// This system's row in the supercharge table, the place included, by
     /// [`boosts_of`]'s rule: the scanned arrival star, else the route's
     /// class, and nothing for a system nothing has placed.
-    fn boost(&self) -> Option<meta::SystemBoost> {
+    fn boost(&self) -> Option<records::SystemBoost> {
         let position = self.position?;
         let class =
             derive::arrival_class(&self.inside).or(self.routed.as_deref());
-        let boost = class.and_then(meta::Boost::of)?;
-        Some(meta::SystemBoost { address: self.address, boost, position })
+        let boost = class.and_then(galos_index::Boost::of)?;
+        Some(records::SystemBoost { address: self.address, boost, position })
     }
 }
 
@@ -834,7 +839,7 @@ where
             return Ok(());
         };
 
-        let mut inside = meta::SystemBodies::default();
+        let mut inside = records::SystemBodies::default();
         stars.take(address, &mut inside.stars).await?;
         bodies.take(address, &mut inside.bodies).await?;
         barycenters.take(address, &mut inside.barycenters).await?;
@@ -1036,12 +1041,12 @@ fn barycenter_from_row(row: &PgRow) -> Result<Barycenter> {
 // The four projections below are `From` impls rather than private helpers
 // because the same projection is what `galos_db`'s conformance tests compare
 // a merged row against: the rule for merging a scan is stated once in
-// `galos_index::merge`.
+// `galos_index::accumulate::merge`.
 
-/// A [`Surface`] as its field-identical [`meta::Surface`].
-impl From<Surface> for meta::Surface {
-    fn from(surface: Surface) -> meta::Surface {
-        meta::Surface {
+/// A [`Surface`] as its field-identical [`records::Surface`].
+impl From<Surface> for records::Surface {
+    fn from(surface: Surface) -> records::Surface {
+        records::Surface {
             atmosphere_type: surface.atmosphere_type,
             pressure: surface.pressure,
             composition: surface.composition,
@@ -1054,10 +1059,10 @@ impl From<Surface> for meta::Surface {
     }
 }
 
-/// A [`Star`] as its field-identical [`meta::Star`].
-impl From<Star> for meta::Star {
-    fn from(star: Star) -> meta::Star {
-        meta::Star {
+/// A [`Star`] as its field-identical [`records::Star`].
+impl From<Star> for records::Star {
+    fn from(star: Star) -> records::Star {
+        records::Star {
             system_address: star.system_address,
             id: star.id,
             name: star.name,
@@ -1081,10 +1086,10 @@ impl From<Star> for meta::Star {
     }
 }
 
-/// A [`Body`] as its field-identical [`meta::Body`].
-impl From<Body> for meta::Body {
-    fn from(body: Body) -> meta::Body {
-        meta::Body {
+/// A [`Body`] as its field-identical [`records::Body`].
+impl From<Body> for records::Body {
+    fn from(body: Body) -> records::Body {
+        records::Body {
             system_address: body.system_address,
             id: body.id,
             parents: body.parents,
@@ -1108,10 +1113,10 @@ impl From<Body> for meta::Body {
     }
 }
 
-/// A [`Barycenter`] as its field-identical [`meta::Barycenter`].
-impl From<Barycenter> for meta::Barycenter {
-    fn from(barycenter: Barycenter) -> meta::Barycenter {
-        meta::Barycenter {
+/// A [`Barycenter`] as its field-identical [`records::Barycenter`].
+impl From<Barycenter> for records::Barycenter {
+    fn from(barycenter: Barycenter) -> records::Barycenter {
+        records::Barycenter {
             system_address: barycenter.system_address,
             id: barycenter.id,
             updated_at: barycenter.updated_at,
@@ -1125,13 +1130,13 @@ impl From<Barycenter> for meta::Barycenter {
 mod tests {
     use super::*;
     use crate::testing::Scratch;
-    use galos_index::Parent;
+    use galos_index::records::Parent;
 
     /// A system's bodies survive the trip out to disk and back through the
     /// same path helpers, format and reader the client uses.
     ///
     /// No database: the values are built by hand, written with [`write_meta`]
-    /// under [`source::bodies_path`], and read back through a [`FsSource`].
+    /// under [`galos_index::format::layout::bodies_path`], and read back through a [`FsSource`].
     ///
     /// The surfaced body is here on purpose: its [`BodyType`] and its
     /// [`AtmosphereType`] are `#[serde(untagged)]` enums with an
@@ -1207,7 +1212,7 @@ mod tests {
             discovered_at: None,
         };
 
-        let want = meta::SystemBodies {
+        let want = records::SystemBodies {
             stars: vec![star.into()],
             bodies: vec![gas_giant.into()],
             barycenters: vec![barycenter.into()],
@@ -1218,8 +1223,15 @@ mod tests {
             std::process::id(),
             at.timestamp_nanos_opt().unwrap_or(0),
         ));
-        std::fs::create_dir_all(dir.join(source::BODIES_DIR)).unwrap();
-        write_meta(&source::bodies_path(&dir, address), &want).unwrap();
+        std::fs::create_dir_all(
+            dir.join(galos_index::format::layout::BODIES_DIR),
+        )
+        .unwrap();
+        write_meta(
+            &galos_index::format::layout::bodies_path(&dir, address),
+            &want,
+        )
+        .unwrap();
 
         let fs = FsSource::new(&dir);
         let got = fs.bodies(address).await.unwrap();
@@ -1227,7 +1239,7 @@ mod tests {
 
         // A system with no file reads as one with nothing, not an error.
         let empty = fs.bodies(address + 1).await.unwrap();
-        assert_eq!(empty, meta::SystemBodies::default());
+        assert_eq!(empty, records::SystemBodies::default());
 
         // A surfaced body, the one carrying both untagged enums, through the
         // same trip.
@@ -1272,12 +1284,15 @@ mod tests {
             mapped: true,
             discovered_at: None,
         };
-        let surfaced_bodies = meta::SystemBodies {
+        let surfaced_bodies = records::SystemBodies {
             bodies: vec![surfaced.into()],
             ..Default::default()
         };
-        write_meta(&source::bodies_path(&dir, address + 2), &surfaced_bodies)
-            .unwrap();
+        write_meta(
+            &galos_index::format::layout::bodies_path(&dir, address + 2),
+            &surfaced_bodies,
+        )
+        .unwrap();
         let read_back = fs.bodies(address + 2).await.unwrap();
         assert_eq!(read_back, surfaced_bodies);
 
@@ -1317,13 +1332,22 @@ mod tests {
 
         // The tables a resume needs, all present and all empty.
         let empty: Vec<u8> = Vec::new();
-        source::write_meta(&source::populated_path(&dir), &empty)
-            .expect("populated");
-        source::write_meta(&source::reaches_path(&dir), &empty)
-            .expect("reaches");
-        source::write_meta(&source::factions_path(&dir), &empty)
-            .expect("factions");
-        galos_index::names::Writer::writing(&dir)
+        galos_index::format::msgpack::write_meta(
+            &galos_index::format::layout::populated_path(&dir),
+            &empty,
+        )
+        .expect("populated");
+        galos_index::format::msgpack::write_meta(
+            &galos_index::format::layout::reaches_path(&dir),
+            &empty,
+        )
+        .expect("reaches");
+        galos_index::format::msgpack::write_meta(
+            &galos_index::format::layout::factions_path(&dir),
+            &empty,
+        )
+        .expect("factions");
+        galos_index::store::names::Writer::writing(&dir)
             .expect("names")
             .finish()
             .expect("names");
@@ -1336,8 +1360,11 @@ mod tests {
 
         // A table half written, which is what a builder killed mid-pass left
         // before the write became a rename.
-        std::fs::write(source::boosts_path(&dir), b"\xdd\xff\xff\xff\xff\x01")
-            .expect("a truncated table");
+        std::fs::write(
+            galos_index::format::layout::boosts_path(&dir),
+            b"\xdd\xff\xff\xff\xff\x01",
+        )
+        .expect("a truncated table");
         assert!(
             Metadata::resume(&dir).is_err(),
             "a corrupt table resumed as an empty one"
@@ -1414,7 +1441,7 @@ mod tests {
         // Over the rows a full build has in hand, which is every scanned
         // thing there is, handed over a system at a time. The place comes
         // back beside the class, both being published.
-        let mut whole: HashMap<i64, meta::SystemBoost> = HashMap::new();
+        let mut whole: HashMap<i64, records::SystemBoost> = HashMap::new();
         each_scanned(&db, crate::index::untold(), |system| {
             if let Some(row) = system.boost() {
                 whole.insert(row.address, row);
@@ -1425,9 +1452,9 @@ mod tests {
         .expect("a full read");
         assert_eq!(
             whole.get(&scanned),
-            Some(&meta::SystemBoost {
+            Some(&records::SystemBoost {
                 address: scanned,
-                boost: meta::Boost::Neutron,
+                boost: galos_index::Boost::Neutron,
                 position: [1.0, 2.0, 3.0],
             }),
             "a scanned neutron star published no supercharge, or not the \
@@ -1435,9 +1462,9 @@ mod tests {
         );
         assert_eq!(
             whole.get(&routed),
-            Some(&meta::SystemBoost {
+            Some(&records::SystemBoost {
                 address: routed,
-                boost: meta::Boost::WhiteDwarf,
+                boost: galos_index::Boost::WhiteDwarf,
                 position: [4.0, 5.0, 6.0],
             }),
             "a routed class is still what an unscanned system has",
@@ -1449,7 +1476,7 @@ mod tests {
         let some = bodies_of(&db, &[scanned, routed])
             .await
             .expect("the scanned things of two systems");
-        let touched: HashMap<i64, meta::SystemBoost> =
+        let touched: HashMap<i64, records::SystemBoost> =
             boosts_of(&db, &[scanned, routed], &some)
                 .await
                 .expect("a read of what changed")
@@ -1566,7 +1593,7 @@ mod tests {
 
         // What a full build reads, and what a watch pass reads: the same
         // system, and the same order within it.
-        let mut built = meta::SystemBodies::default();
+        let mut built = records::SystemBodies::default();
         each_scanned(&db, crate::index::untold(), |system| {
             if system.address == address {
                 built = system.inside;

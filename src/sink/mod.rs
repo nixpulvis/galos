@@ -168,7 +168,7 @@ pub use galos_index::SystemReport;
 ///
 /// Upper case by construction, so a source folds case once as it builds a
 /// report and nothing downstream folds it again. See
-/// [`galos_index::name`] for what that saved.
+/// [`galos_index::core::name`] for what that saved.
 pub use galos_index::SystemName;
 
 /// Who a source says wrote what it is handing over.

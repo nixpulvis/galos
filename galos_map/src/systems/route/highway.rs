@@ -37,7 +37,7 @@
 use super::graph::{Drive, Routing, Sampler, Tuning, WHOLE, Weigh};
 use crate::Boosts;
 use bevy::math::DVec3;
-use galos_index::meta::Boost;
+use galos_index::Boost;
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -182,7 +182,7 @@ impl Highway {
     /// empty one — there is then no coarse graph and nothing plans on one.
     ///
     /// Nothing is joined and nothing is looked up: the published rows carry
-    /// the place ([`galos_index::SystemBoost`]), so all this does is sort
+    /// the place ([`galos_index::records::SystemBoost`]), so all this does is sort
     /// four million of them into cells, measured at 213 ms. It used to find
     /// the places by walking the names table's whole address column — 4 GB
     /// of mapping faulted and 7.9 s before a galactic route could begin
@@ -1083,7 +1083,7 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::SystemBoost;
+    use galos_index::records::SystemBoost;
 
     /// The ship every plan below is flown by: fifty light years unaided,
     /// two hundred off a neutron star.

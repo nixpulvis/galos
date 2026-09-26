@@ -6,11 +6,12 @@
 //! sidecars beside it, read through one [`galos_index::Source`].
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::meta::{
-    Boost, Faction as MetaFaction, NameEntry, PopulatedSystem,
+use galos_index::read::inhabited::Inhabitance;
+use galos_index::records::{
+    Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
-use galos_index::names::{Delta, Table};
-use galos_index::{Index, Inhabitance, Source as IndexSource, SystemName};
+use galos_index::store::names::{Delta, Table};
+use galos_index::{Boost, Index, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -80,7 +81,7 @@ pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 /// Measured over `.galos_index`, the root's inhabited centroid and its
 /// count-weighted centroid are 12.5 kly apart and their spreads differ
 /// tenfold, so a political splat laid on the stellar moments draws the bubble
-/// out toward the galactic core. See [`galos_index::inhabited`].
+/// out toward the galactic core. See [`galos_index::read::inhabited`].
 #[derive(Resource, Default, Clone)]
 pub struct Settled(pub Arc<Inhabitance>);
 
@@ -156,7 +157,7 @@ pub struct Names {
 /// measures hundreds of candidates, so the twenty-odd compares are noise
 /// beside it.
 ///
-/// The place comes with the row ([`galos_index::SystemBoost`]) and that is
+/// The place comes with the row ([`galos_index::records::SystemBoost`]) and that is
 /// the whole of why routing no longer touches the names table: finding
 /// where four million cones sat used to mean walking the names table's
 /// address column, 4 GB of mapping faulted and 7.9 s before a galactic
@@ -171,7 +172,7 @@ pub struct Names {
 #[derive(Resource, Default, Clone)]
 pub struct Boosts {
     /// The rows, ascending by address.
-    rows: Arc<Vec<galos_index::SystemBoost>>,
+    rows: Arc<Vec<galos_index::records::SystemBoost>>,
     /// Whether the index published the table this came from
     published: bool,
 }
@@ -188,7 +189,7 @@ impl Boosts {
     /// Sorted here rather than trusted: the builder writes it in address
     /// order and the lookup is a binary search, which is wrong rather than
     /// slow if a file says otherwise.
-    pub fn of(rows: Vec<galos_index::SystemBoost>) -> Boosts {
+    pub fn of(rows: Vec<galos_index::records::SystemBoost>) -> Boosts {
         let mut rows = rows;
         if !rows.windows(2).all(|pair| pair[0].address <= pair[1].address) {
             rows.sort_unstable_by_key(|row| row.address);
@@ -212,7 +213,7 @@ impl Boosts {
 
     /// The rows, for the coarse graph [`systems::route::highway`] sorts
     /// them into.
-    pub(crate) fn table(&self) -> &[galos_index::SystemBoost] {
+    pub(crate) fn table(&self) -> &[galos_index::records::SystemBoost] {
         &self.rows
     }
 }
@@ -237,7 +238,7 @@ impl Names {
     /// running map never comes this way — see [`Self::packed`].
     pub fn reaching(
         entries: Vec<NameEntry>,
-        reaches: Vec<galos_index::SystemReach>,
+        reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
         Names {
             table: galos_index::Names::of(Table::default(), Delta::of(entries)),
@@ -255,7 +256,7 @@ impl Names {
     pub fn over(
         sky: Arc<galos_index::Sky>,
         entries: Vec<NameEntry>,
-        reaches: Vec<galos_index::SystemReach>,
+        reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
         Names { sky: Some(sky), ..Names::reaching(entries, reaches) }
     }
@@ -306,7 +307,7 @@ impl Names {
     /// rebuild. The base is untouched and the log is copied on write, so a
     /// fetch task holding a clone keeps reading the table it was handed. See
     /// [`crate::refresh`].
-    pub fn absorb(&mut self, tail: galos_index::Delta) {
+    pub fn absorb(&mut self, tail: galos_index::store::names::Delta) {
         self.table.absorb(tail);
     }
 
@@ -347,7 +348,7 @@ impl Names {
     /// payloads being drawn from, so a search for `SOL` stalled the frame
     /// *and* the galaxy's reads. A prefix is a binary search of
     /// `byname.bin` and ~28 pages: measured 3.0 ms for `SOL` over the real
-    /// 200,071,629-name table. See `galos_index::Table::matching`.
+    /// 200,071,629-name table. See `galos_index::store::names::Table::matching`.
     ///
     /// The cap is applied in the index rather than by collecting the
     /// galaxy and sorting it down. What [`crate::search`] does on top is

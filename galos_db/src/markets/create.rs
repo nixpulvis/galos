@@ -2,7 +2,8 @@ use super::Market;
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Market as JournalMarket;
-use galos_index::{procedural, SystemName};
+use galos_index::core::procedural;
+use galos_index::SystemName;
 
 impl Market {
     /// Write the market row that a station's trade data hangs off

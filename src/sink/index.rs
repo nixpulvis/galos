@@ -8,7 +8,7 @@
 //! Three things held together:
 //!
 //! - [`Galaxy`] — the events, accumulated into the index's vocabulary,
-//!   shared with `galos_index::galaxy`.
+//!   shared with `galos_index::accumulate::galaxy`.
 //! - [`Tree`] — the cell tree, held open and edited. `Tree::upsert` touches
 //!   the handful of cells on one system's path, so a scan costs the depth of
 //!   the tree rather than its size. Nothing here rebuilds: this takes EDDN
@@ -36,7 +36,7 @@
 //! In `bodies/<address>.bin`, not in memory: a reach is the far edge over
 //! every body of a system together and the file is written whole, so holding
 //! them would mean [`Galaxy`] keeping every body the feed ever carried. See
-//! `galos_index::bodies`. What is held is what has been scanned and not
+//! `galos_index::accumulate::bodies`. What is held is what has been scanned and not
 //! yet written, which [`Sink::flush`] clears as it publishes.
 
 use crate::sink::tables::{Tables, Wrote};
@@ -46,11 +46,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
-use galos_index::galaxy::UNKNOWN;
-use galos_index::{
-    BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
-};
-use galos_index::{Galaxy, Published};
+use galos_index::accumulate::bodies::Published;
+use galos_index::accumulate::galaxy::UNKNOWN;
+use galos_index::format::checkpoint::{By, Checkpoint, Pending};
+use galos_index::format::layout::pending_path;
+use galos_index::{BuildParams, Galaxy, Index as ServedIndex, System, Tree};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -66,11 +66,11 @@ pub const INDEX_DIR: &str = ".galos_index";
 /// *that* directory; beside it rather than inside it, holding every system
 /// at full precision, which no client should be served.
 ///
-/// The string itself is [`galos_index::checkpoint::SUFFIX`] and is
+/// The string itself is [`galos_index::format::layout::CHECKPOINT_SUFFIX`] and is
 /// re-exported rather than spelled again: the log, the mark and the copy
 /// that carries all three hang off the same suffix, and two spellings of
 /// it is a backup that silently leaves one of them behind.
-pub use galos_index::checkpoint::SUFFIX as CHECKPOINT_SUFFIX;
+pub use galos_index::format::layout::CHECKPOINT_SUFFIX;
 
 /// Whether there is anything to edit a published directory from.
 ///
@@ -207,7 +207,7 @@ impl Index {
         // directory published before `bodies/` and `cells/` were sharded
         // still holds the flat files.
         let asked = || stop();
-        match galos_index::migrate(dir, &asked) {
+        match galos_index::ops::migrate::migrate(dir, &asked) {
             Ok(done) => {
                 if done.bodies.moved > 0 {
                     info!(
@@ -364,7 +364,7 @@ impl Index {
             dir: dir.to_owned(),
             checkpoint: checkpoint.to_owned(),
             // The published body files are the store, not a second copy in
-            // memory beside them; see `galos_index::bodies`.
+            // memory beside them; see `galos_index::accumulate::bodies`.
             galaxy: Galaxy::keeping(
                 chrono::Utc::now(),
                 Box::new(Published::new(dir)),
@@ -473,7 +473,7 @@ impl Index {
             Ok(folding) => folding,
             Err(err) => {
                 warn!(
-                    file = %Pending::path(&self.checkpoint).display(),
+                    file = %pending_path(&self.checkpoint).display(),
                     error = %err,
                     "what this publish wrote could not be logged; a \
                      restart would not see it",
@@ -936,7 +936,7 @@ mod tests {
     fn politics(
         dir: &Path,
         address: i64,
-    ) -> Option<galos_index::meta::PopulatedSystem> {
+    ) -> Option<galos_index::records::PopulatedSystem> {
         let read = FsSource::new(dir);
         pollster::block_on(read.populated())
             .expect("the populated table reads")
@@ -1003,8 +1003,8 @@ mod tests {
             .expect("the populated table reads");
         table[0].factions = vec![968, 1047];
         table[0].body_count = Some(9);
-        galos_index::source::write_meta(
-            &galos_index::source::populated_path(&dir),
+        galos_index::format::msgpack::write_meta(
+            &galos_index::format::layout::populated_path(&dir),
             &table,
         )
         .expect("the richer table writes");
@@ -1556,7 +1556,7 @@ mod tests {
             Reporter::Commander("cmdr"),
         ));
         pollster::block_on(sink.flush()).expect("the first publish lands");
-        assert!(!Pending::path(&checkpoint).exists(), "a whole one clears it");
+        assert!(!pending_path(&checkpoint).exists(), "a whole one clears it");
 
         // The second appends to the log rather than folding the base, so
         // what it publishes lives there until the next whole checkpoint.
@@ -1566,7 +1566,7 @@ mod tests {
         ));
         pollster::block_on(sink.flush()).expect("the second publish lands");
         assert_eq!(sink.tree.len(), 2, "both systems are in the tree");
-        assert!(Pending::path(&checkpoint).exists(), "the log has the second");
+        assert!(pending_path(&checkpoint).exists(), "the log has the second");
         drop(sink);
 
         let reopened = opened(&dir, &checkpoint).expect("it reopens");
@@ -1714,7 +1714,7 @@ mod tests {
     /// When each cell payload a directory publishes was last written, by
     /// path.
     fn payloads(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
-        let cells = dir.join(galos_index::store::PAYLOAD_DIR);
+        let cells = dir.join(galos_index::format::layout::PAYLOAD_DIR);
         let mut found = BTreeMap::new();
         for shard in std::fs::read_dir(&cells).expect("a cells directory") {
             let shard = shard.expect("a shard").path();
@@ -1732,10 +1732,10 @@ mod tests {
     }
 
     /// The payload file of the cell holding `at` at `level`, named as
-    /// `galos_index::store` names one.
+    /// `galos_index::store::cells` names one.
     fn payload_of(dir: &Path, at: [f64; 3], level: u8) -> PathBuf {
         let morton = galos_index::CellId::of_point(at, level).morton();
-        dir.join(galos_index::store::PAYLOAD_DIR)
+        dir.join(galos_index::format::layout::PAYLOAD_DIR)
             .join(format!("{:03x}", morton & 0xfff))
             .join(format!("{:02}-{:016x}.bin", level, morton))
     }
@@ -1759,7 +1759,7 @@ mod tests {
 
         // More systems than one leaf holds, spread over a cube so the tree
         // splits: a directory of a single cell has nothing to leave alone.
-        let filling = galos_index::tree::LEAF_CAP as i64 + 200;
+        let filling = galos_index::build::snapshot::LEAF_CAP as i64 + 200;
         pollster::block_on(async {
             for id in 0..filling {
                 let at = [
@@ -1800,7 +1800,8 @@ mod tests {
             .collect();
         // The cells the moved system was in and is in, at every level the
         // tree can reach.
-        let mine: HashSet<PathBuf> = (0..=galos_index::geometry::MAX_LEVEL)
+        let mine: HashSet<PathBuf> = (0
+            ..=galos_index::core::geometry::MAX_LEVEL)
             .flat_map(|level| {
                 [payload_of(&dir, was, level), payload_of(&dir, now, level)]
             })
@@ -1823,7 +1824,7 @@ mod tests {
         // left beside it.
         drop(sink);
         assert!(
-            !Pending::path(&checkpoint).exists(),
+            !pending_path(&checkpoint).exists(),
             "the log outlived the compaction the finish ends with",
         );
         assert_eq!(published(&dir), filling as u64);
@@ -1866,12 +1867,12 @@ mod tests {
         // log and not a base: a run of the feed appends the rows it named
         // and never writes a generation, which is what the fold is for.
         for path in [
-            galos_index::source::populated_path(&dir),
-            galos_index::source::reaches_path(&dir),
-            galos_index::source::boosts_path(&dir),
-            galos_index::source::factions_path(&dir),
-            galos_index::source::names_delta_path(&dir),
-            dir.join(galos_index::store::INDEX_FILE),
+            galos_index::format::layout::populated_path(&dir),
+            galos_index::format::layout::reaches_path(&dir),
+            galos_index::format::layout::boosts_path(&dir),
+            galos_index::format::layout::factions_path(&dir),
+            galos_index::format::layout::names_delta_path(&dir),
+            dir.join(galos_index::format::layout::INDEX_FILE),
             checkpoint.clone(),
         ] {
             assert!(
@@ -1882,7 +1883,7 @@ mod tests {
         }
         assert!(!payloads(&dir).is_empty(), "no cell payload was published");
         assert!(
-            !Pending::path(&checkpoint).exists(),
+            !pending_path(&checkpoint).exists(),
             "the resume point was not compacted; the log stands beside it",
         );
 

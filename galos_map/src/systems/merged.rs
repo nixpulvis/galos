@@ -2,7 +2,7 @@
 //!
 //! **A merged mark is a system, and which one follows what the map is
 //! drawing.** A blob stands for everything under one cell of the tree
-//! ([`galos_index::BlobRef`]) because all of it falls inside one mark, so
+//! ([`galos_index::read::walk::BlobRef`]) because all of it falls inside one mark, so
 //! there is no second mark to tell it apart from — but there is always one
 //! system under it the eye is really being pointed at, and out at galaxy
 //! scale it is the only thing there is to click. Brightest by default;
@@ -391,20 +391,21 @@ mod tests {
     use super::*;
     use crate::systems::tests::seeing;
     use bevy::window::{PrimaryWindow, Window, WindowResolution};
-    use galos_index::meta::StarKind;
+    use galos_index::StarKind;
 
     /// A merged mark over `count` systems, of which `colonies` are
     /// imperial: what the aggregate's political histogram would say.
-    fn inhabited(colonies: u32) -> galos_index::Inhabited {
+    fn inhabited(colonies: u32) -> galos_index::read::inhabited::Inhabited {
         use elite_journal::prelude::Allegiance;
-        let mut held = galos_index::Inhabited::ZERO;
+        let mut held = galos_index::read::inhabited::Inhabited::ZERO;
         for n in 0..colonies {
-            held = held.merge(galos_index::Inhabited::of_system(
-                [f64::from(n), 0., 0.],
-                Some(Allegiance::Empire),
-                None,
-                None,
-            ));
+            held =
+                held.merge(galos_index::read::inhabited::Inhabited::of_system(
+                    [f64::from(n), 0., 0.],
+                    Some(Allegiance::Empire),
+                    None,
+                    None,
+                ));
         }
         held
     }
@@ -472,7 +473,7 @@ mod tests {
     fn a_merged_mark_stands_for_what_the_mode_draws() {
         use crate::systems::spawn::{ColorBy, Hue};
         let gains = super::super::glow::Gains::default();
-        let empty = galos_index::Inhabited::ZERO;
+        let empty = galos_index::read::inhabited::Inhabited::ZERO;
 
         // A cell of ten thousand systems with eight colonies in it.
         let held = inhabited(8);
@@ -638,7 +639,7 @@ mod tests {
         Populated(std::sync::Arc::new(
             [(
                 busiest,
-                galos_index::meta::PopulatedSystem {
+                galos_index::records::PopulatedSystem {
                     address: busiest,
                     name: "Busy".into(),
                     position: [0.; 3],
@@ -831,7 +832,9 @@ pub(crate) fn weigh_blobs(
     standing.marks.extend(planned.0.blobs.iter().map(|blob| {
         let held = settled.0.get(blob.id);
         let stands_for = match populated_only {
-            true => held.map_or(0, galos_index::Inhabited::count),
+            true => {
+                held.map_or(0, galos_index::read::inhabited::Inhabited::count)
+            }
             false => blob.count,
         };
         Mark {
@@ -972,7 +975,7 @@ impl Named {
 /// grey at an uninhabited system's level — for a cell with no colonies in
 /// it, which is most of the galaxy.
 fn average_mark(
-    held: Option<&galos_index::Inhabited>,
+    held: Option<&galos_index::read::inhabited::Inhabited>,
     count: u64,
     color_by: crate::systems::spawn::ColorBy,
     gains: &super::glow::Gains,

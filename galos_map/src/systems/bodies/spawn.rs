@@ -51,8 +51,8 @@ use bevy::light::NotShadowCaster;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
-use galos_index::meta::{Body as DbBody, Star as DbStar};
-use galos_index::orbit::{Orbits, Spacing, turn};
+use galos_index::records::{Body as DbBody, Star as DbStar};
+use galos_index::system::orbit::{Orbits, Spacing, turn};
 use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
@@ -1583,7 +1583,7 @@ fn stand(
 mod tests {
     use super::*;
     use crate::systems::spawn::Shell;
-    use galos_index::meta::SystemBodies;
+    use galos_index::records::SystemBodies;
 
     /// A ring laid to a view a hundred thousandth of it across
     fn laid_at(at: f64) -> Spacing {
@@ -1598,7 +1598,7 @@ mod tests {
     /// there, and the pair's own ellipses about it are readings and are drawn.
     #[test]
     fn a_guessed_path_is_not_drawn() {
-        use galos_index::orbit::Orbit;
+        use galos_index::system::orbit::Orbit;
 
         let mut orbits = Orbits::default();
         orbits.insert(1, None, Orbit::still());

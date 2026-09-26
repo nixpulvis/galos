@@ -170,7 +170,7 @@ impl Star {
 ///
 /// The record kept is the nearer of the two to the arrival point, ties
 /// broken by the lower id. That is the order
-/// `galos_index::derive::arrival_class` picks the arrival star in and the
+/// `galos_index::records::derive::arrival_class` picks the arrival star in and the
 /// same comparison, so the row this keeps is the row the index derived from
 /// a dump keeps, and the arrival class both read off it is the one star.
 ///

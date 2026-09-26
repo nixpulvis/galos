@@ -73,7 +73,7 @@ mod fetch;
 /// chain and shift everything above it down. It is [`None`] for a body
 /// stored before the kinds were kept, which recorded the nearest ancestor's
 /// id alone.
-pub use galos_index::Parent;
+pub use galos_index::records::Parent;
 
 /// The chain a pair of stored arrays holds, nearest first
 ///

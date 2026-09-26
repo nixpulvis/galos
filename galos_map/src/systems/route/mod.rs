@@ -1021,7 +1021,7 @@ const SOLID: f32 = 0.35;
 ///
 /// A count against the screen rather than a length in the world, which is how
 /// the rings inside a system are dashed as well — see `Spacing`'s `DASHES` in
-/// `galos_index::orbit`. **A dash held at a fixed distance cannot be read at
+/// `galos_index::system::orbit`. **A dash held at a fixed distance cannot be read at
 /// more than one zoom**: half a light year is a clear mark with one stop in
 /// view and a hundredth of a pixel with the galaxy in view, so a leg trailing
 /// off the map read as a faint solid line exactly where the dashes were the
@@ -1585,7 +1585,7 @@ mod tests {
     /// asked for by name, and [`frame_trip`] answers. Nothing is routed --
     /// where the stops stand is all the framing needs.
     fn framed(places: &[DVec3]) -> (Spyglass, Vec<Option<f32>>) {
-        use galos_index::NameEntry;
+        use galos_index::records::NameEntry;
 
         // **The stops are minted as addresses, not as places.** The names
         // table holds no position since it stopped holding the names an

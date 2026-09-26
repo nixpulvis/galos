@@ -40,10 +40,12 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
-use galos_index::screen::{
+use galos_index::read::inhabited::Inhabited;
+use galos_index::read::resident::Resident;
+use galos_index::read::screen::{
     Crowded, Empty, crowded_marks, frame_marks, share, wanted,
 };
-use galos_index::{CellId, Inhabited, Part, Point, Resident, Stamp};
+use galos_index::{CellId, Part, Point, Stamp};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -169,7 +171,7 @@ pub(crate) struct Keeping {
 
 impl Keeping {
     /// Take the plan's marks as the set every reader asks against
-    fn marks(&mut self, marks: &[galos_index::MarkRef]) {
+    fn marks(&mut self, marks: &[galos_index::read::walk::MarkRef]) {
         self.marked.clear();
         self.marked.extend(marks.iter().map(|mark| mark.id));
     }
@@ -437,7 +439,7 @@ pub(crate) fn fetch(
         for mark in &planned.0.marks {
             // Past the clamp there is nothing to test for: the walk is
             // clamped to the reach itself, so a cell it marks is a cell
-            // the bubble touches. See [`galos_index::Reach`].
+            // the bubble touches. See [`galos_index::read::walk::Reach`].
             let id = mark.id;
             if tasks.0.contains_key(&id) {
                 continue;
@@ -980,7 +982,7 @@ fn busiest_first<'a>(
 /// drew, and how many merged marks stand over the rest of the sky.
 ///
 /// There is no share here and there is nothing to divide by. The walk's ask
-/// is already one mark to every [`galos_index::MERGE_PX`] squared of the cell
+/// is already one mark to every [`galos_index::read::walk::MERGE_PX`] squared of the cell
 /// covers, so what bounds the frame is the frame's own area and not a factor
 /// struck across every cell — see [`galos_index::Index::walk_screen`]. What
 /// this reports is therefore a fact about the view rather than a dial: if
@@ -999,7 +1001,7 @@ pub struct Sampled {
     pub blobs: usize,
     /// How many of those are marks lighting a tile the rest of the frame
     /// left dark, rather than marks the share drew. See
-    /// [`galos_index::screen::Empty`].
+    /// [`galos_index::read::screen::Empty`].
     pub lit: usize,
     /// How many systems those merged marks stand for.
     pub behind: u64,
@@ -1009,8 +1011,8 @@ pub struct Sampled {
 /// systems first, grown and shed per system as the camera moves
 ///
 /// **The walk says how many, and there is nothing to divide.** A cell's
-/// payload is magnitude-ordered and [`galos_index::MarkRef::wanted`] is how
-/// many of it the cell's footprint holds apart at [`galos_index::MERGE_PX`]
+/// payload is magnitude-ordered and [`galos_index::read::walk::MarkRef::wanted`] is how
+/// many of it the cell's footprint holds apart at [`galos_index::read::walk::MERGE_PX`]
 /// to every merge distance squared of the patch of screen the cell's
 /// contents cover. Drawing that many, and only that many, is what lets a
 /// cell fill in and empty one system at a time rather than switching on
@@ -1018,7 +1020,7 @@ pub struct Sampled {
 /// differently their boxes fell.
 ///
 /// What the sky *under* those marks comes to is the walk's too: everything
-/// finer than one mark is merged into [`galos_index::BlobRef`]s, drawn by
+/// finer than one mark is merged into [`galos_index::read::walk::BlobRef`]s, drawn by
 /// [`super::field`] off the aggregates with no payload at all. So this pass
 /// no longer has an overrun to spend. It used to: the per-cell rule bounds a
 /// cell and not a frame, the marked prefixes of a wide view came to tens of
@@ -2055,7 +2057,7 @@ mod tests {
     #[test]
     fn the_verdicts_are_kept_until_the_filters_move() {
         use crate::systems::filter::{Filter, Filters};
-        use galos_index::meta::PopulatedSystem;
+        use galos_index::records::PopulatedSystem;
 
         let points: Vec<Point> = (1..=4).map(point).collect();
         let id = CellId::of_point([0.; 3], 4);
@@ -2318,7 +2320,7 @@ mod tests {
                 let points = built.payload(cell.id);
                 if !points.is_empty() {
                     resident.0.insert(cell.id, points.to_vec());
-                    marks.push(galos_index::MarkRef {
+                    marks.push(galos_index::read::walk::MarkRef {
                         id: cell.id,
                         slice: points.len() as u32,
                         at: cell.id.bounds().center(),
@@ -2431,7 +2433,7 @@ mod tests {
     fn the_walk_holds_every_stop_of_a_route() {
         use crate::systems::filter::{Filter, Filters};
         use crate::systems::tests::system;
-        use galos_index::NameEntry;
+        use galos_index::records::NameEntry;
 
         let mut app = walking();
         app.insert_resource(Names::reaching(
@@ -2483,7 +2485,7 @@ mod tests {
     fn the_walk_keeps_what_the_filters_admit() {
         use crate::systems::filter::{Filter, Filters};
         use crate::systems::tests::system;
-        use galos_index::meta::PopulatedSystem;
+        use galos_index::records::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
         // Five systems a few light years apart, faintest last, and the faction
@@ -2577,7 +2579,7 @@ mod tests {
     /// cell's systems come out of it.
     #[test]
     fn the_walk_spends_a_cells_budget_on_the_populated_systems() {
-        use galos_index::meta::PopulatedSystem;
+        use galos_index::records::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
         // In front of the camera, where [`placed`] puts the rest of the
@@ -2671,7 +2673,7 @@ mod tests {
     #[test]
     fn a_cell_the_filters_empty_offers_nothing_below_the_dim() {
         use crate::systems::filter::{DimTo, Filter, Filters};
-        use galos_index::meta::PopulatedSystem;
+        use galos_index::records::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
         let inputs: Vec<galos_index::System> = (1..=4)
@@ -2746,12 +2748,12 @@ mod tests {
     fn a_merged_mark_the_filters_exclude_is_dimmed_then_dropped() {
         use crate::systems::filter::{DimTo, Filter, Filters};
 
-        let merged = |id: CellId| galos_index::BlobRef {
+        let merged = |id: CellId| galos_index::read::walk::BlobRef {
             id,
             count: 4_000,
             blend: 1.,
             at: id.bounds().center(),
-            aged: [500; galos_index::aggregate::AGE_BUCKETS],
+            aged: [500; galos_index::core::aggregate::AGE_BUCKETS],
             m_min: Some(2.),
         };
         let held = CellId::of_point([0., 0., 0.], 6);
@@ -2860,7 +2862,7 @@ mod tests {
         // Marked as well as held: the walk draws the cells the plan names.
         app.insert_resource(Planned(galos_index::Needed {
             mode: galos_index::Mode::Shell,
-            marks: vec![galos_index::MarkRef {
+            marks: vec![galos_index::read::walk::MarkRef {
                 id: owner,
                 slice: built.payload(owner).len() as u32,
                 at: owner.bounds().center(),

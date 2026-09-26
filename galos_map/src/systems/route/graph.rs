@@ -12,8 +12,8 @@ use super::highway::Highway;
 use crate::Boosts;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::meta::Boost;
-use galos_index::{CellId, Node, Sky};
+use galos_index::read::sky::Node;
+use galos_index::{Boost, CellId, Sky};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -1884,7 +1884,7 @@ impl Jumps {
 /// against a galaxy that grew underneath it has been searching two
 /// different skies. The payloads make that hold for free — a cell the feed
 /// republishes is renamed into place, so a mapping this holds keeps reading
-/// what it was given ([`galos_index::store`]).
+/// what it was given ([`galos_index::store::cells`]).
 #[derive(Clone)]
 pub struct JumpGraph {
     /// The galaxy's places, read where they lie.
@@ -3545,7 +3545,7 @@ mod tests {
     use super::*;
     use crate::testing::{Scratch, sky_apart, sky_of};
     use galos_index::CellId;
-    use galos_index::meta::NameEntry;
+    use galos_index::records::NameEntry;
 
     /// A system named for its address, at `at`.
     fn at(address: i64, at: [f32; 3]) -> NameEntry {
@@ -3593,7 +3593,7 @@ mod tests {
     /// A published supercharge table naming `cones`, placed where the test
     /// put them
     ///
-    /// The published row carries the place ([`galos_index::SystemBoost`]),
+    /// The published row carries the place ([`galos_index::records::SystemBoost`]),
     /// which is what takes the names table out of routing — so a test's
     /// cones have to be systems the test actually placed.
     fn cones(entries: &[NameEntry], cones: &[(i64, Boost)]) -> Boosts {
@@ -3605,7 +3605,7 @@ mod tests {
                         .iter()
                         .find(|entry| entry.address == address)
                         .expect("a cone the test placed");
-                    galos_index::SystemBoost {
+                    galos_index::records::SystemBoost {
                         address,
                         boost,
                         position: placed.position,

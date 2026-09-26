@@ -72,7 +72,7 @@ async fn run() {
     // that put an offset wrong is a decode failure here and nowhere else,
     // so a directory swept by `galos index sweep --bodies` is checked by
     // running this over it.
-    let held = galos_index::pack::addresses(Path::new(&dir))
+    let held = galos_index::store::bodies::addresses(Path::new(&dir))
         .expect("the pack lists its systems");
     let step = (held.len() / sample.max(1)).max(1);
     let mut packed = Read::default();
@@ -97,7 +97,7 @@ struct Read {
 
 impl Read {
     /// One system's insides, decoded.
-    fn took(&mut self, system: &galos_index::SystemBodies) {
+    fn took(&mut self, system: &galos_index::records::SystemBodies) {
         self.files += 1;
         self.stars += system.stars.len();
         self.bodies += system.bodies.len();

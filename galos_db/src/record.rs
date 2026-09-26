@@ -41,7 +41,8 @@ use elite_journal::entry::route::Destination;
 use elite_journal::entry::{Entry, Event};
 use elite_journal::station::Station as JournalStation;
 use elite_journal::system::System as JournalSystem;
-use galos_index::{merge, SystemReport};
+use galos_index::accumulate::merge;
+use galos_index::SystemReport;
 use tracing::{debug, info, warn};
 
 /// A write inside a message that was turned away
@@ -748,7 +749,7 @@ async fn record_visit(
     if let Some(body) = body {
         // No discovery time: none of the events that land here is a scan, so
         // whatever the body carries for it was never reported. See
-        // `galos_index::merge::discovered_at`.
+        // `galos_index::accumulate::merge::discovered_at`.
         match Body::from_journal(
             conn,
             timestamp,

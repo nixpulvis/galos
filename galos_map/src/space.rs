@@ -65,7 +65,7 @@ pub(crate) fn metres(position: DVec3) -> DVec3 {
 /// again here. The same number twice is the same number until one of them is
 /// edited, and a body's distance from arrival is read through it on both
 /// sides: here to say it out loud, there to work out where the thing stands.
-pub(crate) const LIGHT_SECOND: f64 = galos_index::inside::LIGHT_SECOND;
+pub(crate) const LIGHT_SECOND: f64 = galos_index::system::inside::LIGHT_SECOND;
 
 /// How many light seconds `distance` light years comes to
 ///

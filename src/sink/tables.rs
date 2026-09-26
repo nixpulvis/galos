@@ -25,10 +25,10 @@
 //! Factions are the one table that is written and never derived. A journal
 //! names factions and numbers nothing — the ids are `galos_db`'s, minted on
 //! write — so what is published stands untouched for the life of the run.
-//! See `galos_index::galaxy`.
+//! See `galos_index::accumulate::galaxy`.
 
-use galos_index::meta::PopulatedSystem;
-use galos_index::sidecars::{Counts, Moved, Sidecars};
+use galos_index::records::PopulatedSystem;
+use galos_index::store::sidecars::{Counts, Moved, Sidecars};
 use galos_index::Galaxy;
 use std::collections::HashSet;
 use std::io;
@@ -49,7 +49,7 @@ pub struct Wrote {
     ///
     /// A fold rewrites every row the table names — minutes at 200 M
     /// systems — and happens about monthly on the live feed, so it is
-    /// reported rather than left silent. See `galos_index::names::compact`.
+    /// reported rather than left silent. See `galos_index::store::names::compact`.
     pub folded: bool,
     /// Which of the whole-file tables were rewritten.
     pub tables: Moved,
@@ -141,7 +141,7 @@ impl Tables {
     /// In memory. The tables that are single files are left for
     /// [`Self::write`], which is what decides between "what moved" and "all
     /// of it", and the per-system body files belong to the galaxy's own store
-    /// (`galos_index::bodies`), which is what writes them.
+    /// (`galos_index::accumulate::bodies`), which is what writes them.
     ///
     /// A system the galaxy has nothing to say about is left exactly as the
     /// directory has it; see the module header.
@@ -164,7 +164,7 @@ impl Tables {
     ///
     /// What a cold build patches through. That build writes its own names
     /// table straight to disk as it reads — sorted and swapped in at the
-    /// end, `galos_index::names::Writer` — so a second copy held here
+    /// end, `galos_index::store::names::Writer` — so a second copy held here
     /// would be a kilobyte a system over the galaxy, the one thing that
     /// route exists not to hold, and would then be published over the
     /// base the build had just put in place.
