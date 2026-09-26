@@ -26,17 +26,16 @@ use crate::format::layout::{
     boosts_path, factions_path, populated_path, reaches_path,
 };
 use crate::format::msgpack::{read_meta, write_meta};
-use crate::records::Faction;
-use crate::records::NameEntry;
-use crate::records::PopulatedSystem;
-use crate::records::SystemBoost;
-use crate::records::SystemReach;
+use crate::format::rows::{self, RUN_BYTES, Sheet, Sorted};
+use crate::records::{
+    Faction, NameEntry, PopulatedSystem, SystemBoost, SystemReach,
+};
 use crate::store::names::Names;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -460,92 +459,6 @@ pub struct Rows {
     boosts: Sheet,
 }
 
-/// One table's rows, length-framed so a row half written is the end of
-/// what the file stands for rather than a row read out of the wrong bytes.
-struct Sheet {
-    path: PathBuf,
-    out: BufWriter<File>,
-}
-
-impl Sheet {
-    /// Open `path`, empty.
-    fn open(path: PathBuf) -> io::Result<Sheet> {
-        let file = File::create(&path)?;
-        Ok(Sheet { path, out: BufWriter::new(file) })
-    }
-
-    /// One row, its length ahead of it.
-    fn push<T: serde::Serialize>(&mut self, row: &T) -> io::Result<()> {
-        let bytes = rmp_serde::to_vec(row)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        self.out.write_all(&(bytes.len() as u32).to_le_bytes())?;
-        self.out.write_all(&bytes)
-    }
-
-    /// Everything pushed, on disk.
-    fn flush(&mut self) -> io::Result<()> {
-        self.out.flush()
-    }
-}
-
-/// How many bytes of rows one sorted run holds.
-///
-/// What the sort costs in memory, and the only dial it has: a run is read
-/// back, sorted and written out, and the runs are then merged. A galaxy's
-/// six gigabytes of rows is tens of runs at this size, which is few enough
-/// that the merge can scan their heads rather than heap them.
-const RUN_BYTES: usize = 128 * 1024 * 1024;
-
-/// A row file read a row at a time.
-///
-/// Nothing reads a row file twice, so the rows go past rather than in: the
-/// whole point of writing them to a file was not to hold them.
-struct Framed {
-    inner: BufReader<File>,
-    buf: Vec<u8>,
-}
-
-impl Framed {
-    /// Open a row file, or answer [`None`] where there is not one.
-    fn open(path: &Path) -> io::Result<Option<Framed>> {
-        match File::open(path) {
-            Ok(file) => Ok(Some(Framed {
-                inner: BufReader::new(file),
-                buf: Vec::new(),
-            })),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    /// The next row and what it took on disk, or the end of the file.
-    ///
-    /// A row half written is a row the build never marked, so a short read
-    /// is the end of what the file stands for rather than a failure.
-    fn next<T: DeserializeOwned>(&mut self) -> io::Result<Option<(T, usize)>> {
-        let mut head = [0u8; 4];
-        match self.inner.read_exact(&mut head) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                return Ok(None);
-            }
-            Err(err) => return Err(err),
-        }
-        let len = u32::from_le_bytes(head) as usize;
-        self.buf.resize(len, 0);
-        match self.inner.read_exact(&mut self.buf) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                return Ok(None);
-            }
-            Err(err) => return Err(err),
-        }
-        let row = rmp_serde::from_slice(&self.buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(Some((row, len + 4)))
-    }
-}
-
 impl Rows {
     /// Write the rows of a build into `dir`, from nothing.
     pub fn writing(dir: &Path) -> io::Result<Rows> {
@@ -626,7 +539,7 @@ impl Rows {
         let counts = Counts {
             names: 0,
             populated: sort_table::<PopulatedSystem>(
-                &self.populated.path,
+                self.populated.path(),
                 &at,
                 "populated",
                 &populated_path(dir),
@@ -634,7 +547,7 @@ impl Rows {
                 budget,
             )?,
             reaches: sort_table::<SystemReach>(
-                &self.reaches.path,
+                self.reaches.path(),
                 &at,
                 "reaches",
                 &reaches_path(dir),
@@ -642,7 +555,7 @@ impl Rows {
                 budget,
             )?,
             boosts: sort_table::<SystemBoost>(
-                &self.boosts.path,
+                self.boosts.path(),
                 &at,
                 "boosts",
                 &boosts_path(dir),
@@ -678,98 +591,9 @@ fn sort_table<T: Serialize + DeserializeOwned>(
     key: impl Fn(&T) -> i64,
     budget: usize,
 ) -> io::Result<usize> {
-    let runs = spill_runs::<T>(rows, scratch, name, &key, budget)?;
-    let merged = scratch.join(format!("{name}.sorted"));
-    let count = merge::<T>(&runs, &merged, &key)?;
-    write_table::<T>(table, &merged, count)?;
-    for run in runs {
-        let _ = std::fs::remove_file(run);
-    }
-    let _ = std::fs::remove_file(&merged);
-    Ok(count)
-}
-
-/// Read the rows a run at a time, sort each run, and answer the runs.
-fn spill_runs<T: Serialize + DeserializeOwned>(
-    rows: &Path,
-    scratch: &Path,
-    name: &str,
-    key: &impl Fn(&T) -> i64,
-    budget: usize,
-) -> io::Result<Vec<PathBuf>> {
-    let mut runs = Vec::new();
-    let Some(mut framed) = Framed::open(rows)? else {
-        return Ok(runs);
-    };
-    let mut held: Vec<T> = Vec::new();
-    let mut bytes = 0usize;
-    let mut ended = false;
-    while !ended {
-        match framed.next::<T>()? {
-            Some((row, width)) => {
-                held.push(row);
-                bytes += width;
-            }
-            None => ended = true,
-        }
-        if held.is_empty() || (!ended && bytes < budget) {
-            continue;
-        }
-        // Stable, so the rows an address has keep the order they were
-        // written in and the last of them is still the last.
-        held.sort_by_key(|it| key(it));
-        let path = scratch.join(format!("{name}.run{:04}", runs.len()));
-        let mut run = Sheet::open(path.clone())?;
-        for row in held.drain(..) {
-            run.push(&row)?;
-        }
-        run.flush()?;
-        runs.push(path);
-        bytes = 0;
-    }
-    Ok(runs)
-}
-
-/// Merge sorted runs into one file in address order, the last row an
-/// address has winning.
-///
-/// A scan over the runs' heads rather than a heap: a run is [`RUN_BYTES`]
-/// and a galaxy's rows are gigabytes, so there are tens of runs and the
-/// scan costs less than the code a heap would.
-fn merge<T: Serialize + DeserializeOwned>(
-    runs: &[PathBuf],
-    out: &Path,
-    key: &impl Fn(&T) -> i64,
-) -> io::Result<usize> {
-    let mut readers = Vec::new();
-    let mut heads: Vec<Option<T>> = Vec::new();
-    for run in runs {
-        let mut framed = Framed::open(run)?.expect("a run just written");
-        heads.push(framed.next::<T>()?.map(|(row, _)| row));
-        readers.push(framed);
-    }
-
-    let mut sorted = Sheet::open(out.to_owned())?;
-    let mut count = 0usize;
-    loop {
-        let Some(address) = heads.iter().flatten().map(key).min() else {
-            break;
-        };
-        // The runs in order, so a later run's row is taken over an earlier
-        // one's, and inside a run the last of a stretch over the first:
-        // both are the one rule, that the last row written wins.
-        let mut best: Option<T> = None;
-        for (at, head) in heads.iter_mut().enumerate() {
-            while head.as_ref().is_some_and(|it| key(it) == address) {
-                best = head.take();
-                *head = readers[at].next::<T>()?.map(|(row, _)| row);
-            }
-        }
-        sorted.push(&best.expect("the address came off a head"))?;
-        count += 1;
-    }
-    sorted.flush()?;
-    Ok(count)
+    let sorted = rows::sorted::<T>(rows, scratch, name, &key, budget)?;
+    write_table::<T>(table, &sorted)?;
+    Ok(sorted.count())
 }
 
 /// Write a sorted run of rows as the MessagePack array a reader expects.
@@ -779,8 +603,7 @@ fn merge<T: Serialize + DeserializeOwned>(
 /// before its elements are, so nothing past one row is held.
 fn write_table<T: Serialize + DeserializeOwned>(
     path: &Path,
-    rows: &Path,
-    count: usize,
+    sorted: &Sorted,
 ) -> io::Result<()> {
     use serde::Serializer as _;
     use serde::ser::SerializeSeq;
@@ -792,9 +615,9 @@ fn write_table<T: Serialize + DeserializeOwned>(
     let mut out =
         rmp_serde::Serializer::new(BufWriter::new(File::create(&tmp)?));
     let mut seq = out
-        .serialize_seq(Some(count))
+        .serialize_seq(Some(sorted.count()))
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if let Some(mut framed) = Framed::open(rows)? {
+    if let Some(mut framed) = sorted.rows()? {
         while let Some((row, _)) = framed.next::<T>()? {
             seq.serialize_element(&row)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

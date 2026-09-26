@@ -125,7 +125,7 @@ pub fn wanted(share: f64, held: usize, id: CellId) -> usize {
 /// a cell id is a level and three grid coordinates, so its low bits are
 /// position — and the top twenty-four bits of the mix, which is all that is
 /// wanted of it.
-pub fn dither(id: CellId) -> f64 {
+pub(crate) fn dither(id: CellId) -> f64 {
     let mut z = id.morton().wrapping_add(u64::from(id.level));
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -149,7 +149,7 @@ pub fn dither(id: CellId) -> f64 {
 ///
 /// It also bounds the cost. One mark a tile over a 1280x720 frame is 900
 /// marks, an sixtieth of [`frame_marks`], whatever the tree holds.
-pub const TILE_PX: f64 = 32.0;
+pub(crate) const TILE_PX: f64 = 32.0;
 
 impl View {
     /// Where a position lands on screen, in pixels from the top left, or

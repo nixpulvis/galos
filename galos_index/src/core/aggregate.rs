@@ -27,7 +27,7 @@ use galos_photometry::Magnitude;
 
 /// Temperature buckets the glow keeps its color structure in: a warm bulge
 /// and blue arms without storing a temperature per star.
-pub const TEMP_BUCKETS: usize = 6;
+pub(crate) const TEMP_BUCKETS: usize = 6;
 
 /// Age buckets for the Recency axis, which a prefix sum answers any span from.
 pub const AGE_BUCKETS: usize = 8;

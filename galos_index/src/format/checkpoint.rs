@@ -319,7 +319,7 @@ impl Checkpoint {
 /// that stood before it whole. [`abandon`](Self::abandon) takes the temp
 /// file with it; a `Compaction` merely dropped leaves it behind and nothing
 /// else, and the next one truncates it.
-pub struct Compaction {
+pub(crate) struct Compaction {
     path: PathBuf,
     tmp: PathBuf,
     out: BufWriter<File>,

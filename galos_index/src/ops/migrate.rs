@@ -136,7 +136,7 @@ pub fn migrate(
 /// the next open takes the rest. A payload already standing in its shard
 /// wins over the loose one, for the reason [`crate::store::bodies::pack`]
 /// gives.
-pub fn reshard_cells(
+pub(crate) fn reshard_cells(
     dir: &Path,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Resharded> {
@@ -209,7 +209,7 @@ struct Unplaced {
 ///
 /// Not interruptible and it need not be: it is one read of the table, one
 /// pass over the address column, and one write.
-pub fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
+pub(crate) fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
     let path = boosts_path(dir);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,

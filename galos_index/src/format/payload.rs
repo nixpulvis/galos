@@ -18,13 +18,13 @@ use crate::core::geometry::CellId;
 use crate::core::record::{Point, StarKind};
 
 /// The magic at the head of a cell's payload.
-pub const PAYLOAD_MAGIC: [u8; 4] = *b"GPAY";
+pub(crate) const PAYLOAD_MAGIC: [u8; 4] = *b"GPAY";
 
 /// The payload layout this crate writes.
-pub const PAYLOAD_VERSION: u16 = 1;
+pub(crate) const PAYLOAD_VERSION: u16 = 1;
 
 /// The header: magic, version, how many systems, how wide a position axis.
-pub const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
+pub(crate) const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
 
 /// The grid a system's position sits on, in light years
 ///
@@ -43,10 +43,10 @@ pub const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
 /// cell a sphere touches — 45.4 billion of them to relax 3.9 million — and
 /// it reads a position and a star kind and nothing else, so the bytes it
 /// streams are the whole cost. Seven against forty-one.
-pub const POSITION_STEP: f64 = 1.0 / 32.0;
+pub(crate) const POSITION_STEP: f64 = 1.0 / 32.0;
 
 /// How wide a position axis is for a cell of this level, in bytes.
-pub fn position_width(level: u8) -> u8 {
+pub(crate) fn position_width(level: u8) -> u8 {
     let counts = crate::core::geometry::edge_ly(level) / POSITION_STEP;
     if counts <= u16::MAX as f64 { 2 } else { 4 }
 }
@@ -62,7 +62,7 @@ fn columns(count: usize, width: u8) -> [usize; 4] {
 }
 
 /// How long a payload of `count` systems is at `width` bytes an axis.
-pub fn payload_len(count: usize, width: u8) -> usize {
+pub(crate) fn payload_len(count: usize, width: u8) -> usize {
     columns(count, width)[3] + count * (4 + 1 + 4)
 }
 
@@ -78,7 +78,7 @@ pub fn payload_len(count: usize, width: u8) -> usize {
 /// Positions are cell-relative integers on [`POSITION_STEP`], so the block
 /// needs its cell to be read at all — which every reader has, the cell
 /// being how the file was found.
-pub fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
+pub(crate) fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
     let width = position_width(cell.level);
     let mut out = Vec::with_capacity(payload_len(points.len(), width));
     PAYLOAD_MAGIC.encode(&mut out);
@@ -116,7 +116,7 @@ pub fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
 /// What a payload's header says: how many systems, how wide a position, and
 /// where each column begins.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct PayloadHead {
+pub(crate) struct PayloadHead {
     pub count: usize,
     pub width: u8,
     pub kinds: usize,
@@ -131,7 +131,7 @@ pub struct PayloadHead {
 /// carries its own magic and version, which the record blocks this replaced
 /// did not: a stale one is refused rather than read as a plausible number
 /// of systems with every field out of the wrong bytes.
-pub fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
+pub(crate) fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
     let mut cur = bytes;
     if <[u8; 4]>::decode(&mut cur)? != PAYLOAD_MAGIC {
         return None;
@@ -154,7 +154,7 @@ pub fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
 /// carries its own magic and version, so unlike the record blocks this
 /// replaced, a stale one cannot decode as a plausible number of systems
 /// with every field read out of the wrong bytes.
-pub fn payload_points(cell: CellId, bytes: &[u8]) -> Option<Vec<Point>> {
+pub(crate) fn payload_points(cell: CellId, bytes: &[u8]) -> Option<Vec<Point>> {
     let head = payload_head(bytes)?;
     let PayloadHead { count, width, kinds: kind, ids: id64, lit } = head;
     if bytes.len() < payload_len(count, width) {
@@ -196,14 +196,14 @@ pub fn payload_points(cell: CellId, bytes: &[u8]) -> Option<Vec<Point>> {
 /// Read by the migration that rewrites them and by nothing else: the old
 /// block was `id64`, three `f64` axes, a magnitude, a temperature bucket
 /// and a moment, laid end to end with no header to say so.
-pub const LEGACY_POINT_LEN: usize = 8 + 24 + 4 + 1 + 4;
+pub(crate) const LEGACY_POINT_LEN: usize = 8 + 24 + 4 + 1 + 4;
 
 /// The systems a payload written before the columns held
 ///
 /// Whole records only, so a trailing partial row is dropped rather than
 /// failed. The star kind was not among them, so every system comes back as
 /// [`StarKind::Unknown`] and the migration fills it from the scan record.
-pub fn legacy_payload_points(bytes: &[u8]) -> Vec<Point> {
+pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<Point> {
     let mut points = Vec::with_capacity(bytes.len() / LEGACY_POINT_LEN);
     let (rows, _) = bytes.as_chunks::<LEGACY_POINT_LEN>();
     for row in rows {
@@ -256,7 +256,7 @@ pub const INDEX_VERSION: u16 = 3;
 /// A payload block carries no header, so the width of its records is known
 /// only from the version beside them. A reader that [`Index`]'s decode
 /// refused asks this to say which format it met.
-pub fn index_version(bytes: &[u8]) -> Option<u16> {
+pub(crate) fn index_version(bytes: &[u8]) -> Option<u16> {
     let mut cur = bytes;
     if <[u8; 4]>::decode(&mut cur)? != INDEX_MAGIC {
         return None;

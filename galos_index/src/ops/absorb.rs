@@ -25,7 +25,7 @@
 //! so a name crosses exactly when its system's record crossed; a sidecar row
 //! is weighed in whichever direction the system record settled. The bodies
 //! are the one thing with a clock of their own, and they are merged per body
-//! — see [`over_bodies`].
+//! — see [`merge::bodies_over`].
 //!
 //! **Except what is a function of the system's whole contents.** Record
 //! over record is the wrong rule for a fact nobody reported — the kind of
@@ -82,7 +82,7 @@
 //! **The bodies pass is in front of that rename and does write.** It has to
 //! be: what it merges to is what the records are derived over. What it
 //! leaves is nonetheless safe, and for a different reason — it never takes
-//! anything away. [`over_bodies`] keeps every body of both sides, so a kill
+//! anything away. [`merge::bodies_over`] keeps every body of both sides, so a kill
 //! inside it leaves `INTO` serving every body record it was serving and
 //! some of `FROM`'s besides. Nothing is lost. What is *not* true is that it
 //! is invisible: until the union lands, those systems' records were derived
@@ -125,8 +125,7 @@ use crate::core::record::{Boost, StarKind, System};
 use crate::format::checkpoint::{By, Checkpoint, Compaction};
 use crate::format::{layout, msgpack};
 use crate::records::{
-    Barycenter, Body, Faction, PopulatedSystem, Star, Surface, SystemBodies,
-    SystemBoost, SystemReach, derive,
+    Faction, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
 };
 use crate::store::names::Names;
 use crate::store::sidecars::{Moved, Sidecars};
@@ -363,7 +362,7 @@ impl fmt::Display for Refused {
             // The bodies pass is the one that writes in front of the
             // union, so it is the one this cannot say "nothing was
             // written" about. What it may leave is body records and
-            // nothing else — see [`over_bodies`], which takes nothing
+            // nothing else — see [`merge::bodies_over`], which takes nothing
             // away — and the tree those systems' records were derived
             // over is then older than their own body files, which is
             // what `galos index verify` reports and what re-running
@@ -392,6 +391,19 @@ impl fmt::Display for Refused {
                  this state up",
             ),
             Refused::Failed { what, why } => write!(f, "{what}: {why}"),
+        }
+    }
+}
+
+/// The I/O failure underneath, where there is one, so a caller reporting
+/// the chain says what the filesystem said as well as which step it was.
+impl std::error::Error for Refused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Refused::Adrift { why, .. } | Refused::Failed { why, .. } => {
+                Some(why)
+            }
+            _ => None,
         }
     }
 }
@@ -1139,7 +1151,7 @@ fn carry_sidecars(
     for row in populated {
         let arriving = newer(row.address);
         let merged = match ours.published(row.address) {
-            Some(stood) => over(stood, row, arriving),
+            Some(stood) => merge::populated_over(stood, row, arriving),
             None => row,
         };
         if ours.populate(merged) {
@@ -1213,7 +1225,7 @@ fn carry_sidecars(
 /// `bodies/<address>` is written whole, so a system scanned on both sides
 /// cannot simply take one side's record: that loses whatever the other side
 /// scanned. Each system's record is read from both and merged body by body —
-/// see [`over_bodies`] for the rule.
+/// see [`merge::bodies_over`] for the rule.
 ///
 /// What is walked is the incoming directory's *pack*
 /// ([`bodies::each_address`]), one shard index at a time. A directory still
@@ -1242,7 +1254,7 @@ fn carry_sidecars(
 ///
 /// Running before the union means a write before the resume point is
 /// committed, and the module header says what that leaves. In short: this
-/// pass never takes anything away — [`over_bodies`] keeps every body of
+/// pass never takes anything away — [`merge::bodies_over`] keeps every body of
 /// both sides — so a kill inside it leaves `INTO` serving every body
 /// record it served and some of `FROM`'s besides, beside system records
 /// derived before them. Nothing is lost and re-running the merge settles
@@ -1270,7 +1282,7 @@ fn carry_bodies(
             let read = || -> io::Result<SystemBodies> {
                 let said = bodies::read_bodies(from, address)?;
                 let stood = bodies::read_bodies(into, address)?;
-                Ok(over_bodies(stood, said))
+                Ok(merge::bodies_over(stood, said))
             };
             let merged = match read() {
                 Ok(inside) => inside,
@@ -1372,235 +1384,12 @@ fn rebuild(
     }
 }
 
-/// One populated row over another, the newer winning column by column.
-///
-/// **A thinner row must not erase a richer one.** A row derived from events
-/// publishes an empty faction list by construction — a journal names
-/// factions and numbers none of them — and the body counts arrive in their
-/// own events rather than with the arrival, so writing such a row straight
-/// over a database-derived one takes the faction ids off the system, and the
-/// map colours and filters by exactly those.
-///
-/// The same rule is stated at `src/sink/tables.rs:215-250`, where it is an
-/// event's row over what a directory publishes; `galos_index` cannot depend
-/// on `galos`, so it is stated again here and the two are kept textually in
-/// step. With `newer` set this is that function exactly. What is new is the
-/// other direction, which a merge needs and a feed does not: an older row
-/// still fills in a column nothing has ever had a word for.
-pub fn over(
-    held: &PopulatedSystem,
-    said: PopulatedSystem,
-    newer: bool,
-) -> PopulatedSystem {
-    let (win, lose) = match newer {
-        true => (said, held.clone()),
-        false => (held.clone(), said),
-    };
-    PopulatedSystem {
-        security: win.security.or(lose.security),
-        government: win.government.or(lose.government),
-        allegiance: win.allegiance.or(lose.allegiance),
-        primary_economy: win.primary_economy.or(lose.primary_economy),
-        secondary_economy: win.secondary_economy.or(lose.secondary_economy),
-        // Never stated by an event-derived row, so never taken away by one.
-        factions: match win.factions.is_empty() {
-            true => lose.factions,
-            false => win.factions,
-        },
-        body_count: win.body_count.or(lose.body_count),
-        non_body_count: win.non_body_count.or(lose.non_body_count),
-        ..win
-    }
-}
-
-/// Two stored records of one system's insides, folded into one.
-///
-/// [`crate::accumulate::merge`] is the scan-over-stored twin of this and states the rule
-/// it restates: a reading wins where it is one, what is not stated leaves
-/// what stands, the two facts about a thing's history only go one way, and
-/// the stamp only goes forward. What differs is that both sides here are
-/// *stored* records, each of which has already merged every scan its own
-/// directory saw, so there is no "did the scan mention this" to ask — only
-/// which of two finished records is the later, and what the earlier one
-/// still has to say.
-///
-/// So, per thing, joined by its `id` within the system:
-///
-/// - A star, body or barycentre on one side only is taken whole.
-/// - On both sides, the greater `updated_at` wins, a tie going to the
-///   arriving record as everywhere else.
-/// - `discovered_at` takes the **earliest** of the two that is `Some`
-///   ([`merge::earliest`]): when a thing was found does not change, and a
-///   record that does not know leaves what does.
-/// - `mapped` is **OR-ed**: it only ever goes up, and a side that never
-///   heard of the mapping is not a side saying it was unmapped.
-/// - A field the winner leaves **blank** — `None`, an empty string or an
-///   empty list — falls back to the loser's. An orbit goes through
-///   [`merge::orbit`], so the two elements an uploader may drop are filled
-///   in element by element rather than the whole orbit being taken or lost.
-///
-/// Everything else is a reading and the winner's stands: a magnitude, a
-/// radius, a temperature, whether a body is tidally locked. Zero is a
-/// reading there, not an absence.
-pub fn over_bodies(held: SystemBodies, said: SystemBodies) -> SystemBodies {
-    SystemBodies {
-        stars: join(held.stars, said.stars, |it| it.id, star_over),
-        bodies: join(held.bodies, said.bodies, |it| it.id, body_over),
-        barycenters: join(
-            held.barycenters,
-            said.barycenters,
-            |it| it.id,
-            barycenter_over,
-        ),
-    }
-}
-
-/// Two tables of one system's things, joined by id.
-///
-/// A walk rather than a hash, as [`merge::put`] is and for the same reason:
-/// a system is tens of things, and a map of them costs more than the walk it
-/// replaces. The held order is kept and what only the arriving side has goes
-/// on the end, so a record written twice is written the same way twice.
-fn join<T>(
-    held: Vec<T>,
-    said: Vec<T>,
-    id: impl Fn(&T) -> i16,
-    over: impl Fn(T, T) -> T,
-) -> Vec<T> {
-    let mut said: Vec<Option<T>> = said.into_iter().map(Some).collect();
-    let mut out = Vec::with_capacity(held.len() + said.len());
-    for stood in held {
-        let key = id(&stood);
-        let found = said
-            .iter()
-            .position(|it| it.as_ref().is_some_and(|it| id(it) == key));
-        match found {
-            Some(at) => {
-                let arriving = said[at].take().expect("just found");
-                out.push(over(stood, arriving));
-            }
-            None => out.push(stood),
-        }
-    }
-    out.extend(said.into_iter().flatten());
-    out
-}
-
-/// The winner's string where it said one, and the loser's where it left the
-/// field empty.
-///
-/// The game writes an empty string where it has nothing to say, which is an
-/// absence rather than a reading — [`merge::surface`] calls out the three
-/// fields it does this for.
-fn stated(win: String, lose: String) -> String {
-    match win.is_empty() {
-        true => lose,
-        false => win,
-    }
-}
-
-/// Two stored stars of one system, folded. See [`over_bodies`].
-fn star_over(held: Star, said: Star) -> Star {
-    let (win, lose) = match said.updated_at >= held.updated_at {
-        true => (said, held),
-        false => (held, said),
-    };
-    let orbit = merge::orbit(win.orbit.as_ref(), lose.orbit.as_ref());
-    let mapped = win.mapped || lose.mapped;
-    let discovered_at = merge::earliest(win.discovered_at, lose.discovered_at);
-    Star {
-        name: stated(win.name, lose.name),
-        parents: match win.parents.is_empty() {
-            true => lose.parents,
-            false => win.parents,
-        },
-        updated_by: stated(win.updated_by, lose.updated_by),
-        luminosity: stated(win.luminosity, lose.luminosity),
-        star_class: stated(win.star_class, lose.star_class),
-        orbit,
-        mapped,
-        discovered_at,
-        ..win
-    }
-}
-
-/// Two stored bodies of one system, folded. See [`over_bodies`].
-fn body_over(held: Body, said: Body) -> Body {
-    let (win, lose) = match said.updated_at >= held.updated_at {
-        true => (said, held),
-        false => (held, said),
-    };
-    // A body's orbit is not optional — a scan always states one — so the
-    // fill is only of the two elements an uploader may have dropped.
-    let orbit = merge::orbit(Some(&win.orbit), Some(&lose.orbit))
-        .expect("two stated orbits");
-    let mapped = win.mapped || lose.mapped;
-    let discovered_at = merge::earliest(win.discovered_at, lose.discovered_at);
-    Body {
-        parents: match win.parents.is_empty() {
-            true => lose.parents,
-            false => win.parents,
-        },
-        name: stated(win.name, lose.name),
-        body_type: win.body_type.or(lose.body_type),
-        distance_from_arrival: win
-            .distance_from_arrival
-            .or(lose.distance_from_arrival),
-        updated_by: stated(win.updated_by, lose.updated_by),
-        planet_class: stated(win.planet_class, lose.planet_class),
-        temperature: win.temperature.or(lose.temperature),
-        // A gas giant has no surface to record, and a record with one is a
-        // record of a closer look: the winner's where it has one, and the
-        // loser's rather than nothing where it has not.
-        surface: match (win.surface, lose.surface) {
-            (Some(win), Some(lose)) => Some(surface_over(win, lose)),
-            (win, lose) => win.or(lose),
-        },
-        orbit,
-        mapped,
-        discovered_at,
-        ..win
-    }
-}
-
-/// Two stored surfaces of one body, folded. See [`over_bodies`].
-fn surface_over(win: Surface, lose: Surface) -> Surface {
-    Surface {
-        composition: win.composition.or(lose.composition),
-        atmosphere: win.atmosphere.or(lose.atmosphere),
-        volcanism: win.volcanism.or(lose.volcanism),
-        terraform_state: win.terraform_state.or(lose.terraform_state),
-        materials: match win.materials.is_empty() {
-            true => lose.materials,
-            false => win.materials,
-        },
-        ..win
-    }
-}
-
-/// Two stored barycentres of one system, folded. See [`over_bodies`].
-///
-/// The orbit is the whole of what one holds: a barycentre is not drawn and
-/// is kept so a body naming it as an ancestor can be placed.
-fn barycenter_over(held: Barycenter, said: Barycenter) -> Barycenter {
-    let (win, lose) = match said.updated_at >= held.updated_at {
-        true => (said, held),
-        false => (held, said),
-    };
-    let orbit = merge::orbit(win.orbit.as_ref(), lose.orbit.as_ref());
-    Barycenter {
-        updated_by: stated(win.updated_by, lose.updated_by),
-        orbit,
-        ..win
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::build::cold::Taking;
     use crate::read::index::Index;
-    use crate::records::NameEntry;
+    use crate::records::{Body, NameEntry, Star};
     use crate::store::sidecars::{write_boosts, write_reaches};
     use chrono::{DateTime, Utc};
     use elite_journal::body::{Orbit, Spin};
@@ -2266,135 +2055,5 @@ mod tests {
             mapped: false,
             discovered_at: None,
         }
-    }
-
-    /// Two stored records of one system are folded thing by thing: the
-    /// later reading wins, the mapping only goes up, the discovery only
-    /// goes back, a blank falls through, and a thing only one side has is
-    /// kept.
-    #[test]
-    fn a_body_on_both_sides_takes_the_newer_reading() {
-        let held = SystemBodies {
-            stars: vec![
-                Star {
-                    temperature: 4_000.0,
-                    mapped: true,
-                    discovered_at: Some(stamp(500)),
-                    ..a_star(0, 100)
-                },
-                a_star(2, 100),
-            ],
-            bodies: vec![a_body(1, 100)],
-            barycenters: Vec::new(),
-        };
-        let said = SystemBodies {
-            stars: vec![
-                Star {
-                    temperature: 5_100.0,
-                    // The winner leaves it blank, so the loser's stands.
-                    luminosity: String::new(),
-                    mapped: false,
-                    discovered_at: Some(stamp(300)),
-                    ..a_star(0, 200)
-                },
-                a_star(3, 200),
-            ],
-            bodies: Vec::new(),
-            barycenters: vec![Barycenter {
-                system_address: 1,
-                id: 4,
-                updated_at: stamp(200),
-                updated_by: "a test".to_owned(),
-                orbit: None,
-            }],
-        };
-
-        let merged = over_bodies(held, said);
-
-        let star = |id: i16| {
-            merged
-                .stars
-                .iter()
-                .find(|it| it.id == id)
-                .unwrap_or_else(|| panic!("star {id} was dropped"))
-        };
-        let primary = star(0);
-        assert_eq!(primary.updated_at, stamp(200), "the later reading");
-        assert_eq!(primary.temperature, 5_100.0, "the later reading");
-        assert_eq!(primary.luminosity, "V", "a blank fell through");
-        assert!(primary.mapped, "mapping only goes up");
-        assert_eq!(
-            primary.discovered_at,
-            Some(stamp(300)),
-            "discovery only goes back",
-        );
-
-        star(2);
-        star(3);
-        assert_eq!(merged.stars.len(), 3);
-        assert_eq!(merged.bodies.len(), 1, "a body only one side had is kept");
-        assert_eq!(merged.bodies[0].id, 1);
-        assert_eq!(merged.barycenters.len(), 1);
-        assert_eq!(merged.barycenters[0].id, 4);
-    }
-
-    /// The tie goes to the arriving record, as it does everywhere else the
-    /// program merges by a stamp.
-    #[test]
-    fn a_tie_goes_to_the_arriving_body() {
-        let held = SystemBodies {
-            stars: vec![Star { temperature: 4_000.0, ..a_star(0, 100) }],
-            ..SystemBodies::default()
-        };
-        let said = SystemBodies {
-            stars: vec![Star { temperature: 5_100.0, ..a_star(0, 100) }],
-            ..SystemBodies::default()
-        };
-        let merged = over_bodies(held, said);
-        assert_eq!(merged.stars[0].temperature, 5_100.0);
-    }
-
-    /// A thinner populated row does not erase a richer one, in either
-    /// direction: the newer wins where it says something, and the older
-    /// fills only what nothing has ever said.
-    #[test]
-    fn a_thinner_populated_row_fills_rather_than_erases() {
-        let stood = PopulatedSystem {
-            address: 1,
-            name: "SOL".into(),
-            position: [0.0; 3],
-            population: 22_780_919_531,
-            security: None,
-            government: None,
-            allegiance: None,
-            primary_economy: None,
-            secondary_economy: None,
-            factions: vec![1, 2, 3],
-            body_count: Some(40),
-            non_body_count: None,
-        };
-        let said = PopulatedSystem {
-            population: 1,
-            factions: Vec::new(),
-            body_count: None,
-            non_body_count: Some(7),
-            ..stood.clone()
-        };
-
-        let newer = over(&stood, said.clone(), true);
-        assert_eq!(newer.population, 1, "the newer reading of the column");
-        assert_eq!(newer.factions, vec![1, 2, 3], "never stated, never taken");
-        assert_eq!(
-            newer.body_count,
-            Some(40),
-            "a blank filled from what stood",
-        );
-        assert_eq!(newer.non_body_count, Some(7));
-
-        let older = over(&stood, said, false);
-        assert_eq!(older.population, 22_780_919_531, "the standing reading");
-        assert_eq!(older.factions, vec![1, 2, 3]);
-        assert_eq!(older.body_count, Some(40));
-        assert_eq!(older.non_body_count, Some(7), "still filled a blank");
     }
 }

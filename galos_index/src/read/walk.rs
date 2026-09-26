@@ -58,7 +58,7 @@ pub const SPLIT_PX: f64 = 0.5;
 /// `SPLIT_PX..SPLIT_FULL_PX` a cell and its children both draw, their weights
 /// summing to one, so the level handoff crosses over rather than popping; above
 /// it the children carry the region alone.
-pub const SPLIT_FULL_PX: f64 = 1.0;
+pub(crate) const SPLIT_FULL_PX: f64 = 1.0;
 
 /// Two marks merge into one when their centres fall within this many pixels
 ///
@@ -95,7 +95,7 @@ pub const MERGE_PX: f64 = 4.0;
 /// `1 - alpha` and everything below it `alpha`, so a level handoff crosses
 /// over rather than popping. A cell's levels are an octave apart in size, so
 /// only one level of the tree is ever mid-fade under any point of the sky.
-pub const MERGE_BAND: f64 = 2.0;
+pub(crate) const MERGE_BAND: f64 = 2.0;
 
 /// The merge distance the realistic view resolves stars at, in pixels
 ///
@@ -106,12 +106,12 @@ pub const MERGE_BAND: f64 = 2.0;
 /// where the map would collapse it to one mark: the merge distance is the
 /// point spread in [`Mode::Real`] and the smallest stable mark in
 /// [`Mode::Shell`].
-pub const STAR_MERGE_PX: f64 = 2.0;
+pub(crate) const STAR_MERGE_PX: f64 = 2.0;
 
 /// A cell wider than this on screen is refined for the glow; narrower, it
 /// splats. Half a degree, the "fraction of a degree" the opening-angle test
 /// turns on.
-pub const GLOW_OPENING_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
+pub(crate) const GLOW_OPENING_ANGLE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 
 /// Which presentation the tree is read for.
 ///

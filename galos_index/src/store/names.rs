@@ -183,13 +183,6 @@ const SWEEP: usize = 4 * 1024 * 1024;
 /// 200 M. Forty bits reach a terabyte of names.
 const SPAN: usize = 5;
 
-/// What one row of the base costs on disk, beside its name.
-///
-/// 8 + 12 + 4 + 5 = 29 bytes, and a name averages ~25 more: 5.8 GB at
-/// 200,071,629 systems, against 8.7 GB of MessagePack chunks for the same
-/// table and 7.9 GB resident to read them.
-pub const ROW_BYTES: usize = ADDR + ROW + SPAN;
-
 /// How many rows one bucket of the by-name sort holds in memory.
 ///
 /// The by-name order cannot be had by sorting row numbers in place: the
@@ -370,7 +363,7 @@ impl Names {
     ///    stored. A derived name's words are a sector and a boxel code, so
     ///    a query matching a sector *mid-name* — `EUQ` for `PRAEA EUQ
     ///    YE-Q D5-0` — is answered by asking
-    ///    [`procedural::sectors_holding`] which sectors hold that word and
+    ///    [`procedural::sectors_holding_all`] which sectors hold that word and
     ///    walking each one's run of the by-name order. 11,662 sectors and
     ///    192 KB, compiled in, so finding the sector costs microseconds
     ///    and the rows come back through the same prefix search as ever.
