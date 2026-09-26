@@ -167,7 +167,7 @@ fn diagnostics(
     // them took last frame — the same measure a panel is sized by, for the
     // same reason: every block here is drawn whatever the viewport is, so
     // unbounded it ran the frame rate at the end off the bottom of the screen
-    // with nothing to reach it by. See `crate::ui::panels::room_under`,
+    // with nothing to reach it by. See `crate::ui::panels::window::room_under`,
     // which does this for the panels; the window is measured rather than
     // worked out from the style because egui lays its own title bar out and
     // leaves the frame's margins out of its own clamping.
@@ -188,7 +188,7 @@ fn diagnostics(
         .constrain_to(ctx.content_rect().shrink(MARGIN))
         .open(&mut show.0)
         .show(ctx, |ui| {
-            crate::ui::scrolling(ui, room, "diagnostics", |ui| {
+            crate::ui::list::scrolling(ui, room, "diagnostics", |ui| {
             row(
                 ui,
                 "index",
