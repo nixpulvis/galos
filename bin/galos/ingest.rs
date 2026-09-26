@@ -778,7 +778,7 @@ mod tests {
         let Err(said) = refused(&ingesting(&["--from", "eddn"])) else {
             panic!("a run with no sink was accepted")
         };
-        assert!(said.contains("--db"), "should say what to name: {said}");
+        assert!(said.contains("--db"), "should say what to name: {}", said);
 
         assert!(refused(&ingesting(&["--from", "eddn", "--db"])).is_ok());
         assert!(
@@ -838,7 +838,7 @@ mod tests {
         let Err(said) = refused(&into_itself) else {
             panic!("the rows read into themselves were accepted")
         };
-        assert!(said.contains("themselves"), "should say why: {said}");
+        assert!(said.contains("themselves"), "should say why: {}", said);
 
         let nowhere = ingesting(&["--from", "database", "--db"]);
         assert!(
@@ -878,7 +878,8 @@ mod tests {
         ] {
             assert!(
                 refused(&ingesting(said)).is_err(),
-                "{said:?} cannot honour --only",
+                "{:?} cannot honour --only",
+                said,
             );
         }
     }
@@ -897,7 +898,7 @@ mod tests {
         let Err(said) = refused(&import) else {
             panic!("an import on a beat was accepted")
         };
-        assert!(said.contains("--publish"), "should say why: {said}");
+        assert!(said.contains("--publish"), "should say why: {}", said);
 
         let no_index = ingesting(&["--from", "eddn", "--db", "--publish", "2"]);
         assert!(
@@ -930,7 +931,7 @@ mod tests {
         let Err(said) = refused(&named) else {
             panic!("a commander named over the feed was accepted")
         };
-        assert!(said.contains("--user"), "should say why: {said}");
+        assert!(said.contains("--user"), "should say why: {}", said);
 
         let sharded = ingesting(&["--from", "eddn", "--db", "--shard", "0/8"]);
         assert!(refused(&sharded).is_err(), "a sharded feed was accepted");

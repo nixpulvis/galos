@@ -53,13 +53,6 @@ context in place of a dozen arguments; do the same elsewhere:
   `String` and a trip an `ARROW`-joined string parsed back apart. One `Trip`
   type carrying `RouteSettings`.
 
-## Warnings
-
-`cargo check --workspace --tests` warns 17 times, all
-`panic message contains an unused formatting placeholder`: five in
-`bin/galos/ingest.rs` and twelve in `src/read/mod.rs`. A lint newer than the
-code; pass the value or drop the braces.
-
 ## Benchmarks
 
 `galos_index/tests/{procedural,zooming}.rs` and `galos_route`'s `perf` module
