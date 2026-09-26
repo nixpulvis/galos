@@ -759,7 +759,7 @@ mod tests {
 mod drawing {
     use super::tests::sky;
     use super::*;
-    use crate::read::index::Index;
+    use crate::core::index::Index;
     use crate::read::walk::{Mode, View};
 
     /// Where the test skies hang: the galactic centre, so the cells are the

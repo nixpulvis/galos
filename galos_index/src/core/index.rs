@@ -1,5 +1,5 @@
-//! The resident index: every cell's aggregate, held whole, and the file it
-//! is read from.
+//! The cell tree held in memory: every cell's aggregate, and the same cells
+//! flattened for the walks.
 //!
 //! Small enough to hold entire — a few tens of megabytes over the galaxy —
 //! so every walk plans on it without a fetch, and the router looks addresses
@@ -7,23 +7,12 @@
 //! map an address is found in, and the same cells flattened breadth-first
 //! for the walks to descend ([`crate::read::walk`]).
 //!
-//! The file is `index.bin`: a header naming its magic and
-//! [`INDEX_VERSION`], a count, and that many fixed-width [`Cell`] records.
-//! It is rewritten whole on every publish, and a file of another width or
-//! version is refused rather than misread. The payloads beside it are read
-//! through here too, one cell at a time.
+//! Pure: its bytes are [`crate::format::payload`]'s, and the file it is read
+//! from and written to is [`crate::store::cells`]'s.
 
 use crate::core::aggregate::{AGE_BUCKETS, Cell};
-use crate::core::codec::{Decode, Encode, FixedCodec};
 use crate::core::geometry::CellId;
-use crate::core::record::Point;
-use crate::format::layout::{INDEX_FILE, legacy_payload_path, payload_path};
-use crate::format::payload::{INDEX_MAGIC, INDEX_VERSION, index_version};
-use crate::store::cells::Payload;
 use std::collections::HashMap;
-use std::fs;
-use std::io;
-use std::path::Path;
 
 /// The resident tree of cell aggregates, keyed by address, and the same tree
 /// flattened for the walks.
@@ -47,8 +36,8 @@ use std::path::Path;
 /// makes one derivation enough.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Index {
-    pub(super) cells: HashMap<CellId, Cell>,
-    pub(super) nodes: Vec<Node>,
+    pub(crate) cells: HashMap<CellId, Cell>,
+    pub(crate) nodes: Vec<Node>,
 }
 
 /// One node of the walk's own tree: where a cell's contents sit and how far
@@ -62,12 +51,12 @@ pub struct Index {
 /// read the second moments, which is most of a 216-byte [`Cell`], for every
 /// cell in the tree.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(super) struct Node {
+pub(crate) struct Node {
     /// Where a cell's contents sit: [`contents_center`].
-    pub(super) center: [f64; 3],
+    pub(crate) center: [f64; 3],
     /// How far they spread about that centre: [`contents_extent`], the RMS
     /// radius the field lays a Gaussian at.
-    pub(super) extent: f64,
+    pub(crate) extent: f64,
     /// How wide they are: [`contents_width`], rolled up from the children.
     ///
     /// A spread and a width are not the same question and the walk asks
@@ -76,29 +65,29 @@ pub(super) struct Node {
     /// cell holds fall inside one mark — and a distribution's support is
     /// several times its RMS radius and is not a scalar fact about it at
     /// all. See [`contents_width`].
-    pub(super) width: f64,
+    pub(crate) width: f64,
     /// How many systems the subtree holds.
-    pub(super) count: u64,
+    pub(crate) count: u64,
     /// How many the cell owns itself.
-    pub(super) slice: u64,
+    pub(crate) slice: u64,
     /// The brightest absolute magnitude in the subtree, for the sky's cut.
-    pub(super) m_min: Option<f32>,
+    pub(crate) m_min: Option<f32>,
     /// How many systems the subtree holds in each Recency bucket, so a span
     /// can be asked of a merged mark.
-    pub(super) aged: [u32; AGE_BUCKETS],
+    pub(crate) aged: [u32; AGE_BUCKETS],
     /// The cell's address, which is what a walk answers with.
-    pub(super) id: CellId,
+    pub(crate) id: CellId,
     /// Where this node's children begin. They are contiguous, so a walk
     /// reads them as a slice rather than looking eight addresses up.
-    pub(super) first_child: u32,
+    pub(crate) first_child: u32,
     /// How many children the tree actually holds for this cell, which is the
     /// set bits of `child_mask` that are present in the map.
-    pub(super) children: u8,
+    pub(crate) children: u8,
     /// Whether the cell has no children at all, the flag
     /// [`Cell::is_leaf`] answers. Not the same as `children == 0`: a mask can
     /// name a child the map does not hold, and the glow's cut turns on the
     /// mask.
-    pub(super) leaf: bool,
+    pub(crate) leaf: bool,
 }
 
 impl Node {
@@ -314,7 +303,7 @@ impl Index {
 }
 
 /// Straight-line distance between two points, light years.
-pub(super) fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
+pub(crate) fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
@@ -322,7 +311,7 @@ pub(super) fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// A cell's contents' spread in light years: the count-weighted RMS radius,
 /// floored at the mean spacing so a cell of one or a few systems still resolves
 /// as the camera closes rather than staying a zero-extent point forever.
-pub(super) fn contents_extent(cell: &Cell) -> f64 {
+pub(crate) fn contents_extent(cell: &Cell) -> f64 {
     let count = cell.aggregate.count().max(1) as f64;
     let spacing = cell.id.edge_ly() / count.cbrt();
     cell.aggregate.count_extent().max(spacing)
@@ -330,7 +319,7 @@ pub(super) fn contents_extent(cell: &Cell) -> f64 {
 
 /// Where a cell's contents sit: the count-weighted centroid, or the box centre
 /// where the aggregate carries no weight of its own.
-pub(super) fn contents_center(cell: &Cell) -> [f64; 3] {
+pub(crate) fn contents_center(cell: &Cell) -> [f64; 3] {
     cell.aggregate.count_centroid().unwrap_or_else(|| cell.id.bounds().center())
 }
 
@@ -357,234 +346,9 @@ pub(super) fn contents_center(cell: &Cell) -> [f64; 3] {
 /// This is the seed [`widen`] rolls up. Where a cell has children their
 /// centroids say far more about its shape than this does, and the larger of
 /// the two answers stands.
-pub(super) fn contents_width(cell: &Cell) -> f64 {
+pub(crate) fn contents_width(cell: &Cell) -> f64 {
     UNIFORM_SPAN * cell.aggregate.count_extent()
 }
 
 /// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
 pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
-
-impl Encode for Index {
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.reserve(
-            INDEX_MAGIC.len() + u16::LEN + u32::LEN + self.len() * Cell::LEN,
-        );
-        INDEX_MAGIC.encode(out);
-        INDEX_VERSION.encode(out);
-        (self.len() as u32).encode(out);
-        for cell in self.cells() {
-            cell.encode(out);
-        }
-    }
-}
-
-impl Decode for Index {
-    /// [`None`] for a header this does not read, and for a body that disagrees
-    /// with it.
-    ///
-    /// The header says how many cells follow and a cell is a fixed width, so
-    /// the length is a thing the file can be held to: anything but exactly
-    /// `count * Cell::LEN` bytes of body was written by a different build of
-    /// this code. That is the check that makes the index record's width safe
-    /// to change without moving [`INDEX_VERSION`] — without it a stale index
-    /// passes the header, decodes one record's bytes as another's, and hands
-    /// back a plausible-looking tree of nonsense. Refused here, it is a
-    /// rebuild instead of a wrong sky.
-    ///
-    /// The payload has no such check — it carries no count to be held against,
-    /// and drops a short tail rather than failing — so a change to *its* width
-    /// is caught here instead, by the version this refuses on. See
-    /// [`INDEX_VERSION`].
-    fn decode(cur: &mut &[u8]) -> Option<Index> {
-        if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
-            return None;
-        }
-        if u16::decode(cur)? != INDEX_VERSION {
-            return None;
-        }
-        let count = u32::decode(cur)? as usize;
-        if cur.len() != count * Cell::LEN {
-            return None;
-        }
-        let mut cells = Vec::with_capacity(count);
-        for _ in 0..count {
-            cells.push(Cell::decode(cur)?);
-        }
-        Some(Index::from_cells(cells))
-    }
-}
-
-impl Index {
-    /// Read an index from a build directory.
-    ///
-    /// A directory at another format version is refused here and nowhere
-    /// else: its payloads carry no header, so reading it would decode every
-    /// field of every system out of the wrong bytes. The error names the
-    /// version met, and a rebuild is the fix — `bring_level` falls back to a
-    /// full build when a resume cannot read what is there.
-    pub fn read(dir: &Path) -> io::Result<Index> {
-        let bytes = fs::read(dir.join(INDEX_FILE))?;
-        Index::from_bytes(&bytes).ok_or_else(|| {
-            let what = match index_version(&bytes) {
-                Some(found) if found != INDEX_VERSION => format!(
-                    "index format version {found}, this build reads \
-                     {INDEX_VERSION}: the payloads changed layout, so run \
-                     `galos index migrate` over the directory"
-                ),
-                _ => "not an index file".to_string(),
-            };
-            io::Error::new(io::ErrorKind::InvalidData, what)
-        })
-    }
-
-    /// Write the index file, and nothing else.
-    ///
-    /// Rewritten whole every time: the aggregates and the rank ranges, a few
-    /// megabytes over today's galaxy, and some 73 MB at two hundred million
-    /// systems — written entire on every publish, which is what it costs.
-    pub fn write(&self, dir: &Path) -> io::Result<()> {
-        fs::create_dir_all(dir)?;
-        fs::write(dir.join(INDEX_FILE), self.to_bytes())
-    }
-
-    /// Read one cell's payload from a build directory, empty when the cell owns
-    /// nothing and so has no file. Positions are in light years.
-    ///
-    /// The sharded path first and the flat one after it, so a directory
-    /// published before the sharding, or one being resharded as this reads,
-    /// answers with what it has.
-    pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<Point>> {
-        let bytes = match fs::read(payload_path(dir, id)) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                match fs::read(legacy_payload_path(dir, id)) {
-                    Ok(bytes) => bytes,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        return Ok(Vec::new());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(e) => return Err(e),
-        };
-        Ok(crate::format::payload::payload_points(id, &bytes)
-            .unwrap_or_default())
-    }
-
-    /// The first `limit` systems of a cell's payload, brightest first.
-    ///
-    /// **What a draw asks for is a share of a cell and not the cell.** The
-    /// payload is magnitude-ordered, the map draws the brightest few of it
-    /// (`galos_map`'s `bounded::wanted`), and reading the rest is bytes
-    /// faulted, decoded, held and never looked at: measured over
-    /// `.index/full`, a flight that drew eight thousand marks read 121 M
-    /// points and 5.8 GB to do it.
-    ///
-    /// Mapped rather than read, so the pages behind the rows nobody asked
-    /// for are never touched. A directory written before the columnar
-    /// layout has no head to map and falls back to the whole file, which is
-    /// what it could always do.
-    pub fn read_payload_prefix(
-        dir: &Path,
-        id: CellId,
-        limit: usize,
-    ) -> io::Result<Vec<Point>> {
-        let Some(payload) = Payload::open(dir, id)? else {
-            let mut points = Index::read_payload(dir, id)?;
-            points.truncate(limit);
-            return Ok(points);
-        };
-        let take = limit.min(payload.len());
-        Ok((0..take).map(|at| payload.point_at(at)).collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::aggregate::Aggregate;
-
-    /// An index round-trips its cells, and a file that is not one is refused
-    /// rather than misread.
-    #[test]
-    fn an_index_round_trips_and_rejects_a_bad_header() {
-        let index = Index::from_cells([
-            Cell {
-                id: CellId::ROOT,
-                rank_lo: 0,
-                rank_hi: 512,
-                child_mask: 0xFF,
-                aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
-            },
-            Cell {
-                id: CellId { level: 1, x: 0, y: 1, z: 1 },
-                rank_lo: 512,
-                rank_hi: 520,
-                child_mask: 0,
-                aggregate: Aggregate::ZERO,
-            },
-        ]);
-        let bytes = index.to_bytes();
-        assert_eq!(Index::from_bytes(&bytes), Some(index));
-        assert_eq!(
-            Index::from_bytes(b"nope and then some padding bytes"),
-            None
-        );
-    }
-
-    /// An index written when a *cell* record was a different width is refused
-    ///
-    /// [`INDEX_VERSION`] does not move for a change to the index record, so
-    /// a stale file carries the same magic and the same version and the
-    /// header cannot tell it apart. Only its length can. Without this the
-    /// decoder reads one record's bytes as another's and hands back a tree of
-    /// plausible nonsense — the wrong sky, drawn with no complaint.
-    ///
-    /// Both directions, since a record may grow as easily as shrink.
-    #[test]
-    fn an_index_of_another_width_is_refused() {
-        let cell = Cell {
-            id: CellId::ROOT,
-            rank_lo: 0,
-            rank_hi: 512,
-            child_mask: 0xFF,
-            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
-        };
-        let bytes = Index::from_cells([cell]).to_bytes();
-        assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
-
-        let mut wider = bytes.clone();
-        wider.extend_from_slice(&[0u8; 32]);
-        assert_eq!(Index::from_bytes(&wider), None, "a wider record read");
-
-        let narrower = &bytes[..bytes.len() - 32];
-        assert_eq!(Index::from_bytes(narrower), None, "a narrower record read");
-    }
-
-    /// An index at another format version is refused, and says which.
-    ///
-    /// The payload's record width rides on this version and on nothing
-    /// else, a block of points carrying no header of its own. A directory
-    /// from before the magnitude went to `f32` is well-formed at every
-    /// other check, so this is the only thing standing between it and a
-    /// galaxy decoded out of the wrong bytes.
-    #[test]
-    fn an_index_at_another_version_is_refused() {
-        let cell = Cell {
-            id: CellId::ROOT,
-            rank_lo: 0,
-            rank_hi: 512,
-            child_mask: 0xFF,
-            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
-        };
-        let bytes = Index::from_cells([cell]).to_bytes();
-        assert_eq!(index_version(&bytes), Some(INDEX_VERSION));
-
-        let mut stale = bytes.clone();
-        stale[4..6].copy_from_slice(&1u16.to_le_bytes());
-        assert_eq!(index_version(&stale), Some(1));
-        assert_eq!(Index::from_bytes(&stale), None);
-
-        assert_eq!(index_version(b"nope, not an index at all"), None);
-    }
-}

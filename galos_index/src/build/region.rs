@@ -46,8 +46,8 @@
 use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::CellId;
+use crate::core::index::Index;
 use crate::core::record::{Point, System};
-use crate::read::index::Index;
 use std::collections::{HashMap, HashSet};
 
 /// Which cells a galaxy is built a region at a time from.

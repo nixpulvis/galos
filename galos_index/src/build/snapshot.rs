@@ -10,16 +10,10 @@
 //! moved.
 
 use crate::core::aggregate::{Aggregate, Cell};
-use crate::core::codec::Encode;
 use crate::core::geometry::{CellId, MAX_LEVEL};
+use crate::core::index::Index;
 use crate::core::record::{Point, System};
-use crate::format::layout::{
-    INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
-};
-use crate::read::index::Index;
-use crate::store::cells::write_payload;
 use std::collections::{HashMap, HashSet};
-use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -411,17 +405,10 @@ impl Snapshot {
     /// galaxy's, so the index file belongs to whoever joins them — see
     /// [`crate::build::region`]. A whole build is this and then the index.
     pub fn write_payloads(&self, dir: &Path) -> io::Result<()> {
-        fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-        for (&id, points) in &self.payloads {
-            if !points.is_empty() {
-                write_payload(
-                    dir,
-                    id,
-                    crate::format::payload::payload_bytes(id, points),
-                )?;
-            }
-        }
-        Ok(())
+        crate::store::cells::write::write_payloads(
+            dir,
+            self.payloads.iter().map(|(&id, points)| (id, points.as_slice())),
+        )
     }
 
     /// Apply a diff to a directory already holding the previous tree: rewrite
@@ -429,25 +416,12 @@ impl Snapshot {
     /// The directory ends identical to a full [`write`](Self::write) of this
     /// tree, having touched only the cells whose systems moved.
     pub fn write_diff(&self, dir: &Path, dirtied: &CellDiff) -> io::Result<()> {
-        fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-        fs::write(dir.join(INDEX_FILE), self.index.to_bytes())?;
-        for &id in &dirtied.changed {
-            write_payload(
-                dir,
-                id,
-                crate::format::payload::payload_bytes(id, self.payload(id)),
-            )?;
-        }
-        for &id in &dirtied.removed {
-            for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
-                match fs::remove_file(path) {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e),
-                }
-            }
-        }
-        Ok(())
+        crate::store::cells::write::write_changes(
+            dir,
+            &self.index,
+            dirtied.changed.iter().map(|&id| (id, self.payload(id))),
+            dirtied.removed.iter().copied(),
+        )
     }
 }
 

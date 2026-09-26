@@ -2,7 +2,7 @@
 //!
 //! One place for the migrations an operator runs on purpose, rather than one
 //! command per format change: `galos index migrate` is what
-//! [`crate::read::index::Index::read`]'s refusal names, and what it does is
+//! [`crate::core::index::Index::read`]'s refusal names, and what it does is
 //! whatever the directory turns out to need. Today that is the payloads,
 //! which became columns; the next thing lands here beside it rather than as
 //! another subcommand named after a layout.
@@ -27,13 +27,13 @@
 //! they were.
 
 use crate::core::codec::Decode as _;
+use crate::core::index::Index;
 use crate::core::record::StarKind;
 use crate::format::layout::payload_path;
 use crate::format::payload::{
     INDEX_VERSION, index_version, legacy_payload_points, payload_bytes,
     payload_head,
 };
-use crate::read::index::Index;
 use std::io;
 use std::path::Path;
 

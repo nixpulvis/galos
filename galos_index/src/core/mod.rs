@@ -11,6 +11,7 @@
 pub mod aggregate;
 pub mod codec;
 pub mod geometry;
+pub mod index;
 pub mod moments;
 pub mod name;
 pub mod procedural;

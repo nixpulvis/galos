@@ -40,8 +40,8 @@
 
 use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use crate::core::geometry::CellId;
+use crate::core::index::Index;
 use crate::core::moments::Moments;
-use crate::read::index::Index;
 use crate::records::PopulatedSystem;
 use elite_journal::prelude::{Allegiance, Government, Security};
 use std::collections::HashMap;

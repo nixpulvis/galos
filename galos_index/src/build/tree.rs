@@ -28,8 +28,8 @@
 use crate::build::snapshot::{BuildParams, CellDiff, Snapshot};
 use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::{CellId, MAX_LEVEL};
+use crate::core::index::Index;
 use crate::core::record::{Point, StarKind, System};
-use crate::read::index::Index;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One system as the live tree holds it: its place and its photometry, the

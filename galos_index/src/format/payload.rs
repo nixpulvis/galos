@@ -5,15 +5,17 @@
 //! an integer count of [`POSITION_STEP`] off the cell's own low corner, so a
 //! block is read *with* its cell rather than standing on its own. The
 //! fixed-width records beside it spell their own layouts through
-//! [`crate::core::codec`]; the index file's is [`crate::read::index`].
+//! [`crate::core::codec`]; the index file's is here too, beside the version it is held to.
 //!
 //! Nothing is frozen yet: the version moves when a record's width does and
 //! the check cannot catch it (see [`INDEX_VERSION`]), and the index record
 //! keeps growing, as the aggregate gains the field step's filter marginals
 //! and its quantization.
 
-use crate::core::codec::{Decode, Encode};
+use crate::core::aggregate::Cell;
+use crate::core::codec::{Decode, Encode, FixedCodec};
 use crate::core::geometry::CellId;
+use crate::core::index::Index;
 use crate::core::record::{Point, StarKind};
 
 /// The magic at the head of a cell's payload.
@@ -263,6 +265,60 @@ pub fn index_version(bytes: &[u8]) -> Option<u16> {
     u16::decode(&mut cur)
 }
 
+/// The index file's bytes: a header naming [`INDEX_MAGIC`] and
+/// [`INDEX_VERSION`], a count, and that many fixed-width [`Cell`] records.
+/// Rewritten whole on every publish, and a file of another width or version
+/// is refused rather than misread.
+impl Encode for Index {
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.reserve(
+            INDEX_MAGIC.len() + u16::LEN + u32::LEN + self.len() * Cell::LEN,
+        );
+        INDEX_MAGIC.encode(out);
+        INDEX_VERSION.encode(out);
+        (self.len() as u32).encode(out);
+        for cell in self.cells() {
+            cell.encode(out);
+        }
+    }
+}
+
+impl Decode for Index {
+    /// [`None`] for a header this does not read, and for a body that disagrees
+    /// with it.
+    ///
+    /// The header says how many cells follow and a cell is a fixed width, so
+    /// the length is a thing the file can be held to: anything but exactly
+    /// `count * Cell::LEN` bytes of body was written by a different build of
+    /// this code. That is the check that makes the index record's width safe
+    /// to change without moving [`INDEX_VERSION`] — without it a stale index
+    /// passes the header, decodes one record's bytes as another's, and hands
+    /// back a plausible-looking tree of nonsense. Refused here, it is a
+    /// rebuild instead of a wrong sky.
+    ///
+    /// The payload has no such check — it carries no count to be held against,
+    /// and drops a short tail rather than failing — so a change to *its* width
+    /// is caught here instead, by the version this refuses on. See
+    /// [`INDEX_VERSION`].
+    fn decode(cur: &mut &[u8]) -> Option<Index> {
+        if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
+            return None;
+        }
+        if u16::decode(cur)? != INDEX_VERSION {
+            return None;
+        }
+        let count = u32::decode(cur)? as usize;
+        if cur.len() != count * Cell::LEN {
+            return None;
+        }
+        let mut cells = Vec::with_capacity(count);
+        for _ in 0..count {
+            cells.push(Cell::decode(cur)?);
+        }
+        Some(Index::from_cells(cells))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +473,91 @@ mod tests {
             StarKind::Unknown,
             "the old payload cannot have held a kind",
         );
+    }
+
+    use crate::core::aggregate::Aggregate;
+
+    /// An index round-trips its cells, and a file that is not one is refused
+    /// rather than misread.
+    #[test]
+    fn an_index_round_trips_and_rejects_a_bad_header() {
+        let index = Index::from_cells([
+            Cell {
+                id: CellId::ROOT,
+                rank_lo: 0,
+                rank_hi: 512,
+                child_mask: 0xFF,
+                aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+            },
+            Cell {
+                id: CellId { level: 1, x: 0, y: 1, z: 1 },
+                rank_lo: 512,
+                rank_hi: 520,
+                child_mask: 0,
+                aggregate: Aggregate::ZERO,
+            },
+        ]);
+        let bytes = index.to_bytes();
+        assert_eq!(Index::from_bytes(&bytes), Some(index));
+        assert_eq!(
+            Index::from_bytes(b"nope and then some padding bytes"),
+            None
+        );
+    }
+
+    /// An index written when a *cell* record was a different width is refused
+    ///
+    /// [`INDEX_VERSION`] does not move for a change to the index record, so
+    /// a stale file carries the same magic and the same version and the
+    /// header cannot tell it apart. Only its length can. Without this the
+    /// decoder reads one record's bytes as another's and hands back a tree of
+    /// plausible nonsense — the wrong sky, drawn with no complaint.
+    ///
+    /// Both directions, since a record may grow as easily as shrink.
+    #[test]
+    fn an_index_of_another_width_is_refused() {
+        let cell = Cell {
+            id: CellId::ROOT,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0xFF,
+            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+        };
+        let bytes = Index::from_cells([cell]).to_bytes();
+        assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
+
+        let mut wider = bytes.clone();
+        wider.extend_from_slice(&[0u8; 32]);
+        assert_eq!(Index::from_bytes(&wider), None, "a wider record read");
+
+        let narrower = &bytes[..bytes.len() - 32];
+        assert_eq!(Index::from_bytes(narrower), None, "a narrower record read");
+    }
+
+    /// An index at another format version is refused, and says which.
+    ///
+    /// The payload's record width rides on this version and on nothing
+    /// else, a block of points carrying no header of its own. A directory
+    /// from before the magnitude went to `f32` is well-formed at every
+    /// other check, so this is the only thing standing between it and a
+    /// galaxy decoded out of the wrong bytes.
+    #[test]
+    fn an_index_at_another_version_is_refused() {
+        let cell = Cell {
+            id: CellId::ROOT,
+            rank_lo: 0,
+            rank_hi: 512,
+            child_mask: 0xFF,
+            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+        };
+        let bytes = Index::from_cells([cell]).to_bytes();
+        assert_eq!(index_version(&bytes), Some(INDEX_VERSION));
+
+        let mut stale = bytes.clone();
+        stale[4..6].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(index_version(&stale), Some(1));
+        assert_eq!(Index::from_bytes(&stale), None);
+
+        assert_eq!(index_version(b"nope, not an index at all"), None);
     }
 }

@@ -22,7 +22,7 @@
 //! holding keeps reading the galaxy the route started on.
 
 use crate::core::geometry::CellId;
-use crate::read::index::Index;
+use crate::core::index::Index;
 use crate::store::cells::Payload;
 use elite_journal::Boxel;
 use std::collections::HashMap;

@@ -1386,7 +1386,7 @@ fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read::index::Index;
+    use crate::core::index::Index;
     use crate::records::{Body, NameEntry, Star};
     use crate::store::sidecars::{write_boosts, write_reaches};
     use chrono::{DateTime, Utc};

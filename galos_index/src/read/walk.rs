@@ -27,7 +27,7 @@
 
 use crate::core::aggregate::AGE_BUCKETS;
 use crate::core::geometry::CellId;
-use crate::read::index::{Index, Node, distance};
+use crate::core::index::{Index, Node, distance};
 use galos_photometry::{Distance, Magnitude};
 
 /// The field's resolution limit, in pixels: the widest a cell's own contents
@@ -665,7 +665,7 @@ fn splitting(view: &View, node: &Node, merge_px: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::core::aggregate::{Aggregate, Cell};
-    use crate::read::index::{contents_extent, contents_width};
+    use crate::core::index::{contents_extent, contents_width};
 
     /// The sky read at the eye's own limit, which is where the exposure
     /// rests.
@@ -1208,8 +1208,8 @@ mod tests {
 mod merging {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
+    use crate::core::index::contents_center;
     use crate::core::record::{StarKind, System};
-    use crate::read::index::contents_center;
 
     /// Where the test skies are hung: the galactic centre, so the cells a
     /// build makes are the ones a real sky would land in.

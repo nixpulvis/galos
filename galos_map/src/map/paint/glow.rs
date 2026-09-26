@@ -92,7 +92,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::read::index::UNIFORM_SPAN;
+use galos_index::core::index::UNIFORM_SPAN;
 use galos_index::read::inhabited::{
     Inhabited, allegiance_at, government_at, security_at,
 };
