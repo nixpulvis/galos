@@ -35,7 +35,6 @@ use crate::map::galaxy::System;
 use crate::map::galaxy::fetch::Poll;
 use crate::map::galaxy::spawn::system_at;
 use crate::map::index::{Factions, Names, Populated};
-use crate::map::route::graph::{Drive, Routing, Tuning};
 use crate::map::schedule::MapSet;
 use crate::map::search::Pending;
 use bevy::ecs::system::SystemParam;
@@ -43,6 +42,7 @@ use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use chrono::{DateTime, Duration, Utc};
 use galos_index::meta::Faction as DbFaction;
+use galos_route::graph::{Drive, Routing, Tuning};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Filters>();
@@ -1653,7 +1653,7 @@ fn mark(
 mod tests {
     use super::*;
     use crate::map::galaxy::tests::{heard, system};
-    use crate::map::route::graph::Crossing;
+    use galos_route::graph::Crossing;
 
     /// A moment `secs` after the epoch
     fn moment(secs: i64) -> DateTime<Utc> {
@@ -2384,7 +2384,7 @@ mod tests {
     /// of the kinds.
     #[test]
     fn the_gathered_filters_answer_what_walking_them_answers() {
-        use crate::map::route::graph::{Drive, Routing, Tuning};
+        use galos_route::graph::{Drive, Routing, Tuning};
 
         let route = |stops: Vec<i64>| Filter::Route {
             label: "route".to_owned(),

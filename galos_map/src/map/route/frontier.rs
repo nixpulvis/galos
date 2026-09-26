@@ -11,7 +11,7 @@
 //!
 //! - **Where it has been.** The coarse cells the search has expanded in, dim
 //!   and only ever growing: the closed set, a region filling. Cell size is a
-//!   [`CELLS`]th of the way from the start to the goal, so the picture is
+//!   [`CELLS`](galos_route::graph::CELLS)th of the way from the start to the goal, so the picture is
 //!   about that many cells along the route whether it is two hundred light
 //!   years or twenty-two thousand. Coarse on purpose — a mark per cell at
 //!   sixty-four cells along was a lattice dense enough to read as ruling
@@ -34,72 +34,24 @@
 //! cumulative sample and halved it whenever it filled — which reads as the
 //! search restarting, over and over, and is what this replaced.
 //!
-//! What the search pays for all of it is in [`crate::map::route::graph::Sampler`]: a
+//! What the search pays for all of it is in [`galos_route::graph::Sampler`]: a
 //! counter and a distance per expansion, a cell insert and a jump on one in
-//! [`STRIDE`], and a walk back up the search's own parent map when the closest
+//! [`STRIDE`](galos_route::graph::STRIDE), and a walk back up the search's own parent map when the closest
 //! system reached moves. Nothing per neighbour, which is what an earlier cut
 //! paid and what put the cost at ninety-eight per cent.
 
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::fetch::FetchIndex;
 use crate::map::route::LineList;
-use crate::map::route::graph::{Drawn, Frontier};
 use crate::map::screen::world_per_pixel;
 use crate::map::space::Galaxy;
 use bevy::math::DVec3;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use big_space::prelude::*;
+use galos_route::graph::{Drawn, Frontier};
 use std::sync::Arc;
 use std::time::Duration;
-
-/// How many cells of the closed set span the route being plotted
-///
-/// The bound on the dimmest layer, and it is a bound by geometry rather than
-/// by count: the cells the search touches are the corridor it searched, and a
-/// corridor a couple of cells wide across twenty long is a hundred or so
-/// marks however long the route is. Fewer and larger reads; more and smaller
-/// is a haze over the sky.
-pub(crate) const CELLS: f64 = 20.;
-
-/// The most cells the closed set holds before it is drawn coarser
-///
-/// [`CELLS`] bounds the layer by geometry, which holds while the search stays
-/// in a corridor — and it does whenever there is a route to find. There is
-/// not always: a leg to a system unreachable at the range asked expands the
-/// whole component it can reach, in every direction, and a corridor's worth
-/// of cells becomes a region's. So there is a count as well as a geometry,
-/// and passing it doubles the cell rather than dropping anything: the picture
-/// goes coarser, which is what it should do when a search has stopped being
-/// a line and become a volume, and it stays a picture of everywhere the
-/// search has been.
-///
-/// Well clear of what the geometry asks for — a corridor two cells wide by
-/// twenty long is a hundred or so — so an ordinary route never reaches it and
-/// is drawn exactly as [`CELLS`] says.
-pub(crate) const CELL_CEILING: usize = 4096;
-
-/// One expansion in how many is drawn
-///
-/// Only the two sampled layers pay this — the closed set and the window — and
-/// what they lose is nothing anyone could see: at half a million expansions,
-/// one in sixteen still fills every cell of the corridor several times over.
-pub(crate) const STRIDE: u64 = 16;
-
-/// How many cells the leading edge holds
-///
-/// The last cells the work moved through, so the bright set is a few marks
-/// stepping along rather than a second region. Few enough to read as a place
-/// and not as an area, more than one so that which way it is going can be
-/// seen at all.
-pub(crate) const EDGE: usize = 8;
-
-/// How many samples are held before the search hands them over
-///
-/// The whole of what keeps the lock off the hot loop: a batch of these is one
-/// lock. Small enough that the map has something to draw within a frame or two
-/// of the search starting.
-pub(crate) const BATCH: usize = 32;
 
 /// How few pixels across a mark may be drawn
 ///
@@ -636,8 +588,9 @@ fn mark(at: Vec3, across: f32) -> [Vec3; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::route::graph::Frontier;
     use galos_index::{CellId, Node};
+    use galos_route::graph::Frontier;
+    use galos_route::graph::{BATCH, EDGE, STRIDE};
     use rustc_hash::FxHashMap;
 
     /// A place `along` light years down the x axis
@@ -757,8 +710,7 @@ mod tests {
         let mut owner = frontier.sampler();
         let mut sibling = owner.beside();
         let came = chain(10);
-        let expand = |sampler: &mut crate::map::route::graph::Sampler,
-                      along: f64| {
+        let expand = |sampler: &mut galos_route::graph::Sampler, along: f64| {
             for step in 0..(STRIDE * BATCH as u64 * 4) {
                 sampler.expanded(
                     node((step % 10) as u32),
@@ -968,7 +920,7 @@ mod tests {
                     Some("a trip".into()),
                     crate::map::route::Drive::Standard,
                     crate::map::route::Routing::QUICK,
-                    crate::map::route::graph::Tuning::default(),
+                    galos_route::graph::Tuning::default(),
                 ),
                 frontier,
                 asked,
@@ -1026,7 +978,7 @@ mod tests {
                 None,
                 crate::map::route::Drive::Standard,
                 crate::map::route::Routing::FEWEST,
-                crate::map::route::graph::Tuning::default(),
+                galos_route::graph::Tuning::default(),
             ),
             Arc::clone(&frontier),
             Instant::now(),

@@ -2,13 +2,13 @@ use crate::map::galaxy::System;
 use crate::map::galaxy::spawn::system_at;
 use crate::map::index::{Names, Populated};
 use crate::map::route::fetch::fetch_route;
-use crate::map::route::graph::{Drive, Routing, Tuning};
 use crate::map::schedule::MapSet;
 use crate::map::search::Search;
 use crate::map::selection::Selection;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use chrono::{DateTime, Utc};
+use galos_route::graph::{Drive, Routing, Tuning};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -21,9 +21,9 @@ pub fn plugin(app: &mut App) {
     // when a route is first asked for, which may be before a read has
     // landed. An absent supercharge table is what the map says where it
     // cannot say where a jet cone is, which is exactly the right answer
-    // before the read — see [`crate::map::index::Boosts::absent`].
-    app.init_resource::<crate::map::index::Boosts>();
-    app.init_resource::<crate::map::route::graph::Jumps>();
+    // before the read — see [`galos_route::Boosts::absent`].
+    app.init_resource::<galos_route::Boosts>();
+    app.init_resource::<galos_route::graph::Jumps>();
     // And how the form says a plot is getting on, which the route fetch
     // writes: a click that takes a route back leaves nothing to wait on,
     // and the spinner has to stop. The form's own plugin inits this too;
@@ -169,12 +169,12 @@ pub fn fetch_searched(
     mut tasks: ResMut<FetchTasks>,
     mut searching: ResMut<crate::map::route::frontier::Frontiers>,
     time: Res<Time<Real>>,
-    mut jumps: ResMut<crate::map::route::graph::Jumps>,
+    mut jumps: ResMut<galos_route::graph::Jumps>,
     names: Res<Names>,
-    boosts: Res<crate::map::index::Boosts>,
+    boosts: Res<galos_route::Boosts>,
     populated: Res<Populated>,
     mut plot: ResMut<crate::map::search::Plot>,
-    tune: Res<crate::map::route::graph::Tuning>,
+    tune: Res<galos_route::graph::Tuning>,
     mut filters: ResMut<crate::map::filter::Filters>,
     mut selected: ResMut<crate::map::route::SelectedFilter>,
 ) {
@@ -351,8 +351,8 @@ pub(crate) mod tests {
         ));
         app.add_message::<Search>();
         app.init_resource::<Selection>();
-        app.init_resource::<crate::map::route::graph::Routing>();
-        app.init_resource::<crate::map::route::graph::Tuning>();
+        app.init_resource::<galos_route::graph::Routing>();
+        app.init_resource::<galos_route::graph::Tuning>();
         app.init_resource::<crate::map::route::frontier::Frontiers>();
         // The rows a plot puts up, and which route is the one being looked
         // at: a leg's row goes up when it is asked for, so the ask writes
@@ -364,7 +364,7 @@ pub(crate) mod tests {
         let dir = crate::testing::Scratch::new("fetch");
         let sky = crate::testing::sky_of(dir.path(), &entries);
         let names = Names::reaching(entries, Vec::new());
-        app.insert_resource(crate::map::route::graph::Jumps::over(sky));
+        app.insert_resource(galos_route::graph::Jumps::over(sky));
         app.insert_resource(names);
         app.insert_resource(Populated::default());
         app.add_plugins(plugin);
@@ -467,7 +467,7 @@ pub(crate) mod tests {
     ///
     /// The searches are told to give up as well as dropped: a body the pool
     /// has begun does not stop for being dropped. See
-    /// [`crate::map::route::graph::Frontier::abandon`].
+    /// [`galos_route::graph::Frontier::abandon`].
     #[test]
     fn a_stop_takes_back_every_leg_of_a_trip() {
         let (mut app, _dir) = plotting();

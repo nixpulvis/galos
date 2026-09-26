@@ -8,12 +8,11 @@
 //! scanning them all, so the positions are bucketed into a coarse spatial grid
 //! and a jump looks only in the buckets a ship could reach.
 
-use crate::map::index::Boosts;
-use crate::map::route::highway::Highway;
-use bevy::math::DVec3;
-use bevy::prelude::*;
+use crate::Boosts;
+use crate::highway::Highway;
 use galos_index::meta::Boost;
 use galos_index::{CellId, Node, Sky};
+use glam::DVec3;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -55,8 +54,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// The same four hundred and fifty-eight jumps either way here, for a
 /// twentieth of the wait — but only the second row *proves* it is the
 /// fewest, and that proof is nearly all of the time.
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct Routing {
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Routing {
     /// How many jumps over the fewest it may settle for, in percent
     ///
     /// Offered as its complement — **optimality**, where 100% is nothing
@@ -96,12 +96,12 @@ pub(crate) struct Routing {
     /// up to whole jumps is not the same as weighting the whole jumps — it
     /// overstates by up to a jump wherever it lands, which for a system one
     /// jump out is an estimate of two and no five percent about it.
-    pub(crate) over: u32,
+    pub over: u32,
     /// What the route is weighed by: jumps, distance, or fuel
     ///
     /// The second of the two questions, and the one that says what "best"
     /// means before the first says how hard to prove it. See [`Weigh`].
-    pub(crate) weigh: Weigh,
+    pub weigh: Weigh,
 }
 
 /// What a route is weighed by
@@ -118,7 +118,7 @@ pub(crate) struct Routing {
 /// does not fit a flag: it is not a tie-break on the jump count, it is
 /// another thing to count.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(crate) enum Weigh {
+pub enum Weigh {
     /// The fewest jumps, ties broken by heading at the goal
     #[default]
     Jumps,
@@ -190,7 +190,7 @@ impl Default for Routing {
 /// a jump costs `WHOLE`, so the weighting is exact arithmetic on integers
 /// rather than a float rounded at two places. A hundred because the setting
 /// is offered in percent; every whole percent lands on its own integer.
-pub(crate) const WHOLE: u32 = 100;
+pub const WHOLE: u32 = 100;
 
 /// How many percent over the fewest the quick answer settles for
 ///
@@ -199,8 +199,7 @@ pub(crate) const WHOLE: u32 = 100;
 /// times the jumps over. What the form's slider opens at is the user's
 /// business — this is the number the measurements in `Routing` were taken
 /// at, and the fixture the tests ask for.
-#[cfg(test)]
-pub(crate) const OVER: u32 = 5;
+pub const OVER: u32 = 5;
 
 /// Whether a setting is allowed to approximate.
 ///
@@ -220,22 +219,16 @@ impl Routing {
     /// settings: what the map asks for is whatever the two controls say,
     /// and these are how the tests and the measurements name the corners
     /// the old three-way choice used to offer.
-    #[cfg(test)]
-    pub(crate) const FEWEST: Routing = Routing { over: 0, weigh: Weigh::Jumps };
+    pub const FEWEST: Routing = Routing { over: 0, weigh: Weigh::Jumps };
 
     /// Inside [`OVER`] percent of the fewest, and a hundredth of the time.
-    #[cfg(test)]
-    pub(crate) const QUICK: Routing =
-        Routing { over: OVER, weigh: Weigh::Jumps };
+    pub const QUICK: Routing = Routing { over: OVER, weigh: Weigh::Jumps };
 
     /// The fewest jumps, and provably the shortest chain of that many.
-    #[cfg(test)]
-    pub(crate) const SHORTEST: Routing =
-        Routing { over: 0, weigh: Weigh::Shortest };
+    pub const SHORTEST: Routing = Routing { over: 0, weigh: Weigh::Shortest };
 
     /// The least fuel, proven.
-    #[cfg(test)]
-    pub(crate) const ECONOMICAL: Routing =
+    pub const ECONOMICAL: Routing =
         Routing { over: 0, weigh: Weigh::Fuel { hop: HOP, expand: 0 } };
 
     /// Whether anything about the answer is unproven
@@ -260,7 +253,7 @@ impl Routing {
     /// percent of nothing switched the coarse plan on regardless — and a
     /// planned route cannot claim to be proven, its edges being lower
     /// bounds on gaps rather than chains anything has flown.
-    pub(crate) fn approximates(&self) -> bool {
+    pub fn approximates(&self) -> bool {
         match self.weigh {
             Weigh::Fuel { hop: 0, expand } => expand != 0,
             _ => self.over > 0,
@@ -268,7 +261,7 @@ impl Routing {
     }
 
     /// What the estimate is multiplied by, against [`WHOLE`] for a jump.
-    pub(crate) fn weight(&self) -> u32 {
+    pub fn weight(&self) -> u32 {
         WHOLE + self.over
     }
 
@@ -302,7 +295,7 @@ impl Routing {
     /// does not draw it there.** `Expand nearest` is offered at an
     /// unpriced hop alone — a priced one takes long jumps and few of them
     /// — but the count the rail last held travelled along with the ask
-    /// ([`crate::ui::traded`]) and went on biting where nobody could see
+    /// (`galos_map`'s `traded`) and went on biting where nobody could see
     /// it. Measured over `.index/full` at 45 ly, least fuel at a 5% hop,
     /// the remembered 64 against the valve:
     ///
@@ -332,7 +325,7 @@ impl Routing {
 
     /// Whether a long supercharged route may be planned on the boost stars
     ///
-    /// The same rule: a chain of jet cones ([`crate::map::route::highway`]) is a guess
+    /// The same rule: a chain of jet cones ([`crate::highway`]) is a guess
     /// at which cones are worth taking and its edges say how few jumps
     /// *could* cross a gap rather than that a chain of systems crosses it
     /// that way. Nothing about the route it leads to is proven.
@@ -359,12 +352,12 @@ impl Routing {
     /// theorem says a route costs no more than `1 + over/100` times the
     /// fewest, so 95% optimality is a route inside 105% of the fewest
     /// jumps, which is the same claim said the way round people say it.
-    pub(crate) fn optimality(&self) -> u32 {
+    pub fn optimality(&self) -> u32 {
         100 - self.over.min(100)
     }
 
     /// The setting an optimality asks for.
-    pub(crate) fn at(optimality: u32, weigh: Weigh) -> Routing {
+    pub fn at(optimality: u32, weigh: Weigh) -> Routing {
         Routing { over: 100 - optimality.min(100), weigh }
     }
 
@@ -387,7 +380,7 @@ impl Routing {
     /// is the whole of the promise. The middle case is the state the form
     /// does not offer — a cap kept at an unpriced hop with no slack asked
     /// for — and what it gave up is the cap, which the line ends with.
-    pub(crate) fn named(&self) -> String {
+    pub fn named(&self) -> String {
         let quality = match (self.approximates(), self.over) {
             (false, _) => "optimal".to_owned(),
             (true, 0) => "bounded by what it expanded".to_owned(),
@@ -447,13 +440,14 @@ const LONG_ROUTE_LY: f64 = 1_500.;
 /// So they are settings, with the defaults measured rather than assumed.
 /// Only [`Routing::QUICK`] reads any of them: `Direct` and `Shortest` are
 /// proven fewest-jumps routes and have nothing to trade.
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Tuning {
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Tuning {
     /// How large a gap the plan strings together to begin with, in whole
     /// light years
     ///
     /// Whole, because it travels in a route's own identity
-    /// ([`crate::map::filter::Filter::Route`]) and an identity wants
+    /// (`galos_map`'s `Filter::Route`) and an identity wants
     /// [`Hash`] and [`Eq`] — which a float does not have, and for good
     /// reason. A light year is finer than any gap worth telling apart: a
     /// rung of the ladder is a whole jump, tens of light years.
@@ -482,9 +476,9 @@ pub(crate) struct Tuning {
     /// | 450 ly | 47 | 33.6 ms |
     /// | 495 ly | **32** | **6.2 ms** |
     ///
-    /// So [`crate::map::route::highway::Highway::plan`] climbs it — a plan that does
+    /// So [`crate::highway::Highway::plan`] climbs it — a plan that does
     /// not close is tried again a jump wider — and this is where the climb
-    /// starts, which is [`crate::map::route::highway::GAPS_LY`] and no longer a
+    /// starts, which is [`crate::highway::GAPS_LY`] and no longer a
     /// question the form asks. A wider reach only adds edges to the cone
     /// graph, so a reader could only ever set this too low, and too low is
     /// a cliff.
@@ -493,7 +487,7 @@ pub(crate) struct Tuning {
     /// hop *is* those: asked for less, the bridging allowance the plan
     /// derives from this clamps at one jump and the reach is quietly more
     /// than the number said.
-    pub(crate) reach: u32,
+    pub reach: u32,
     /// Expansions the coarse plan spends without closing on the goal before
     /// it gives up
     ///
@@ -501,7 +495,7 @@ pub(crate) struct Tuning {
     /// nowhere. EDDA caps outright instead — 30,000 expansions, then it
     /// takes the closest cone reached and hands the rest to the flat
     /// planner (`long_range.rs:2755-2758`).
-    pub(crate) stall: u64,
+    pub stall: u64,
     /// How many percent over the fewest *hops* the coarse plan leans by,
     /// where nothing is an exact plan over the cone graph
     ///
@@ -537,7 +531,7 @@ pub(crate) struct Tuning {
     /// which is EDDA's own coarse weight (`long_range.rs:52-57`): the
     /// setting is there for the corridor where even the route's own
     /// leaning crawls.
-    pub(crate) planning: u32,
+    pub planning: u32,
     /// Expansions an exact coarse plan may spend before the plan is worked
     /// leaned instead, or [`None`] to pay whatever it costs
     ///
@@ -576,19 +570,19 @@ pub(crate) struct Tuning {
     /// Far under [`Self::stall`] where it is set at all, deliberately:
     /// the stall rule belongs to the pass that has to answer, and a
     /// bounded exact pass is abandoned long before it could stall.
-    pub(crate) allowance: Option<u64>,
+    pub allowance: Option<u64>,
     /// How the jumps that cross one gap of the plan are found
-    pub(crate) crossing: Crossing,
+    pub crossing: Crossing,
 }
 
 impl Default for Tuning {
     /// What a plot is asked for unless the settings say otherwise
     fn default() -> Self {
         Tuning {
-            reach: crate::map::route::highway::GAPS_LY,
-            stall: crate::map::route::highway::STALL,
+            reach: crate::highway::GAPS_LY,
+            stall: crate::highway::STALL,
             planning: 0,
-            allowance: Some(crate::map::route::highway::ALLOWANCE),
+            allowance: Some(crate::highway::ALLOWANCE),
             crossing: Crossing::default(),
         }
     }
@@ -600,7 +594,7 @@ impl Tuning {
     ///
     /// The plan's own leaning, where [`Routing::weight`] is the route's.
     /// Exact at nothing, which is what [`Self::planning`] opens at.
-    pub(crate) fn weight(&self) -> u32 {
+    pub fn weight(&self) -> u32 {
         WHOLE + self.planning
     }
 }
@@ -620,7 +614,7 @@ impl Tuning {
 /// prose still says "leg" internally — [`JumpGraph::leg`],
 /// [`JumpGraph::flown`] — which is the word EDDA uses for it too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) enum Crossing {
+pub enum Crossing {
     /// Step across the gap, on whatever the route is weighed by
     ///
     /// A gap has a boost star at either end — the one the ship stands on
@@ -713,15 +707,16 @@ pub(crate) enum Crossing {
 /// Asked per route rather than set once, for the reason a jump range is: the
 /// same two ends flown by a different ship is a different route through
 /// different systems, and a map that redrew the line under an old label would
-/// be lying about what it plotted. See [`crate::map::filter::Filter`].
+/// be lying about what it plotted. See `galos_map`'s `Filter`.
 ///
 /// White dwarfs are in both settings and worth less than they look. Their
 /// exclusion zone is much larger, the wiki calls them not worth the risk for
 /// half again, and there are seven thousand of them against ninety-four
 /// thousand neutron stars in the data — so what they change is a route with a
 /// gap in its neutron chain, and little else.
-#[derive(Resource, Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(crate) enum Drive {
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub enum Drive {
     /// No supercharging: every jump is the range the ship reaches unaided.
     #[default]
     Unaided,
@@ -737,7 +732,7 @@ impl Drive {
     ///
     /// One where there is no boost to be had or no drive to take it, so a
     /// caller can scale by this unconditionally.
-    pub(crate) fn factor(&self, boost: Option<Boost>) -> f64 {
+    pub fn factor(&self, boost: Option<Boost>) -> f64 {
         match (self, boost) {
             (Drive::Unaided, _) | (_, None) => 1.,
             (Drive::Standard, Some(Boost::WhiteDwarf)) => 1.5,
@@ -756,12 +751,12 @@ impl Drive {
     /// jump the drive could make, however few systems can offer one. It costs
     /// a weaker estimate and more of the graph searched, which is the price of
     /// the answer being true.
-    pub(crate) fn widest(&self) -> f64 {
+    pub fn widest(&self) -> f64 {
         self.factor(Some(Boost::Neutron))
     }
 
     /// What the row for a route says it was plotted for, where anything.
-    pub(crate) fn named(&self) -> Option<&'static str> {
+    pub fn named(&self) -> Option<&'static str> {
         match self {
             Drive::Unaided => None,
             Drive::Standard => Some("supercharged"),
@@ -907,9 +902,8 @@ fn floor(hop: u32) -> u32 {
 /// A fixture and no longer a default. The form asks for the trade on one
 /// rail whose ends are the fewest jumps and the least fuel, so where the
 /// handle stands *is* the hop and there is nothing left for a default hop
-/// to mean. See [`crate::ui`].
-#[cfg(test)]
-pub(crate) const HOP: u32 = 50;
+/// to mean. See the map's chrome.
+pub const HOP: u32 = 50;
 
 /// How many of each sphere's systems a fuel-weighed route expands, unless
 /// told otherwise
@@ -963,7 +957,7 @@ pub(crate) const HOP: u32 = 50;
 /// taking sixty-four rather than everything. Against a short-range ship it
 /// is worth 1.3x and nothing else, the sphere barely holding more than the
 /// cap allows.
-pub(crate) const EXPAND: u32 = 64;
+pub const EXPAND: u32 = 64;
 
 /// What a jump of `leg` costs the tank, at a ship whose range is `range`
 ///
@@ -1148,10 +1142,61 @@ impl std::ops::Add for Cost {
     }
 }
 
+// How the search is drawn while it runs: what the map's frontier painter
+// is handed, sampled here so the hot loop pays for it once in a while.
+
+/// How many cells of the closed set span the route being plotted
+///
+/// The bound on the dimmest layer, and it is a bound by geometry rather than
+/// by count: the cells the search touches are the corridor it searched, and a
+/// corridor a couple of cells wide across twenty long is a hundred or so
+/// marks however long the route is. Fewer and larger reads; more and smaller
+/// is a haze over the sky.
+pub const CELLS: f64 = 20.;
+
+/// The most cells the closed set holds before it is drawn coarser
+///
+/// [`CELLS`] bounds the layer by geometry, which holds while the search stays
+/// in a corridor — and it does whenever there is a route to find. There is
+/// not always: a leg to a system unreachable at the range asked expands the
+/// whole component it can reach, in every direction, and a corridor's worth
+/// of cells becomes a region's. So there is a count as well as a geometry,
+/// and passing it doubles the cell rather than dropping anything: the picture
+/// goes coarser, which is what it should do when a search has stopped being
+/// a line and become a volume, and it stays a picture of everywhere the
+/// search has been.
+///
+/// Well clear of what the geometry asks for — a corridor two cells wide by
+/// twenty long is a hundred or so — so an ordinary route never reaches it and
+/// is drawn exactly as [`CELLS`] says.
+pub const CELL_CEILING: usize = 4096;
+
+/// One expansion in how many is drawn
+///
+/// Only the two sampled layers pay this — the closed set and the window — and
+/// what they lose is nothing anyone could see: at half a million expansions,
+/// one in sixteen still fills every cell of the corridor several times over.
+pub const STRIDE: u64 = 16;
+
+/// How many cells the leading edge holds
+///
+/// The last cells the work moved through, so the bright set is a few marks
+/// stepping along rather than a second region. Few enough to read as a place
+/// and not as an area, more than one so that which way it is going can be
+/// seen at all.
+pub const EDGE: usize = 8;
+
+/// How many samples are held before the search hands them over
+///
+/// The whole of what keeps the lock off the hot loop: a batch of these is one
+/// lock. Small enough that the map has something to draw within a frame or two
+/// of the search starting.
+pub const BATCH: usize = 32;
+
 /// What a search has reached, as it reaches it
 ///
 /// Shared between the task running the search and the map drawing it: the
-/// search fills it in and [`crate::map::route::frontier`] reads it out a frame at a time.
+/// search fills it in and `galos_map`'s frontier painter reads it out a frame at a time.
 /// Behind a lock rather than a channel because what the map wants is not every
 /// message but the state of the thing.
 ///
@@ -1184,7 +1229,7 @@ impl std::ops::Add for Cost {
 /// thread, and dropping the task does not interrupt a body that is already
 /// running.
 #[derive(Default)]
-pub(crate) struct Frontier {
+pub struct Frontier {
     /// The picture, under the lock.
     reached: Mutex<Reached>,
     /// Where the route is going, in light years
@@ -1246,7 +1291,7 @@ struct Reached {
     /// still until something else disturbs it — which is what happened, and
     /// what read as a picture that only updated when the camera moved.
     ///
-    /// Read on its own by [`crate::map::route::frontier::draw`] before it takes a copy,
+    /// Read on its own by the map's frontier painter before it takes a copy,
     /// so a frame where nothing has moved costs one lock and one compare
     /// rather than a walk of the whole closed set.
     revision: u64,
@@ -1263,42 +1308,42 @@ struct Reached {
 }
 
 /// What the map draws of a search, taken in one lock.
-pub(crate) struct Drawn {
+pub struct Drawn {
     /// Where the search set out from
-    pub(crate) from: DVec3,
+    pub from: DVec3,
     /// How wide a cell of the closed set is, in light years
-    pub(crate) across: f64,
+    pub across: f64,
     /// The middle of every cell expanded in
-    pub(crate) cells: Vec<DVec3>,
+    pub cells: Vec<DVec3>,
     /// The middle of the last few cells worked in, newest last
-    pub(crate) edge: Vec<DVec3>,
+    pub edge: Vec<DVec3>,
     /// Where the route is going
     ///
     /// Drawn to, not just measured against: a search's chain stops at the
     /// closest thing it has reached, which on a galactic plot is hundreds
     /// of light years short of the goal and *looks arrived* — the gap is
-    /// sub-pixel at that zoom. See [`crate::map::route::frontier::left_color`].
-    pub(crate) goal: DVec3,
+    /// sub-pixel at that zoom. See the frontier painter's `left_color`.
+    pub goal: DVec3,
     /// The coarse plan, empty where there was none
-    pub(crate) plan: Vec<DVec3>,
+    pub plan: Vec<DVec3>,
     /// A branch per leg flown, and the leg under way
-    pub(crate) reaching: Vec<Vec<DVec3>>,
+    pub reaching: Vec<Vec<DVec3>>,
     /// How far that system is from the goal, in light years
-    pub(crate) closest: f64,
+    pub closest: f64,
     /// How many times anything here has moved; see [`Reached::revision`]
-    pub(crate) revision: u64,
+    pub revision: u64,
     /// How many times the closed set has grown or coarsened
-    pub(crate) cells_at: u64,
+    pub cells_at: u64,
     /// How many times the leading edge has moved
-    pub(crate) edge_at: u64,
+    pub edge_at: u64,
     /// How many times the chain has moved
-    pub(crate) reaching_at: u64,
+    pub reaching_at: u64,
 }
 
 impl Frontier {
     /// A frontier for a search from `from` to `goal`
     ///
-    /// The cell of the closed set is [`crate::map::route::frontier::CELLS`]-th of the way
+    /// The cell of the closed set is [`crate::graph::CELLS`]-th of the way
     /// between them, so the picture is about that many cells along the route
     /// whether that is two hundred light years or twenty-two thousand. Which
     /// is what bounds the set by the geometry rather than by a count: the
@@ -1308,15 +1353,13 @@ impl Frontier {
     /// A corridor is what a search that has a route to find walks. One that
     /// has not expands in every direction until the reachable component runs
     /// out, and then the geometry bounds nothing — so the cell is widened
-    /// again past [`crate::map::route::frontier::CELL_CEILING`] of them; see
+    /// again past [`crate::graph::CELL_CEILING`] of them; see
     /// [`Sampler::flush`].
-    pub(crate) fn between(from: DVec3, goal: DVec3) -> Arc<Frontier> {
+    pub fn between(from: DVec3, goal: DVec3) -> Arc<Frontier> {
         Arc::new(Frontier {
             reached: Mutex::new(Reached {
                 from: Some(from),
-                across: (from.distance(goal)
-                    / crate::map::route::frontier::CELLS)
-                    .max(1.),
+                across: (from.distance(goal) / crate::graph::CELLS).max(1.),
                 closest: f64::INFINITY,
                 ..Reached::default()
             }),
@@ -1326,7 +1369,7 @@ impl Frontier {
     }
 
     /// A sampler that feeds this, for a search to carry.
-    pub(crate) fn sampler(self: &Arc<Frontier>) -> Sampler {
+    pub fn sampler(self: &Arc<Frontier>) -> Sampler {
         let reached = self.reached.lock().expect("the frontier lock");
         Sampler {
             goal: self.goal,
@@ -1334,7 +1377,7 @@ impl Frontier {
             expanded: 0,
             across: reached.across,
             cells: HashSet::new(),
-            edge: VecDeque::with_capacity(crate::map::route::frontier::EDGE),
+            edge: VecDeque::with_capacity(crate::graph::EDGE),
             worked: None,
             stepped: false,
             plan: Vec::new(),
@@ -1349,7 +1392,7 @@ impl Frontier {
 
     /// What there is to draw, or [`None`] where the search has reached
     /// nothing yet.
-    pub(crate) fn drawn(&self) -> Option<Drawn> {
+    pub fn drawn(&self) -> Option<Drawn> {
         let reached = self.reached.lock().expect("the frontier lock");
         Some(Drawn {
             from: reached.from?,
@@ -1377,27 +1420,27 @@ impl Frontier {
 
     /// Where the search set out from, once its ends have resolved
     ///
-    /// Fixed for the whole of a search, so [`crate::map::route::frontier::draw`] takes it
+    /// Fixed for the whole of a search, so the map's frontier painter takes it
     /// once and keeps it: the depth a mark is sized at is measured from here,
     /// and that has to be known before the revision can be weighed against a
     /// zoom that has moved.
-    pub(crate) fn from(&self) -> Option<DVec3> {
+    pub fn from(&self) -> Option<DVec3> {
         self.reached.lock().expect("the frontier lock").from
     }
 
     /// How many times the picture has moved; see [`Reached::revision`]
     ///
-    /// The whole of what [`crate::map::route::frontier::draw`] needs to know whether to
+    /// The whole of what the map's frontier painter needs to know whether to
     /// take a copy at all. Asked first and on its own, since [`Self::drawn`]
     /// walks every cell of the closed set and clones the chain, under the lock
     /// the search flushes through — work worth nothing on a frame where the
     /// picture has not changed, which is most of them.
-    pub(crate) fn revision(&self) -> u64 {
+    pub fn revision(&self) -> u64 {
         self.reached.lock().expect("the frontier lock").revision
     }
 
     /// How many systems the search has expanded.
-    pub(crate) fn expanded(&self) -> u64 {
+    pub fn expanded(&self) -> u64 {
         self.reached.lock().expect("the frontier lock").expanded
     }
 
@@ -1406,7 +1449,7 @@ impl Frontier {
     /// Set when the search stops of its own accord ([`Sampler::done`]) and
     /// when its leg is given up on ([`Self::abandon`]), the map having the
     /// same thing to do either way: take the layers down.
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.reached.lock().expect("the frontier lock").finished
     }
 
@@ -1418,7 +1461,7 @@ impl Frontier {
     /// begun polling it never runs, so nothing calls [`Sampler::done`] and
     /// the frontier would sit unfinished for the rest of the session — three
     /// layer entities apiece, re-uploaded on every zoom, and counted by
-    /// [`Frontiers::expanded`] and [`Frontiers::closest`] that the form
+    /// `Frontiers::expanded` and `Frontiers::closest` that the form
     /// reads.
     ///
     /// **And the search stops.** Dropping the task does *not* interrupt a
@@ -1430,9 +1473,7 @@ impl Frontier {
     /// makes a click on the plot button over a route being searched mean
     /// something.
     ///
-    /// [`Frontiers::expanded`]: crate::map::route::frontier::Frontiers::expanded
-    /// [`Frontiers::closest`]: crate::map::route::frontier::Frontiers::closest
-    pub(crate) fn abandon(&self) {
+    pub fn abandon(&self) {
         self.stopped.store(true, Ordering::Relaxed);
         self.reached.lock().expect("the frontier lock").finished = true;
     }
@@ -1441,7 +1482,7 @@ impl Frontier {
     ///
     /// Relaxed: the flag is a one-way switch and the only thing that turns
     /// on it is whether the search stops this expansion or the next.
-    pub(crate) fn stopped(&self) -> bool {
+    pub fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Relaxed)
     }
 }
@@ -1477,11 +1518,11 @@ fn coarser(cell: [i32; 3]) -> [i32; 3] {
 /// A search's own tally, flushed into a [`Frontier`] in batches
 ///
 /// What every expansion pays: a counter, a compare and a distance to the
-/// goal. What one in [`crate::map::route::frontier::STRIDE`] pays on top: a cell insert,
+/// goal. What one in [`crate::graph::STRIDE`] pays on top: a cell insert,
 /// and a ring push where that cell is a new one. What the closest system reached moving pays: a walk back
 /// up the search's parent map, hundreds of links at the worst. The lock and
 /// the copies happen once a batch.
-pub(crate) struct Sampler {
+pub struct Sampler {
     into: Arc<Frontier>,
     /// How many expansions have been seen
     expanded: u64,
@@ -1554,7 +1595,7 @@ impl Sampler {
     /// replace what the frontier holds and two of these drawing at once
     /// would rub each other out. The leg's own way is drawn by the owner
     /// when it lands.
-    pub(crate) fn beside(&self) -> Sampler {
+    pub fn beside(&self) -> Sampler {
         Sampler {
             into: Arc::clone(&self.into),
             goal: self.goal,
@@ -1582,7 +1623,7 @@ impl Sampler {
     /// the one it would hand back if this were the goal. `place` says where
     /// a system sits, and is asked only where something is drawn or the
     /// record moves.
-    pub(crate) fn expanded(
+    pub fn expanded(
         &mut self,
         node: Node,
         at: DVec3,
@@ -1610,7 +1651,7 @@ impl Sampler {
     ///
     /// The half of [`Self::expanded`] that is about the picture rather than
     /// about a jump graph, so the coarse plan over the boost stars
-    /// ([`crate::map::route::highway::Highway::plan`]) draws itself the same way — its
+    /// ([`crate::highway::Highway::plan`]) draws itself the same way — its
     /// nodes are cones and its parents an array, and there is no galaxy
     /// node to hand over. `chain` is asked for only where this is the
     /// closest anything has come, which is the only time it is drawn.
@@ -1619,11 +1660,7 @@ impl Sampler {
     /// wait on a galactic route (4.4–4.8 s of 6.5 s at 50 ly), and until
     /// this it drew nothing at all — a click that sat there for seconds
     /// with an empty sky before the legs began.
-    pub(crate) fn reached(
-        &mut self,
-        at: DVec3,
-        chain: impl FnOnce() -> Vec<DVec3>,
-    ) {
+    pub fn reached(&mut self, at: DVec3, chain: impl FnOnce() -> Vec<DVec3>) {
         self.expanded += 1;
 
         // A quiet sibling keeps cells and nothing else: the closed set is a
@@ -1637,12 +1674,11 @@ impl Sampler {
         // avoiding a void that is not there. The marks are the one thing on
         // screen that says where the search has been.
         if self.quiet {
-            if self.expanded % crate::map::route::frontier::STRIDE == 0 {
+            if self.expanded % crate::graph::STRIDE == 0 {
                 self.cells.insert(cell_of(at, self.across));
             }
             if self.expanded
-                % (crate::map::route::frontier::STRIDE
-                    * crate::map::route::frontier::BATCH as u64)
+                % (crate::graph::STRIDE * crate::graph::BATCH as u64)
                 == 0
             {
                 self.flush();
@@ -1660,7 +1696,7 @@ impl Sampler {
             self.settled = true;
         }
 
-        if self.expanded % crate::map::route::frontier::STRIDE != 0 {
+        if self.expanded % crate::graph::STRIDE != 0 {
             return;
         }
         let cell = cell_of(at, self.across);
@@ -1673,13 +1709,11 @@ impl Sampler {
             self.worked = Some(cell);
             self.stepped = true;
             self.edge.push_back(cell);
-            if self.edge.len() > crate::map::route::frontier::EDGE {
+            if self.edge.len() > crate::graph::EDGE {
                 self.edge.pop_front();
             }
         }
-        if self.expanded
-            % (crate::map::route::frontier::STRIDE
-                * crate::map::route::frontier::BATCH as u64)
+        if self.expanded % (crate::graph::STRIDE * crate::graph::BATCH as u64)
             == 0
         {
             self.flush();
@@ -1691,7 +1725,7 @@ impl Sampler {
     /// The waypoints of the coarse plan, which is the route as it stands
     /// until the legs refine it. Drawn from here on, so the picture does
     /// not fall back to whichever leg is under way.
-    pub(crate) fn planned(&mut self, plan: Vec<DVec3>) {
+    pub fn planned(&mut self, plan: Vec<DVec3>) {
         self.plan = plan;
         self.reaching.clear();
         self.settled = true;
@@ -1705,7 +1739,7 @@ impl Sampler {
     /// Redraws at once rather than waiting for the next leg to reach
     /// anything: a leg that is a single supercharged jump never samples at
     /// all, and most of a plan's legs are exactly that.
-    pub(crate) fn flew(&mut self, jumps: Vec<DVec3>) {
+    pub fn flew(&mut self, jumps: Vec<DVec3>) {
         self.flown.push(jumps);
         self.reaching.clear();
         self.settled = true;
@@ -1735,7 +1769,7 @@ impl Sampler {
     /// searched — or, where the search is not walking a corridor, by being
     /// drawn coarser.
     ///
-    /// That is the loop at the end. Past [`crate::map::route::frontier::CELL_CEILING`]
+    /// That is the loop at the end. Past [`crate::graph::CELL_CEILING`]
     /// cells the grid doubles and every cell held is mapped onto the wider
     /// one, which is exact ([`coarser`]) and needs none of the places back.
     /// The sampler's own width goes with it, so what it counts next lands on
@@ -1805,7 +1839,7 @@ impl Sampler {
         }
 
         let mut coarsened = false;
-        while reached.cells.len() > crate::map::route::frontier::CELL_CEILING {
+        while reached.cells.len() > crate::graph::CELL_CEILING {
             reached.across *= 2.;
             reached.cells =
                 reached.cells.iter().copied().map(coarser).collect();
@@ -1832,7 +1866,7 @@ impl Sampler {
     }
 
     /// Say the search has stopped, and hand over whatever is left.
-    pub(crate) fn done(&mut self) {
+    pub fn done(&mut self) {
         self.flush();
         self.into.reached.lock().expect("the frontier lock").finished = true;
     }
@@ -1841,7 +1875,7 @@ impl Sampler {
     ///
     /// Asked once per expansion, which is why it is one relaxed atomic load
     /// and touches nothing under the lock. See [`Frontier::abandon`].
-    pub(crate) fn stopped(&self) -> bool {
+    pub fn stopped(&self) -> bool {
         self.into.stopped()
     }
 }
@@ -1854,7 +1888,8 @@ impl Sampler {
 /// used to be a grid of its own — 32 bytes a system of points, an address
 /// map beside them and a bucket per occupied cell, 13.7 GB and 32 s at
 /// 200 M, paid on the click that asked for a route.
-#[derive(Resource, Clone, Default)]
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
+#[derive(Clone, Default)]
 pub struct Jumps {
     /// The graph, once a route has asked for one.
     pub graph: Option<Arc<JumpGraph>>,
@@ -2200,12 +2235,12 @@ impl JumpGraph {
                 let clock = std::time::Instant::now();
                 let placed = Highway::over(&self.boosts);
                 match &placed {
-                    Some(highway) => info!(
+                    Some(highway) => tracing::info!(
                         "the highway: {} boost stars placed in {:.2?}",
                         highway.len(),
                         clock.elapsed(),
                     ),
-                    None => info!(
+                    None => tracing::info!(
                         "no highway: the index publishes no supercharge \
                          table, so a long supercharged route is searched flat"
                     ),
@@ -2484,9 +2519,9 @@ impl JumpGraph {
     /// and the search would stop settling for the fewest jumps. See
     /// [`Drive::widest`].
     /// `watching` is filled in as the search runs, for the map to draw what it
-    /// has reached; see [`crate::map::route::frontier`]. [`None`] where nothing is
+    /// has reached; see `galos_map`'s frontier painter. [`None`] where nothing is
     /// watching, and the search then records nothing at all.
-    pub(crate) fn route(
+    pub fn route(
         &self,
         start: (i64, [f64; 3]),
         end: (i64, [f64; 3]),
@@ -2545,7 +2580,7 @@ impl JumpGraph {
     /// by leg
     ///
     /// Two levels. The chain of jet cones worth taking comes off
-    /// [`crate::map::route::highway`], which is a graph of the two systems in a
+    /// [`crate::highway`], which is a graph of the two systems in a
     /// hundred that can supercharge a drive and nothing else — 3.8 M nodes
     /// of 200 M — and then each hop of that chain is flown by the same
     /// fewest-jumps search the flat router uses, over a few hundred light
@@ -2555,7 +2590,7 @@ impl JumpGraph {
     /// standard drive: the plan and its legs come to 140 jumps in 2.0 s,
     /// where the flat charged search over the same two ends is 137 jumps
     /// in **610 s**. At 80 ly it is 81 jumps in 0.8 s. Most of what is
-    /// left is the plan; see [`crate::map::route::highway::Highway::plan`] for what
+    /// left is the plan; see [`crate::highway::Highway::plan`] for what
     /// its leaning costs and what it saves.
     ///
     /// Four things make it not apply, and each answers [`None`] so the
@@ -3683,8 +3718,8 @@ mod tests {
 
         // Expansions marching away in a straight line, one cell apiece: what
         // a search with nowhere to go looks like to the sampler.
-        let ceiling = crate::map::route::frontier::CELL_CEILING;
-        let stride = crate::map::route::frontier::STRIDE;
+        let ceiling = crate::graph::CELL_CEILING;
+        let stride = crate::graph::STRIDE;
         let step = first * 1.5;
         for n in 0..(ceiling as u64 * 4 * stride) {
             let at = DVec3::new(0., 0., (n / stride) as f64 * step);

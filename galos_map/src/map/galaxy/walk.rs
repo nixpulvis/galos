@@ -1866,8 +1866,8 @@ pub(crate) fn build_from_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::route::graph::{Drive, Routing, Tuning};
     use bevy::math::DVec3;
+    use galos_route::graph::{Drive, Routing, Tuning};
 
     /// A payload point becomes a system placed exactly at its own position,
     /// named by its id where the resident tables hold nothing on it.

@@ -3,7 +3,6 @@ use crate::map::bodies::spawn::{Body, Places};
 use crate::map::camera::MoveCamera;
 use crate::map::index::{Names, Populated};
 use crate::map::route::ARROW;
-use crate::map::route::graph::{Drive, Routing, Tuning};
 use crate::map::schedule::MapSet;
 use crate::map::search::Plot;
 use crate::map::space::Galaxy;
@@ -37,6 +36,7 @@ use galos_index::meta::Economies;
 use galos_index::name::SystemName;
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
+use galos_route::graph::{Drive, Routing, Tuning};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     ops::Deref,

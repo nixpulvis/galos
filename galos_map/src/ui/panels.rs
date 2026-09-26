@@ -17,7 +17,6 @@ use crate::map::camera::{MoveCamera, OrbitCamera};
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::System;
 use crate::map::index::{Factions, Names, Populated};
-use crate::map::route::graph::Crossing;
 use crate::map::schedule::MapSet;
 use crate::map::schedule::PaintSet;
 use crate::map::selection::{Picked, Selection};
@@ -32,6 +31,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::body::{Composition, Material, Orbit, Spin};
 use galos_index::meta::{Body as DbBody, Economies, Star as DbStar, Surface};
 use galos_photometry::{Distance, Magnitude};
+use galos_route::graph::Crossing;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::time::Duration;
@@ -665,7 +665,7 @@ fn panels(
     searching: Res<crate::map::route::frontier::Frontiers>,
     // Which systems can supercharge, which is the one thing about a star's
     // kind the index publishes for all of them.
-    boosts: Res<crate::map::index::Boosts>,
+    boosts: Res<galos_route::Boosts>,
     // And the real class of the stars a panel lists, looked up by address:
     // a list is finite where the galaxy is not. See [`StarClasses`].
     mut classes: ResMut<StarClasses>,
@@ -1808,7 +1808,7 @@ impl Scooping {
 ///
 /// **The gap width is not said, because it is not one number.** The plan
 /// climbs it — a chain that does not close on the goal is tried again a
-/// jump wider ([`crate::map::route::highway::Highway::plan`]) — so
+/// jump wider ([`galos_route::highway::Highway::plan`]) — so
 /// [`Tuning::reach`] is where the climb started rather than what the plan
 /// used, and a line that quoted it would be describing a rung the answer
 /// may not have come from.
@@ -1876,7 +1876,7 @@ fn admitted(
     // route; see [`crate::map::filter::Plotted`].
     plotted: Option<Plotted>,
     // Which stops can supercharge, for the class each line says.
-    boosts: &crate::map::index::Boosts,
+    boosts: &galos_route::Boosts,
     // And what the arrival star of each listed system is, where it has been
     // looked up; see [`StarClasses`].
     classes: &StarClasses,
@@ -2484,7 +2484,6 @@ fn named<T: Display>(value: &Option<T>) -> String {
 mod tests {
     use super::*;
     use crate::map::galaxy::tests::{system, tallied};
-    use crate::map::route::graph::{Crossing, Drive, Routing, Tuning};
     use crate::testing::{context, painted, words};
     use chrono::DateTime;
     use elite_journal::Allegiance;
@@ -2492,6 +2491,7 @@ mod tests {
         AtmosphereType, Orbit as JournalOrbit, Spin as JournalSpin,
     };
     use elite_journal::system::Economy;
+    use galos_route::graph::{Crossing, Drive, Routing, Tuning};
 
     /// A registry naming each of `known`
     fn known(known: &[(i32, &str)]) -> FactionNames {
@@ -3142,7 +3142,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -3176,7 +3176,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -3554,7 +3554,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::new(100., 0., 0.)),
                 &mut None,
@@ -3606,7 +3606,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -3733,7 +3733,7 @@ mod tests {
 
         let route = route_through("SOL -> LAVE", &[1, 2, 3]);
         let systems: Vec<System> = (1..=3).map(system).collect();
-        let boosts = crate::map::index::Boosts::of(vec![SystemBoost {
+        let boosts = galos_route::Boosts::of(vec![SystemBoost {
             address: 2,
             boost: Boost::Neutron,
             position: [0., 0., 0.],
@@ -3794,7 +3794,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 None,
                 &mut None,
@@ -4145,7 +4145,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -4417,7 +4417,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 Some(DVec3::ZERO),
                 &mut None,
@@ -4491,7 +4491,7 @@ mod tests {
                 None,
                 0,
                 None,
-                &crate::map::index::Boosts::absent(),
+                &galos_route::Boosts::absent(),
                 &StarClasses::default(),
                 None,
                 &mut None,
@@ -4630,7 +4630,7 @@ mod tests {
                     None,
                     0,
                     None,
-                    &crate::map::index::Boosts::absent(),
+                    &galos_route::Boosts::absent(),
                     &StarClasses::default(),
                     Some(DVec3::ZERO),
                     &mut None,
@@ -4740,7 +4740,7 @@ mod tests {
                     None,
                     0,
                     None,
-                    &crate::map::index::Boosts::absent(),
+                    &galos_route::Boosts::absent(),
                     &StarClasses::default(),
                     Some(DVec3::ZERO),
                     &mut None,
@@ -4898,7 +4898,7 @@ mod tests {
                         None,
                         0,
                         None,
-                        &crate::map::index::Boosts::absent(),
+                        &galos_route::Boosts::absent(),
                         &StarClasses::default(),
                         Some(DVec3::ZERO),
                         &mut None,

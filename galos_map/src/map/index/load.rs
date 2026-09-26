@@ -32,16 +32,16 @@
 use crate::map::index::names;
 use crate::map::index::refresh::Held;
 use crate::map::index::{
-    Boosts, Factions, IndexDir, Names, Populated, ResidentIndex, Settled,
-    Transport,
+    Factions, IndexDir, Names, Populated, ResidentIndex, Settled, Transport,
 };
-use crate::map::route::graph::Jumps;
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::meta::{Faction, PopulatedSystem};
 use galos_index::{Index, Inhabitance, SystemBoost};
+use galos_route::Boosts;
+use galos_route::graph::Jumps;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 

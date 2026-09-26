@@ -4,7 +4,6 @@ use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::Spyglass;
 use crate::map::galaxy::System;
 use crate::map::index::Names;
-use crate::map::route::graph::{Drive, Routing, Tuning};
 use crate::map::schedule::MapSet;
 use crate::map::search::Search;
 use bevy::asset::RenderAssetUsages;
@@ -13,6 +12,8 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use elite_journal::Boxel;
+use galos_route::graph;
+use galos_route::graph::{Drive, Routing, Tuning};
 /// How a route is written: the two systems it runs between, in order
 pub(crate) const ARROW: &str = " -> ";
 
@@ -528,15 +529,15 @@ pub(crate) struct PlottedRoute {
     pub(crate) range: String,
     /// Which drive it was plotted for, carried along for the same reason the
     /// range is: it is part of what tells two plots between the same ends
-    /// apart. See [`crate::map::route::graph::Drive`].
+    /// apart. See [`galos_route::graph::Drive`].
     pub(crate) drive: Drive,
     /// How hard the search worked at it, carried along for the same reason.
-    /// See [`crate::map::route::graph::Routing`].
+    /// See [`galos_route::graph::Routing`].
     pub(crate) how: Routing,
     /// How the plan over the boost stars was worked out, carried along for
     /// the same reason the rest are: it is part of what was asked, and part
     /// of what tells two plots between the same ends apart. See
-    /// [`crate::map::route::graph::Tuning`].
+    /// [`galos_route::graph::Tuning`].
     pub(crate) tune: Tuning,
     /// How long it took, from the click to the answer landing
     ///
@@ -937,18 +938,8 @@ fn emphasise(
 }
 
 pub(crate) mod fetch;
-// The one module the binary names: it builds the jump graph from the
-// resident names before the app is up.
 pub(crate) mod frontier;
-pub mod graph;
-pub(crate) mod highway;
-// The guard: what a plot must not get slower at, measured against a real
-// directory. Here rather than in `tests/` because it asks for a route in
-// `graph`'s own `pub(crate)` vocabulary.
-#[cfg(test)]
-mod perf;
 pub(crate) mod spawn;
-pub(crate) mod tour;
 
 /// A list of points that will have a line drawn between each consecutive points
 #[derive(Debug, Clone)]

@@ -46,11 +46,6 @@ use crate::map::paint::sizing::{ScalePopulation, View};
 use crate::map::route::ARROW;
 use crate::map::route::SelectedFilter;
 use crate::map::route::frontier::Frontiers;
-use crate::map::route::graph::{
-    self as graph, Crossing, Drive, Routing, Tuning, Weigh,
-};
-use crate::map::route::highway;
-use crate::map::route::tour::Shape;
 use crate::map::schedule::{MapSet, PaintSet};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::map::selection::{ClickedEmptySky, Picked, SELECTION, Selection};
@@ -63,6 +58,11 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use chrono::Datelike;
 use galos_index::meta::{Faction as DbFaction, NameEntry};
 use galos_photometry::psf::ProfileKind;
+use galos_route::graph::{
+    self as graph, Crossing, Drive, Routing, Tuning, Weigh,
+};
+use galos_route::highway;
+use galos_route::tour::Shape;
 
 pub(crate) mod keys;
 pub(crate) mod loading;
@@ -1820,7 +1820,7 @@ fn ask_bar(
     how: &mut Routing,
     drive: &mut Drive,
     tune: &mut Tuning,
-    boosts: &crate::map::index::Boosts,
+    boosts: &galos_route::Boosts,
     searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> Asked {
@@ -2417,7 +2417,7 @@ pub(crate) struct SearchBar<'w> {
     tune: ResMut<'w, Tuning>,
     /// Whether the index publishes a supercharge table at all, which is what
     /// a route for a supercharging drive needs before it can be asked for
-    boosts: Res<'w, crate::map::index::Boosts>,
+    boosts: Res<'w, galos_route::Boosts>,
     searching: Res<'w, Frontiers>,
 }
 
@@ -3562,7 +3562,7 @@ mod plans {
     /// What this pins is that the form no longer offers the number: a
     /// control whose wrong settings are unreachable is better than one
     /// whose wrong settings are a cliff. See
-    /// [`crate::map::route::highway::Highway::plan`].
+    /// [`galos_route::highway::Highway::plan`].
     #[test]
     fn the_gap_width_is_not_asked_for() {
         let mut tune = Tuning::default();
@@ -3680,7 +3680,7 @@ mod plans {
     #[test]
     fn the_trade_names_its_own_ends() {
         use super::{Weigh, traded};
-        use crate::map::route::graph::EXPAND;
+        use galos_route::graph::EXPAND;
 
         // The rail's reading of each ask, which is what its handle stands
         // at: the fewest-jumps ask is the top of the trade and not a
@@ -3716,7 +3716,7 @@ mod plans {
     #[test]
     fn the_rail_says_the_hop_in_light_years() {
         use super::{Weigh, trading};
-        use crate::map::route::graph::EXPAND;
+        use galos_route::graph::EXPAND;
 
         // A fifty light year ship, so half the rail is twenty-five.
         let painted = |weigh| {
@@ -3779,7 +3779,7 @@ mod plans {
     #[test]
     fn a_weighing_offers_only_the_trade_it_has() {
         use super::{Weigh, approximating};
-        use crate::map::route::graph::EXPAND;
+        use galos_route::graph::EXPAND;
 
         let offered = |weigh| {
             let mut how = Routing::at(95, weigh);
@@ -3862,7 +3862,7 @@ mod plans {
     #[test]
     fn the_percent_goes_where_no_bound_exists() {
         use super::{Weigh, bounded};
-        use crate::map::route::graph::EXPAND;
+        use galos_route::graph::EXPAND;
 
         let unpriced = Routing::at(95, Weigh::Fuel { hop: 0, expand: EXPAND });
         assert!(!bounded(&unpriced), "an unpriced hop claimed a bound");
@@ -3909,7 +3909,7 @@ mod plans {
     #[test]
     fn the_top_of_the_rail_is_the_proven_ask() {
         use super::approximating;
-        use crate::map::route::graph::EXPAND;
+        use galos_route::graph::EXPAND;
 
         // Where the percent bites, its own rail carries the word.
         let said = words(|ui| {
@@ -4647,7 +4647,7 @@ fn jump_range(asked: &str) -> Result<f64, &'static str> {
 fn plotting(
     asked: &str,
     drive: Drive,
-    boosts: &crate::map::index::Boosts,
+    boosts: &galos_route::Boosts,
 ) -> Result<f64, &'static str> {
     let range = jump_range(asked)?;
     if drive.named().is_some() && !boosts.published() {
@@ -4724,7 +4724,7 @@ fn across(selection: &Selection) -> Option<f64> {
 /// The order they were picked, or the cheapest order to reach them all in
 /// where that was asked for and a range is in hand to cost a leg with —
 /// which is what `cheapest` carries. The ordering itself is
-/// [`crate::map::route::tour`]'s, and `shape` is what it is told about
+/// [`galos_route::tour`]'s, and `shape` is what it is told about
 /// the trip: which end is held, and whether the leg home is costed with the
 /// rest.
 ///
@@ -4738,7 +4738,7 @@ fn flown_order(
     let places: Vec<DVec3> =
         selection.systems().map(|system| system.position()).collect();
     match cheapest {
-        Some(range) => crate::map::route::tour::ordered(&places, range, shape),
+        Some(range) => galos_route::tour::ordered(&places, range, shape),
         None => (0..places.len()).collect(),
     }
 }
@@ -4747,7 +4747,7 @@ fn flown_order(
 ///
 /// The order they were picked, or the cheapest order to reach them all in
 /// where that was asked for and a range is in hand to cost a leg with. The
-/// ordering is [`crate::map::route::tour`]'s; this is only the naming.
+/// ordering is [`galos_route::tour`]'s; this is only the naming.
 ///
 /// A ring names its first stop twice, at both ends. The stops are what the
 /// legs are cut from — a leg to each name from the one before it — so the
@@ -4792,7 +4792,7 @@ fn legs_flown(stops: usize, shape: Shape) -> usize {
 /// What shape a trip through `stops` is asked for in
 ///
 /// The form holds two flags and they come to one shape, which is what
-/// [`crate::map::route::tour`] is told and what says how many legs the
+/// [`galos_route::tour`] is told and what says how many legs the
 /// trip is. One reading of them, so the count the form says, the order the
 /// stops go out in, and the legs actually plotted cannot disagree.
 ///
@@ -4866,7 +4866,7 @@ fn route_body(
     how: &mut Routing,
     drive: &mut Drive,
     tune: &mut Tuning,
-    boosts: &crate::map::index::Boosts,
+    boosts: &galos_route::Boosts,
     searching: &Frontiers,
 ) -> Response {
     // Which systems it runs through is not said here. They are the rows in
@@ -13088,8 +13088,8 @@ mod tests {
     /// route is right.
     #[test]
     fn a_supercharged_route_is_refused_without_a_table_to_plot_it() {
-        let absent = crate::map::index::Boosts::absent();
-        let published = crate::map::index::Boosts::of(Vec::new());
+        let absent = galos_route::Boosts::absent();
+        let published = galos_route::Boosts::of(Vec::new());
 
         // Unaided asks nothing of the table either way.
         assert_eq!(plotting("50", Drive::Unaided, &absent), Ok(50.));

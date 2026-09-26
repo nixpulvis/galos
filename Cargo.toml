@@ -51,6 +51,8 @@ galos_catalog = { path = "./galos_catalog", default-features = false, optional =
 # filled from the same readings, and the accumulator that turns an event
 # into one lives here whichever store is being written to.
 galos_index = { path = "./galos_index" }
+# The router the map plots with, which `galos route --index` asks.
+galos_route = { path = "./galos_route" }
 # The journal's events, and the reader that tails a directory of them.
 elite_journal = { path = "./elite_journal", features = ["watch"] }
 prettytable-rs = "0.10"
@@ -123,6 +125,7 @@ members = [
     "galos_photometry",
     "galos_index",
     "galos_catalog",
+    "galos_route",
     "galos_sky",
     "galos_map",
     "galos_server",
