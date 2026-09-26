@@ -3962,6 +3962,7 @@ dependencies = [
  "galos_catalog",
  "galos_db",
  "galos_index",
+ "galos_route",
  "indicatif",
  "itertools",
  "pollster 0.3.0",

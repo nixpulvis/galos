@@ -26,14 +26,15 @@
 //! settings of one store: a database keeps stations, markets, signals and
 //! factions, an index keeps the sky, and `status`, `verify` and `migrate`
 //! mean different work on each side with no code in common.
-//! [`search`] and [`route`] are the questions, which only the database can
-//! answer.
+//! [`search`] and [`route`] are the questions: a search only the database
+//! can answer, and a route either store can, over an index with `--index`.
 //!
 //! ## The `db` feature
 //!
 //! On by default, and off is the point. Built `--no-default-features`,
-//! this binary is [`ingest`] `--index` and the [`index`] group: no `sqlx`,
-//! no `dotenv`, no `DATABASE_URL`, and no client compiled in. That is what
+//! this binary is [`ingest`] `--index`, the [`index`] group and [`route`]
+//! `--index`: no `sqlx`, no `dotenv`, no `DATABASE_URL`, and no client
+//! compiled in. That is what
 //! a machine serving the map from a directory wants, since it has no
 //! Postgres for a client to open. `--db` and `--from database` are what
 //! the feature adds to the writing, and they are what is about the other
@@ -55,7 +56,6 @@ mod ingest;
 
 #[cfg(feature = "db")]
 mod db;
-#[cfg(feature = "db")]
 mod route;
 #[cfg(feature = "db")]
 mod search;
@@ -96,7 +96,6 @@ enum Command {
     Search(search::Cli),
 
     /// Plot routes between systems.
-    #[cfg(feature = "db")]
     Route(route::Cli),
 }
 
@@ -164,12 +163,8 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        #[cfg(feature = "db")]
-        Command::Route(it) => match asked().await {
-            Ok(db) => {
-                it.run(&db);
-                ExitCode::SUCCESS
-            }
+        Command::Route(it) => match it.run().await {
+            Ok(()) => ExitCode::SUCCESS,
             Err(said) => {
                 eprintln!("{said}");
                 ExitCode::FAILURE
