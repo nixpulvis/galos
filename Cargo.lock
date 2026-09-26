@@ -4039,6 +4039,7 @@ dependencies = [
  "epaint_default_fonts",
  "galos_index",
  "galos_photometry",
+ "galos_route",
  "log",
  "pollster 0.4.0",
  "rustc-hash 2.1.3",
@@ -4050,6 +4051,19 @@ version = "0.0.1"
 dependencies = [
  "enum-kinds",
  "enum_dispatch",
+]
+
+[[package]]
+name = "galos_route"
+version = "0.0.1"
+dependencies = [
+ "bevy_ecs",
+ "elite_journal",
+ "galos_index",
+ "glam",
+ "pollster 0.4.0",
+ "rustc-hash 2.1.3",
+ "tracing",
 ]
 
 [[package]]

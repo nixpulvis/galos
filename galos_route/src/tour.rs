@@ -26,7 +26,7 @@
 //! the trip is optimal — the stops are handed to the same fan-out an ordered
 //! trip uses, and the user can reorder by picking again.
 
-use bevy::math::DVec3;
+use glam::DVec3;
 
 /// How many destinations are ordered exactly
 ///
@@ -70,7 +70,7 @@ fn and(one: Cost, other: Cost) -> Cost {
 /// one costs the same, so where a ring is entered says which system the
 /// flying begins at and nothing at all about what it costs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Shape {
+pub enum Shape {
     /// A line through every stop, out from the first place picked
     ///
     /// A trip has to set out from somewhere and nothing on the map says where
@@ -95,7 +95,7 @@ pub(crate) enum Shape {
 
 impl Shape {
     /// Whether the last stop is flown back to the first
-    pub(crate) fn loops(self) -> bool {
+    pub fn loops(self) -> bool {
         self == Shape::Loop
     }
 }
@@ -115,11 +115,7 @@ impl Shape {
 /// input however it was reached. Fewer than three places have only one order
 /// and are handed straight back — a ring through two of them is the one leg
 /// out and the same leg back, whichever way round it is flown.
-pub(crate) fn ordered(
-    places: &[DVec3],
-    range: f64,
-    shape: Shape,
-) -> Vec<usize> {
+pub fn ordered(places: &[DVec3], range: f64, shape: Shape) -> Vec<usize> {
     if places.len() < 3 || range <= 0. {
         return (0..places.len()).collect();
     }

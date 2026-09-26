@@ -41,15 +41,16 @@ use crate::map::galaxy::walk::{
     PointOrders, Republished, ResidentCells, adopt,
 };
 use crate::map::index::{
-    Boosts, Factions, Names, Populated, ResidentIndex, Settled, Transport,
+    Factions, Names, Populated, ResidentIndex, Settled, Transport,
 };
-use crate::map::route::graph::Jumps;
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::meta::{Faction, PopulatedSystem, SystemBoost, SystemReach};
 use galos_index::{CellId, Delta, Index, Inhabitance, Part, Point, Stamp};
+use galos_route::Boosts;
+use galos_route::graph::Jumps;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;

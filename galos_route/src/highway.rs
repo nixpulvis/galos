@@ -1,7 +1,7 @@
 //! The boost stars alone, and the coarse graph a long route is planned on.
 //!
 //! A supercharged crossing of the galaxy is what the flat search in
-//! [`crate::map::route::graph`] is worst at. The reach of a boosted jump is four times
+//! [`crate::graph`] is worst at. The reach of a boosted jump is four times
 //! the range, so its sphere holds sixty-four times the systems, and the
 //! estimate has to divide by that widest jump everywhere to stay honest
 //! about the fewest — while two systems in a hundred can actually offer one.
@@ -15,16 +15,16 @@
 //! light years wide rather than tens — and an edge is one supercharged hop,
 //! or a supercharged hop plus a few ordinary jumps where the next cone is
 //! further out than one hop reaches. A coarse plan over that is a chain of
-//! waypoints; [`crate::map::route::graph::JumpGraph`] then flies each leg with the
+//! waypoints; [`crate::graph::JumpGraph`] then flies each leg with the
 //! search it already has.
 //!
 //! **What the chain is not is proven.** A coarse edge says how few jumps
 //! *could* cross a gap, not that a chain of systems exists to cross it that
 //! way, and the boost stars it steps through are a guess at which cones are
-//! worth taking. Which is why only [`crate::map::route::graph::Routing::QUICK`] plans
+//! worth taking. Which is why only [`crate::graph::Routing::QUICK`] plans
 //! here: a setting that claims the fewest jumps cannot be answered off a
 //! plan over two per cent of the galaxy. See
-//! [`crate::map::route::graph::Routing::highway`].
+//! [`crate::graph::Routing::highway`].
 //!
 //! The same shape as EDDA's `long_range.rs`, read against its
 //! implementation, and the numbers agree where they can be compared: its
@@ -34,10 +34,10 @@
 //! carried in the coarse state, the refuel rounds over the refined legs —
 //! because a galos route is jumps and a ship's range, with no tank in it.
 
-use crate::map::index::Boosts;
-use crate::map::route::graph::{Drive, Routing, Sampler, Tuning, WHOLE, Weigh};
-use bevy::math::DVec3;
+use crate::Boosts;
+use crate::graph::{Drive, Routing, Sampler, Tuning, WHOLE, Weigh};
 use galos_index::meta::Boost;
+use glam::DVec3;
 use rustc_hash::FxHashMap;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -50,7 +50,7 @@ use std::collections::BinaryHeap;
 /// to a side. At the 64 ly the flat search buckets by, the same query would
 /// be thousands of cell lookups. EDDA sizes its own sub-index at 250 for
 /// the same reason (`long_range.rs:59-61`).
-pub(crate) const CELL_LY: f64 = 250.0;
+pub const CELL_LY: f64 = 250.0;
 
 /// How wide the gaps in the highway are to begin with, in light years
 ///
@@ -93,7 +93,7 @@ pub(crate) const CELL_LY: f64 = 250.0;
 /// the stretch left became one enormous gap for the legs to fly. Five
 /// hundred is the same sort of number as four hundred, measured against
 /// routes rather than against a flood out of one system.
-pub(crate) const GAPS_LY: u32 = 500;
+pub const GAPS_LY: u32 = 500;
 
 /// How many ordinary jumps wider the plan may try when a reach does not
 /// connect
@@ -137,7 +137,7 @@ const GOAL_BRIDGE: u32 = 12;
 /// connected component, 2.4 M nodes and some tens of seconds, to say so.
 /// Measured against progress rather than against a total, so a long
 /// crossing is never cut short for being long.
-pub(crate) const STALL: u64 = 200_000;
+pub const STALL: u64 = 200_000;
 
 /// Expansions an exact coarse plan may spend before the plan is worked
 /// leaned instead.
@@ -147,7 +147,7 @@ pub(crate) const STALL: u64 = 200_000;
 /// at 45 ly, an exact plan either lands in 512 expansions or wants
 /// between 97,792 and 276,480 of them, so every corridor sampled is a
 /// factor of forty-eight either side of this. See [`Highway::plan`].
-pub(crate) const ALLOWANCE: u64 = 2_048;
+pub const ALLOWANCE: u64 = 2_048;
 
 /// The start and the goal, which are systems rather than boost stars.
 ///
@@ -158,7 +158,7 @@ const START: u32 = u32::MAX - 1;
 const GOAL: u32 = u32::MAX;
 
 /// The boost stars, cell-sorted, and the directory over them.
-pub(crate) struct Highway {
+pub struct Highway {
     /// Where each boost star sits, in cell order.
     ///
     /// At the `f32` the names table carries, which is what these are read
@@ -187,7 +187,7 @@ impl Highway {
     /// the places by walking the names table's whole address column — 4 GB
     /// of mapping faulted and 7.9 s before a galactic route could begin
     /// planning, once a session, and the click sat there while it did.
-    pub(crate) fn over(boosts: &Boosts) -> Option<Highway> {
+    pub fn over(boosts: &Boosts) -> Option<Highway> {
         if !boosts.published() {
             return None;
         }
@@ -228,18 +228,18 @@ impl Highway {
     }
 
     /// How many boost stars it holds.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.place.len()
     }
 
     /// Whether it holds none.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.place.is_empty()
     }
 
     /// How many cells of the grid are occupied.
     #[cfg(test)]
-    pub(crate) fn cells(&self) -> usize {
+    pub fn cells(&self) -> usize {
         self.cells.len()
     }
 
@@ -310,7 +310,7 @@ impl Highway {
     /// over the handful this hands back — and their places come with them,
     /// because a cell that holds a cone is a cell no nearness rule may
     /// skip.
-    pub(crate) fn cones_near(
+    pub fn cones_near(
         &self,
         at: [f64; 3],
         radius: f64,
@@ -325,7 +325,7 @@ impl Highway {
 
     /// The boost star nearest `to` within `within` light years, if any.
     #[cfg(test)]
-    pub(crate) fn nearest(&self, to: [f64; 3], within: f64) -> Option<i64> {
+    pub fn nearest(&self, to: [f64; 3], within: f64) -> Option<i64> {
         let mut best: Option<(f64, u32)> = None;
         self.each_near(to, within, |node, _, away| {
             if best.is_none_or(|(held, _)| away < held) {
@@ -422,7 +422,7 @@ impl Highway {
     /// goal the highway does not reach and the one the caller falls back
     /// to the flat search on.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn plan(
+    pub fn plan(
         &self,
         from: ([f64; 3], Option<Boost>),
         to: [f64; 3],
@@ -612,7 +612,7 @@ impl Highway {
         // it that was wrong, and it is this.
         //
         // **Least fuel is not the other half, and the cap is why.**
-        // [`crate::map::route::graph::burned`] charges a whole tank for any jump at or
+        // [`crate::graph::burned`] charges a whole tank for any jump at or
         // past the ship's range, because that is what a maximum fuel per
         // jump means — so on a chain of cones every hop costs one tank
         // however far the jet throws the ship, and the fuel *is* the hop
@@ -668,7 +668,7 @@ impl Highway {
             // Told to give up, the route having been taken back while it
             // was still being planned. Seconds of a pool thread otherwise,
             // with nobody left to read the chain. See
-            // [`crate::map::route::graph::Frontier::abandon`].
+            // [`crate::graph::Frontier::abandon`].
             if watched.as_ref().is_some_and(|drawn| drawn.stopped()) {
                 return Planned::Nothing;
             }
@@ -713,7 +713,7 @@ impl Highway {
                 //
                 // The stretch left over becomes the last hop of the plan,
                 // and is crossed by whatever
-                // [`crate::map::route::graph::Tuning::crossing`] says — stepping first,
+                // [`crate::graph::Tuning::crossing`] says — stepping first,
                 // which is cheap over any distance, and the search only if
                 // that cannot close. It is EDDA's rule: truncate the coarse
                 // chain at the closest node reached and hand the rest on
@@ -833,7 +833,7 @@ enum Planned {
 /// fuel is not one of them.
 ///
 /// The order of the fields is the whole of it, as it is in the flat
-/// search's own [`crate::map::route::graph::Cost`]: a hop is never traded for any
+/// search's own [`crate::graph::Cost`]: a hop is never traded for any
 /// amount of distance, and between two chains of the same hop count the
 /// shorter one wins. Derived [`Ord`] compares them in that order.
 ///

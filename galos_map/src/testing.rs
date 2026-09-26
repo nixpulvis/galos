@@ -48,18 +48,6 @@ pub fn sky(dir: &Path, places: &[(i64, [f64; 3])]) -> Arc<Sky> {
     built(dir, places, &BuildParams::default())
 }
 
-/// The same, divided until no two systems share a cell
-///
-/// The build divides on *count*: a cell splits when more systems fall in it
-/// than the cap, and a cell keeps the brightest slice of what it owned. So
-/// a handful of systems is one root payload under the published caps,
-/// however far apart they lie — which leaves nothing to say about a query
-/// that has to cross cells. Cut to one apiece, the same places build a tree
-/// several levels deep and every system has a cell of its own.
-pub fn sky_apart(dir: &Path, places: &[(i64, [f64; 3])]) -> Arc<Sky> {
-    built(dir, places, &BuildParams { internal_slice: 1, leaf_cap: 1 })
-}
-
 /// Write the tree `params` makes of `places`, and map what was written.
 fn built(
     dir: &Path,
@@ -82,7 +70,6 @@ fn built(
     Arc::new(Sky::open(dir).expect("the galaxy maps"))
 }
 
-/// The same over places given as the names table carries them, `f32`.
 /// The address of the class `A` boxel `place` falls in
 ///
 /// **A fixture places a system by giving it the right address.** The names
@@ -116,6 +103,7 @@ pub fn boxel_at(place: [f64; 3]) -> i64 {
     .expect("a boxel inside the grid")
 }
 
+/// The same over places given as the names table carries them, `f32`.
 pub fn sky_of(dir: &Path, entries: &[galos_index::NameEntry]) -> Arc<Sky> {
     let places: Vec<(i64, [f64; 3])> = entries
         .iter()

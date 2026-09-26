@@ -1,3 +1,7 @@
+// TODO: reorganize. This measures a local `GALOS_PERF_DIR` and passes
+// silently without one. Revisit alongside galos_index's perf tests when
+// setting up proper criterion benchmarks.
+
 //! What a plotted route must not get slower at, measured against a real
 //! directory.
 //!
@@ -7,7 +11,7 @@
 //!
 //! A unit-test module rather than a file in `tests/`: it measures
 //! [`Routing`], [`Tuning`], [`Weigh`] and [`Drive`], every one of them
-//! `pub(crate)`, which an integration test could reach only by widening the
+//! `pub`, which an integration test could reach only by widening the
 //! router's API for the sake of a test's file location. The zoom half of
 //! what used to be one guard is an integration test of `galos_index`
 //! (`galos_index/tests/zooming.rs`), everything it touches being that
@@ -16,7 +20,7 @@
 //! Stands down without `GALOS_PERF_DIR` naming a built index directory:
 //!
 //! ```sh
-//! GALOS_PERF_DIR=.index/full cargo test -p galos_map --lib perf -- --nocapture
+//! GALOS_PERF_DIR=.index/full cargo test -p galos_route --lib perf -- --nocapture
 //! ```
 //!
 //! The clocks are loose, this running on whatever machine is to hand, so
@@ -37,7 +41,7 @@
 //! The cold figure is the first charged route of a session, which pays for
 //! placing the 3,846,802 boost stars. Of the warm 6.5 s, the coarse plan
 //! is 4.4–4.8 s (116 waypoints, 178,910 expansions) and its 117 legs are
-//! 2.0–2.3 s. See [`crate::map::route::highway`].
+//! 2.0–2.3 s. See [`crate::highway`].
 //!
 //! ## Measured again, the place published beside the cone
 //!
@@ -58,9 +62,9 @@
 //! twentieth the setting already leans its flat one by: one jump in a
 //! hundred and forty, and 3.3× at 50 ly against 13× at 80. And the plan is
 //! drawn while it runs now
-//! ([`crate::map::route::graph::Sampler::reached`]) — it used to be
+//! ([`crate::graph::Sampler::reached`]) — it used to be
 //! seconds of empty sky before the legs began. See
-//! [`crate::map::route::highway::Highway::plan`].
+//! [`crate::highway::Highway::plan`].
 //!
 //! ## Measured again, what a ship that jumps half as far costs
 //!
@@ -71,7 +75,7 @@
 //! of range and **200 ly at 25**, and at 200 ly the boost stars are not a
 //! connected graph: the plan died in 0.3 ms and the caller fell back to the
 //! flat galaxy-wide search. So the hop's reach is a distance now
-//! ([`crate::map::route::graph::Tuning::reach`], default 400 ly, the
+//! ([`crate::graph::Tuning::reach`], default 400 ly, the
 //! measured threshold — 350 fails at *both* ranges), the leaning is a
 //! setting, and a leg is refined leaned rather than proven by default
 //! (measured: the same jumps, and faster).
@@ -114,7 +118,7 @@
 //! | Colonia → Sgr A\*, 45 ly, 25% | 81 in **0.97 s** | 80 in 19.84 s | +1 |
 //!
 //! One jump in a hundred and forty for eight to twenty times the speed, so
-//! it is the default ([`crate::map::route::graph::Crossing::Stepped`]).
+//! it is the default ([`crate::graph::Crossing::Stepped`]).
 //! The guard's own rows moved with it: the 50 ly crossing is **0.33 s warm
 //! and 0.58 s cold** against 2.0–2.2 s, and the 25 ly crossing **0.89 s**
 //! against 4.8 s — where before any of this it was 233 s.
@@ -143,7 +147,7 @@
 //! again: eight jumps between the two ends of it for nine times the wait.
 //! What the five percent plot now pays is the stall allowance itself — 8.5 s
 //! of coarse search before it gives up and flies what it has, which is
-//! [`crate::map::route::graph::Tuning::stall`] and the next thing to
+//! [`crate::graph::Tuning::stall`] and the next thing to
 //! measure.
 //!
 //! ## Measured once, what the drawing does through a plan's legs
@@ -166,8 +170,8 @@
 //! apart, inside a frame.
 //!
 //! The plan is drawn whole now and each leg is a strand beside it
-//! ([`crate::map::route::graph::Sampler::planned`],
-//! [`crate::map::route::graph::Sampler::flew`]). The same crossing,
+//! ([`crate::graph::Sampler::planned`],
+//! [`crate::graph::Sampler::flew`]). The same crossing,
 //! measured again:
 //!
 //! ```text
@@ -181,7 +185,7 @@
 //!
 //! Also why the two sampled layers stand still through all of it: the
 //! closed-set grid is sized once from the route's own length
-//! ([`crate::map::route::frontier::CELLS`]), which over 22 kly is
+//! ([`crate::graph::CELLS`]), which over 22 kly is
 //! 1,100 ly a cell — and a refinement leg is 200–600 ly, so a whole leg
 //! search falls inside one cell. `cells 85` from 239 ms to the end is not a
 //! search standing still; it is a picture drawn at the wrong scale to see
@@ -212,7 +216,7 @@
 //! recorded. It read as the coarse plan having stopped engaging under the
 //! new layout. It had not: the rows themselves asked for `Drive::Unaided`,
 //! a drive with no cone to charge off, so
-//! [`crate::map::route::graph::JumpGraph::route`] never reached the
+//! [`crate::graph::JumpGraph::route`] never reached the
 //! highway at all and the flat galaxy-wide search answered. 451 and 919 are
 //! that search's own counts. Asked with `Drive::Standard`, over the same
 //! columnar directory:
@@ -258,7 +262,7 @@
 //! **What the same probe did find is that the plan never read the ask.** A
 //! least-fuel plot and a fewest-jumps plot came back byte for byte the
 //! same route — 48 stops, the same 621 ly — because the coarse search
-//! did not look at [`crate::map::route::graph::Weigh`] at all. For
+//! did not look at [`crate::graph::Weigh`] at all. For
 //! least fuel that is the *right* answer and the cap is why: a boosted
 //! jump costs a whole tank however far the cone throws the ship, so on a
 //! chain of cones the fuel is the hop count. For the shortest of the
@@ -299,7 +303,7 @@
 //!
 //! What the cap keeps now is the cheapest candidates per light year of
 //! ground closed, taken off the metric's own price
-//! ([`crate::map::route::graph::thinned`]) — which for a route counted
+//! ([`crate::graph::thinned`]) — which for a route counted
 //! in jumps is the nearest the goal, the same set as before, and for one
 //! weighed by fuel is emphatically not:
 //!
@@ -342,7 +346,7 @@
 //! `Cost` that the weighting makes inconsistent, where a jump count
 //! weighted stays consistent by a jump. So a route that has not promised
 //! the fewest now expands each system once
-//! ([`crate::map::route::graph::JumpGraph::walk`]), which keeps the
+//! ([`crate::graph::JumpGraph::walk`]), which keeps the
 //! same `1 + over/100` bound — weighted A\* without re-expansion is
 //! `ARA*`'s own argument, and the claim that the bound *needed* reopening
 //! was wrong.
@@ -357,7 +361,7 @@
 //! Asked because a 45 ly least-fuel plot came back in 4.8 s and read as
 //! the exact setting having got faster. It has not: nothing above touches
 //! it, every approximation being gated on
-//! [`crate::map::route::graph::Routing::approximates`], and the
+//! [`crate::graph::Routing::approximates`], and the
 //! guard's own exact rows sat at 0.66–0.81 s and 81–88 s throughout, from
 //! before the first of these changes to after the last.
 //!
@@ -392,7 +396,7 @@
 //! route at 2.144 of a tank against the proven route's 2.148.
 //!
 //! Priced in hundred-thousandths, with any jump charged at least one unit
-//! ([`crate::map::route::graph::burned`]), the ordering comes right and
+//! ([`crate::graph::burned`]), the ordering comes right and
 //! the proven routes come out *cheaper* than they did:
 //!
 //! | corridor | proven, before | proven, after | 95% after, all in range |
@@ -422,10 +426,10 @@
 //! ## Measured 2026-09-16, the plan's weight taken off the route's
 //!
 //! The coarse plan multiplied its estimate by
-//! [`crate::map::route::graph::Routing::over`], so a reader asking for
+//! [`crate::graph::Routing::over`], so a reader asking for
 //! a route within five percent was also asking for a plan leaned by five
 //! and could not ask for the exact plan at all. It is
-//! [`crate::map::route::graph::Tuning::planning`] now, with a rail of
+//! [`crate::graph::Tuning::planning`] now, with a rail of
 //! its own in the planning fold and exact at the top of it.
 //!
 //! What exact is worth, end to end from Sol at 45 ly with a standard
@@ -449,7 +453,7 @@
 //! 4.27 ms exact against 4.02 ms leaned — 3 kly out at a 495 Ly gap, warm,
 //! the same 40 stops. Every corridor sampled is a factor of forty-eight
 //! either side of that, so exact is *tried* rather than promised:
-//! [`crate::map::route::graph::Tuning::allowance`] drops an exact pass
+//! [`crate::graph::Tuning::allowance`] drops an exact pass
 //! that has spent 2,048 expansions — 40 ms at some 20 µs apiece — and the
 //! plan is then worked leaned exactly as it was.
 //!
@@ -477,7 +481,7 @@
 //! One number three times over in the third column, which is the defect,
 //! against 6 to 11 percent of the tank once the step is priced by the
 //! metric the route is weighed by — the same rule
-//! [`crate::map::route::graph::thinned`] follows one level down. It
+//! [`crate::graph::thinned`] follows one level down. It
 //! costs a few percent of the clock (76–113 ms against 99, 325–335 against
 //! 304) and 11 to 118 percent more stops, which is the trade the rail is
 //! for.
@@ -486,7 +490,7 @@
 //! it came into reach is a jump at full range, which is the dearest jump
 //! there is, and closing in on it first is 142.21 tanks against 146.77 on
 //! the unpriced Colonia row. The walk is called
-//! [`crate::map::route::graph::Crossing::Stepped`] now, "nearest"
+//! [`crate::graph::Crossing::Stepped`] now, "nearest"
 //! having stopped being true of it.
 //!
 //! The longest walk any gap took, which is what
@@ -527,7 +531,7 @@
 //! So the floor is 500 Ly, where the curve flattens, and the plan climbs
 //! from there: a chain that does not close on the goal is planned again
 //! one ordinary jump wider, up to `RUNGS` = 8 rungs
-//! ([`crate::map::route::highway::Highway::plan`]). A rung is only
+//! ([`crate::highway::Highway::plan`]). A rung is only
 //! paid where the narrower reach had already failed. **And the rail is
 //! gone** — no reader can be expected to know which corridor wants which
 //! number, and every wrong answer was a cliff.
@@ -639,12 +643,12 @@
 
 #![cfg(test)]
 
-use crate::map::index::Boosts;
-use crate::map::route::graph::{
+use crate::Boosts;
+use crate::graph::{
     Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh,
 };
-use bevy::math::DVec3;
 use galos_index::{FsSource, Source as _};
+use glam::DVec3;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -663,7 +667,7 @@ fn measured() -> Option<PathBuf> {
 ///
 /// **The count is the assertion a clock cannot make.** Every charged row
 /// below was written with `Drive::Unaided` — a drive with no cone to charge
-/// off, which [`crate::map::route::graph::JumpGraph`] answers no plan
+/// off, which [`crate::graph::JumpGraph`] answers no plan
 /// for — so the coarse plan never ran and the flat galaxy-wide search
 /// answered in its place: 451 stops where the plan finds 141, and 919 where
 /// it finds 334. Both were still seconds, so the clock saw nothing and the
@@ -679,7 +683,7 @@ fn measured() -> Option<PathBuf> {
 ///
 /// Stops and not jumps: the systems the route runs through, the ship's own
 /// jumps being one fewer. It is the count every table in this file and in
-/// [`crate::map::route::graph`] was recorded in.
+/// [`crate::graph`] was recorded in.
 fn plotted(
     what: &str,
     route: Option<Vec<(i64, [f64; 3])>>,

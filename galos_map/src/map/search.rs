@@ -1,6 +1,5 @@
 use crate::map::camera::OrbitCamera;
 use crate::map::index::Names;
-use crate::map::route::graph::{Drive, Routing};
 use crate::map::schedule::MapSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -8,6 +7,7 @@ use bevy::tasks::futures_lite::future::poll_once;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::meta::NameEntry;
 use galos_index::names::MIN_PREFIX;
+use galos_route::graph::{Drive, Routing};
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {

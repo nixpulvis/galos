@@ -4,10 +4,10 @@ use crate::map::galaxy::spawn::build_system;
 use crate::map::index::{Names, Populated};
 use crate::map::route::SelectedFilter;
 use crate::map::route::frontier::Frontiers;
-use crate::map::route::graph::{Drive, Frontier, Jumps, Routing, Tuning};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use elite_journal::Boxel;
+use galos_route::graph::{Drive, Frontier, Jumps, Routing, Tuning};
 
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ pub fn fetch_route(
     how: Routing,
     tune: Tuning,
     names: &Res<Names>,
-    boosts: &Res<crate::map::index::Boosts>,
+    boosts: &Res<galos_route::Boosts>,
     populated: &Res<Populated>,
     filters: &mut ResMut<Filters>,
     selected: &mut ResMut<SelectedFilter>,
@@ -170,7 +170,7 @@ pub fn replot(
     time: &Res<Time<Real>>,
     jumps: &mut ResMut<Jumps>,
     names: &Res<Names>,
-    boosts: &Res<crate::map::index::Boosts>,
+    boosts: &Res<galos_route::Boosts>,
     populated: &Res<Populated>,
     filters: &mut ResMut<Filters>,
 ) -> bool {
@@ -267,7 +267,7 @@ fn ask_leg(
     filters: &mut ResMut<Filters>,
     jumps: &mut ResMut<Jumps>,
     names: &Res<Names>,
-    boosts: &Res<crate::map::index::Boosts>,
+    boosts: &Res<galos_route::Boosts>,
     populated: &Res<Populated>,
     now: bevy::platform::time::Instant,
 ) {
