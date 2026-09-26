@@ -171,12 +171,13 @@ pub struct Cli {
     /// Replace a directory that already serves systems, where this run
     /// cannot resume what is there.
     ///
-    /// Reading `--from database` into a directory rebuilds the whole of it
-    /// when the resume point beside it is not one of the database's — a
-    /// directory built from a dump, or from the feed, whose systems the
-    /// rows have no other way to carry forward. That replaces every system
-    /// it publishes, so it is refused unless it is asked for here. `galos
-    /// index status -i DIR` says what wrote the one you have.
+    /// A run that derives the directory from the rows — `--from database`,
+    /// or `--db` with `-i` bringing it level before following a feed —
+    /// rebuilds the whole of it when the resume point beside it cannot be
+    /// followed: one built from a dump or from the feed alone, or one whose
+    /// cell tree and names table stand for different systems. That replaces
+    /// every system it publishes, so it is refused unless it is asked for
+    /// here. `galos index status -i DIR` says what wrote the one you have.
     #[cfg(feature = "db")]
     #[arg(long, help_heading = ROWS)]
     rebuild: bool,
@@ -726,10 +727,11 @@ fn refused(cli: &Cli) -> Result<(), String> {
     }
 
     #[cfg(feature = "db")]
-    if cli.rebuild && !cli.from_db() {
+    if cli.rebuild && !cli.deriving() {
         return Err(
-            "--rebuild replaces a directory the rows cannot resume: --from \
-             database"
+            "--rebuild replaces a directory with one derived from the \
+             database, and this run derives none: add --from database, or \
+             --db alongside -i/--index"
                 .into(),
         );
     }
