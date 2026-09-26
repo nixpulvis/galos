@@ -15,7 +15,7 @@
 //! tenfold. So the systems nobody lives in splat at the stellar centroid with
 //! the stellar extent, and the colonies splat at their own, which is what
 //! keeps a colonisation filament a filament instead of smearing it over the
-//! cell that holds it. [`galos_index::Inhabited`] is the second distribution
+//! cell that holds it. [`galos_index::read::inhabited::Inhabited`] is the second distribution
 //! and exists for this.
 //!
 //! **One light per system, and a correction for the crowd.** A system is
@@ -56,7 +56,7 @@
 //!
 //! **Every splat is a pixel or two by construction**, which is what makes
 //! one isotropic Gaussian enough. A cell hands its light to its children
-//! once its contents subtend [`galos_index::walk::SPLIT_PX`] — half a pixel,
+//! once its contents subtend [`galos_index::read::walk::SPLIT_PX`] — half a pixel,
 //! so the frontier follows the pixel grid down as far as the tree goes — and
 //! a filament is carried by a chain of pixel-wide splats rather than by one
 //! elongated blob. It also bounds the cost of a centroid that has left the
@@ -92,10 +92,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::inhabited::{
+use galos_index::read::index::UNIFORM_SPAN;
+use galos_index::read::inhabited::{
     Inhabited, allegiance_at, government_at, security_at,
 };
-use galos_index::walk::UNIFORM_SPAN;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
@@ -453,7 +453,7 @@ const GLOW_TEXELS: u32 = 64;
 /// **What buys the resolution is the split and not this.** Three tenths was
 /// reached when a splatted cell's contents spanned two to four pixels, where
 /// the floor was the only lever on how tight a filament could be drawn and
-/// this one had to carry it. With [`galos_index::walk::SPLIT_PX`] cutting at
+/// this one had to carry it. With [`galos_index::read::walk::SPLIT_PX`] cutting at
 /// half a pixel the frontier's cells are about a pixel across, so half of
 /// one is half a pixel — [`FINEST`], the display's own limit — and the floor
 /// costs nothing where the tree has depth to give. Where it has not, in the
@@ -1861,7 +1861,8 @@ mod exposure {
     use crate::map::camera::OrbitCamera;
     use crate::map::galaxy::plan::Planned;
     use crate::map::index::{Populated, ResidentIndex, Settled};
-    use galos_index::{FsSource, Inhabitance, Source};
+    use galos_index::read::inhabited::Inhabitance;
+    use galos_index::{FsSource, Source};
     use std::path::PathBuf;
 
     fn measured() -> Option<PathBuf> {
@@ -2196,7 +2197,7 @@ mod exposure {
             // The field resolves to the frame and not to the split. A
             // splat's kernel is its cell's own spread ([`FLATTENED`]),
             // floored on half the cell ([`COVERAGE`]) and then on half a
-            // pixel ([`FINEST`]) — and with [`galos_index::walk::SPLIT_PX`]
+            // pixel ([`FINEST`]) — and with [`galos_index::read::walk::SPLIT_PX`]
             // cutting at half a pixel of contents, the last of those three
             // is what catches a frontier cell wherever the tree has depth
             // to give. So some of every frame is laid on the pixel floor,

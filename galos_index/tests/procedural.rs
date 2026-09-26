@@ -5,7 +5,7 @@
 
 //! What a whole galaxy's names say about deriving them.
 //!
-//! `galos_index::procedural` spells a system's name from its address, and
+//! `galos_index::core::procedural` spells a system's name from its address, and
 //! the names table stores only the ones that disagree. The unit tests pin
 //! the arithmetic against known systems; this pins it against **every name
 //! a real directory holds**, because the thing that matters is a rate: a
@@ -34,8 +34,8 @@
 //! dictionary regenerated against a larger galaxy can only cover more.
 
 use elite_journal::Boxel;
-use galos_index::names::Table;
-use galos_index::procedural;
+use galos_index::core::procedural;
+use galos_index::store::names::Table;
 use std::path::PathBuf;
 use std::time::Instant;
 

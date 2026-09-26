@@ -29,7 +29,7 @@ use crate::ui::panels::system::{body_described, described, star_described};
 use crate::ui::panels::window::{WIDTH, framed, inside, room_under, tile};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::meta::{Body as DbBody, Star as DbStar};
+use galos_index::records::{Body as DbBody, Star as DbStar};
 
 mod fields;
 mod filter;
@@ -720,7 +720,7 @@ mod tests {
     /// to.
     #[test]
     fn a_trip_flown_home_is_listed_in_the_order_flown() {
-        let placed = |address: i64, at: f32| galos_index::meta::NameEntry {
+        let placed = |address: i64, at: f32| galos_index::records::NameEntry {
             address,
             name: format!("STOP {address}").into(),
             position: [at, 0., 0.],

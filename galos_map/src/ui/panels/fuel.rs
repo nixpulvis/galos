@@ -81,14 +81,16 @@ impl StarClasses {
 /// The class of the star a ship drops in at
 ///
 /// The index's own rule, not another one beside it
-/// ([`galos_index::derive::arrival_class`]): the star nearest the arrival
+/// ([`galos_index::records::derive::arrival_class`]): the star nearest the arrival
 /// point, ties broken by body id. It matters that this is the same rule the
 /// published boost table was derived by — a panel that read the primary as
 /// "the star that goes round nothing" would name a different star in a close
 /// pair than the table saying whether that system can supercharge, and the
 /// two readings would disagree about the same system on the same screen.
-fn arrival_class(inside: &galos_index::meta::SystemBodies) -> Option<String> {
-    galos_index::derive::arrival_class(inside).map(str::to_owned)
+fn arrival_class(
+    inside: &galos_index::records::SystemBodies,
+) -> Option<String> {
+    galos_index::records::derive::arrival_class(inside).map(str::to_owned)
 }
 
 /// How a jump's fuel goes with its length, drive by drive
@@ -155,7 +157,7 @@ const POWERS: [(u8, f64); 7] = [
 ///
 /// The longest run of stops a ship crosses with **nothing to scoop**, and
 /// which stop it sets out from. A fuel scoop takes hydrogen off the main
-/// sequence and off nothing else (`galos_index::meta::scoopable`), so a
+/// sequence and off nothing else (`galos_index::core::record::scoopable`), so a
 /// stretch of white dwarfs, brown dwarfs and black holes is a stretch the
 /// ship crosses on the fuel it had — and where that stretch is longer than
 /// the tank, the route is not a slower route, it is a stranded ship.
@@ -227,7 +229,7 @@ impl Scooping {
 
         for (name, class, jump) in stops {
             match class {
-                Some(class) if galos_index::meta::scoopable(class) => {
+                Some(class) if galos_index::core::record::scoopable(class) => {
                     // The jump that arrived here was flown before the tank
                     // was filled here, so it is the run's to pay for.
                     jumps.extend(jump);

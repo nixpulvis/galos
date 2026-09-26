@@ -15,12 +15,12 @@ use bevy::prelude::*;
 use chrono::{DateTime, Utc};
 // Re-exported: the floor under a reach is read all over the map — the zoom
 // floor, the shell, the ruled plane — and it belongs beside the reach it
-// floors, which is `galos_index::inside`.
-pub use galos_index::inside::STAND_IN;
-use galos_index::meta::{
+// floors, which is `galos_index::system::inside`.
+use galos_index::records::{
     Barycenter as DbBarycenter, Body as DbBody, Star as DbStar, SystemBodies,
 };
-use galos_index::orbit::Orbits;
+pub use galos_index::system::inside::STAND_IN;
+use galos_index::system::orbit::Orbits;
 
 // Held in: the map reaches a system's insides through `bodies::plugin`.
 /// Seconds in a day
@@ -66,7 +66,7 @@ const WITHIN: f64 = 1.;
 /// read, and the walk that places a moon runs each step of itself on from the
 /// scan that step actually has. What [`Self::since`] hands out is that zero's
 /// distance from the moment being asked about. See
-/// [`galos_index::orbit::Orbit::behind`].
+/// [`galos_index::system::orbit::Orbit::behind`].
 #[derive(Resource)]
 pub struct Clock {
     /// The present, as the map last read it
@@ -443,7 +443,7 @@ impl Contents {
     /// Everything about the arrangement they describe — what goes round what,
     /// where each thing stands, how far the whole of it reaches — is asked of
     /// these rather than of this, and asked through
-    /// [`galos_index::inside`], which is the same code the
+    /// [`galos_index::system::inside`], which is the same code the
     /// builder works the reach table out with. What is left here is the asking
     /// and the holding.
     pub fn rows(&self) -> Option<&SystemBodies> {
@@ -489,7 +489,7 @@ impl Contents {
 
     /// Which star the system arrives at, and where the middle of it falls
     ///
-    /// Both [`galos_index::inside`]'s, asked of the rows in hand.
+    /// Both [`galos_index::system::inside`]'s, asked of the rows in hand.
     pub fn primary(&self) -> Option<i16> {
         self.rows().and_then(SystemBodies::primary)
     }
@@ -586,7 +586,7 @@ impl Contents {
     /// written with, so the shell the map draws around a system and the size
     /// it drew it at from light years off cannot disagree. The address goes in
     /// because a place the map has to stand up itself is pointed in a
-    /// direction taken from it; see `galos_index::orbit::made_up_direction`.
+    /// direction taken from it; see `galos_index::system::orbit::made_up_direction`.
     ///
     /// Dated against the moment the system was last heard from, so that one
     /// reading of the clock places rows read years apart: each path is run on

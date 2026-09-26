@@ -41,7 +41,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use chrono::{DateTime, Duration, Utc};
-use galos_index::meta::Faction as DbFaction;
+use galos_index::records::Faction as DbFaction;
 use galos_route::graph::{Drive, Routing, Tuning};
 
 pub fn plugin(app: &mut App) {
@@ -1031,7 +1031,7 @@ impl Filters {
     /// which is what leaves an unfiltered map exactly as it was.
     pub(crate) fn admitted_share(
         &self,
-        aged: &[u32; galos_index::aggregate::AGE_BUCKETS],
+        aged: &[u32; galos_index::core::aggregate::AGE_BUCKETS],
         named: u32,
         count: u64,
     ) -> f32 {
@@ -1044,9 +1044,9 @@ impl Filters {
         for active in self.asked.iter().filter(|active| active.enabled) {
             match &active.filter {
                 Filter::Recency { span, .. } => {
-                    let last =
-                        galos_index::derive::age_bucket(span.num_days().max(0))
-                            as usize;
+                    let last = galos_index::records::derive::age_bucket(
+                        span.num_days().max(0),
+                    ) as usize;
                     let fresh: u32 = aged.iter().take(last + 1).copied().sum();
                     share = share.min(fresh as f32 / whole);
                 }
@@ -1698,7 +1698,7 @@ mod tests {
     /// come to.
     #[test]
     fn a_merged_mark_is_weighed_by_the_share_it_admits() {
-        const BUCKETS: usize = galos_index::aggregate::AGE_BUCKETS;
+        const BUCKETS: usize = galos_index::core::aggregate::AGE_BUCKETS;
         // A cell of a thousand systems: a hundred written today, the rest
         // a year stale. `AGE_EDGES` puts today in bucket 0 and a year in
         // bucket 4.

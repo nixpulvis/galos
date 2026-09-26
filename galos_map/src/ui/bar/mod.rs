@@ -843,7 +843,7 @@ mod tests {
 
     use crate::ui::bar::search::{found, system_list};
     use crate::ui::testing::{dragged, holding, results, results_of};
-    use galos_index::meta::Faction as DbFaction;
+    use galos_index::records::Faction as DbFaction;
 
     // Only the debug-only passes below use it: egui compiles its
     // between-pass id check out of a release build. See

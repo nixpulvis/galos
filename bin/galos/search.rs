@@ -160,7 +160,7 @@ impl Cli {
 /// name whether it was stored or is spelled from the address, answers a
 /// prefix in microseconds and a word held anywhere in a name — `A*` for
 /// `SAGITTARIUS A*` — in a few milliseconds. See
-/// `galos_index::names::Table::matching`.
+/// `galos_index::store::names::Table::matching`.
 ///
 /// A percent sign is what the old SQL pattern wanted and this does not, so
 /// it is trimmed rather than searched for: nobody typing `LHS%` means a

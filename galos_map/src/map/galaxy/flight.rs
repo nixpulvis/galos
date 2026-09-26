@@ -200,7 +200,10 @@ impl Flight {
         // read off ([`crate::map::galaxy::blobs`]). Empty, the weighing pass
         // would measure the miss path over a galaxy nobody lives in.
         let settled = crate::map::index::Settled(std::sync::Arc::new(
-            galos_index::Inhabitance::of(&index, populated.iter()),
+            galos_index::read::inhabited::Inhabitance::of(
+                &index,
+                populated.iter(),
+            ),
         ));
 
         let mut app = App::new();
@@ -427,7 +430,7 @@ impl Flight {
 /// What may be missing is what a mark ahead of it already covers: two
 /// marks that would overlap are drawn as one, which is the rule the
 /// merge frontier applies to the payload draw and
-/// [`galos_index::screen::Crowded`] applies to this one. So the claim
+/// [`galos_index::read::screen::Crowded`] applies to this one. So the claim
 /// here is the rule itself — nothing is dropped from a patch of screen
 /// that is otherwise empty.
 #[test]
@@ -450,7 +453,7 @@ fn the_populated_sky_draws_what_stands_alone() {
     // What the frame drew, by the patch of screen each mark holds.
     let mut systems = world.query::<&System>();
     let drawn: Vec<&System> = systems.iter(world).collect();
-    let mut held = galos_index::screen::Crowded::about(&view, about);
+    let mut held = galos_index::read::screen::Crowded::about(&view, about);
     for system in &drawn {
         held.claim(system.position);
     }
@@ -512,7 +515,7 @@ fn the_populated_sky_draws_what_stands_alone() {
 /// marks were merged away. Nothing about what the reader is looking at
 /// changed. It is reckoned about the point the view turns on instead,
 /// and sized by how far back the eye stands, neither of which an orbit
-/// moves. See [`galos_index::screen::Crowded::about`].
+/// moves. See [`galos_index::read::screen::Crowded::about`].
 ///
 /// A quarter turn at a time, all the way round, each held long enough
 /// to settle: the drawn sky must come back the same set of systems it

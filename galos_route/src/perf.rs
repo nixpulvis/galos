@@ -49,7 +49,7 @@
 //! first expansion: the supercharge table was addresses, and finding where
 //! four million cones sat meant walking the names table's address column.
 //! The place is in the published row now
-//! ([`galos_index::SystemBoost`]) and the highway is a 213 ms sort, so a
+//! ([`galos_index::records::SystemBoost`]) and the highway is a 213 ms sort, so a
 //! cold click costs what a warm one does:
 //!
 //! | | jumps | before | after |

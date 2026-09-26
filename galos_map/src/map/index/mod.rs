@@ -10,9 +10,12 @@ pub(crate) mod refresh;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::meta::{Faction as MetaFaction, NameEntry, PopulatedSystem};
-use galos_index::names::{Delta, Table};
-use galos_index::{Index, Inhabitance, Source as IndexSource, SystemName};
+use galos_index::read::inhabited::Inhabitance;
+use galos_index::records::{
+    Faction as MetaFaction, NameEntry, PopulatedSystem,
+};
+use galos_index::store::names::{Delta, Table};
+use galos_index::{Index, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -131,7 +134,7 @@ impl Names {
     /// running map never comes this way — see [`Self::packed`].
     pub fn reaching(
         entries: Vec<NameEntry>,
-        reaches: Vec<galos_index::SystemReach>,
+        reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
         Names {
             table: galos_index::Names::of(Table::default(), Delta::of(entries)),
@@ -149,7 +152,7 @@ impl Names {
     pub fn over(
         sky: Arc<galos_index::Sky>,
         entries: Vec<NameEntry>,
-        reaches: Vec<galos_index::SystemReach>,
+        reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
         Names { sky: Some(sky), ..Names::reaching(entries, reaches) }
     }
@@ -200,7 +203,7 @@ impl Names {
     /// rebuild. The base is untouched and the log is copied on write, so a
     /// fetch task holding a clone keeps reading the table it was handed. See
     /// [`crate::map::index::refresh`].
-    pub fn absorb(&mut self, tail: galos_index::Delta) {
+    pub fn absorb(&mut self, tail: galos_index::store::names::Delta) {
         self.table.absorb(tail);
     }
 
@@ -241,7 +244,7 @@ impl Names {
     /// payloads being drawn from, so a search for `SOL` stalled the frame
     /// *and* the galaxy's reads. A prefix is a binary search of
     /// `byname.bin` and ~28 pages: measured 3.0 ms for `SOL` over the real
-    /// 200,071,629-name table. See `galos_index::Table::matching`.
+    /// 200,071,629-name table. See `galos_index::store::names::Table::matching`.
     ///
     /// The cap is applied in the index rather than by collecting the
     /// galaxy and sorting it down. What [`crate::map::search`] does on top is
