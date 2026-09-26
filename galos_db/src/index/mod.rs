@@ -11,12 +11,11 @@
 
 use crate::{Database, Result};
 use async_std::stream::StreamExt;
-use futures_core::stream::BoxStream;
 use galos_index::build::cold::{
     Abandoned, Build, Built, OnStop, Start, Summary,
 };
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
-use galos_index::records::derive;
+use galos_index::records::derive::{self, NearestStar};
 use galos_index::{BuildParams, ExactSystem, Index, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::{Metadata, Moved};
@@ -117,6 +116,39 @@ fn star_light(row: &sqlx::postgres::PgRow) -> Result<Option<(i64, f64, f64)>> {
     Ok(Some((address, Magnitude(m as f64).visual(Temperature(t)).0, t)))
 }
 
+/// The columns a star is read by: [`star_light`]'s, and the arrival star's.
+const STAR_COLUMNS: &str = "system_address, id, distance_from_arrival_ls, \
+     star_class, absolute_magnitude, temperature";
+
+/// What one system's scanned stars say to the build: the light of each, and
+/// which of them a ship arrives at.
+#[derive(Default)]
+struct Scanned {
+    light: Vec<(f64, f64)>,
+    arrival: NearestStar,
+}
+
+impl Scanned {
+    /// Forget the system before, for the next one.
+    fn clear(&mut self) {
+        self.light.clear();
+        self.arrival.clear();
+    }
+
+    /// One star of the system, as read by [`STAR_COLUMNS`].
+    fn take(&mut self, row: &sqlx::postgres::PgRow) -> Result<()> {
+        if let Some((_, magnitude, temperature)) = star_light(row)? {
+            self.light.push((magnitude, temperature));
+        }
+        self.arrival.offer(
+            row.try_get("distance_from_arrival_ls")?,
+            row.try_get("id")?,
+            row.try_get::<&str, _>("star_class")?,
+        );
+        Ok(())
+    }
+}
+
 /// Every scanned star of `addresses`, grouped under its system.
 ///
 /// The paged path's read, bounded by [`CHANGED_CHUNK`]. A cold build goes
@@ -124,19 +156,17 @@ fn star_light(row: &sqlx::postgres::PgRow) -> Result<Option<(i64, f64, f64)>> {
 async fn stars_by_system(
     db: &Database,
     addresses: &[i64],
-) -> Result<HashMap<i64, Vec<(f64, f64)>>> {
-    let rows = sqlx::query(
-        "SELECT system_address, absolute_magnitude, temperature \
-         FROM stars WHERE system_address = ANY($1)",
-    )
+) -> Result<HashMap<i64, Scanned>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {STAR_COLUMNS} FROM stars WHERE system_address = ANY($1)"
+    ))
     .bind(addresses)
     .fetch_all(&db.pool)
     .await?;
-    let mut stars: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
+    let mut stars: HashMap<i64, Scanned> = HashMap::new();
     for row in rows {
-        if let Some((address, magnitude, temperature)) = star_light(&row)? {
-            stars.entry(address).or_default().push((magnitude, temperature));
-        }
+        let address: i64 = row.try_get("system_address")?;
+        stars.entry(address).or_default().take(&row)?;
     }
     Ok(stars)
 }
@@ -151,7 +181,7 @@ async fn stars_by_system(
 /// from a row and one built from a journal entry land in the same place.
 fn input_from_row(
     row: &sqlx::postgres::PgRow,
-    scanned: &[(f64, f64)],
+    scanned: &Scanned,
     now: chrono::NaiveDateTime,
 ) -> Result<ExactSystem> {
     let address: i64 = row.try_get("address")?;
@@ -160,8 +190,10 @@ fn input_from_row(
     let z: f64 = row.try_get("z")?;
     let class: Option<String> = row.try_get("primary_star_class")?;
     let at: chrono::NaiveDateTime = row.try_get("updated_at")?;
-    let (absolute_magnitude, temperature) =
-        derive::lit(scanned.iter().copied(), class.as_deref().unwrap_or(""));
+    let (absolute_magnitude, temperature) = derive::lit(
+        scanned.light.iter().copied(),
+        class.as_deref().unwrap_or(""),
+    );
     let (age_bucket, updated_at) = derive::updated(at, now);
     Ok(ExactSystem {
         id64: address as u64,
@@ -170,13 +202,10 @@ fn input_from_row(
         temperature,
         age_bucket,
         updated_at,
-        // The arrival star's own class, off the same column the photometry
-        // fallback reads. A row with none reads as nothing having been
-        // said, which is what most of the galaxy is: see
-        // [`galos_index::StarKind`].
-        kind: class
-            .as_deref()
-            .map_or(galos_index::StarKind::Unknown, galos_index::StarKind::of),
+        // The scanned arrival star, else the class a route named, as the
+        // journal side reads it. Neither reads as nothing having been said,
+        // which is what most of the galaxy is: see [`galos_index::StarKind`].
+        kind: derive::arrival_kind(scanned.arrival.class(), class.as_deref()),
     })
 }
 
@@ -254,14 +283,12 @@ async fn build_cells(
     let mut build =
         Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
 
-    let mut stars = sqlx::query(
-        "SELECT system_address, absolute_magnitude, temperature \
-         FROM stars ORDER BY system_address",
-    )
-    .fetch(&db.pool);
+    let read_stars =
+        format!("SELECT {STAR_COLUMNS} FROM stars ORDER BY system_address");
+    let mut stars = sqlx::query(&read_stars).fetch(&db.pool);
     // The one star read past the system it belongs to, which is what
     // merging two cursors costs in memory.
-    let mut ahead = next_star(&mut stars).await?;
+    let mut ahead = stars.next().await.transpose()?;
 
     let mut rows = sqlx::query(
         "SELECT address, name, \
@@ -272,7 +299,7 @@ async fn build_cells(
     )
     .fetch(&db.pool);
 
-    let mut scanned: Vec<(f64, f64)> = Vec::new();
+    let mut scanned = Scanned::default();
     let mut read = 0u64;
     while let Some(row) = rows.next().await {
         let row = row?;
@@ -282,16 +309,17 @@ async fn build_cells(
             told(Progress { step: step::SYSTEMS, done: read, of });
         }
         scanned.clear();
-        while let Some((at, magnitude, temperature)) = ahead {
+        while let Some(star) = &ahead {
+            let at: i64 = star.try_get("system_address")?;
             // A star of a system this read will never reach: one whose
             // system has no position, or none at all.
             if at > address {
                 break;
             }
             if at == address {
-                scanned.push((magnitude, temperature));
+                scanned.take(star)?;
             }
-            ahead = next_star(&mut stars).await?;
+            ahead = stars.next().await.transpose()?;
         }
         if build.push(
             input_from_row(&row, &scanned, now)?,
@@ -303,19 +331,6 @@ async fn build_cells(
     }
     told(Progress { step: step::SYSTEMS, done: read, of: Some(read) });
     Ok(build.finish(Provenance::Database, Some(now), OnStop::Abandon)?)
-}
-
-/// The next star of the ordered read, as [`star_light`] reads one, skipping
-/// those with nothing to light a system by.
-async fn next_star(
-    stars: &mut BoxStream<'_, sqlx::Result<sqlx::postgres::PgRow>>,
-) -> Result<Option<(i64, f64, f64)>> {
-    while let Some(row) = stars.next().await {
-        if let Some(star) = star_light(&row?)? {
-            return Ok(Some(star));
-        }
-    }
-    Ok(None)
 }
 
 /// Say what [`galos_index::ops::migrate::migrate`] moved in `dir`, on this
@@ -524,8 +539,8 @@ async fn inputs_for(
     rows.iter()
         .map(|row| {
             let address: i64 = row.try_get("address")?;
-            let scanned = stars.get(&address).map_or(&[][..], Vec::as_slice);
-            input_from_row(row, scanned, now)
+            let none = Scanned::default();
+            input_from_row(row, stars.get(&address).unwrap_or(&none), now)
         })
         .collect()
 }
@@ -1827,6 +1842,109 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
 
+        db.done().await;
+    }
+
+    /// A payload's star kind is the scanned arrival star, as the journal
+    /// side reads it, and not only the class a route named
+    ///
+    /// `systems.primary_star_class` is written only by a plotted route, so
+    /// a scanned neutron star has `N` in `stars` and a null column. Built
+    /// off the column alone, its payload said nothing about it while the
+    /// supercharge table said it was a neutron star, and a directory built
+    /// from a journal said so in both. Both reads are asked: the cold
+    /// build's merged cursors and a watch pass's paged read.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_payload_kind_is_the_scanned_arrival_star() {
+        let Some(db) = Scratch::new().await else { return };
+
+        let scanned = 0x0B00_5700_0000_0011_u64 as i64;
+        let routed = 0x0B00_5700_0000_0012_u64 as i64;
+        for (address, name, class) in [
+            (scanned, "KIND SCANNED", None),
+            (routed, "KIND ROUTED", Some("DA")),
+        ] {
+            sqlx::query(
+                "INSERT INTO systems (address, name, position, updated_at, \
+                                      updated_by, primary_star_class) \
+                 VALUES ($1, $2, ST_MakePoint(1, 2, 3)::geometry, now(), \
+                         'test', $3)",
+            )
+            .bind(address)
+            .bind(name)
+            .bind(class)
+            .execute(&db.pool)
+            .await
+            .expect("the system should write");
+        }
+        // A neutron star at the drop point and a G star further out, the G
+        // star written first and with the lower id.
+        for (id, class, distance) in [(0i16, "G", 900.0f32), (1i16, "N", 0.0)] {
+            sqlx::query(
+                "INSERT INTO stars (system_address, id, name, updated_at, \
+                     updated_by, absolute_magnitude, age_my, \
+                     distance_from_arrival_ls, luminosity, star_class, \
+                     stellar_mass, subclass, axial_tilt, radius, \
+                     rotation_period, temperature, was_mapped) \
+                 VALUES ($1, $2, $3, now(), 'test', 4.8, 100, $4, 'V', $5, \
+                         1.0, 2, 0, 1.0, 0, 5000, false)",
+            )
+            .bind(scanned)
+            .bind(id)
+            .bind(format!("KIND SCANNED {id}"))
+            .bind(distance)
+            .bind(class)
+            .execute(&db.pool)
+            .await
+            .expect("the star should write");
+        }
+
+        let paged: HashMap<i64, galos_index::StarKind> =
+            inputs_for(&db, &[scanned, routed])
+                .await
+                .expect("the paged read")
+                .into_iter()
+                .map(|it| (it.id64 as i64, it.kind))
+                .collect();
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_kind_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let now = db.now().await.expect("the clock should read").naive_utc();
+        build_cells(
+            &db,
+            &dir,
+            &checkpoint,
+            BuildParams::default(),
+            galos_index::build::cold::region_budget(),
+            now,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the cold build should run");
+        let sky = galos_index::Sky::open(&dir).expect("the built galaxy");
+        let built = |address: i64| {
+            let node =
+                sky.node_of(address, [1., 2., 3.]).expect("a built system");
+            sky.payload(node.cell).expect("its cell").kind_at(node.at as usize)
+        };
+
+        for (address, want) in [
+            (scanned, galos_index::StarKind::Neutron),
+            (routed, galos_index::StarKind::WhiteDwarf),
+        ] {
+            assert_eq!(built(address), want, "the cold build, {address}");
+            assert_eq!(paged.get(&address), Some(&want), "the paged read");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
         db.done().await;
     }
 }

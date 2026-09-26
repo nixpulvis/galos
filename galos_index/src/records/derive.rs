@@ -122,11 +122,66 @@ pub fn arrival_class(bodies: &SystemBodies) -> Option<&str> {
         .stars
         .iter()
         .min_by(|one, other| {
-            one.distance_from_arrival_ls
-                .total_cmp(&other.distance_from_arrival_ls)
-                .then(one.id.cmp(&other.id))
+            order(
+                (one.distance_from_arrival_ls, one.id),
+                (other.distance_from_arrival_ls, other.id),
+            )
         })
         .map(|star| star.star_class.as_str())
+}
+
+/// Which of two stars, as `(distance from arrival, body id)`, a ship drops
+/// in nearer: [`arrival_class`]'s rule, stated once for it and
+/// [`NearestStar`].
+fn order(one: (f32, i16), other: (f32, i16)) -> std::cmp::Ordering {
+    one.0.total_cmp(&other.0).then(one.1.cmp(&other.1))
+}
+
+/// [`arrival_class`] for a reader the stars stream past rather than one
+/// holding a system's [`SystemBodies`]: offered each star, it keeps the one
+/// a ship arrives at.
+///
+/// Reused across systems by [`Self::clear`], so a read of every star there
+/// is keeps one class's worth of string rather than one a star.
+#[derive(Clone, Debug, Default)]
+pub struct NearestStar {
+    best: Option<(f32, i16)>,
+    class: String,
+}
+
+impl NearestStar {
+    /// Forget the system before, for the next one.
+    pub fn clear(&mut self) {
+        self.best = None;
+        self.class.clear();
+    }
+
+    /// One star of the system, `distance` light seconds from arrival.
+    pub fn offer(&mut self, distance: f32, id: i16, class: &str) {
+        let nearer =
+            self.best.is_none_or(|best| order((distance, id), best).is_lt());
+        if nearer {
+            self.best = Some((distance, id));
+            self.class.clear();
+            self.class.push_str(class);
+        }
+    }
+
+    /// The class of the nearest star offered, [`None`] where none was.
+    pub fn class(&self) -> Option<&str> {
+        self.best.map(|_| self.class.as_str())
+    }
+}
+
+/// What kind of star a ship arrives at: the scanned arrival star's class,
+/// else the class a plotted route named, else nothing said.
+///
+/// The one reading a payload's [`StarKind`] is taken by, on both sides —
+/// `scanned` is [`arrival_class`] or [`NearestStar::class`], and `routed`
+/// is `systems.primary_star_class` on the database side and the route
+/// file's class on the journal side.
+pub fn arrival_kind(scanned: Option<&str>, routed: Option<&str>) -> StarKind {
+    scanned.or(routed).map_or(StarKind::Unknown, StarKind::of)
 }
 
 /// One system's row in the supercharge table, by the one rule both
@@ -284,12 +339,35 @@ mod tests {
     /// would be whichever star the caller read first.
     #[test]
     fn arrival_class_breaks_a_tie_by_id() {
+        // The held reading and the streamed one answer alike, in either
+        // order the stars come in.
+        let streamed = |stars: &[Star]| {
+            let mut nearest = NearestStar::default();
+            for star in stars {
+                nearest.offer(
+                    star.distance_from_arrival_ls,
+                    star.id,
+                    &star.star_class,
+                );
+            }
+            nearest.class().map(str::to_owned)
+        };
         let mut bodies = SystemBodies::default();
-        bodies.stars = vec![star(2, 0.0, "N"), star(1, 0.0, "G")];
-        assert_eq!(arrival_class(&bodies), Some("G"));
+        for (stars, want) in [
+            (vec![star(2, 0.0, "N"), star(1, 0.0, "G")], "G"),
+            (vec![star(1, 0.0, "G"), star(2, 0.0, "N")], "G"),
+            // Nearest wins outright, whatever its id.
+            (vec![star(1, 900.0, "G"), star(9, 12.0, "M")], "M"),
+        ] {
+            bodies.stars = stars;
+            assert_eq!(arrival_class(&bodies), Some(want));
+            assert_eq!(streamed(&bodies.stars).as_deref(), Some(want));
+        }
 
-        bodies.stars = vec![star(1, 900.0, "G"), star(9, 12.0, "M")];
-        assert_eq!(arrival_class(&bodies), Some("M"), "nearest wins outright");
+        let mut nearest = NearestStar::default();
+        nearest.offer(0.0, 1, "N");
+        nearest.clear();
+        assert_eq!(nearest.class(), None, "a cleared reading says nothing");
     }
 
     /// A system with nothing scanned has no arrival class of its own, and

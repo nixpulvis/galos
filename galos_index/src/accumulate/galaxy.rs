@@ -77,7 +77,7 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
-use crate::core::record::{ExactSystem, StarKind};
+use crate::core::record::ExactSystem;
 use crate::records::{
     NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
 };
@@ -453,13 +453,12 @@ impl Galaxy {
             temperature,
             age_bucket,
             updated_at,
-            // The arrival star, by the same rule the boost table is derived
-            // by: nearest the drop point, ties by body id, and the class a
-            // plotted route named where nothing has been scanned. Nothing
-            // said reads as nothing said — see [`StarKind::Unknown`].
-            kind: self
-                .arrival_class(report.address)
-                .map_or(StarKind::Unknown, |class| StarKind::of(&class)),
+            // The arrival star, by [`derive::arrival_kind`], the rule the
+            // database side reads it by too.
+            kind: derive::arrival_kind(
+                derive::arrival_class(&inside),
+                report.star_class.as_deref(),
+            ),
         }
     }
 
@@ -502,18 +501,6 @@ impl Galaxy {
             self.systems.keys().filter_map(|&a| self.boost_of(a)).collect();
         table.sort_by_key(|it| it.address);
         table
-    }
-
-    /// The class of the star a ship drops in at, as far as anything says.
-    ///
-    /// [`derive::arrival_class`] over what has been scanned, and where
-    /// nothing has been the class a plotted route named, that being the only
-    /// other statement about the same star.
-    fn arrival_class(&self, address: i64) -> Option<String> {
-        let inside = self.inside.read(address);
-        derive::arrival_class(&inside)
-            .map(str::to_owned)
-            .or_else(|| self.systems.get(&address)?.star_class.clone())
     }
 
     /// The systems anybody lives in, with the political columns a colour and a
