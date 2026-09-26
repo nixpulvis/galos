@@ -247,7 +247,7 @@ pub(crate) type Searching = Pending<String, Vec<NameEntry>>;
 /// being looked up
 ///
 /// One at a time for the reason a search is, and asked apart from the route
-/// itself, which `systems::fetch` has already sent off. This settles only
+/// itself, which `galaxy::fetch` has already sent off. This settles only
 /// which of the two ends the user got wrong, so what it answers with is that
 /// trouble or nothing at all.
 type Locating = Pending<(), Option<String>>;

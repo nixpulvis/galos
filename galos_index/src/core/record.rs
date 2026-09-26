@@ -336,7 +336,7 @@ impl FixedCodec for StarKind {
 ///
 /// Which of the two, rather than the multiplier: what a boost is worth depends
 /// on the drive fitted, and the table is about the sky. See
-/// `galos_map::systems::route::graph::Drive`.
+/// `galos_route::graph::Drive`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Boost {
     /// A white dwarf: half again, and a much larger exclusion zone to be

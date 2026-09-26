@@ -22,6 +22,8 @@ The crates, and where to start reading each: its `lib.rs` header.
 - [`galos_map`](./galos_map): the 3D map, a bevy client of an index directory.
 - [`galos_index`](./galos_index): the octree, its on-disk format, the builders
   that fill it and the walks that read it.
+- [`galos_route`](./galos_route): the router over an index — the jump graph,
+  the supercharge highway, and the order to fly a set of stops in.
 - [`galos_db`](./galos_db): the Postgres store, and deriving an index from it.
 - [`galos_photometry`](./galos_photometry): magnitudes, temperatures, colour and
   the point spread.
