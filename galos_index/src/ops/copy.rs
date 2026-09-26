@@ -16,16 +16,15 @@
 //! ## The resume point travels with the directory
 //!
 //! A build directory is served; the resume point is the builder's private
-//! business and sits *beside* it, three files: the base `<dir>.checkpoint`,
-//! the log `<dir>.checkpoint.pending` and the dump mark
-//! `<dir>.checkpoint.mark`. They are what says the directory can be
-//! followed — the served tree is lossy and no tree can be rebuilt from it
-//! (see [`crate::format::checkpoint`]) — so a copy that took the directory alone
-//! would be a galaxy that cannot be resumed by `--watch` and cannot be
-//! carried on by a cold build. It would have to be reimported from nothing
-//! to be useful again, which is the day the backup was taken against. So
-//! [`copy`] carries all four things and [`Copied::siblings`] says how many
-//! of the three were there.
+//! business and sits *beside* it, three files: the base `<dir>.checkpoint`, the
+//! log `<dir>.checkpoint.pending` and the dump mark `<dir>.checkpoint.mark`.
+//! They are what says the directory can be followed — the served tree is lossy
+//! and no tree can be rebuilt from it (see [`crate::format::checkpoint`]) — so
+//! a copy that took the directory alone would be a galaxy that cannot be
+//! resumed by `--watch` and cannot be carried on by a cold build. It would have
+//! to be reimported from nothing to be useful again, which is the day the
+//! backup was taken against. So [`copy`] carries all four things and
+//! [`Copied::siblings`] says how many of the three were there.
 //!
 //! ## The order, which is the whole of the argument
 //!
@@ -34,15 +33,14 @@
 //! copy is inconsistent *by*, and there is a right answer:
 //!
 //! - **Everything but `index.bin` first, and `index.bin` last.** A cell the
-//!   tree names with no payload under it is a hole — a galaxy quietly
-//!   missing a piece, and nothing reports it. A payload file the tree does
-//!   not name is an orphan, which costs disk and nothing else and which
-//!   `galos index sweep` gives back. Taking the payloads before the index
-//!   means a copy caught across a publish holds orphans and can hold no
-//!   holes, because every cell the copied index names was on disk before
-//!   the index was read. This is the same argument
-//!   [`sweep_payloads`](crate::store::cells::sweep_payloads) makes for running after the
-//!   index is written, in the other direction.
+//!   tree names with no payload under it is a hole — a galaxy quietly missing a
+//!   piece, and nothing reports it. A payload file the tree does not name is an
+//!   orphan, which costs disk and nothing else and which `galos index sweep`
+//!   gives back. Taking the payloads before the index means a copy caught
+//!   across a publish holds orphans and can hold no holes, because every cell
+//!   the copied index names was on disk before the index was read. This is the
+//!   same argument [`sweep_payloads`](crate::store::cells::sweep_payloads)
+//!   makes for running after the index is written, in the other direction.
 //! - **The log before the base.** `Compaction::finish` renames the new base
 //!   into place and *then* clears the log, so a copy that takes the log
 //!   first and the base second holds at worst a base newer than its log —
@@ -53,14 +51,15 @@
 //!   directory ([`crate::Lock`]). Copied, it hands the destination a pid
 //!   that has never heard of it, and the next writer there is refused by a
 //!   ghost until somebody runs `--force-lock`.
-//! - **Not the scratch.** [`names::scratch_dir`](crate::format::layout::scratch_dir)
-//!   — `names/.building/` — is a fold in progress, and
+//! - **Not the scratch.**
+//!   [`names::scratch_dir`](crate::format::layout::scratch_dir) —
+//!   `names/.building/` — is a fold in progress, and
 //!   [`cold::spill_dir`](crate::format::layout::spill_dir) —
-//!   `<dir>.checkpoint.regions/` — is a cold build's per-region spill;
-//!   both run to gigabytes and neither means anything away from the run
-//!   that made them. The first is inside the directory and is skipped by
-//!   name. The second, like `<dir>.checkpoint.tmp`, is beside it, and only
-//!   the three named siblings beside a directory are ever looked at.
+//!   `<dir>.checkpoint.regions/` — is a cold build's per-region spill; both run
+//!   to gigabytes and neither means anything away from the run that made them.
+//!   The first is inside the directory and is skipped by name. The second, like
+//!   `<dir>.checkpoint.tmp`, is beside it, and only the three named siblings
+//!   beside a directory are ever looked at.
 //!
 //! ## Why [`std::fs::copy`] and not a read/write loop
 //!
@@ -95,9 +94,8 @@
 //! to run the copy again straight over it, because every step is a write of
 //! the same bytes to the same place.
 
-use crate::format::layout::pending_path;
 use crate::format::layout::{
-    INDEX_FILE, checkpoint_beside, mark_path, scratch_dir,
+    INDEX_FILE, checkpoint_beside, mark_path, pending_path, scratch_dir,
 };
 use std::fmt;
 use std::fs;
@@ -356,10 +354,8 @@ mod tests {
     use crate::Lock;
     use crate::build::snapshot::{BuildParams, Snapshot};
     use crate::core::record::System;
-    use crate::format::checkpoint::Pending;
-    use crate::format::checkpoint::{By, Checkpoint};
-    use crate::format::layout::PAYLOAD_DIR;
-    use crate::format::layout::lock_path;
+    use crate::format::checkpoint::{Checkpoint, Provenance, pending};
+    use crate::format::layout::{PAYLOAD_DIR, lock_path};
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -434,9 +430,14 @@ mod tests {
         built.write(dir).unwrap();
 
         let base = checkpoint_beside(dir);
-        Checkpoint::compact(&base, None, By::Events, rows.iter().copied())
-            .unwrap();
-        Pending::append(&base, None, &rows[..4]).unwrap();
+        Checkpoint::compact(
+            &base,
+            None,
+            Provenance::Events,
+            rows.iter().copied(),
+        )
+        .unwrap();
+        pending::append(&base, None, &rows[..4]).unwrap();
         fs::write(mark_path(&base), b"a dump read this far").unwrap();
         built
     }

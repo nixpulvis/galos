@@ -28,10 +28,7 @@
 //! by luminosity and reads a luminosity-weighted centroid and spread. It is the
 //! same arithmetic; only the weight differs.
 
-use crate::core::codec::Decode;
-use crate::core::codec::Encode;
-use crate::core::codec::FixedCodec;
-use crate::core::codec::record;
+use crate::core::codec::{Decode, Encode, FixedCodec, record};
 
 /// The weighted moments of a set of points in three dimensions.
 ///

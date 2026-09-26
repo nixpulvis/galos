@@ -538,12 +538,12 @@ fn write_boosts(
 /// plotted route, naming the class of a system nobody has necessarily been
 /// to.
 ///
-/// Which star that is, is [`derive::arrival_class`] and not a query, over
-/// the rows the caller has already read for the body files and the reaches.
-/// SQL says only which systems are eligible: positioned, and with a class to
-/// read at all. The classification is [`galos_index::Boost::of`], so a class that
-/// supercharges nothing is left out and the caller takes such a system out
-/// of the table it stands in.
+/// Which star that is, is [`derive::arrival_class`] and not a query, over the
+/// rows the caller has already read for the body files and the reaches. SQL
+/// says only which systems are eligible: positioned, and with a class to read
+/// at all. The classification is [`galos_index::Boost::of`], so a class that
+/// supercharges nothing is left out and the caller takes such a system out of
+/// the table it stands in.
 ///
 /// The place comes off the same row, the published table carrying it: what a
 /// router wants of a supercharge is where to fly for it, and reading that
@@ -621,10 +621,10 @@ async fn bodies_of(
 /// taken back stops reading as one that still has it. Only a pass knows
 /// which addresses it asked about.
 ///
-/// Both go through [`galos_index::store::bodies`] and [`galos_index::store::bodies::remove_bodies`]: a
-/// directory published by an older builder still holds loose files a read
-/// falls back onto, and a withdrawal has to clear those as well as the
-/// pack.
+/// Both go through [`galos_index::store::bodies`] and
+/// [`galos_index::store::bodies::remove_bodies`]: a directory published by an
+/// older builder still holds loose files a read falls back onto, and a
+/// withdrawal has to clear those as well as the pack.
 fn write_bodies(
     dir: &Path,
     grouped: &HashMap<i64, records::SystemBodies>,
@@ -1136,7 +1136,8 @@ mod tests {
     /// same path helpers, format and reader the client uses.
     ///
     /// No database: the values are built by hand, written with [`write_meta`]
-    /// under [`galos_index::format::layout::bodies_path`], and read back through a [`FsSource`].
+    /// under [`galos_index::format::layout::bodies_path`], and read back
+    /// through a [`FsSource`].
     ///
     /// The surfaced body is here on purpose: its [`BodyType`] and its
     /// [`AtmosphereType`] are `#[serde(untagged)]` enums with an

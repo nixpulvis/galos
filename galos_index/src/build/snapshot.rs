@@ -9,8 +9,7 @@
 //! against the one before it, which touches only the cells whose systems
 //! moved.
 
-use crate::core::aggregate::Aggregate;
-use crate::core::aggregate::Cell;
+use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::codec::Encode;
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::record::{Point, System};
@@ -28,7 +27,7 @@ use std::path::Path;
 ///
 /// Small: budget granularity matters most at coarse levels, where one
 /// expansion moves many points.
-pub(crate) const INTERNAL_SLICE: usize = 512;
+pub const INTERNAL_SLICE: usize = 512;
 
 /// The most systems a cell holds before it splits, and the most a leaf owns.
 ///
@@ -72,7 +71,7 @@ pub struct Snapshot {
 /// write of the new tree while touching only the cells whose systems actually
 /// moved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Dirtied {
+pub struct CellDiff {
     /// Cells whose payload differs and must be rewritten.
     pub changed: Vec<CellId>,
     /// Cells that owned systems before and own none now, whose file must go.
@@ -92,21 +91,22 @@ impl Snapshot {
 
     /// Build the light snapshot from a list of systems.
     ///
-    /// The order of the input does not matter: the split is by position and
-    /// the slicing is by magnitude, so the same systems build the same tree
-    /// however they arrive. Within a cell's payload the systems come out
-    /// brightest first. For the live, editable form raise a [`Tree`] with
-    /// [`Tree::build`], which builds this and holds it open.
+    /// The order of the input does not matter: the split is by position and the
+    /// slicing is by magnitude, so the same systems build the same tree however
+    /// they arrive. Within a cell's payload the systems come out brightest
+    /// first. For the live, editable form raise a [`Tree`](crate::Tree) with
+    /// [`Tree::build`](crate::Tree::build), which builds this and holds it
+    /// open.
     pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
         Snapshot::of_region(CellId::ROOT, systems, &HashSet::new(), params)
     }
 
     /// Build the subtree of one cell, out of the systems that fall in it.
     ///
-    /// [`build`](Self::build) is this with the root cell and nothing
-    /// claimed; rooted lower down, a galaxy is raised a region at a time and
-    /// never held whole. See [`crate::build::region`], which decides the regions,
-    /// works out what the cells above them own, and joins the pieces.
+    /// [`build`](Self::build) is this with the root cell and nothing claimed;
+    /// rooted lower down, a galaxy is raised a region at a time and never held
+    /// whole. See [`crate::build::region`], which decides the regions, works
+    /// out what the cells above them own, and joins the pieces.
     ///
     /// `claimed` is the systems of this region that a cell *above* it took:
     /// they are still in `systems`, every cell here holding them, but
@@ -148,8 +148,8 @@ impl Snapshot {
     /// byte-for-byte what they were and `removed` when it owned systems before
     /// and owns none now; an untouched cell is in neither, so its file is left
     /// exactly as it lies.
-    pub fn diff(&self, since: &Snapshot) -> Dirtied {
-        let mut dirtied = Dirtied::default();
+    pub fn diff(&self, since: &Snapshot) -> CellDiff {
+        let mut dirtied = CellDiff::default();
         let ids: HashSet<CellId> = since
             .payloads
             .keys()
@@ -170,15 +170,15 @@ impl Snapshot {
     /// Rebuild over the updated systems, reporting which cells changed from
     /// this one.
     ///
-    /// A full rebuild in CPU, but the write cost is only the [`Dirtied`]
+    /// A full rebuild in CPU, but the write cost is only the [`CellDiff`]
     /// cells, positions being immutable and churn clustered. The live
-    /// [`Tree`] cuts the rebuild itself to an O(depth) edit and lands the
-    /// same directory.
+    /// [`Tree`](crate::Tree) cuts the rebuild itself to an O(depth) edit and
+    /// lands the same directory.
     pub fn rebuild(
         &self,
         systems: &[System],
         params: &BuildParams,
-    ) -> (Snapshot, Dirtied) {
+    ) -> (Snapshot, CellDiff) {
         let next = Snapshot::build(systems, params);
         let dirtied = next.diff(self);
         (next, dirtied)
@@ -394,12 +394,12 @@ impl Snapshot {
     /// and a cell the previous tree had and this one does not is left
     /// standing — this writes what it holds and reads nothing.
     ///
-    /// That "a full write goes to a fresh directory" was the assumption,
-    /// and directories are not fresh: a rebuild over a published one left
-    /// 200,248 payloads and 4.9 GB of a tree nothing refers to. Sweeping
-    /// them is [`sweep_payloads`], which a build calls once its index file
-    /// stands; [`write_diff`](Self::write_diff) is the incremental publish,
-    /// which removes what it is told went.
+    /// That "a full write goes to a fresh directory" was the assumption, and
+    /// directories are not fresh: a rebuild over a published one left 200,248
+    /// payloads and 4.9 GB of a tree nothing refers to. Sweeping them is
+    /// [`sweep_payloads`](crate::store::cells::sweep_payloads), which a build
+    /// calls once its index file stands; [`write_diff`](Self::write_diff) is
+    /// the incremental publish, which removes what it is told went.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
         self.write_payloads(dir)?;
         self.index.write(dir)
@@ -428,7 +428,7 @@ impl Snapshot {
     /// the index whole, write the changed cells, and delete the removed ones.
     /// The directory ends identical to a full [`write`](Self::write) of this
     /// tree, having touched only the cells whose systems moved.
-    pub fn write_diff(&self, dir: &Path, dirtied: &Dirtied) -> io::Result<()> {
+    pub fn write_diff(&self, dir: &Path, dirtied: &CellDiff) -> io::Result<()> {
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
         fs::write(dir.join(INDEX_FILE), self.index.to_bytes())?;
         for &id in &dirtied.changed {

@@ -21,8 +21,8 @@ use std::path::Path;
 
 /// How far a reshard got: what it moved, and whether anything is left.
 ///
-/// [`reshard_bodies`] and [`crate::ops::migrate::reshard_cells`] both answer this.
-/// A caller that asked one to stop needs both halves: the count for the
+/// [`reshard_cells`] answers this, and [`Migrated::cells`] carries it. A
+/// caller that asked it to stop needs both halves: the count for the
 /// line it logs, and `finished` to say whether the next open has the rest
 /// of the directory to do.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -63,9 +63,9 @@ pub struct Migrated {
     pub upgrade: Option<u16>,
 }
 
-/// Bring an existing directory's *layout* up to date, before anything reads
-/// or writes it: [`crate::store::bodies::pack`], [`crate::ops::migrate::reshard_cells`],
-/// and then the names chunks.
+/// Bring an existing directory's *layout* up to date, before anything reads or
+/// writes it: [`crate::store::bodies::pack`],
+/// [`crate::ops::migrate::reshard_cells`], and then the names chunks.
 ///
 /// Nothing is versioned: a layout this cannot recognise is built again.
 ///
@@ -126,17 +126,17 @@ pub fn migrate(
 
 /// Move every loose `cells/*.bin` into its shard, stopping where asked.
 ///
-/// [`crate::store::bodies::pack`]'s twin, and [`crate::ops::migrate::migrate`] is the
-/// pair: a one-time migration, idempotent, a rename each. A directory
-/// already sharded costs one `readdir`.
+/// [`crate::store::bodies::pack`]'s twin, and [`migrate`] runs the pair: a
+/// one-time migration, idempotent, a rename each. A directory already
+/// sharded costs one `readdir`.
 ///
-/// `stop` is asked before each move, and abandoning is safe wherever it
-/// lands: [`legacy_payload_path`] is read where the sharded path is absent,
-/// so a half-migrated directory serves every cell a finished one does, and
-/// the next open takes the rest. A payload already standing in its shard
-/// wins over the loose one, for the reason [`crate::store::bodies::pack`]
-/// gives.
-pub(crate) fn reshard_cells(
+/// `stop` is asked before each move, and abandoning is safe wherever it lands:
+/// [`legacy_payload_path`](crate::format::layout::legacy_payload_path) is read
+/// where the sharded path is absent, so a half-migrated directory serves every
+/// cell a finished one does, and the next open takes the rest. A payload
+/// already standing in its shard wins over the loose one, for the reason
+/// [`crate::store::bodies::pack`] gives.
+pub fn reshard_cells(
     dir: &Path,
     stop: &dyn Fn() -> bool,
 ) -> io::Result<Resharded> {
@@ -209,7 +209,7 @@ struct Unplaced {
 ///
 /// Not interruptible and it need not be: it is one read of the table, one
 /// pass over the address column, and one write.
-pub(crate) fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
+pub fn place_boosts(dir: &Path) -> io::Result<Option<usize>> {
     let path = boosts_path(dir);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,

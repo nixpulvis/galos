@@ -12,11 +12,11 @@
 //! handful would be a region whose ancestors hold a handful, and that is
 //! the one thing a [`Cut`] may not be.
 //!
-//! A bucket over the budget is divided the other way. Its spill is re-read
-//! and re-bucketed one level deeper, and again, until every piece is
-//! within budget or is a cell nothing divides — at [`MAX_LEVEL`], or
-//! holding systems that share a position. Such a piece is a region over
-//! budget; [`crate::build::cold`] counts it in its report rather than hiding it.
+//! A bucket over the budget is divided the other way. Its spill is re-read and
+//! re-bucketed one level deeper, and again, until every piece is within budget
+//! or is a cell nothing divides — at [`MAX_LEVEL`], or holding systems that
+//! share a position. Such a piece is a region over budget;
+//! [`crate::build::cold`] counts it in its report rather than hiding it.
 //!
 //! One level deeper and never several: a piece is a region, and a region's
 //! ancestors must each hold more than a leaf's worth. Every level stepped
@@ -29,8 +29,7 @@
 
 use crate::build::region::Cut;
 use crate::build::snapshot::BuildParams;
-use crate::core::geometry::CellId;
-use crate::core::geometry::MAX_LEVEL;
+use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::record::System;
 use crate::format::layout::spill_path;
 use crate::format::spill::{Spill, Spilled, as_bytes};
@@ -205,7 +204,7 @@ fn gather(
 ///
 /// A piece over budget that no level divides is emitted as it stands: a
 /// region too large is a build that needs more memory, and the count comes
-/// out in [`crate::build::cold::ColdReport::over_budget`].
+/// out in [`crate::build::cold::Summary::over_budget`].
 fn divide(
     dir: &Path,
     region: CellId,

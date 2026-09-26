@@ -49,10 +49,10 @@
 //! ## What is still loose
 //!
 //! Two older layouts exist and are read, never written: `bodies/{address}.bin`
-//! from before the sharding, and `bodies/{shard:03x}/{address}.bin` from
-//! before this. [`pack`] walks both into the shards, one batch at a time and
-//! interruptibly, and [`crate::store::bodies::read_bodies`] falls back to them until
-//! it has, so a directory part way through answers for every system a
+//! from before the sharding, and `bodies/{shard:03x}/{address}.bin` from before
+//! this. [`pack`] walks both into the shards, one batch at a time and
+//! interruptibly, and [`crate::store::bodies::read_bodies`] falls back to them
+//! until it has, so a directory part way through answers for every system a
 //! finished one does.
 
 use crate::format::layout::{
@@ -99,8 +99,8 @@ pub enum Found {
 ///
 /// A shard is written as one batch, so a batch that fails leaves its systems
 /// unwritten and they come back in `kept` for the caller to try again with —
-/// which is what [`crate::accumulate::bodies::Published`] does with a disk that is full
-/// and then is not.
+/// which is what [`crate::accumulate::bodies::OnDisk`] does with a disk that is
+/// full and then is not.
 #[derive(Debug, Default)]
 pub struct Wrote {
     /// Systems written.
@@ -246,7 +246,7 @@ fn tail_bound(base: usize) -> usize {
 /// replaced, or one a tombstone withdrew. Reclaiming it is the shard's
 /// live bytes written out again, so the bar is what that write is worth.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Dead {
+pub enum Dead {
     /// Half the file. What the write path keeps: a feed appending to a
     /// shard it has appended to for months pays the rewrite once the file
     /// holds twice the bytes it needs, and no sooner.
@@ -686,21 +686,15 @@ pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
 }
 
 /// Give one shard's dead bytes back, where a sweep's bar is reached.
-pub fn reclaim(dir: &Path, shard: u64) -> io::Result<Gave> {
+///
+/// The same report a whole sweep answers, for one shard: `shards` is one
+/// where it gave anything back and nought where it did not.
+pub fn reclaim(dir: &Path, shard: u64) -> io::Result<Reclaimed> {
     folded(dir, shard, Dead::Worth)
 }
 
-/// What one shard gave back, and how.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Gave {
-    /// Bytes the disk no longer holds for this shard.
-    pub bytes: u64,
-    /// Whether they were punched out in place rather than copied away.
-    pub punched: bool,
-}
-
 /// One fold, at whichever bar the caller keeps.
-fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
+fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Reclaimed> {
     let path = body_index_path(dir, shard);
     let table = Table::read(&path)?;
     let live = table.live();
@@ -722,7 +716,7 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
     // under [`tail_bound`]. Measured on a re-imported galaxy — 4,096
     // shards, 49.8 % of their bytes live, and not one of them foldable.
     if table.tail.is_empty() && !reclaiming {
-        return Ok(Gave::default());
+        return Ok(Reclaimed { finished: true, ..Reclaimed::default() });
     }
 
     // Punched where the dead bytes are whole blocks and the file has not
@@ -731,7 +725,7 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
         true => How::of(&cost),
         false => How::Nothing,
     };
-    let mut gave = Gave::default();
+    let mut gave = Reclaimed { finished: true, ..Reclaimed::default() };
 
     // **Before the index, and the copy after it.** The two are not the
     // same operation: a punch takes bytes nothing points at and leaves
@@ -743,7 +737,14 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
     // by a failed `fcntl` — and the shard takes the copy instead.
     if how == How::Punch {
         match punched(&data, &cost) {
-            Ok(()) => gave = Gave { bytes: cost.punchable, punched: true },
+            Ok(()) => {
+                gave = Reclaimed {
+                    shards: (cost.punchable > 0) as usize,
+                    bytes: cost.punchable,
+                    punched: cost.punchable,
+                    finished: true,
+                }
+            }
             Err(_) => how = How::Copy,
         }
     }
@@ -768,7 +769,12 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Gave> {
                 at += framed.len() as u64;
             }
             out.flush()?;
-            gave = Gave { bytes: cost.dead, punched: false };
+            gave = Reclaimed {
+                shards: (cost.dead > 0) as usize,
+                bytes: cost.dead,
+                punched: 0,
+                finished: true,
+            };
         }
         // In place, so the entries are the entries: every live offset
         // still names the byte it named before.
@@ -1079,7 +1085,7 @@ fn punch(_file: &File, _at: u64, _len: u64) -> io::Result<()> {
 
 /// What the body shards hold, and what a sweep would give back.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Held {
+pub struct Weighed {
     /// Shards with an index file.
     pub shards: usize,
     /// Systems the pack answers for.
@@ -1105,9 +1111,9 @@ pub struct Held {
 /// --bodies` says before it is asked to act. One read of each shard's
 /// index and one walk of its data file's extents — a second over a
 /// galaxy — and nothing decoded at all.
-pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Held> {
+pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Weighed> {
     let bodies = dir.join(BODIES_DIR);
-    let mut held = Held { finished: true, ..Held::default() };
+    let mut held = Weighed { finished: true, ..Weighed::default() };
     let Ok(entries) = std::fs::read_dir(&bodies) else {
         return Ok(held);
     };
@@ -1160,20 +1166,20 @@ pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Held> {
 
 /// Give a directory's dead body records back, shard by shard.
 ///
-/// **What a whole-galaxy re-import leaves behind.** A dump names each
-/// system once and [`crate::accumulate::bodies::Published::raising`] writes each record
+/// **What a whole-galaxy re-import leaves behind.** A dump names each system
+/// once and [`crate::accumulate::bodies::OnDisk::raising`] writes each record
 /// without reading what stood there, so a second import over a published
-/// directory appends a fresh record for every system and the one behind it
-/// is dead the moment the entry naming the new one lands. Nothing on the
-/// write path reclaims those: [`append`] folds when a shard's tail passes
-/// [`tail_bound`], and an import leaves every tail well under it. Measured
-/// on a re-imported galaxy: `bodies/` at 323 GB, 49.8 % of it live, and
-/// 161 GB of dead record no append was going to reach.
+/// directory appends a fresh record for every system and the one behind it is
+/// dead the moment the entry naming the new one lands. Nothing on the write
+/// path reclaims those: [`append`] folds when a shard's tail passes
+/// [`tail_bound`], and an import leaves every tail well under it. Measured on a
+/// re-imported galaxy: `bodies/` at 323 GB, 49.8 % of it live, and 161 GB of
+/// dead record no append was going to reach.
 ///
 /// So the reclaim is asked for rather than waited on: by
 /// [`Build::finish`](crate::build::cold::Build::finish) once its index file
 /// stands, and by `galos index sweep --bodies` for a directory nothing is
-/// about to build. [`held`] weighs what this would do without doing any of
+/// about to build. [`weigh`] weighs what this would do without doing any of
 /// it, which is what that command reports before it is asked to act.
 ///
 /// `said` is handed the running total as each shard lands. A galaxy is
@@ -1238,9 +1244,7 @@ pub fn sweep_bodies(
                         Ok(gave) => {
                             shards.fetch_add(1, Relaxed);
                             bytes.fetch_add(gave.bytes, Relaxed);
-                            if gave.punched {
-                                punched.fetch_add(gave.bytes, Relaxed);
-                            }
+                            punched.fetch_add(gave.punched, Relaxed);
                             said(&running());
                         }
                         // The first failure is the answer rather than a
@@ -1275,15 +1279,15 @@ pub fn sweep_bodies(
 /// each shard once and walks its live entries in the order they were
 /// written.
 ///
-/// `each` is handed the address and the class of the star a ship arrives
-/// at — [`crate::records::derive::arrival_class`]'s answer, which is the rule the
-/// boost table and the map's own panels read by. Systems with nothing
-/// scanned are not offered at all.
+/// `each` is handed the address and the class of the star a ship arrives at —
+/// [`crate::records::derive::arrival_class`]'s answer, which is the rule the
+/// boost table and the map's own panels read by. Systems with nothing scanned
+/// are not offered at all.
 ///
 /// Interruptible, a galaxy of scans being minutes of them, and what it
 /// abandons costs nothing: the caller is filling in a column it can fill
 /// again.
-pub(crate) fn each_arrival_class(
+pub fn each_arrival_class(
     dir: &Path,
     stop: &dyn Fn() -> bool,
     each: &mut dyn FnMut(i64, &str),
@@ -1409,8 +1413,8 @@ const BATCH: usize = 512;
 /// Interruptible, because a galaxy of loose files is hours of them and a run
 /// asked to stop must not wait. What it abandons the next open takes up: a
 /// loose file is removed only once the pack has its record, and
-/// [`crate::store::bodies::read_bodies`] falls back to the loose paths for whatever
-/// is left, so a directory part way through answers for every system a
+/// [`crate::store::bodies::read_bodies`] falls back to the loose paths for
+/// whatever is left, so a directory part way through answers for every system a
 /// finished one does.
 ///
 /// A system the pack already holds wins over a loose file of the same

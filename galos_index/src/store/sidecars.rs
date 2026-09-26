@@ -447,24 +447,24 @@ pub fn write_boosts(
 /// run at a time and merges the runs, so what the tables cost to write is
 /// one run rather than one galaxy — see [`sort_table`].
 ///
-/// Nothing is read back while the rows are being written, so a row does
-/// not merge over a published one. That is the same argument
-/// [`crate::accumulate::bodies::Published::raising`] makes: a build from nothing can
-/// only be told back what it has just said, and a dump names each system
+/// Nothing is read back while the rows are being written, so a row does not
+/// merge over a published one. That is the same argument
+/// [`crate::accumulate::bodies::OnDisk::raising`] makes: a build from nothing
+/// can only be told back what it has just said, and a dump names each system
 /// once.
-pub struct Rows {
+pub struct TableWriter {
     dir: PathBuf,
     populated: Sheet,
     reaches: Sheet,
     boosts: Sheet,
 }
 
-impl Rows {
+impl TableWriter {
     /// Write the rows of a build into `dir`, from nothing.
-    pub fn writing(dir: &Path) -> io::Result<Rows> {
+    pub fn writing(dir: &Path) -> io::Result<TableWriter> {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
-        Ok(Rows {
+        Ok(TableWriter {
             dir: dir.to_owned(),
             populated: Sheet::open(dir.join("populated.rows"))?,
             reaches: Sheet::open(dir.join("reaches.rows"))?,
@@ -484,8 +484,8 @@ impl Rows {
     /// reaches are one array of tens of millions of rows, and decoding it
     /// into a `Vec` to walk it once would put the whole thing in memory
     /// for the length of the seeding.
-    pub fn onto(dir: &Path, served: &Path) -> io::Result<Rows> {
-        let mut rows = Rows::writing(dir)?;
+    pub fn onto(dir: &Path, served: &Path) -> io::Result<TableWriter> {
+        let mut rows = TableWriter::writing(dir)?;
         each_row(&populated_path(served), |row: PopulatedSystem| {
             rows.populate(&row)
         })?;
@@ -841,7 +841,7 @@ mod tests {
         let dir = at.0.join("served");
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let rows = Rows::writing(&at.0.join("rows")).expect("rows");
+        let rows = TableWriter::writing(&at.0.join("rows")).expect("rows");
         let counts = rows.finish(&dir).expect("the tables write");
 
         assert_eq!(counts.populated, 0);
@@ -874,14 +874,15 @@ mod tests {
         let (spill, dir) = (at.0.join("rows"), at.0.join("served"));
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let mut rows = Rows::writing(&spill).expect("rows");
+        let mut rows = TableWriter::writing(&spill).expect("rows");
         rows.populate(&populated(1)).expect("a row");
         rows.reach(1, 4.0).expect("a reach");
         rows.populate(&populated(2)).expect("a row");
         let first = rows.finish(&dir).expect("the tables write");
         assert_eq!(first.populated, 2);
 
-        let mut rows = Rows::onto(&spill, &dir).expect("the tables back");
+        let mut rows =
+            TableWriter::onto(&spill, &dir).expect("the tables back");
         rows.populate(&populated(3)).expect("a row");
         rows.reach(3, 16.0).expect("a reach");
         rows.boost(SystemBoost {
@@ -930,7 +931,7 @@ mod tests {
         let dir = at.0.join("served");
         std::fs::create_dir_all(&dir).expect("a directory");
 
-        let mut rows = Rows::writing(&at.0.join("rows")).expect("rows");
+        let mut rows = TableWriter::writing(&at.0.join("rows")).expect("rows");
         let pushed = [5i64, 3, 9, 3, 1, 9, 7, 3, 2, 8, 4, 6];
         for (n, &address) in pushed.iter().enumerate() {
             // The population says which push this row was, so the table

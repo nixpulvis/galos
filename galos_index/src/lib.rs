@@ -17,7 +17,7 @@
 //! - [`core`]: the cube, the sums, the fixed-width records.
 //! - [`records`]: the serde rows the client reads beside the cells.
 //! - [`system`]: where things are inside one system.
-//! - [`format`]: file names, byte layouts and the resume point.
+//! - [`format`](mod@format): file names, byte layouts and the resume point.
 //! - [`store`]: the stores a directory is made of, read and written.
 //! - [`read`]: the client's walks over the resident index.
 //! - [`build`]: raising the tree, whole or a region or an edit at a time.

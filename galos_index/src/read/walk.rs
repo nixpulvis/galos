@@ -27,9 +27,7 @@
 
 use crate::core::aggregate::AGE_BUCKETS;
 use crate::core::geometry::CellId;
-use crate::read::index::Index;
-use crate::read::index::Node;
-use crate::read::index::distance;
+use crate::read::index::{Index, Node, distance};
 use galos_photometry::{Distance, Magnitude};
 
 /// The field's resolution limit, in pixels: the widest a cell's own contents
@@ -44,7 +42,7 @@ use galos_photometry::{Distance, Magnitude};
 /// as a row of overlapping blobs: blurred across the feature and lumpy
 /// along it, on a lattice whose pitch was the cell. Under half a pixel the
 /// cell it cannot resolve past is the pixel, which is the finest thing the
-/// display can carry, and [`galos_map`]'s field floors its kernel at half a
+/// display can carry, and `galos_map`'s field floors its kernel at half a
 /// pixel so neighbours still sum flat.
 ///
 /// What it costs is the descent, and the descent is nearly free: the walk
@@ -58,12 +56,12 @@ pub const SPLIT_PX: f64 = 0.5;
 /// `SPLIT_PX..SPLIT_FULL_PX` a cell and its children both draw, their weights
 /// summing to one, so the level handoff crosses over rather than popping; above
 /// it the children carry the region alone.
-pub(crate) const SPLIT_FULL_PX: f64 = 1.0;
+pub const SPLIT_FULL_PX: f64 = 1.0;
 
 /// Two marks merge into one when their centres fall within this many pixels
 ///
 /// **The mark's own size plus a margin.** A map mark is drawn at
-/// [`galos_map`]'s `field::SMALLEST` radius, a pixel and a half across, and
+/// `galos_map`'s `field::SMALLEST` radius, a pixel and a half across, and
 /// two of them closer than about that read as one smudge rather than as two
 /// places. Four pixels is the mark plus a couple of pixels of air, which is
 /// where a pair still reads as a pair.
@@ -129,7 +127,7 @@ pub enum Mode {
     /// draws — the exposure's own zero point, not a constant. It is what the
     /// photometric cut measures against, so opening the exposure deepens the
     /// sky the walk answers with rather than only enlarging the stars already
-    /// in it. See [`crate::Magnitude::EYE_LIMIT`] for where it rests.
+    /// in it. See [`Magnitude::EYE_LIMIT`] for where it rests.
     Real { limit: f64 },
 }
 
@@ -666,8 +664,7 @@ fn splitting(view: &View, node: &Node, merge_px: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::aggregate::Aggregate;
-    use crate::core::aggregate::Cell;
+    use crate::core::aggregate::{Aggregate, Cell};
     use crate::read::index::{contents_extent, contents_width};
 
     /// The sky read at the eye's own limit, which is where the exposure

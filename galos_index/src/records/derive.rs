@@ -2,16 +2,15 @@
 //!
 //! A directory is produced two ways. [`crate::build::cold`] raises one from
 //! records, which `galos_db::index` reads out of Postgres over every system
-//! anybody has ever reported; [`crate::accumulate::galaxy`] accumulates one from events,
-//! which reach it off the wire or out of a single pilot's own journal files
-//! with no database anywhere. They write the same format, for the same
-//! client, and one directory is held from both at once — `galos ingest
+//! anybody has ever reported; [`crate::accumulate::galaxy`] accumulates one
+//! from events, which reach it off the wire or out of a single pilot's own
+//! journal files with no database anywhere. They write the same format, for the
+//! same client, and one directory is held from both at once — `galos ingest
 //! --from database --index DIR` raising it and `galos ingest --from eddn
-//! --index DIR` carrying it on.
-//! Where they read the same fact they must read it the same way: a
-//! system binned into Recency bucket three out of the database and bucket
-//! four out of a journal shows as a cell whose counts do not add up to the
-//! stars drawn inside it.
+//! --index DIR` carrying it on. Where they read the same fact they must read it
+//! the same way: a system binned into Recency bucket three out of the database
+//! and bucket four out of a journal shows as a cell whose counts do not add up
+//! to the stars drawn inside it.
 //!
 //! So each such rule is kept here once, this crate being the format both
 //! sides agree on.

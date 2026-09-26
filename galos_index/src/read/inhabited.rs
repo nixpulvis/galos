@@ -1,7 +1,7 @@
 //! What a cell carries about the systems anybody lives in.
 //!
-//! [`Aggregate`](crate::core::aggregate::Aggregate) stands for every system in a
-//! subtree, and its two weightings are the stellar ones: flux for the glow,
+//! [`Aggregate`](crate::core::aggregate::Aggregate) stands for every system in
+//! a subtree, and its two weightings are the stellar ones: flux for the glow,
 //! count for the density. Neither answers where the *inhabited* systems sit,
 //! and the two are nothing alike — one 256 ly cell holds a few thousand
 //! governed systems among some hundred thousand neighbours, so a political
@@ -66,7 +66,7 @@ pub(crate) const SECURITY_BUCKETS: usize = 6;
 /// A `match` and never a comparison: `Allegiance` carries a hand-written
 /// `PartialEq` under which `None != None`, so `==` answers falsely for the one
 /// variant a histogram most needs to place.
-pub(crate) fn allegiance_bucket(allegiance: Option<Allegiance>) -> usize {
+pub fn allegiance_bucket(allegiance: Option<Allegiance>) -> usize {
     match allegiance {
         None => 0,
         Some(Allegiance::Alliance) => 1,
@@ -101,7 +101,7 @@ pub fn allegiance_at(bucket: usize) -> Option<Allegiance> {
 }
 
 /// Which bucket a system's government counts in.
-pub(crate) fn government_bucket(government: Option<Government>) -> usize {
+pub fn government_bucket(government: Option<Government>) -> usize {
     match government {
         None => 0,
         Some(Government::Anarchy) => 1,
@@ -149,7 +149,7 @@ pub fn government_at(bucket: usize) -> Option<Government> {
 }
 
 /// Which bucket a system's security rating counts in.
-pub(crate) fn security_bucket(security: Option<Security>) -> usize {
+pub fn security_bucket(security: Option<Security>) -> usize {
     match security {
         None => 0,
         Some(Security::High) => 1,
@@ -178,8 +178,9 @@ pub fn security_at(bucket: usize) -> Option<Security> {
 /// with [`merge`](Self::merge) and drawn over its own loaded slice through
 /// [`remove`](Self::remove). Every field is a sum, so a set split any way and
 /// rejoined is the same record and there is no non-additive key to answer on
-/// the total instead of the residual — which [`Aggregate`](crate::core::aggregate::Aggregate)
-/// needs for `m_min` and this does not need at all.
+/// the total instead of the residual — which
+/// [`Aggregate`](crate::core::aggregate::Aggregate) needs for `m_min` and this
+/// does not need at all.
 ///
 /// The prune key is `count > 0`: a subtree with nobody in it cannot matter to
 /// a political view, and that is free to ask.

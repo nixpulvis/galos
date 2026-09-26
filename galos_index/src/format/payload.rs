@@ -12,8 +12,7 @@
 //! keeps growing, as the aggregate gains the field step's filter marginals
 //! and its quantization.
 
-use crate::core::codec::Decode;
-use crate::core::codec::Encode;
+use crate::core::codec::{Decode, Encode};
 use crate::core::geometry::CellId;
 use crate::core::record::{Point, StarKind};
 
@@ -43,7 +42,7 @@ pub(crate) const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
 /// cell a sphere touches — 45.4 billion of them to relax 3.9 million — and
 /// it reads a position and a star kind and nothing else, so the bytes it
 /// streams are the whole cost. Seven against forty-one.
-pub(crate) const POSITION_STEP: f64 = 1.0 / 32.0;
+pub const POSITION_STEP: f64 = 1.0 / 32.0;
 
 /// How wide a position axis is for a cell of this level, in bytes.
 pub(crate) fn position_width(level: u8) -> u8 {
@@ -78,7 +77,7 @@ pub(crate) fn payload_len(count: usize, width: u8) -> usize {
 /// Positions are cell-relative integers on [`POSITION_STEP`], so the block
 /// needs its cell to be read at all — which every reader has, the cell
 /// being how the file was found.
-pub(crate) fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
+pub fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
     let width = position_width(cell.level);
     let mut out = Vec::with_capacity(payload_len(points.len(), width));
     PAYLOAD_MAGIC.encode(&mut out);
@@ -229,11 +228,11 @@ pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<Point> {
 pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
 /// Two, and moved by the payload record's width
 ///
-/// It stood at zero while the format settled, and a record changed width
-/// under it more than once — the age buckets went from `u64` to `u32` — on
-/// the argument that the length check in [`Index`]'s own `decode` catches a
-/// stale file by its size, so a rebuild is the fix and rebuilding is cheap
-/// against inputs already to hand.
+/// It stood at zero while the format settled, and a record changed width under
+/// it more than once — the age buckets went from `u64` to `u32` — on the
+/// argument that the length check in [`Index`](crate::Index)'s own `decode`
+/// catches a stale file by its size, so a rebuild is the fix and rebuilding is
+/// cheap against inputs already to hand.
 ///
 /// That argument holds for the index file and not for the payload. A block
 /// of points carries no magic, no version and no count, so nothing about it
@@ -253,10 +252,10 @@ pub const INDEX_VERSION: u16 = 3;
 /// The version an index file's header claims, or [`None`] for bytes that are
 /// not an index file at all.
 ///
-/// A payload block carries no header, so the width of its records is known
-/// only from the version beside them. A reader that [`Index`]'s decode
+/// A payload block carries no header, so the width of its records is known only
+/// from the version beside them. A reader that [`Index`](crate::Index)'s decode
 /// refused asks this to say which format it met.
-pub(crate) fn index_version(bytes: &[u8]) -> Option<u16> {
+pub fn index_version(bytes: &[u8]) -> Option<u16> {
     let mut cur = bytes;
     if <[u8; 4]>::decode(&mut cur)? != INDEX_MAGIC {
         return None;

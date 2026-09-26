@@ -33,13 +33,14 @@ pub struct Swept {
 
 /// Remove the payloads of cells the published tree does not name.
 ///
-/// A whole-directory build writes its own cells and knows nothing of the
-/// tree that stood before it, so every cell the old tree had and the new
-/// one does not is left behind: 200,248 files and 4.9 GB of them, measured
-/// on a directory rebuilt from the database over one built from a dump.
-/// The live path has no such debt — a publish deletes what
-/// [`Snapshot::write_diff`] is told went — and the names table already
-/// retires its stale generations. This is the same sweep for the cells.
+/// A whole-directory build writes its own cells and knows nothing of the tree
+/// that stood before it, so every cell the old tree had and the new one does
+/// not is left behind: 200,248 files and 4.9 GB of them, measured on a
+/// directory rebuilt from the database over one built from a dump. The live
+/// path has no such debt — a publish deletes what
+/// [`Snapshot::write_diff`](crate::Snapshot::write_diff) is told went — and the
+/// names table already retires its stale generations. This is the same sweep
+/// for the cells.
 ///
 /// **Call it only once the new index file stands.** An orphan is a file
 /// nothing refers to and a hole is a cell the tree names with no payload
@@ -49,11 +50,11 @@ pub struct Swept {
 /// tree does not name, and an interrupted sweep leaves a directory that is
 /// merely larger.
 ///
-/// Both layouts are considered: the sharded [`payload_path`] and the
-/// pre-shard [`legacy_payload_path`]. A loose file for a cell the tree
-/// *does* name is kept, being the payload a reader falls back to — bringing
-/// those forward is [`reshard_cells`]'s work, and this must not stand in
-/// for it by deleting them.
+/// Both layouts are considered: the sharded [`payload_path`] and the pre-shard
+/// [`legacy_payload_path`]. A loose file for a cell the tree *does* name is
+/// kept, being the payload a reader falls back to — bringing those forward is
+/// [`reshard_cells`](crate::ops::migrate::reshard_cells)'s work, and this must
+/// not stand in for it by deleting them.
 ///
 /// `named` answers whether the published tree names a cell — which is
 /// `|id| index.get(id).is_some()` over the [`Index`](crate::Index) just
@@ -129,14 +130,14 @@ fn payload_cell(name: &str) -> Option<CellId> {
 /// Write one cell's payload, opening its shard directory the first time
 /// anything lands there.
 ///
-/// Beside the file and renamed over it, as [`crate::format::msgpack::write_meta`]
-/// and the names table's generations are. Not for the torn-write reason
-/// those have — a payload carries no header and a short read drops its
-/// last record, which a reader already tolerates — but because a payload
-/// is **mapped**. `fs::write` truncates and rewrites in place, so a feed
-/// republishing a cell under a reader's mapping would give it torn bytes,
-/// and the truncation itself is a `SIGBUS` on the pages a reader still
-/// holds. A rename leaves the old inode alone for as long as anything has
+/// Beside the file and renamed over it, as
+/// [`crate::format::msgpack::write_meta`] and the names table's generations
+/// are. Not for the torn-write reason those have — a payload carries no header
+/// and a short read drops its last record, which a reader already tolerates —
+/// but because a payload is **mapped**. `fs::write` truncates and rewrites in
+/// place, so a feed republishing a cell under a reader's mapping would give it
+/// torn bytes, and the truncation itself is a `SIGBUS` on the pages a reader
+/// still holds. A rename leaves the old inode alone for as long as anything has
 /// it open, which is the same guarantee a names generation gives.
 pub(crate) fn write_payload(
     dir: &Path,
@@ -172,12 +173,12 @@ pub fn stale(dir: &Path) -> Option<u16> {
 
 /// One cell's payload, mapped rather than decoded.
 ///
-/// [`Index::read_payload`] reads the file and decodes a [`Point`] per
-/// record into a `Vec`, which is right for drawing — the map wants owned
-/// points to build entities from — and wrong for anything that asks
-/// repeatedly. The router asks per expansion, half a million times a
-/// route, and the LOD walk asks for 152 M points in a zoom and pays 24 s
-/// and 6.1 GB of `Vec` for it.
+/// [`Index::read_payload`](crate::Index::read_payload) reads the file and
+/// decodes a [`Point`] per record into a `Vec`, which is right for drawing —
+/// the map wants owned points to build entities from — and wrong for anything
+/// that asks repeatedly. The router asks per expansion, half a million times a
+/// route, and the LOD walk asks for 152 M points in a zoom and pays 24 s and
+/// 6.1 GB of `Vec` for it.
 ///
 /// So: the bytes where they lie, and a field read out of them when asked.
 /// Nothing here is aligned to anything, so every read is `from_le_bytes`
@@ -210,8 +211,8 @@ impl Payload {
     /// layout, which is what a directory built before the columns is.
     ///
     /// The sharded path first and the flat one after it, as
-    /// [`Index::read_payload`] does, so a directory part way through a
-    /// reshard answers with what it has.
+    /// [`Index::read_payload`](crate::Index::read_payload) does, so a directory
+    /// part way through a reshard answers with what it has.
     pub fn open(dir: &Path, id: CellId) -> io::Result<Option<Payload>> {
         let file = match fs::File::open(payload_path(dir, id)) {
             Ok(file) => file,

@@ -44,8 +44,7 @@
 //! [`crate::build::cold`] is that sequence, run over a source that streams.
 
 use crate::build::snapshot::{BuildParams, Snapshot};
-use crate::core::aggregate::Aggregate;
-use crate::core::aggregate::Cell;
+use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::CellId;
 use crate::core::record::{Point, System};
 use crate::read::index::Index;

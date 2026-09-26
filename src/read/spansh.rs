@@ -48,10 +48,11 @@ use crate::{Shard, Shutdown};
 use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
 use galos_index::accumulate::bodies::Shared;
-use galos_index::build::cold::{Build, LeftOff, Taking};
-use galos_index::store::sidecars::Rows;
+use galos_index::build::cold::{Build, ResumeMark};
+use galos_index::store::sidecars::TableWriter;
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -175,7 +176,7 @@ impl Place {
     /// [`None`] for a mark this cannot read, or one taken against another
     /// file or another length of it — a read that cannot be taken up is a
     /// read that starts over, never a run that fails.
-    pub fn of(kept: &LeftOff, path: &Path) -> Option<Place> {
+    pub fn of(kept: &ResumeMark, path: &Path) -> Option<Place> {
         let place: Place = rmp_serde::from_slice(kept.cursor()).ok()?;
         let size = std::fs::metadata(path).ok()?.len();
         let named = path.to_string_lossy();
@@ -481,19 +482,19 @@ impl Galaxy {
     ///
     /// The body files are written per system rather than held: a dump names
     /// each system once, so a system's file is whole the moment its line has
-    /// been read. The store is [`Published::raising`] for the same reason —
+    /// been read. The store is [`OnDisk::raising`] for the same reason —
     /// a build from nothing can only be told back what it has just said, so
     /// nothing is read from the directory it is writing.
     ///
     /// The metadata tables ride in `rows`, which is the same
-    /// [`galos_index::store::sidecars::Rows`] the mark is cut against: a row a system,
-    /// written as it is derived and made into the three tables when the
-    /// read is over, so that neither the read nor a stop holds a galaxy's
-    /// worth of them.
+    /// [`galos_index::store::sidecars::TableWriter`] the mark is cut against: a
+    /// row a system, written as it is derived and made into the three tables
+    /// when the read is over, so that neither the read nor a stop holds a
+    /// galaxy's worth of them.
     pub fn read(
         &self,
         build: &mut Build<'_>,
-        rows: &mut Rows,
+        rows: &mut TableWriter,
         from: Option<Place>,
     ) -> io::Result<()> {
         let mut reading =
@@ -504,8 +505,8 @@ impl Galaxy {
         let taken_up = systems;
         let by = crate::read::from::published("Spansh", &self.path);
         // One store for the whole read, though the accumulator is a line's.
-        // What it holds is what makes the body records go out a shard at a
-        // time rather than one append a system; see `galos_index::store::bodies` and
+        // What it holds is what makes the body records go out a shard at a time
+        // rather than one append a system; see `galos_index::store::bodies` and
         // [`Shared`].
         let store = Shared::raising(self.dir.as_path());
         loop {
@@ -551,11 +552,11 @@ impl Galaxy {
                         // New by construction: a cold build writes a directory
                         // from nothing, so the updated count stays zero for the
                         // whole read.
-                        Taking::More => {
+                        ControlFlow::Continue(()) => {
                             reading.took(Some(Landed::New));
                             true
                         }
-                        Taking::Stopped => {
+                        ControlFlow::Break(()) => {
                             build.mark(
                                 &reading
                                     .place(began, self.now, systems - 1, bodies)
@@ -574,10 +575,10 @@ impl Galaxy {
             if took {
                 rows.take(&galaxy, galaxy.touched())?;
             }
-            // What the store has written since it was last asked. It holds
-            // what it is told until [`Published::CARRIED`] systems have
-            // piled up, so most lines add nothing here and the line that
-            // does adds a shard's worth at a time — see `galos_index::store::bodies`.
+            // What the store has written since it was last asked. It holds what
+            // it is told until [`OnDisk::CARRIED`] systems have piled up, so
+            // most lines add nothing here and the line that does adds a shard's
+            // worth at a time — see `galos_index::store::bodies`.
             bodies += store.written();
 
             // What the publish at the end of the read will record, kept

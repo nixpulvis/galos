@@ -1,9 +1,9 @@
 //! Events, accumulated into what the index wants.
 //!
 //! The index has two inputs and neither names a source.
-//! [`Build`](crate::build::cold::Build) takes records - a database's rows, a dump's
-//! lines - and builds the whole tree at once. This takes events, one at a
-//! time, as they arrive: EDDN's feed, a commander's own `.log` files, a
+//! [`Build`](crate::build::cold::Build) takes records - a database's rows, a
+//! dump's lines - and builds the whole tree at once. This takes events, one at
+//! a time, as they arrive: EDDN's feed, a commander's own `.log` files, a
 //! relay. What reaches it is an [`Entry<Event>`] and nothing about where it
 //! came from.
 //!
@@ -30,13 +30,13 @@
 //!
 //! ## What a second look does
 //!
-//! Nothing here. Both rules live beside this one, where the database's side
-//! of the program can be held against them: [`SystemReport::over`] for a
-//! system's own columns and [`crate::accumulate::merge`] for the things inside it.
+//! Nothing here. Both rules live beside this one, where the database's side of
+//! the program can be held against them: [`SystemReport::over`] for a system's
+//! own columns and [`crate::accumulate::merge`] for the things inside it.
 //! Between them they are the write path's `ON CONFLICT DO UPDATE` clauses
-//! stated in Rust — a reading wins where a scan is one, what a scan does
-//! not state leaves what stands, and the two facts about history only ever
-//! go one way.
+//! stated in Rust — a reading wins where a scan is one, what a scan does not
+//! state leaves what stands, and the two facts about history only ever go one
+//! way.
 //!
 //! ## What an event cannot say
 //!
@@ -68,8 +68,7 @@
 //! itself — and here it is simpler, the events carrying their own timestamps
 //! and no upsert standing between them and the reading.
 
-use crate::accumulate::bodies::Bodies;
-use crate::accumulate::bodies::Kept;
+use crate::accumulate::bodies::{Bodies, InMemory};
 // The Recency edges and the bucketing over them are kept once, in
 // [`crate::records::derive`], rather than named again here. How many buckets
 // there are is part of the published format — a cell aggregate is a count
@@ -82,7 +81,7 @@ use crate::core::record::{Boost, StarKind, System};
 use crate::records::{
     NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
 };
-use crate::store::sidecars::Rows;
+use crate::store::sidecars::TableWriter;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::{Scan, ScanTarget};
 use elite_journal::entry::{Entry, Event};
@@ -127,8 +126,8 @@ pub struct Galaxy {
     /// Where the things scanned inside a system are kept.
     ///
     /// Behind a trait because the answer differs by who is asking, and the
-    /// difference is a gigabyte: see [`crate::accumulate::bodies`]. Nothing in here knows
-    /// which store it has.
+    /// difference is a gigabyte: see [`crate::accumulate::bodies`]. Nothing in
+    /// here knows which store it has.
     inside: Box<dyn Bodies>,
     /// Systems touched since the last [`Galaxy::settle`].
     touched: HashSet<i64>,
@@ -143,7 +142,7 @@ impl Default for Galaxy {
 impl Galaxy {
     /// An empty galaxy, aged against `now`, keeping what it scans in memory.
     pub fn new(now: DateTime<Utc>) -> Galaxy {
-        Galaxy::keeping(now, Box::new(Kept::new()))
+        Galaxy::keeping(now, Box::new(InMemory::new()))
     }
 
     /// An empty galaxy that keeps what it scans in `inside`.
@@ -544,8 +543,9 @@ impl Galaxy {
 /// The event path's half of the rows a build writes: what the galaxy says
 /// about a system, pushed into the tables' row files.
 ///
-/// Here rather than beside [`Rows`], which is a store and knows no source.
-impl Rows {
+/// Here rather than beside [`TableWriter`], which is a store and knows no
+/// source.
+impl TableWriter {
     /// Take what `galaxy` says about every system in `touched`.
     pub fn take(
         &mut self,
@@ -942,12 +942,12 @@ mod tests {
 
     /// The class survives a trip through the byte a payload carries
     ///
-    /// Which is the whole point of [`crate::core::record::StarKind`]: a router asks
-    /// what kind of star every system it expands has, and the answer has to
-    /// be a byte beside a position rather than a lookup in a table of
-    /// ninety-five million. So every kind has to come back out of its code
-    /// as what went in, and a code this build does not know has to read as
-    /// nothing having been said rather than as some other star.
+    /// Which is the whole point of [`crate::core::record::StarKind`]: a router
+    /// asks what kind of star every system it expands has, and the answer has
+    /// to be a byte beside a position rather than a lookup in a table of
+    /// ninety-five million. So every kind has to come back out of its code as
+    /// what went in, and a code this build does not know has to read as nothing
+    /// having been said rather than as some other star.
     #[test]
     fn a_star_kind_goes_through_a_byte_unchanged() {
         use crate::core::record::StarKind;

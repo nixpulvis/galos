@@ -17,9 +17,7 @@
 //! unchanged: the cube and its cells order and bound the systems, but a system
 //! is drawn exactly where it sits, however coarse the cell that owns it.
 
-use crate::core::codec::Decode;
-use crate::core::codec::Encode;
-use crate::core::codec::FixedCodec;
+use crate::core::codec::{Decode, Encode, FixedCodec};
 
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.

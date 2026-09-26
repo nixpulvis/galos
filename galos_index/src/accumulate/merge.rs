@@ -1,9 +1,9 @@
 //! What a second look at a body does to what is on record.
 //!
-//! The peer of [`crate::accumulate::report`], one level down. That one merges what a
-//! report says about a system; this merges what a scan says about the things
-//! inside it — a star, a body, its surface, the barycentre a close pair goes
-//! round.
+//! The peer of [`crate::accumulate::report`], one level down. That one merges
+//! what a report says about a system; this merges what a scan says about the
+//! things inside it — a star, a body, its surface, the barycentre a close pair
+//! goes round.
 //!
 //! `galos_db` states the same rule column by column in the `ON CONFLICT DO
 //! UPDATE` clauses of its `stars` and `system_bodies` upserts, and it has to:
@@ -392,10 +392,7 @@ pub fn populated_over(
 /// Everything else is a reading and the winner's stands: a magnitude, a
 /// radius, a temperature, whether a body is tidally locked. Zero is a
 /// reading there, not an absence.
-pub(crate) fn bodies_over(
-    held: SystemBodies,
-    said: SystemBodies,
-) -> SystemBodies {
+pub fn bodies_over(held: SystemBodies, said: SystemBodies) -> SystemBodies {
     SystemBodies {
         stars: join(held.stars, said.stars, |it| it.id, star_over),
         bodies: join(held.bodies, said.bodies, |it| it.id, body_over),

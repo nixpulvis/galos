@@ -8,11 +8,11 @@
 //! than from the event.
 //!
 //! That is the whole reason this exists. `galos_db`'s write path and
-//! [`crate::accumulate::galaxy`]'s accumulator each need those fields off the event, and
-//! plucking them out separately is two fifteen-arm matches that have to
-//! agree about which events name a system and what each one says. They did
-//! not: four events wrote a positioned row on one side and nothing at all
-//! on the other. One match answers both.
+//! [`crate::accumulate::galaxy`]'s accumulator each need those fields off the
+//! event, and plucking them out separately is two fifteen-arm matches that have
+//! to agree about which events name a system and what each one says. They did
+//! not: four events wrote a positioned row on one side and nothing at all on
+//! the other. One match answers both.
 //!
 //! ## What a second report does
 //!
@@ -42,11 +42,11 @@
 //! every sink method already takes, and a galaxy of them does not pay a
 //! string per system for something it will never serve.
 //!
-//! **Anything below system level.** A body is only ever stated by a `Scan`,
-//! so `elite_journal`'s own [`Star`](elite_journal::body::Star) and
-//! [`Body`](elite_journal::body::Body) *are* the report, and both
-//! derivations hand them straight to [`crate::accumulate::merge`]. A `BodyReport` would
-//! be a shape with one source and nothing to reconcile.
+//! **Anything below system level.** A body is only ever stated by a `Scan`, so
+//! `elite_journal`'s own [`Star`](elite_journal::body::Star) and
+//! [`Body`](elite_journal::body::Body) *are* the report, and both derivations
+//! hand them straight to [`crate::accumulate::merge`]. A `BodyReport` would be
+//! a shape with one source and nothing to reconcile.
 
 use crate::core::name::SystemName;
 use crate::records::PopulatedSystem;
@@ -104,10 +104,10 @@ pub struct SystemReport {
     /// The class of the star a ship drops in at, where a report states one
     /// for a system nobody has scanned.
     ///
-    /// A plotted route is the only thing that does: it names a class for
-    /// every stop ahead of the ship. `galos_db`'s `primary_star_class`
-    /// column, and what [`crate::records::derive::lit`] falls back to when a system
-    /// has no scanned star — which is two thirds of the galaxy.
+    /// A plotted route is the only thing that does: it names a class for every
+    /// stop ahead of the ship. `galos_db`'s `primary_star_class` column, and
+    /// what [`crate::records::derive::lit`] falls back to when a system has no
+    /// scanned star — which is two thirds of the galaxy.
     pub star_class: Option<String>,
 }
 

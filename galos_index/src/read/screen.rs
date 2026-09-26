@@ -1,12 +1,11 @@
 //! How much of what the frontier answers actually gets drawn, and where on
 //! screen it lands.
 //!
-//! The walk ([`crate::read::walk`]) says *which* cells the view needs; this says
-//! *how many marks* each of them is worth. One copy, because there are two
-//! readers that must agree to the mark: the client's own draw and the
-//! offline renderer (`examples/frontier.rs`) that is the check on it. A
-//! picture drawn with a second copy of this arithmetic checks the second
-//! copy.
+//! The walk ([`crate::read::walk`]) says *which* cells the view needs; this
+//! says *how many marks* each of them is worth. One copy, because there are two
+//! readers that must agree to the mark: the client's own draw and the offline
+//! renderer (`examples/frontier.rs`) that is the check on it. A picture drawn
+//! with a second copy of this arithmetic checks the second copy.
 //!
 //! **The frame's budget is the screen.** Marks on a grid of [`MERGE_PX`]
 //! fill the viewport, so the frame carries area over pitch squared of them
@@ -149,7 +148,7 @@ pub(crate) fn dither(id: CellId) -> f64 {
 ///
 /// It also bounds the cost. One mark a tile over a 1280x720 frame is 900
 /// marks, an sixtieth of [`frame_marks`], whatever the tree holds.
-pub(crate) const TILE_PX: f64 = 32.0;
+pub const TILE_PX: f64 = 32.0;
 
 impl View {
     /// Where a position lands on screen, in pixels from the top left, or
