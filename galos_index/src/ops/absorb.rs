@@ -11,14 +11,14 @@
 //!
 //! [`System::updated_at`] is the one clock a directory merge has. It is Unix
 //! seconds, it is on every record, and it is what the tree already sorts
-//! Recency by — so the rule is the rule the rest of the program already
-//! states twice: **the newer record wins, a tie goes to the arriving one,
-//! and an absence never contradicts.** See
-//! [`SystemReport::over`](crate::accumulate::report::SystemReport::over) for a system's
-//! own columns and [`crate::accumulate::merge`] for the things inside it; both use `>=`
-//! against the stamp, as the database's `CASE WHEN $n >= t.updated_at`
-//! upserts do, there being nothing to choose between two records of the same
-//! moment and one of them having to win.
+//! Recency by — so the rule is the rule the rest of the program already states
+//! twice: **the newer record wins, a tie goes to the arriving one, and an
+//! absence never contradicts.** See
+//! [`SystemReport::over`](crate::accumulate::report::SystemReport::over) for a
+//! system's own columns and [`crate::accumulate::merge`] for the things inside
+//! it; both use `>=` against the stamp, as the database's `CASE WHEN $n >=
+//! t.updated_at` upserts do, there being nothing to choose between two records
+//! of the same moment and one of them having to win.
 //!
 //! Everything else follows the system record rather than deciding for
 //! itself. A [`NameEntry`](crate::records::NameEntry) carries no stamp at all,
@@ -27,15 +27,15 @@
 //! are the one thing with a clock of their own, and they are merged per body
 //! — see [`merge::bodies_over`].
 //!
-//! **Except what is a function of the system's whole contents.** Record
-//! over record is the wrong rule for a fact nobody reported — the kind of
-//! star a ship arrives at, the light of the system, how far it reaches,
-//! what it supercharges. Each of those was worked out from one side's
-//! bodies, and the merged directory holds both sides', so each is worked
-//! out again over the merged contents by the calls [`crate::accumulate::galaxy`] makes.
-//! See [`Relit`], which names the directory that said two contradicting
-//! things before this existed. It is why the bodies are folded *first*: the
-//! contents have to be settled before the record over them can be written.
+//! **Except what is a function of the system's whole contents.** Record over
+//! record is the wrong rule for a fact nobody reported — the kind of star a
+//! ship arrives at, the light of the system, how far it reaches, what it
+//! supercharges. Each of those was worked out from one side's bodies, and the
+//! merged directory holds both sides', so each is worked out again over the
+//! merged contents by the calls [`crate::accumulate::galaxy`] makes. See
+//! [`Relit`], which names the directory that said two contradicting things
+//! before this existed. It is why the bodies are folded *first*: the contents
+//! have to be settled before the record over them can be written.
 //!
 //! **Nothing is ever withdrawn.** An absence on the incoming side says "I
 //! have not heard", never "it is gone", which is `src/sink/tables.rs`'s rule
@@ -45,14 +45,14 @@
 //! ## Why the resume points and not the directories
 //!
 //! Both sides are read through [`Checkpoint`] and a directory without one is
-//! refused rather than worked around. It has to be. What a directory
-//! *serves* is a lossy projection — a payload downcasts the magnitude to
-//! `f32`, buckets the temperature into six buckets and drops the age
-//! entirely ([`crate::format::checkpoint`], `src/sink/index.rs`) — so a merge that
-//! read the two directories instead of their resume points would silently
-//! coarsen every system it carried, and the damage would be invisible until
-//! somebody filtered by age. The full-precision inputs live in the resume
-//! point and nowhere else.
+//! refused rather than worked around. It has to be. What a directory *serves*
+//! is a lossy projection — a payload downcasts the magnitude to `f32`, buckets
+//! the temperature into six buckets and drops the age entirely
+//! ([`crate::format::checkpoint`], `src/sink/index.rs`) — so a merge that read
+//! the two directories instead of their resume points would silently coarsen
+//! every system it carried, and the damage would be invisible until somebody
+//! filtered by age. The full-precision inputs live in the resume point and
+//! nowhere else.
 //!
 //! ## What is held
 //!
@@ -79,17 +79,17 @@
 //! already serving nothing, and a kill anywhere in it leaves a directory
 //! serving nothing beside a resume point holding everything.
 //!
-//! **The bodies pass is in front of that rename and does write.** It has to
-//! be: what it merges to is what the records are derived over. What it
-//! leaves is nonetheless safe, and for a different reason — it never takes
-//! anything away. [`merge::bodies_over`] keeps every body of both sides, so a kill
-//! inside it leaves `INTO` serving every body record it was serving and
-//! some of `FROM`'s besides. Nothing is lost. What is *not* true is that it
-//! is invisible: until the union lands, those systems' records were derived
-//! before their own body files, which is the disagreement `galos index
-//! verify` reports. Re-running the merge settles it — the relight is worked
-//! out from the directory's own merged contents, so the second run reaches
-//! the same answer the first was going to.
+//! **The bodies pass is in front of that rename and does write.** It has to be:
+//! what it merges to is what the records are derived over. What it leaves is
+//! nonetheless safe, and for a different reason — it never takes anything away.
+//! [`merge::bodies_over`] keeps every body of both sides, so a kill inside it
+//! leaves `INTO` serving every body record it was serving and some of `FROM`'s
+//! besides. Nothing is lost. What is *not* true is that it is invisible: until
+//! the union lands, those systems' records were derived before their own body
+//! files, which is the disagreement `galos index verify` reports. Re-running
+//! the merge settles it — the relight is worked out from the directory's own
+//! merged contents, so the second run reaches the same answer the first was
+//! going to.
 //!
 //! That state is recoverable two ways and neither of them reads a dump.
 //! Running the merge again is idempotent: every `FROM` record is already in
@@ -114,15 +114,15 @@
 //! what the operator runs first, and it reads both directories and neither
 //! changes.
 
-use crate::accumulate::bodies::Bodies;
-use crate::accumulate::bodies::Published;
+use crate::accumulate::bodies::{Bodies, OnDisk};
 use crate::accumulate::merge;
 use crate::build::cold::{
-    Build, Built, ColdReport, Ending, LeftOff, Start, left_off, region_budget,
+    Build, Built, OnStop, ResumeMark, Start, Summary, region_budget,
+    resume_mark,
 };
 use crate::build::snapshot::BuildParams;
 use crate::core::record::{Boost, StarKind, System};
-use crate::format::checkpoint::{By, Checkpoint, Compaction};
+use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::{layout, msgpack};
 use crate::records::{
     Faction, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
@@ -155,7 +155,7 @@ const SAID_BODIES: u64 = 1 << 12;
 
 /// What a fold came to.
 ///
-/// Counts rather than contents, as [`ColdReport`] is: what this describes is
+/// Counts rather than contents, as [`Summary`] is: what this describes is
 /// a galaxy.
 #[derive(Copy, Clone, Debug)]
 pub struct Absorbed {
@@ -186,7 +186,7 @@ pub struct Absorbed {
     /// The cursor the merged resume point carries — see [`older`].
     pub cursor: Option<NaiveDateTime>,
     /// What raising the tree again came to, absent for a dry run.
-    pub rebuilt: Option<ColdReport>,
+    pub rebuilt: Option<Summary>,
     /// Whether this only counted. A dry run writes nothing at all.
     pub dry_run: bool,
 }
@@ -265,7 +265,7 @@ pub enum Refused {
         into: PathBuf,
         from: PathBuf,
         /// What `INTO`'s was derived by, `FROM`'s being the other.
-        wrote: By,
+        wrote: Provenance,
     },
     /// Two faction tables that number the same faction differently.
     Factions {
@@ -325,8 +325,8 @@ impl fmt::Display for Refused {
             ),
             Refused::TwoHands { into, from, wrote } => {
                 let (held, said, wanted) = match wrote {
-                    By::Database => ("a database", "a feed", from),
-                    By::Events => ("a feed", "a database", into),
+                    Provenance::Database => ("a database", "a feed", from),
+                    Provenance::Events => ("a feed", "a database", into),
                 };
                 write!(
                     f,
@@ -553,9 +553,9 @@ pub fn absorb(
 
 /// Say which part of a merge an error came out of.
 ///
-/// [`crate::build::cold`]'s own `step`, in this module's vocabulary: a merge over a
-/// galaxy is minutes to hours, `std::fs` errors name no path, and a bare "No
-/// such file or directory" at the end of one is not worth reading.
+/// [`crate::build::cold`]'s own `step`, in this module's vocabulary: a merge
+/// over a galaxy is minutes to hours, `std::fs` errors name no path, and a bare
+/// "No such file or directory" at the end of one is not worth reading.
 fn failed(what: &'static str) -> impl Fn(io::Error) -> Refused {
     move |why| Refused::Failed { what, why }
 }
@@ -590,14 +590,13 @@ fn factions(dir: &Path) -> Result<Vec<Faction>, Refused> {
 /// The factions `FROM` names that `INTO` does not, or the refusal that the
 /// two tables number one faction differently.
 ///
-/// A faction's id comes from a sequence `galos_db` mints when the row is
-/// first written (`crate::accumulate::galaxy`, and [`Sidecars::add_factions`], which
-/// only ever appends because of it). Two directories fed by the *same*
-/// database agree on every id, which is the operator's actual case. Two fed
-/// by different ones do not, and a union of those tables would put one
-/// database's name on the other's id and colour the map by the wrong
-/// faction — silently, a faction id being a number the client looks up and
-/// never checks.
+/// A faction's id comes from a sequence `galos_db` mints when the row is first
+/// written (`crate::accumulate::galaxy`, and [`Sidecars::add_factions`], which
+/// only ever appends because of it). Two directories fed by the *same* database
+/// agree on every id, which is the operator's actual case. Two fed by different
+/// ones do not, and a union of those tables would put one database's name on
+/// the other's id and colour the map by the wrong faction — silently, a faction
+/// id being a number the client looks up and never checks.
 fn agreed(
     ours: &[Faction],
     theirs: &[Faction],
@@ -748,11 +747,11 @@ struct Union {
 /// One directory saying two contradicting things, which is exactly what
 /// `galos index verify` exists to catch.
 ///
-/// So these five are derived again, over the merged contents, by the same
-/// calls [`crate::accumulate::galaxy`] makes and not by arithmetic of this module's own
-/// — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::boost_of`. What
-/// stays the winner's is `age_bucket` and `updated_at`: those are about
-/// when the system was reported, not about what is in it.
+/// So these five are derived again, over the merged contents, by the same calls
+/// [`crate::accumulate::galaxy`] makes and not by arithmetic of this module's
+/// own — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::boost_of`. What
+/// stays the winner's is `age_bucket` and `updated_at`: those are about when
+/// the system was reported, not about what is in it.
 #[derive(Copy, Clone, Debug)]
 struct Relit {
     /// What kind of star a ship arrives at, over the merged stars.
@@ -1239,7 +1238,7 @@ fn carry_sidecars(
 /// The writes go through the directory's own store, which batches them by
 /// shard — a shard is two appends however many of the held systems fell in
 /// it, and neither is a directory operation. It is
-/// [`Published::raising`], the store that does not read the disk first,
+/// [`OnDisk::raising`], the store that does not read the disk first,
 /// because this has already read the standing record and merged it: there
 /// is nothing left underneath for the store to find. Every append leaves
 /// the record behind it dead, and [`Build::finish`]'s own sweep gives
@@ -1268,7 +1267,7 @@ fn carry_bodies(
     say: &mut dyn FnMut(&Folding),
 ) -> Result<(u64, HashMap<i64, Relit>), Refused> {
     say(&Folding { phase: Phase::Bodies, done: 0, total: 0 });
-    let mut store = Published::raising(into);
+    let mut store = OnDisk::raising(into);
     let mut folded = 0u64;
     let mut relit: HashMap<i64, Relit> = HashMap::new();
     let mut broke: Option<io::Error> = None;
@@ -1346,20 +1345,20 @@ fn carry_bodies(
 /// directory* got to in its own source, and `FROM`'s is about a different
 /// read of a different thing. A directory with no mark at all — which is
 /// every directory a database pass built, a database having no place in
-/// itself to record — resumes as [`LeftOff::nowhere`], and
+/// itself to record — resumes as [`ResumeMark::nowhere`], and
 /// [`Build::finish`] writes no mark unless one was given, so whatever stands
 /// stands.
 fn rebuild(
     into: &Path,
     into_checkpoint: &Path,
-    by: By,
+    by: Provenance,
     cursor: Option<NaiveDateTime>,
     stop: &dyn Fn() -> bool,
     say: &mut dyn FnMut(&Folding),
-) -> Result<ColdReport, Refused> {
+) -> Result<Summary, Refused> {
     say(&Folding { phase: Phase::Rebuilding, done: 0, total: 0 });
     let start = Start::Resuming(
-        left_off(into_checkpoint).unwrap_or_else(LeftOff::nowhere),
+        resume_mark(into_checkpoint).unwrap_or_else(ResumeMark::nowhere),
     );
     let build = Build::begin(
         into,
@@ -1371,12 +1370,12 @@ fn rebuild(
     )
     .map_err(failed("the rebuild"))?;
     match build
-        .finish(by, cursor, Ending::Publish)
+        .finish(by, cursor, OnStop::Publish)
         .map_err(failed("the rebuild"))?
     {
         Built::Index(report) => Ok(report),
         // Only reachable where the union is empty and the run is already
-        // stopping, `Ending::Publish` publishing whatever was read
+        // stopping, `OnStop::Publish` publishing whatever was read
         // otherwise.
         Built::Stopped(_) => {
             Err(Refused::Stopped { phase: Phase::Rebuilding, committed: true })
@@ -1387,13 +1386,13 @@ fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::cold::Taking;
     use crate::read::index::Index;
     use crate::records::{Body, NameEntry, Star};
     use crate::store::sidecars::{write_boosts, write_reaches};
     use chrono::{DateTime, Utc};
     use elite_journal::body::{Orbit, Spin};
     use std::collections::BTreeMap;
+    use std::ops::ControlFlow;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Somewhere to merge in, removed with the value.
@@ -1463,7 +1462,7 @@ mod tests {
         name: &str,
         systems: &[System],
         tag: &str,
-        by: By,
+        by: Provenance,
         cursor: Option<NaiveDateTime>,
     ) -> (PathBuf, PathBuf) {
         let dir = scratch.join(name);
@@ -1490,10 +1489,10 @@ mod tests {
             };
             assert_eq!(
                 build.push(system, entry).expect("a push"),
-                Taking::More
+                ControlFlow::Continue(())
             );
         }
-        match build.finish(by, cursor, Ending::Publish).expect("a publish") {
+        match build.finish(by, cursor, OnStop::Publish).expect("a publish") {
             Built::Index(_) => {}
             Built::Stopped(it) => panic!("nothing asked it to stop: {it}"),
         }
@@ -1584,11 +1583,19 @@ mod tests {
             })
             .collect();
 
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
         let whole = union(&xs, &ys);
-        let oracle =
-            raise(&scratch, "oracle", &whole, "SYS", By::Database, at(400));
+        let oracle = raise(
+            &scratch,
+            "oracle",
+            &whole,
+            "SYS",
+            Provenance::Database,
+            at(400),
+        );
 
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.systems(), whole.len() as u64);
@@ -1671,8 +1678,10 @@ mod tests {
             kind: StarKind::of("N"),
             ..system(1, 1_700_009_000)
         }];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
         let stood = SystemBodies {
             stars: vec![dwarf.clone()],
@@ -1760,14 +1769,16 @@ mod tests {
             .map(|id| system(id, 1_700_001_000 + id as u32))
             .collect();
 
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
         let oracle = raise(
             &scratch,
             "oracle",
             &union(&xs, &ys),
             "SYS",
-            By::Database,
+            Provenance::Database,
             at(400),
         );
 
@@ -1805,8 +1816,10 @@ mod tests {
             system(5, 1_700_000_000),
             system(6, 1_700_000_000),
         ];
-        let into = raise(&scratch, "into", &xs, "AY", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "BEE", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "AY", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "BEE", Provenance::Database, at(900));
 
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.taken, 2);
@@ -1832,8 +1845,10 @@ mod tests {
         let scratch = Scratch::new("sidecars");
         let xs = [system(1, 1_700_000_000), system(2, 1_700_000_000)];
         let ys = [system(1, 1_700_009_000), system(2, 1_700_009_000)];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
         write_reaches(&into.0, &HashMap::from([(1i64, 100.0f32)]))
             .expect("the standing reaches");
@@ -1868,8 +1883,10 @@ mod tests {
         let scratch = Scratch::new("bodies");
         let xs = [system(1, 1_700_000_000)];
         let ys = [system(1, 1_700_009_000)];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
         let stood = SystemBodies {
             stars: vec![Star { temperature: 4_000.0, ..a_star(0, 100) }],
@@ -1910,8 +1927,10 @@ mod tests {
         let ys: Vec<System> = (300..=700)
             .map(|id| system(id, 1_700_001_000 + id as u32))
             .collect();
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
         let before = std::fs::read(into.1.as_path()).expect("the checkpoint");
         let cells = Index::read(&into.0).expect("the index").len();
@@ -1941,8 +1960,10 @@ mod tests {
         let scratch = Scratch::new("adrift");
         let xs = [system(1, 1_700_000_000)];
         let ys = [system(2, 1_700_000_000)];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
         std::fs::remove_file(&from.1).expect("the resume point removed");
 
         match folded(&into, &from, false) {
@@ -1958,12 +1979,14 @@ mod tests {
         let scratch = Scratch::new("hands");
         let xs = [system(1, 1_700_000_000)];
         let ys = [system(2, 1_700_000_000)];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Events, None);
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Events, None);
 
         match folded(&into, &from, false) {
             Err(Refused::TwoHands { wrote, .. }) => {
-                assert_eq!(wrote, By::Database)
+                assert_eq!(wrote, Provenance::Database)
             }
             it => panic!("{:?}", it.map(|done| done.to_string())),
         }
@@ -1977,8 +2000,10 @@ mod tests {
         let scratch = Scratch::new("factions");
         let xs = [system(1, 1_700_000_000)];
         let ys = [system(2, 1_700_000_000)];
-        let into = raise(&scratch, "into", &xs, "SYS", By::Database, at(400));
-        let from = raise(&scratch, "from", &ys, "SYS", By::Database, at(900));
+        let into =
+            raise(&scratch, "into", &xs, "SYS", Provenance::Database, at(400));
+        let from =
+            raise(&scratch, "from", &ys, "SYS", Provenance::Database, at(900));
 
         let ours = vec![Faction { id: 7, name: "Kumo Crew".to_owned() }];
         let theirs = vec![Faction { id: 7, name: "Aegis Core".to_owned() }];

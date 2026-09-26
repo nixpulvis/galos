@@ -15,12 +15,10 @@
 
 use crate::core::geometry::CellId;
 use crate::core::record::Point;
-use crate::format::layout::boosts_path;
-use crate::format::layout::factions_path;
-use crate::format::layout::names_delta_path;
-use crate::format::layout::names_head_path;
-use crate::format::layout::populated_path;
-use crate::format::layout::reaches_path;
+use crate::format::layout::{
+    boosts_path, factions_path, names_delta_path, names_head_path,
+    populated_path, reaches_path,
+};
 use crate::format::msgpack::read_meta;
 use crate::read::index::Index;
 use crate::records::{

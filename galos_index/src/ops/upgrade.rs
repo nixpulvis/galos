@@ -7,10 +7,10 @@
 //! which became columns; the next thing lands here beside it rather than as
 //! another subcommand named after a layout.
 //!
-//! Not run at open, unlike [`crate::ops::migrate::migrate`]'s resharding. That is
-//! a rename a file and this is a re-encode of every cell plus a sweep of
-//! the scan record — hours over a galaxy, which a client that wants to draw
-//! cannot spend without saying so.
+//! Not run at open, unlike [`crate::ops::migrate::migrate`]'s resharding. That
+//! is a rename a file and this is a re-encode of every cell plus a sweep of the
+//! scan record — hours over a galaxy, which a client that wants to draw cannot
+//! spend without saying so.
 //!
 //! **A rebuild that is not a reimport.** The payloads written before the
 //! columns hold everything the new ones do but one field: the star kind,
@@ -58,13 +58,13 @@ pub struct Rewrote {
     /// Supercharge rows given the place they had always implied, where the
     /// table still wanted one
     ///
-    /// [`crate::ops::migrate::place_boosts`] is a step of an open rather than of
-    /// a build, and an open over a stale directory does nothing at all —
+    /// [`crate::ops::migrate::place_boosts`] is a step of an open rather than
+    /// of a build, and an open over a stale directory does nothing at all —
     /// [`crate::ops::migrate::migrate`] sets `upgrade` and returns, having
-    /// touched nothing. So a directory brought forward by this command
-    /// alone would still hold a two-field table, and anything reading it
-    /// without opening the galaxy first — the map's own perf guard did —
-    /// fails to decode a row rather than finding a jet cone.
+    /// touched nothing. So a directory brought forward by this command alone
+    /// would still hold a two-field table, and anything reading it without
+    /// opening the galaxy first — the map's own perf guard did — fails to
+    /// decode a row rather than finding a jet cone.
     pub placed: u64,
 }
 
@@ -422,16 +422,16 @@ mod tests {
 
     /// A rewrite brings the supercharge table forward as well
     ///
-    /// Nothing else will. An open over a directory this build cannot read
-    /// does *nothing* — [`crate::ops::migrate::migrate`] asks
-    /// [`crate::store::cells::stale`] first and returns having named this command
-    /// — so a table published before a row carried a place would still be
-    /// two fields wide after the payloads came forward, and a reader that
-    /// asks for the boosts without opening the galaxy first gets a decode
-    /// error rather than a jet cone. Which is how it was found: the map's
-    /// perf guard reported `invalid length 2, expected struct SystemBoost
-    /// with 3 elements` over a directory `galos index migrate` had just
-    /// said it had finished with.
+    /// Nothing else will. An open over a directory this build cannot read does
+    /// *nothing* — [`crate::ops::migrate::migrate`] asks
+    /// [`crate::store::cells::stale`] first and returns having named this
+    /// command — so a table published before a row carried a place would still
+    /// be two fields wide after the payloads came forward, and a reader that
+    /// asks for the boosts without opening the galaxy first gets a decode error
+    /// rather than a jet cone. Which is how it was found: the map's perf guard
+    /// reported `invalid length 2, expected struct SystemBoost with 3 elements`
+    /// over a directory `galos index migrate` had just said it had finished
+    /// with.
     #[test]
     fn a_rewrite_places_the_supercharge_table() {
         /// The row as it was published before it carried a place.

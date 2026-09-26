@@ -782,8 +782,8 @@ impl Orbits {
     /// Where the walk ends is the point the system's stars go round, which is
     /// the arrival star itself only where there is one of them. The map wants
     /// the arrival star either way, that being where it puts the middle of a
-    /// system, so what draws a system subtracts [`crate::system::inside`]'s middle
-    /// from this and every one of them lands short of it.
+    /// system, so what draws a system subtracts [`crate::system::inside`]'s
+    /// middle from this and every one of them lands short of it.
     ///
     /// A parent that is not on record ends the walk, and what is left is
     /// measured from the system's centre. An honest shortcut: the body is put
@@ -793,8 +793,9 @@ impl Orbits {
     /// # Barycentres
     ///
     /// A barycentre is nobody's row in `bodies`, so a chain that names one
-    /// steps somewhere else for it: [`SystemBodies::orbits`](crate::records::SystemBodies::orbits) puts them in
-    /// alongside the stars and the bodies, and the chain runs whole. It puts
+    /// steps somewhere else for it:
+    /// [`SystemBodies::orbits`](crate::records::SystemBodies::orbits) puts them
+    /// in alongside the stars and the bodies, and the chain runs whole. It puts
     /// in the ones no scan ever landed for as well — the type a chain names
     /// says what they are, and how far out they stand is read off the things
     /// riding them — so the walk ending early is now the pathological case

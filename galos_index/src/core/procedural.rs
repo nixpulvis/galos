@@ -31,10 +31,10 @@
 //! - **Frontier's hand-authored regions** — `COL 285 SECTOR`, `IC 2944
 //!   SECTOR`, the nebulae: 5,252,594 rows. A region is a sphere laid over
 //!   the grid, spanning up to eight sectors, and its boxels are numbered
-//!   from the region's own origin rather than the grid's. So [`sector`]
-//!   deliberately **does not hold them**: a name that claimed more than one
-//!   sector coordinate is left out of the dictionary, and every system
-//!   under one is stored.
+//!   from the region's own origin rather than the grid's. So the sector
+//!   dictionary deliberately **does not hold them**: a name that claimed
+//!   more than one sector coordinate is left out of the dictionary, and
+//!   every system under one is stored.
 //!
 //! Which is what makes the scheme safe rather than clever: the caller
 //! derives a name, compares it with the one reported, and stores the name
@@ -194,7 +194,7 @@ pub fn spells(address: i64, name: &str) -> bool {
 
 /// How many letters of a *word* may be wrong before it says nothing
 ///
-/// [`EXACTLY_UNDER`] is about a whole sector name; a word of one is three
+/// `EXACTLY_UNDER` is about a whole sector name; a word of one is three
 /// to six letters, and the bound has to be read against that length or it
 /// answers with the vocabulary. One edit on three letters reaches a quarter
 /// of the alphabet — `EQU` is one from `EQ-G`, `ECU`, `EQZ` — so three

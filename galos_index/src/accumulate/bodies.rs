@@ -10,7 +10,7 @@
 //! What it can do is not be the one holding them, and that is the whole of
 //! this module. Two stores, and which is right depends on what is reading:
 //!
-//! - [`Kept`] holds everything in memory. Right for a journal read straight
+//! - [`InMemory`] holds everything in memory. Right for a journal read straight
 //!   off the disk, which has no directory to keep them in: the map builds
 //!   one out of the `.log` files and nothing publishes an index unless
 //!   somebody asks for one. It is also what that arrangement wants — it
@@ -22,13 +22,13 @@
 //!   Not for the sake of a click: a click is answered by `Source::bodies`, and
 //!   the map already reads the published `bodies/<address>.bin` off the disk
 //!   for that.
-//! - [`Published`] keeps them in the index directory's own body files, which
+//! - [`OnDisk`] keeps them in the index directory's own body files, which
 //!   is where they were going anyway: `bodies/<address>.bin` is what the map
 //!   fetches when a click opens a system, and it is written whole. So the
 //!   durable copy already exists and holding a second one in memory bought
 //!   nothing.
 //!
-//!   [`Published::raising`] is the same store for a build raising a
+//!   [`OnDisk::raising`] is the same store for a build raising a
 //!   directory from nothing, where a file not held has not been written and
 //!   nothing underneath needs keeping. That is two file opens and a rename a
 //!   system less, which over a galaxy is most of what the read costs.
@@ -47,7 +47,7 @@
 //! sometimes. A store is asked and answers, and the only thing held in memory
 //! is what has been changed and not yet written — which the sink flushes on
 //! the same beat it publishes on. Between flushes that is the systems scanned
-//! in the last few seconds, and [`Published::CARRIED`] forces a flush for a
+//! in the last few seconds, and [`OnDisk::CARRIED`] forces a flush for a
 //! caller that never asks for one.
 //!
 //! That bound holds as long as the disk takes the writes. A forced flush the
@@ -115,16 +115,16 @@ pub trait Bodies: fmt::Debug + Send + Sync {
 /// and answers a click off it, and there is no directory in the arrangement
 /// at all.
 #[derive(Debug, Default)]
-pub struct Kept(HashMap<i64, SystemBodies>);
+pub struct InMemory(HashMap<i64, SystemBodies>);
 
-impl Kept {
+impl InMemory {
     /// A store holding nothing.
-    pub fn new() -> Kept {
-        Kept::default()
+    pub fn new() -> InMemory {
+        InMemory::default()
     }
 }
 
-impl Bodies for Kept {
+impl Bodies for InMemory {
     fn read(&self, address: i64) -> Cow<'_, SystemBodies> {
         match self.0.get(&address) {
             Some(inside) => Cow::Borrowed(inside),
@@ -155,7 +155,7 @@ impl Bodies for Kept {
 /// one says; so an edit is held and the file is written when the caller
 /// flushes, which for a sink is the beat it publishes on.
 #[derive(Debug)]
-pub struct Published {
+pub struct OnDisk {
     dir: PathBuf,
     /// Systems edited since the last flush.
     dirty: HashMap<i64, SystemBodies>,
@@ -171,7 +171,7 @@ pub struct Published {
     raising: bool,
 }
 
-impl Published {
+impl OnDisk {
     /// How many systems may be held before a flush is forced.
     ///
     /// The bound exists for a caller that never flushes — a one-shot import,
@@ -181,8 +181,8 @@ impl Published {
     /// point is that the number is bounded, not that it is large.
     pub const CARRIED: usize = 4096;
 
-    pub fn new(dir: impl Into<PathBuf>) -> Published {
-        Published {
+    pub fn new(dir: impl Into<PathBuf>) -> OnDisk {
+        OnDisk {
             dir: dir.into(),
             dirty: HashMap::new(),
             wrote: 0,
@@ -207,7 +207,7 @@ impl Published {
     /// ran rather than running at one rate.
     ///
     /// **Nothing underneath needs keeping**, so the file goes straight to
-    /// its path rather than beside it and over; see [`raise_meta`].
+    /// its path rather than beside it and over.
     ///
     /// Measured over 50,000 systems of Spansh's dump, 27,000 of them with
     /// something scanned: 7.13 s to 2.74 s, at three file opens and a rename
@@ -216,8 +216,8 @@ impl Published {
     /// The cost of being wrong about it is a system's bodies read from a
     /// file this store then overwrites, so it is for a build raising a
     /// directory and nothing else.
-    pub fn raising(dir: impl Into<PathBuf>) -> Published {
-        Published { raising: true, ..Published::new(dir) }
+    pub fn raising(dir: impl Into<PathBuf>) -> OnDisk {
+        OnDisk { raising: true, ..OnDisk::new(dir) }
     }
 
     /// The directory being written to.
@@ -250,7 +250,7 @@ impl Published {
     }
 }
 
-impl Bodies for Published {
+impl Bodies for OnDisk {
     fn read(&self, address: i64) -> Cow<'_, SystemBodies> {
         match self.dirty.get(&address) {
             // Held and not yet written, which is the newer of the two.
@@ -260,7 +260,7 @@ impl Bodies for Published {
     }
 
     fn edit(&mut self, address: i64, act: &mut dyn FnMut(&mut SystemBodies)) {
-        if self.dirty.len() >= Published::CARRIED
+        if self.dirty.len() >= OnDisk::CARRIED
             && !self.dirty.contains_key(&address)
         {
             if let Err(err) = self.flush() {
@@ -322,10 +322,10 @@ impl Bodies for Published {
 
     /// Write what is held, and let go of it.
     ///
-    /// Into the pack, grouped by shard: a shard is two appends however many
-    /// of the held systems fell in it, and neither append is a directory
-    /// operation. See [`crate::store::bodies`] for why that is the whole of this
-    /// module's cost at galaxy scale.
+    /// Into the pack, grouped by shard: a shard is two appends however many of
+    /// the held systems fell in it, and neither append is a directory
+    /// operation. See [`crate::store::bodies`] for why that is the whole of
+    /// this module's cost at galaxy scale.
     ///
     /// A system whose record will not write is kept rather than dropped, so
     /// the next flush tries again and a full disk that clears costs nothing.
@@ -353,24 +353,24 @@ impl Bodies for Published {
 /// of them is a store that can never batch: a flush a system, and a shard's
 /// two files opened to append one record. This is the store behind an
 /// `Arc`, so a run has one of it and each line's [`Galaxy`](crate::Galaxy)
-/// borrows it, which is what lets [`Published::CARRIED`] systems pile up
+/// borrows it, which is what lets [`OnDisk::CARRIED`] systems pile up
 /// and go out shard by shard.
 ///
 /// One writer still: the `Arc` is shared within a run, and a run holds the
 /// directory's [`Lock`](crate::Lock).
 #[derive(Clone, Debug)]
-pub struct Shared(Arc<Mutex<Published>>);
+pub struct Shared(Arc<Mutex<OnDisk>>);
 
 impl Shared {
     /// A shared store onto a directory being edited.
     pub fn new(dir: impl Into<PathBuf>) -> Shared {
-        Shared(Arc::new(Mutex::new(Published::new(dir))))
+        Shared(Arc::new(Mutex::new(OnDisk::new(dir))))
     }
 
     /// A shared store onto a directory being raised from nothing. See
-    /// [`Published::raising`].
+    /// [`OnDisk::raising`].
     pub fn raising(dir: impl Into<PathBuf>) -> Shared {
-        Shared(Arc::new(Mutex::new(Published::raising(dir))))
+        Shared(Arc::new(Mutex::new(OnDisk::raising(dir))))
     }
 
     /// What is held, on disk, and how many systems have been written since
@@ -394,7 +394,7 @@ impl Shared {
     /// A poisoned store is one a write panicked in the middle of; what is
     /// in it is still the systems the run has read, and refusing to write
     /// them would lose more than it protects.
-    fn held(&self) -> std::sync::MutexGuard<'_, Published> {
+    fn held(&self) -> std::sync::MutexGuard<'_, OnDisk> {
         self.0.lock().unwrap_or_else(|it| it.into_inner())
     }
 }
@@ -470,7 +470,7 @@ mod tests {
     fn a_store_answers_what_was_edited_into_it() {
         let dir = scratch("edited");
         let stores: [Box<dyn Bodies>; 2] =
-            [Box::new(Kept::new()), Box::new(Published::new(&dir))];
+            [Box::new(InMemory::new()), Box::new(OnDisk::new(&dir))];
 
         for mut store in stores {
             assert!(
@@ -502,7 +502,7 @@ mod tests {
     fn a_published_store_reads_back_what_it_wrote() {
         let dir = scratch("published");
 
-        let mut first = Published::new(&dir);
+        let mut first = OnDisk::new(&dir);
         first.edit(7, &mut |inside| inside.stars.push(star(0)));
         first.edit(7, &mut |inside| {
             inside.barycenters.push(Barycenter {
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(first.flush().expect("the file writes"), 1);
         drop(first);
 
-        let second = Published::new(&dir);
+        let second = OnDisk::new(&dir);
         let inside = second.read(7);
         assert_eq!(inside.stars.len(), 1, "the star did not survive");
         assert_eq!(inside.barycenters.len(), 1);
@@ -527,7 +527,7 @@ mod tests {
 
     /// A raising store does not read the directory it is writing
     ///
-    /// The contract of [`Published::raising`] and the reason it is faster:
+    /// The contract of [`OnDisk::raising`] and the reason it is faster:
     /// a build from nothing can only be told back what it has already said,
     /// so a file it is not holding is one it has not written. Stated as a
     /// test because the cost of being wrong about it is a system's bodies
@@ -537,11 +537,11 @@ mod tests {
     fn a_raising_store_answers_for_itself_and_not_for_the_disk() {
         let dir = scratch("raising");
 
-        let mut published = Published::new(&dir);
+        let mut published = OnDisk::new(&dir);
         published.edit(11, &mut |inside| inside.stars.push(star(0)));
         published.flush().expect("the file writes");
 
-        let mut raising = Published::raising(&dir);
+        let mut raising = OnDisk::raising(&dir);
         assert!(
             raising.read(11).stars.is_empty(),
             "a raising store read a file it did not write",
@@ -549,7 +549,7 @@ mod tests {
 
         raising.edit(11, &mut |inside| inside.stars.push(star(1)));
         raising.flush().expect("the file writes");
-        let published = Published::new(&dir);
+        let published = OnDisk::new(&dir);
         let stars = &published.read(11).stars;
         assert_eq!(stars.len(), 1, "the file was merged rather than raised");
         assert_eq!(stars[0].id, 1, "the raised file is not what was written");
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn an_edit_is_held_until_it_is_flushed() {
         let dir = scratch("held");
-        let mut store = Published::new(&dir);
+        let mut store = OnDisk::new(&dir);
         store.edit(3, &mut |inside| inside.stars.push(star(0)));
 
         assert_eq!(
@@ -610,12 +610,12 @@ mod tests {
     #[test]
     fn what_is_held_is_bounded() {
         let dir = scratch("bounded");
-        let mut store = Published::new(&dir);
-        for address in 0..(Published::CARRIED as i64 + 16) {
+        let mut store = OnDisk::new(&dir);
+        for address in 0..(OnDisk::CARRIED as i64 + 16) {
             store.edit(address, &mut |inside| inside.stars.push(star(0)));
         }
         assert!(
-            store.dirty.len() <= Published::CARRIED,
+            store.dirty.len() <= OnDisk::CARRIED,
             "the store held {} systems, past its own bound",
             store.dirty.len(),
         );
@@ -627,15 +627,15 @@ mod tests {
 
     /// What a publish wrote counts the flushes it did not ask for
     ///
-    /// A dump import touches far more than [`Published::CARRIED`] systems
+    /// A dump import touches far more than [`OnDisk::CARRIED`] systems
     /// between publishes, so most files are written by the forced flush and
     /// only the remainder by the publish's own. A count taken from the last
     /// flush alone reported one file for a hundred thousand systems.
     #[test]
     fn the_count_covers_a_forced_flush() {
         let dir = scratch("counted");
-        let mut store = Published::new(&dir);
-        let touched = Published::CARRIED as i64 + 16;
+        let mut store = OnDisk::new(&dir);
+        let touched = OnDisk::CARRIED as i64 + 16;
         for address in 1..=touched {
             store.edit(address, &mut |inside| inside.stars.push(star(0)));
         }

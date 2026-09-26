@@ -47,9 +47,9 @@ pub struct Wrote {
     pub name_rows: usize,
     /// Whether this publish folded the log into a fresh base.
     ///
-    /// A fold rewrites every row the table names — minutes at 200 M
-    /// systems — and happens about monthly on the live feed, so it is
-    /// reported rather than left silent. See `galos_index::store::names::compact`.
+    /// A fold rewrites every row the table names — minutes at 200 M systems —
+    /// and happens about monthly on the live feed, so it is reported rather
+    /// than left silent. See `galos_index::store::names::compact`.
     pub folded: bool,
     /// Which of the whole-file tables were rewritten.
     pub tables: Moved,

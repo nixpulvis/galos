@@ -33,7 +33,7 @@ pub const PAYLOAD_DIR: &str = "cells";
 /// structure and already spread evenly.
 ///
 /// [`LEAF_CAP`]: crate::build::snapshot::LEAF_CAP
-pub(crate) fn payload_path(dir: &Path, id: CellId) -> PathBuf {
+pub fn payload_path(dir: &Path, id: CellId) -> PathBuf {
     let morton = id.morton();
     dir.join(PAYLOAD_DIR)
         .join(format!("{:03x}", morton & 0xfff))
@@ -42,7 +42,7 @@ pub(crate) fn payload_path(dir: &Path, id: CellId) -> PathBuf {
 
 /// Where a cell's payload was written before the sharding: `cells/` flat.
 /// Read where the sharded path is absent, never written.
-pub(crate) fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
+pub fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
     dir.join(PAYLOAD_DIR).join(format!(
         "{:02}-{:016x}.bin",
         id.level,
@@ -51,17 +51,17 @@ pub(crate) fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
 }
 
 /// The populated-systems table, resident once and read for every color.
-pub(crate) const POPULATED_FILE: &str = "populated.bin";
+pub const POPULATED_FILE: &str = "populated.bin";
 
 /// How far each scanned system reaches, resident once and read for every
 /// system the map draws.
-pub(crate) const REACHES_FILE: &str = "reaches.bin";
+pub const REACHES_FILE: &str = "reaches.bin";
 
 /// The faction id-to-name table, small and read whole.
-pub(crate) const FACTIONS_FILE: &str = "factions.bin";
+pub const FACTIONS_FILE: &str = "factions.bin";
 
 /// Which systems can supercharge a drive, resident for the router.
-pub(crate) const BOOSTS_FILE: &str = "boosts.bin";
+pub const BOOSTS_FILE: &str = "boosts.bin";
 
 /// The populated table's path within a build directory.
 pub fn populated_path(dir: &Path) -> PathBuf {
@@ -86,16 +86,16 @@ pub fn boosts_path(dir: &Path) -> PathBuf {
 // --- The names table --------------------------------------------------------
 
 /// The subdirectory the names table's sections and log live in.
-pub(crate) const NAMES_DIR: &str = "names";
+pub const NAMES_DIR: &str = "names";
 
 /// `head.bin`'s name within the names directory.
-pub(crate) const HEAD_FILE: &str = "head.bin";
+pub const HEAD_FILE: &str = "head.bin";
 
 /// The addresses, within a generation directory.
 pub const ADDR_FILE: &str = "addr.bin";
 
 /// The rows in name order, within a generation directory.
-pub(crate) const BYNAME_FILE: &str = "byname.bin";
+pub const BYNAME_FILE: &str = "byname.bin";
 
 /// The offsets into the text, one a stored name, within a generation
 /// directory.
@@ -120,12 +120,12 @@ pub fn names_dir(dir: &Path) -> PathBuf {
 /// The one file a reader opens first and the one a writer renames last:
 /// it is what makes a generation of sections live, so a client that has
 /// read it has a whole table or none.
-pub(crate) fn names_head_path(dir: &Path) -> PathBuf {
+pub fn names_head_path(dir: &Path) -> PathBuf {
     names_dir(dir).join(HEAD_FILE)
 }
 
 /// The names table's delta log, within the names directory.
-pub(crate) const DELTA_FILE: &str = "delta.bin";
+pub const DELTA_FILE: &str = "delta.bin";
 
 /// The names table's delta log, which the feed appends to.
 pub fn names_delta_path(dir: &Path) -> PathBuf {
@@ -133,7 +133,7 @@ pub fn names_delta_path(dir: &Path) -> PathBuf {
 }
 
 /// One generation's directory within the names directory.
-pub(crate) fn generation_dir(dir: &Path, generation: u64) -> PathBuf {
+pub fn generation_dir(dir: &Path, generation: u64) -> PathBuf {
     names_dir(dir).join(format!("{generation:03}"))
 }
 
@@ -144,17 +144,17 @@ pub(crate) fn generation_dir(dir: &Path, generation: u64) -> PathBuf {
 /// is gigabytes of sort runs that mean nothing anywhere else, and one
 /// spelling of `.building` is what keeps the copy and the writer agreeing
 /// about which directory that is. See [`crate::ops::copy`].
-pub(crate) fn scratch_dir(dir: &Path) -> PathBuf {
+pub fn scratch_dir(dir: &Path) -> PathBuf {
     names_dir(dir).join(".building")
 }
 
-// --- The bodies ---------------------------------------------------------------
+// --- The bodies -----------------------------------------------------------
 
 /// The subdirectory of per-system body files.
 pub const BODIES_DIR: &str = "bodies";
 
 /// How many shards the addresses are spread over.
-pub(crate) const BODY_SHARDS: u64 = 4096;
+pub const BODY_SHARDS: u64 = 4096;
 
 /// Which shard an address belongs to.
 ///
@@ -162,30 +162,27 @@ pub(crate) const BODY_SHARDS: u64 = 4096;
 /// constant. The multiply mixes the high bits down: an Elite `id64` packs a
 /// mass code and the boxel coordinates into its low bits, so `address % 4096`
 /// leaves whole shards empty and piles the rest up.
-pub(crate) fn body_shard(address: i64) -> u64 {
+pub fn body_shard(address: i64) -> u64 {
     (address as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 52
 }
 
 /// A body shard's index file.
-pub(crate) fn body_index_path(dir: &Path, shard: u64) -> PathBuf {
+pub fn body_index_path(dir: &Path, shard: u64) -> PathBuf {
     dir.join(BODIES_DIR).join(format!("{shard:03x}.idx"))
 }
 
 /// A body shard's data file of a given generation.
-pub(crate) fn body_data_path(
-    dir: &Path,
-    shard: u64,
-    generation: u16,
-) -> PathBuf {
+pub fn body_data_path(dir: &Path, shard: u64, generation: u16) -> PathBuf {
     dir.join(BODIES_DIR).join(format!("{shard:03x}.{generation:04x}.dat"))
 }
 
 /// A system's body file within a build directory, keyed by address.
 ///
-/// The layout before [`crate::store::bodies`]: one file a system, sharded over 4,096
-/// subdirectories, `bodies/{shard:03x}/{address}.bin`. Read and never
-/// written — [`crate::store::bodies::pack`] walks these into the shard files on the
-/// first open, and until it has, [`read_bodies`] falls back to this path.
+/// The layout before [`crate::store::bodies`]: one file a system, sharded over
+/// 4,096 subdirectories, `bodies/{shard:03x}/{address}.bin`. Read and never
+/// written — [`crate::store::bodies::pack`] walks these into the shard files on
+/// the first open, and until it has,
+/// [`read_bodies`](crate::store::bodies::read_bodies) falls back to this path.
 pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
     let shard = body_shard(address);
     dir.join(BODIES_DIR)
@@ -196,9 +193,11 @@ pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
 /// Where a body file sat before the sharding, `bodies/{address}.bin`.
 ///
 /// What a directory published by an older builder holds. Read and never
-/// written: [`reshard_bodies`] moves these into their shards on the first
-/// open, and until it has, [`read_bodies`] falls back to this path.
-pub(crate) fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
+/// written: [`pack`](crate::store::bodies::pack) moves these into the shard
+/// files on the first open, and until it has,
+/// [`read_bodies`](crate::store::bodies::read_bodies) falls back to this
+/// path.
+pub fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
     dir.join(BODIES_DIR).join(format!("{address}.bin"))
 }
 
@@ -208,7 +207,7 @@ pub(crate) fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
 ///
 /// The directory is served whole, so nothing that belongs to the running
 /// process may live under it.
-pub(crate) fn lock_path(dir: &Path) -> PathBuf {
+pub fn lock_path(dir: &Path) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
     name.push(".lock");
     PathBuf::from(name)
@@ -230,7 +229,7 @@ pub const CHECKPOINT_SUFFIX: &str = ".checkpoint";
 /// otherwise — `galos ingest --checkpoint PATH` is the caller that says
 /// otherwise, and `galos::sink::index::Index::checkpoint` is where that
 /// choice is made.
-pub(crate) fn checkpoint_beside(dir: &Path) -> PathBuf {
+pub fn checkpoint_beside(dir: &Path) -> PathBuf {
     let mut name = dir.as_os_str().to_owned();
     name.push(CHECKPOINT_SUFFIX);
     PathBuf::from(name)
@@ -250,7 +249,7 @@ pub fn pending_path(checkpoint: &Path) -> PathBuf {
 /// Public because a copy of a directory has to carry it — see
 /// [`crate::ops::copy`] — and one spelling of `.mark` is the only way that
 /// copy and this build agree about which file it is.
-pub(crate) fn mark_path(checkpoint: &Path) -> PathBuf {
+pub fn mark_path(checkpoint: &Path) -> PathBuf {
     let mut name = checkpoint.as_os_str().to_owned();
     name.push(".mark");
     PathBuf::from(name)
@@ -264,7 +263,7 @@ pub(crate) fn mark_path(checkpoint: &Path) -> PathBuf {
 /// Public for the same reason [`mark_path`] is: a copy of a directory
 /// has to know this is scratch so that it skips it rather than carrying
 /// a galaxy of spills nobody will read — see [`crate::ops::copy`].
-pub(crate) fn spill_dir(checkpoint: &Path) -> PathBuf {
+pub fn spill_dir(checkpoint: &Path) -> PathBuf {
     let mut name = checkpoint.as_os_str().to_owned();
     name.push(".regions");
     PathBuf::from(name)
@@ -275,6 +274,6 @@ pub(crate) fn spill_dir(checkpoint: &Path) -> PathBuf {
 ///
 /// Level first, so a region's file cannot collide with the buckets or the
 /// pieces that a split of it produces, which are at other levels.
-pub(crate) fn spill_path(dir: &Path, cell: CellId) -> PathBuf {
+pub fn spill_path(dir: &Path, cell: CellId) -> PathBuf {
     dir.join(format!("{:02}-{:016x}.bin", cell.level, cell.morton()))
 }

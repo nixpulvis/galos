@@ -25,9 +25,8 @@
 //! drifts and cannot recover `m_min`. Structure, ownership and the per-cell
 //! count are integer-exact.
 
-use crate::build::snapshot::{BuildParams, Dirtied, Snapshot};
-use crate::core::aggregate::Aggregate;
-use crate::core::aggregate::Cell;
+use crate::build::snapshot::{BuildParams, CellDiff, Snapshot};
+use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::record::{Point, StarKind, System};
 use crate::read::index::Index;
@@ -757,7 +756,7 @@ impl Tree {
     /// built to write a dozen files.
     pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
         self.settle();
-        let mut dirtied = Dirtied::default();
+        let mut dirtied = CellDiff::default();
         let mut payloads: HashMap<CellId, Vec<Point>> = HashMap::new();
         let touched: HashSet<CellId> =
             self.dirty.iter().chain(self.gone.iter()).copied().collect();

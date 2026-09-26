@@ -8,13 +8,13 @@
 //! they were read at, so a `--watch` restart rebuilds the tree in memory
 //! and follows changes from the cursor. It is server-private and never
 //! served, and it carries what derived it, an event feed and a database
-//! read meaning different things by a cursor — see [`By`].
+//! read meaning different things by a cursor — see [`Provenance`].
 //!
 //! ## Two files
 //!
-//! **The log is what a publish writes**: one [`Pending`] frame, costing
+//! **The log is what a publish writes**: one [`pending`] frame, costing
 //! what moved. **The base is the compaction**, written when the log has
-//! grown against it — see [`Pending::append`]. A restart maps the base,
+//! grown against it — see [`pending::append`]. A restart maps the base,
 //! applies the log over it, and follows the last cursor either carries.
 //!
 //! ## Why the base is fixed-width and this machine's
@@ -47,29 +47,29 @@ use std::path::{Path, PathBuf};
 /// galaxy, so a mismatch forces a full rebuild — see the crate's `--index`
 /// handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum By {
+pub enum Provenance {
     /// Live entries, from EDDN or a journal, applied as they arrived.
     Events,
     /// A read of the database, up to the clock the cursor carries.
     Database,
 }
 
-impl By {
+impl Provenance {
     /// How the header spells it. A reader that meets a number it has no
     /// name for refuses the file rather than guessing at provenance.
     fn code(self) -> u32 {
         match self {
-            By::Events => 0,
-            By::Database => 1,
+            Provenance::Events => 0,
+            Provenance::Database => 1,
         }
     }
 
     /// The header's spelling read back, or [`None`] for a number this build
     /// has no name for.
-    fn of_code(code: u32) -> Option<By> {
+    fn of_code(code: u32) -> Option<Provenance> {
         match code {
-            0 => Some(By::Events),
-            1 => Some(By::Database),
+            0 => Some(Provenance::Events),
+            1 => Some(Provenance::Database),
             _ => None,
         }
     }
@@ -128,7 +128,7 @@ pub struct Checkpoint {
     /// against.
     pub cursor: Option<NaiveDateTime>,
     /// Which derivation wrote this, which is what makes the cursor readable.
-    pub by: By,
+    pub by: Provenance,
     /// The base file, mapped. A resume point in the old encoding is
     /// rewritten in this one as it is read, so the base is a file of
     /// records by the time anything holds a `Checkpoint`.
@@ -190,7 +190,7 @@ impl Checkpoint {
                  are {RECORD}"
             )));
         }
-        let by = By::of_code(read_u32(&map, 16)).ok_or_else(|| {
+        let by = Provenance::of_code(read_u32(&map, 16)).ok_or_else(|| {
             invalid(
                 "a resume point derived by something this build has no \
                      name for",
@@ -250,7 +250,7 @@ impl Checkpoint {
     pub fn compact(
         path: &Path,
         cursor: Option<NaiveDateTime>,
-        by: By,
+        by: Provenance,
         systems: impl IntoIterator<Item = System>,
     ) -> io::Result<u64> {
         let mut writing = Compaction::begin(path)?;
@@ -265,8 +265,8 @@ impl Checkpoint {
     ///
     /// Two shapes are decoded, newest first: the three-field one, and the
     /// two-field one from before the provenance existed. The older reads as
-    /// [`By::Database`], a database pass having been the only thing that
-    /// ever wrote a cursor anything read.
+    /// [`Provenance::Database`], a database pass having been the only thing
+    /// that ever wrote a cursor anything read.
     ///
     /// Then it *writes*: the old form is replaced with the new one and the
     /// log beside it re-framed. It has to. A publish appends a current
@@ -279,7 +279,7 @@ impl Checkpoint {
         #[derive(Deserialize)]
         struct Whole {
             cursor: Option<NaiveDateTime>,
-            by: By,
+            by: Provenance,
             inputs: Vec<System>,
         }
 
@@ -296,13 +296,13 @@ impl Checkpoint {
         } else {
             let it: Old = rmp_serde::from_slice(bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            (Some(it.cursor), By::Database, it.inputs)
+            (Some(it.cursor), Provenance::Database, it.inputs)
         };
 
         let deltas = read_legacy_frames(path);
         Checkpoint::compact(path, cursor, by, inputs)?;
         if !deltas.is_empty() {
-            Pending::append(path, None, &deltas)?;
+            pending::append(path, None, &deltas)?;
         }
         Checkpoint::read(path)
     }
@@ -319,7 +319,7 @@ impl Checkpoint {
 /// that stood before it whole. [`abandon`](Self::abandon) takes the temp
 /// file with it; a `Compaction` merely dropped leaves it behind and nothing
 /// else, and the next one truncates it.
-pub(crate) struct Compaction {
+pub struct Compaction {
     path: PathBuf,
     tmp: PathBuf,
     out: BufWriter<File>,
@@ -358,7 +358,7 @@ impl Compaction {
     pub fn finish(
         self,
         cursor: Option<NaiveDateTime>,
-        by: By,
+        by: Provenance,
     ) -> io::Result<u64> {
         let Compaction { path, tmp, out, count } = self;
         let mut file = out.into_inner().map_err(io::Error::other)?;
@@ -367,7 +367,7 @@ impl Compaction {
         file.sync_all()?;
         drop(file);
         std::fs::rename(&tmp, &path)?;
-        Pending::clear(&path)?;
+        pending::clear(&path)?;
         Ok(count)
     }
 
@@ -386,22 +386,23 @@ impl Compaction {
     }
 }
 
-/// What has been published since the last compaction.
-///
-/// A frame per publish: how many systems it moved, the cursor that holds
-/// once they are applied, and the systems themselves at full precision. It
-/// costs what moved where a base costs the galaxy.
-///
-/// A frame's cursor is [`None`] where the publish had none to record, and
-/// the cursor a restart follows is the newest one that is not, so a log of
-/// cursorless frames leaves the base's cursor standing.
-///
-/// A kill mid-append leaves a torn frame, which the replay stops at: that
-/// publish either never finished or is in the directory and will be
-/// published again from the cursor behind it.
-pub struct Pending;
+pub mod pending {
+    //! What has been published since the last compaction.
+    //!
+    //! A frame per publish: how many systems it moved, the cursor that holds
+    //! once they are applied, and the systems themselves at full precision. It
+    //! costs what moved where a base costs the galaxy.
+    //!
+    //! A frame's cursor is [`None`] where the publish had none to record, and
+    //! the cursor a restart follows is the newest one that is not, so a log of
+    //! cursorless frames leaves the base's cursor standing.
+    //!
+    //! A kill mid-append leaves a torn frame, which the replay stops at: that
+    //! publish either never finished or is in the directory and will be
+    //! published again from the cursor behind it.
 
-impl Pending {
+    use super::*;
+
     /// Add what a publish wrote, and answer whether the base should now be
     /// compacted.
     ///
@@ -448,7 +449,11 @@ impl Pending {
 }
 
 /// The base's header: what it is, what wrote it, when, and how much.
-fn header(by: By, cursor: Option<NaiveDateTime>, count: u64) -> [u8; HEADER] {
+fn header(
+    by: Provenance,
+    cursor: Option<NaiveDateTime>,
+    count: u64,
+) -> [u8; HEADER] {
     let mut header = [0u8; HEADER];
     header[0..8].copy_from_slice(&MAGIC.to_ne_bytes());
     header[8..12].copy_from_slice(&VERSION.to_ne_bytes());
@@ -617,7 +622,7 @@ mod tests {
         let wrote = Checkpoint::compact(
             &path,
             at(1_700_000_000),
-            By::Database,
+            Provenance::Database,
             inputs.iter().copied(),
         )
         .unwrap();
@@ -625,7 +630,7 @@ mod tests {
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(1_700_000_000));
-        assert_eq!(read.by, By::Database);
+        assert_eq!(read.by, Provenance::Database);
         assert_eq!(read.base(), inputs.as_slice());
         assert!(read.deltas().is_empty());
 
@@ -643,12 +648,17 @@ mod tests {
         let path = dir.join("checkpoint");
 
         let inputs: Vec<System> = (0..10).map(system).collect();
-        Checkpoint::compact(&path, None, By::Events, inputs.iter().copied())
-            .unwrap();
+        Checkpoint::compact(
+            &path,
+            None,
+            Provenance::Events,
+            inputs.iter().copied(),
+        )
+        .unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, None);
-        assert_eq!(read.by, By::Events);
+        assert_eq!(read.by, Provenance::Events);
         assert_eq!(read.base(), inputs.as_slice());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -663,11 +673,16 @@ mod tests {
         let path = dir.join("checkpoint");
 
         let base: Vec<System> = (0..10).map(system).collect();
-        Checkpoint::compact(&path, at(100), By::Database, base.iter().copied())
-            .unwrap();
+        Checkpoint::compact(
+            &path,
+            at(100),
+            Provenance::Database,
+            base.iter().copied(),
+        )
+        .unwrap();
 
-        Pending::append(&path, None, &[system(10), system(11)]).unwrap();
-        Pending::append(&path, at(200), &[system(12)]).unwrap();
+        pending::append(&path, None, &[system(10), system(11)]).unwrap();
+        pending::append(&path, at(200), &[system(12)]).unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.base(), base.as_slice());
@@ -684,8 +699,9 @@ mod tests {
         let dir = scratch("cursor-only");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
-        Pending::append(&path, at(500), &[]).unwrap();
+        Checkpoint::compact(&path, at(100), Provenance::Database, [system(1)])
+            .unwrap();
+        pending::append(&path, at(500), &[]).unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(500));
@@ -703,9 +719,10 @@ mod tests {
         let dir = scratch("torn");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
-        Pending::append(&path, at(200), &[system(2)]).unwrap();
-        Pending::append(&path, at(300), &[system(3), system(4)]).unwrap();
+        Checkpoint::compact(&path, at(100), Provenance::Database, [system(1)])
+            .unwrap();
+        pending::append(&path, at(200), &[system(2)]).unwrap();
+        pending::append(&path, at(300), &[system(3), system(4)]).unwrap();
 
         // Half of the last frame's records, as a kill between two writes
         // leaves them.
@@ -727,14 +744,15 @@ mod tests {
         let dir = scratch("folded");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(100), By::Database, [system(1)]).unwrap();
-        Pending::append(&path, at(200), &[system(2)]).unwrap();
+        Checkpoint::compact(&path, at(100), Provenance::Database, [system(1)])
+            .unwrap();
+        pending::append(&path, at(200), &[system(2)]).unwrap();
         assert!(pending_path(&path).exists());
 
         Checkpoint::compact(
             &path,
             at(200),
-            By::Database,
+            Provenance::Database,
             [system(1), system(2)],
         )
         .unwrap();
@@ -756,13 +774,14 @@ mod tests {
         let path = dir.join("checkpoint");
 
         assert!(
-            Pending::append(&path, None, &[system(1)]).unwrap(),
+            pending::append(&path, None, &[system(1)]).unwrap(),
             "a log with no base to extend was left standing",
         );
 
-        Checkpoint::compact(&path, at(1), By::Database, [system(1)]).unwrap();
+        Checkpoint::compact(&path, at(1), Provenance::Database, [system(1)])
+            .unwrap();
         assert!(
-            !Pending::append(&path, at(2), &[system(2)]).unwrap(),
+            !pending::append(&path, at(2), &[system(2)]).unwrap(),
             "one system asked for a galaxy to be rewritten",
         );
 
@@ -776,7 +795,7 @@ mod tests {
         #[derive(Serialize)]
         struct Whole {
             cursor: Option<chrono::NaiveDateTime>,
-            by: By,
+            by: Provenance,
             inputs: Vec<System>,
         }
 
@@ -786,7 +805,7 @@ mod tests {
         let inputs: Vec<System> = (1..40).map(system).collect();
         let old = Whole {
             cursor: at(1_700_000_000),
-            by: By::Database,
+            by: Provenance::Database,
             inputs: inputs.clone(),
         };
         std::fs::write(&path, rmp_serde::to_vec(&old).unwrap()).unwrap();
@@ -799,7 +818,7 @@ mod tests {
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(1_700_000_000));
-        assert_eq!(read.by, By::Database);
+        assert_eq!(read.by, Provenance::Database);
         assert_eq!(read.base(), inputs.as_slice());
         assert_eq!(read.deltas(), batch.as_slice());
 
@@ -812,7 +831,7 @@ mod tests {
             MAGIC,
             "the old form was left on disk for the next publish to append to",
         );
-        Pending::append(&path, at(1_700_000_100), &[system(102)]).unwrap();
+        pending::append(&path, at(1_700_000_100), &[system(102)]).unwrap();
         let again = Checkpoint::read(&path).unwrap();
         assert_eq!(
             again.deltas(),
@@ -845,7 +864,7 @@ mod tests {
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(1_700_000_000));
-        assert_eq!(read.by, By::Database);
+        assert_eq!(read.by, Provenance::Database);
         assert_eq!(read.base(), inputs.as_slice());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -858,7 +877,8 @@ mod tests {
         let dir = scratch("width");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(1), By::Database, [system(1)]).unwrap();
+        Checkpoint::compact(&path, at(1), Provenance::Database, [system(1)])
+            .unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[12..16].copy_from_slice(&48u32.to_ne_bytes());
         std::fs::write(&path, bytes).unwrap();
@@ -876,9 +896,15 @@ mod tests {
         let dir = scratch("overwrite");
         let path = dir.join("checkpoint");
 
-        Checkpoint::compact(&path, at(1), By::Database, [system(1)]).unwrap();
-        Checkpoint::compact(&path, at(2), By::Database, [system(1), system(2)])
+        Checkpoint::compact(&path, at(1), Provenance::Database, [system(1)])
             .unwrap();
+        Checkpoint::compact(
+            &path,
+            at(2),
+            Provenance::Database,
+            [system(1), system(2)],
+        )
+        .unwrap();
 
         let read = Checkpoint::read(&path).unwrap();
         assert_eq!(read.cursor, at(2));

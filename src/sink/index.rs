@@ -23,21 +23,21 @@
 //! temperature, so the editable tree cannot be rebuilt from the directory it
 //! published.
 //!
-//! What differs is the cursor, which is what [`By`] records. With a database
-//! under the run the cursor is a database clock, sampled *before* the batch
-//! it stands for is applied — sound because the database sink wrote those
+//! What differs is the cursor, which is what [`Provenance`] records. With a
+//! database under the run the cursor is a database clock, sampled *before* the
+//! batch it stands for is applied — sound because the database sink wrote those
 //! entries before this sink was handed them — so a restart's catch-up covers
-//! exactly what the index missed. Without one the checkpoint carries `None`
-//! and says [`By::Events`] wrote it. The two derivations refuse to resume
+//! exactly what the index missed. Without one the checkpoint carries `None` and
+//! says [`Provenance::Events`] wrote it. The two derivations refuse to resume
 //! onto each other's work; see `one_hand`.
 //!
 //! ## Where the scanned bodies live
 //!
-//! In `bodies/<address>.bin`, not in memory: a reach is the far edge over
-//! every body of a system together and the file is written whole, so holding
-//! them would mean [`Galaxy`] keeping every body the feed ever carried. See
-//! `galos_index::accumulate::bodies`. What is held is what has been scanned and not
-//! yet written, which [`Sink::flush`] clears as it publishes.
+//! In `bodies/<address>.bin`, not in memory: a reach is the far edge over every
+//! body of a system together and the file is written whole, so holding them
+//! would mean [`Galaxy`] keeping every body the feed ever carried. See
+//! `galos_index::accumulate::bodies`. What is held is what has been scanned and
+//! not yet written, which [`Sink::flush`] clears as it publishes.
 
 use crate::sink::tables::{Tables, Wrote};
 use crate::sink::{Clock, Stop};
@@ -46,9 +46,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
-use galos_index::accumulate::bodies::Published;
+use galos_index::accumulate::bodies::OnDisk;
 use galos_index::accumulate::galaxy::UNKNOWN;
-use galos_index::format::checkpoint::{By, Checkpoint, Pending};
+use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::layout::pending_path;
 use galos_index::{BuildParams, Galaxy, Index as ServedIndex, System, Tree};
 use std::collections::HashSet;
@@ -66,10 +66,10 @@ pub const INDEX_DIR: &str = ".galos_index";
 /// *that* directory; beside it rather than inside it, holding every system
 /// at full precision, which no client should be served.
 ///
-/// The string itself is [`galos_index::format::layout::CHECKPOINT_SUFFIX`] and is
-/// re-exported rather than spelled again: the log, the mark and the copy
-/// that carries all three hang off the same suffix, and two spellings of
-/// it is a backup that silently leaves one of them behind.
+/// The string itself is [`galos_index::format::layout::CHECKPOINT_SUFFIX`] and
+/// is re-exported rather than spelled again: the log, the mark and the copy
+/// that carries all three hang off the same suffix, and two spellings of it is
+/// a backup that silently leaves one of them behind.
 pub use galos_index::format::layout::CHECKPOINT_SUFFIX;
 
 /// Whether there is anything to edit a published directory from.
@@ -114,15 +114,15 @@ fn one_hand(
     dir: &Path,
     checkpoint: &Path,
     served: u64,
-    wrote: By,
-    ours: By,
+    wrote: Provenance,
+    ours: Provenance,
 ) -> Result<(), String> {
     if served == 0 || wrote == ours {
         return Ok(());
     }
     let (held, wanted) = match ours {
-        By::Events => ("a database", "--db, to resume it as one"),
-        By::Database => (
+        Provenance::Events => ("a database", "--db, to resume it as one"),
+        Provenance::Database => (
             "a feed",
             "--index DIR on a directory of its own, or delete both to \
              build from the database",
@@ -367,7 +367,7 @@ impl Index {
             // memory beside them; see `galos_index::accumulate::bodies`.
             galaxy: Galaxy::keeping(
                 chrono::Utc::now(),
-                Box::new(Published::new(dir)),
+                Box::new(OnDisk::new(dir)),
             ),
             tree,
             tables,
@@ -465,11 +465,11 @@ impl Index {
     ///
     /// A frame on the log, which costs what moved — and the whole base
     /// behind it where the log has outgrown it, which is what
-    /// [`Pending::append`] answers. Without the frame a restart rebuilds the
+    /// [`pending::append`] answers. Without the frame a restart rebuilds the
     /// tree short of what the directory serves and publishes the shortfall
     /// over it. Not fatal: the directory is published regardless.
     fn record(&mut self, cursor: Option<NaiveDateTime>, moved: &[System]) {
-        let folding = match Pending::append(&self.checkpoint, cursor, moved) {
+        let folding = match pending::append(&self.checkpoint, cursor, moved) {
             Ok(folding) => folding,
             Err(err) => {
                 warn!(
@@ -504,10 +504,10 @@ impl Index {
 ///
 /// With a database, a resume point carries a cursor and may be resumed by a
 /// catch-up; without one it carries nothing and may not.
-fn by(clock: &Option<Box<dyn Clock>>) -> By {
+fn by(clock: &Option<Box<dyn Clock>>) -> Provenance {
     match clock {
-        Some(_) => By::Database,
-        None => By::Events,
+        Some(_) => Provenance::Database,
+        None => Provenance::Events,
     }
 }
 
@@ -636,7 +636,7 @@ impl Sink for Index {
     /// [`publish_whole`](Index::publish_whole).
     ///
     /// The cursor is sampled in the same order [`Sink::flush`] samples one,
-    /// and either road leaves the [`Pending`] log superseded and dropped.
+    /// and either road leaves the [`pending`] log superseded and dropped.
     ///
     /// Not interruptible, and the one thing a stopping run waits for: the
     /// cells, the tables and the resume point are three writes that stand
@@ -693,7 +693,7 @@ impl Index {
     /// [`Sink::finish`] onto a directory this run has published into owes
     /// it: the index file whole, the cells whose payloads differ, the body
     /// files the pass scanned, the tables it patched together with any the
-    /// directory has no file for, and a [`Pending`] frame carrying what
+    /// directory has no file for, and a [`pending`] frame carrying what
     /// went in at full precision.
     ///
     /// `touched` is what [`Self::nameable`] took, `cursor` what a resume
@@ -741,7 +741,7 @@ impl Index {
 
         // What this publish put in the directory, at full precision, on the
         // log beside the resume point — and the whole base behind it where
-        // the log has outgrown one. See [`Pending`].
+        // the log has outgrown one. See [`pending`].
         self.record(cursor, &moving);
 
         // One message for every extent, `wrote` saying which: a pass of a
@@ -1515,24 +1515,46 @@ mod tests {
     fn neither_derivation_resumes_onto_the_other() {
         let (dir, checkpoint) = (Path::new("d"), Path::new("c"));
         assert!(
-            one_hand(dir, checkpoint, 100, By::Database, By::Database).is_ok(),
+            one_hand(
+                dir,
+                checkpoint,
+                100,
+                Provenance::Database,
+                Provenance::Database
+            )
+            .is_ok(),
             "a catch-up should resume what a catch-up wrote",
         );
         assert!(
-            one_hand(dir, checkpoint, 0, By::Database, By::Events).is_ok(),
+            one_hand(
+                dir,
+                checkpoint,
+                0,
+                Provenance::Database,
+                Provenance::Events
+            )
+            .is_ok(),
             "an empty directory has nothing to resume wrongly",
         );
 
-        let Err(said) =
-            one_hand(dir, checkpoint, 100, By::Database, By::Events)
-        else {
+        let Err(said) = one_hand(
+            dir,
+            checkpoint,
+            100,
+            Provenance::Database,
+            Provenance::Events,
+        ) else {
             panic!("a database-derived directory was opened by the feed")
         };
         assert!(said.contains("--db"), "should say what to pass: {}", said);
 
-        let Err(said) =
-            one_hand(dir, checkpoint, 100, By::Events, By::Database)
-        else {
+        let Err(said) = one_hand(
+            dir,
+            checkpoint,
+            100,
+            Provenance::Events,
+            Provenance::Database,
+        ) else {
             panic!("an event-derived directory was opened for a catch-up")
         };
         assert!(said.contains("--index"), "should say what to pass: {}", said,);
@@ -1543,7 +1565,7 @@ mod tests {
     /// A publish appends a log frame rather than rewriting the base, so a
     /// restart that read the base alone would bring the tree back short of
     /// the names table beside it, write the shortfall over the directory,
-    /// and leave nothing able to open it again. [`Pending`] is what closes
+    /// and leave nothing able to open it again. [`pending`] is what closes
     /// that.
     #[test]
     fn a_publish_after_the_last_checkpoint_is_not_lost() {

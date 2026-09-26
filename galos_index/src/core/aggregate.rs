@@ -195,13 +195,13 @@ impl Aggregate {
 
     /// How many systems of the subtree fall in each Recency bucket
     ///
-    /// **What lets a Recency span be answered about a cell rather than
-    /// about a system.** The buckets are [`crate::records::derive::AGE_EDGES`], so
-    /// the systems a span admits are a prefix of them and the count is a
-    /// prefix sum — the same question the filter asks of a payload point,
-    /// answered to the day instead of to the second, and answered for a
-    /// whole subtree at once. The column has been written by every build
-    /// since the format existed and had no reader.
+    /// **What lets a Recency span be answered about a cell rather than about a
+    /// system.** The buckets are [`crate::records::derive::AGE_EDGES`], so the
+    /// systems a span admits are a prefix of them and the count is a prefix sum
+    /// — the same question the filter asks of a payload point, answered to the
+    /// day instead of to the second, and answered for a whole subtree at once.
+    /// The column has been written by every build since the format existed and
+    /// had no reader.
     pub fn aged(&self) -> &[u32; AGE_BUCKETS] {
         &self.aged
     }

@@ -13,15 +13,11 @@
 //!
 //! # Units
 //!
-//! Metres and seconds, as [`crate::system::orbit`] is. The journal records lengths in
-//! metres and distances from arrival in light seconds, so the one conversion
-//! stands at [`LIGHT_SECOND`] below.
+//! Metres and seconds, as [`crate::system::orbit`] is. The journal records
+//! lengths in metres and distances from arrival in light seconds, so the one
+//! conversion stands at [`LIGHT_SECOND`] below.
 
-use crate::records::Barycenter;
-use crate::records::Body;
-use crate::records::Parent;
-use crate::records::Star;
-use crate::records::SystemBodies;
+use crate::records::{Barycenter, Body, Parent, Star, SystemBodies};
 use crate::system::orbit::{Orbit, Orbits, made_up_direction};
 use chrono::{DateTime, Utc};
 use elite_journal::body::Orbit as JournalOrbit;
@@ -47,12 +43,13 @@ impl SystemBodies {
     /// about the point its contents go round, there being nothing else to
     /// offer.
     ///
-    /// Ties broken by body id, which is [`crate::records::derive::arrival_class`]'s
-    /// rule and for its reason: a close pair is recorded at one distance from
-    /// arrival to the resolution the journal prints, and without the
-    /// tie-break the answer is the vector's order — query order on the
-    /// database side, scan order on the event side — so the two derivations
-    /// write different `reaches.bin` for the same system.
+    /// Ties broken by body id, which is
+    /// [`crate::records::derive::arrival_class`]'s rule and for its reason: a
+    /// close pair is recorded at one distance from arrival to the resolution
+    /// the journal prints, and without the tie-break the answer is the vector's
+    /// order — query order on the database side, scan order on the event side —
+    /// so the two derivations write different `reaches.bin` for the same
+    /// system.
     pub fn primary(&self) -> Option<i16> {
         self.stars
             .iter()

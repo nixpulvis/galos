@@ -53,7 +53,7 @@
 
 use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
-use galos_index::accumulate::bodies::{Bodies, Published};
+use galos_index::accumulate::bodies::{Bodies, OnDisk};
 use galos_index::core::geometry::MAX_LEVEL;
 use galos_index::records::{
     NameEntry, PopulatedSystem, SystemBoost, SystemReach,
@@ -239,8 +239,8 @@ pub(super) enum Command {
                env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
     },
-    /// Write the sector dictionary `galos_index::core::procedural` derives names
-    /// through, learned from a built directory.
+    /// Write the sector dictionary `galos_index::core::procedural` derives
+    /// names through, learned from a built directory.
     Sectors {
         /// The index directory to learn from.
         #[arg(short = 'i', long = "index", value_name = "DIR",
@@ -723,8 +723,8 @@ fn size(bytes: u64) -> String {
 
 /// Bring a directory up to the format this build reads.
 ///
-/// What [`galos_index::store::cells`]'s version refusal names, so an operator met
-/// by "rebuild the directory" has one thing to run. Three rewrites, in the
+/// What [`galos_index::store::cells`]'s version refusal names, so an operator
+/// met by "rebuild the directory" has one thing to run. Three rewrites, in the
 /// only order they can happen in:
 ///
 /// 1. **The names chunks are folded into the mapped table.** A build
@@ -1101,8 +1101,8 @@ fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
 
 /// Learn the sector dictionary from a directory's names table.
 ///
-/// What `galos_index::core::procedural` compiles in, and the only way to refresh
-/// it: a sector enters the dictionary when the first system in it is
+/// What `galos_index::core::procedural` compiles in, and the only way to
+/// refresh it: a sector enters the dictionary when the first system in it is
 /// reported, so the file is as complete as the galaxy anybody has imported.
 ///
 /// **A name that claims more than one sector coordinate is left out.**
@@ -1793,9 +1793,9 @@ fn payloads(
 /// directory keeps none for it.
 ///
 /// The sharded name first and the flat one after it, which is the order
-/// [`Index::read_payload`] reads them in: `galos_index::format::layout::payload_path` is the
-/// crate's own spelling of the pair and is `pub(crate)`, so they are
-/// spelled again here.
+/// [`Index::read_payload`] reads them in:
+/// `galos_index::format::layout::payload_path` is the crate's own spelling of
+/// the pair and is `pub(crate)`, so they are spelled again here.
 ///
 /// **A spelling that goes stale costs speed and not truth.** Where either
 /// side answers [`None`] the two payloads are read and decoded instead, by
@@ -1954,10 +1954,11 @@ fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
 /// sections that carry the content equal byte for byte:
 /// [`ADDR_FILE`](galos_index::format::layout::ADDR_FILE) is which systems are
 /// named, [`EXCEPTION_FILE`](galos_index::format::layout::EXCEPTION_FILE) and
-/// [`SPAN_FILE`](galos_index::format::layout::SPAN_FILE) are which of them stored
-/// a name and where it lies, and
-/// [`TEXT_FILE`](galos_index::format::layout::TEXT_FILE) is the names themselves.
-/// Everything else a row can be asked is arithmetic over the address.
+/// [`SPAN_FILE`](galos_index::format::layout::SPAN_FILE) are which of them
+/// stored a name and where it lies, and
+/// [`TEXT_FILE`](galos_index::format::layout::TEXT_FILE) is the names
+/// themselves. Everything else a row can be asked is arithmetic over the
+/// address.
 ///
 /// **`byname.bin` is not read.** It is those four sorted by name — 800 MB
 /// of an answer they already hold — and this asks what the table says,
@@ -2193,12 +2194,12 @@ fn agree<T: DeserializeOwned + PartialEq>(
 
 /// How many rows a table file says it holds, off its head.
 ///
-/// `galos_index::format::msgpack::write_meta` writes a `Vec` through `rmp_serde`, and a
-/// MessagePack array says its length in its first one, three or five
-/// bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
-/// `0xdd` and a `u32`. So a count for the report is five bytes read rather
-/// than a table deserialised — `.index/full`'s `reaches.bin` opens
-/// `dd 04 88 58 64`, which is the 76,044,388 rows it holds.
+/// `galos_index::format::msgpack::write_meta` writes a `Vec` through
+/// `rmp_serde`, and a MessagePack array says its length in its first one, three
+/// or five bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
+/// `0xdd` and a `u32`. So a count for the report is five bytes read rather than
+/// a table deserialised — `.index/full`'s `reaches.bin` opens `dd 04 88 58 64`,
+/// which is the 76,044,388 rows it holds.
 fn counted(path: &Path) -> io::Result<usize> {
     use std::io::Read;
     let mut head = Vec::new();
@@ -2320,8 +2321,8 @@ fn rows<T: PartialEq>(
 /// there is not always a file of its own on each side to compare.
 fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
     let at = std::time::Instant::now();
-    let left = Published::new(a).scanned();
-    let right = Published::new(b).scanned();
+    let left = OnDisk::new(a).scanned();
+    let right = OnDisk::new(b).scanned();
 
     let mut differing = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);

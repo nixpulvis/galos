@@ -14,17 +14,13 @@
 //! No live [`Tree`](crate::Tree) is raised: a watch gets one by resuming
 //! from the resume point this leaves.
 
-use crate::build::bucket;
-use crate::build::bucket::Buckets;
-use crate::build::bucket::Formed;
-use crate::build::region;
+use crate::build::bucket::{Buckets, Formed};
 use crate::build::region::{Crown, Offer};
 use crate::build::snapshot::{BuildParams, Snapshot};
+use crate::build::{bucket, region};
 use crate::core::record::System;
-use crate::format::checkpoint::{By, Checkpoint, Compaction};
-use crate::format::layout::INDEX_FILE;
-use crate::format::layout::mark_path;
-use crate::format::layout::spill_dir;
+use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
+use crate::format::layout::{INDEX_FILE, mark_path, spill_dir};
 use crate::format::msgpack::{read_meta, write_meta};
 use crate::format::spill::Spilled;
 use crate::read::index::Index;
@@ -36,6 +32,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 /// How many systems one region of a cold build may hold.
@@ -87,17 +84,17 @@ struct Mark {
 
 /// What a published directory says about the read behind it.
 ///
-/// Answered by [`left_off`] and handed back to [`Build::begin`] as
+/// Answered by [`resume_mark`] and handed back to [`Build::begin`] as
 /// [`Start::Resuming`].
 #[derive(Clone, Debug)]
-pub struct LeftOff(Mark);
+pub struct ResumeMark(Mark);
 
-impl LeftOff {
+impl ResumeMark {
     /// A resume that says nothing about where the read behind it got to.
     ///
     /// What a directory with **no mark** resumes as, and every directory
     /// a database built is one: a database read has no place in its own
-    /// source to write down, so [`left_off`] answers [`None`] for it and
+    /// source to write down, so [`resume_mark`] answers [`None`] for it and
     /// [`Start::Resuming`] could not be spelled at all.
     ///
     /// [`Start::Fresh`] is not the substitute it looks like. It removes
@@ -107,8 +104,8 @@ impl LeftOff {
     /// this is how. [`Build::finish`] writes no mark unless
     /// [`Build::mark`] was called, so resuming this way leaves whatever
     /// mark stands exactly as it was found.
-    pub fn nowhere() -> LeftOff {
-        LeftOff(Mark::default())
+    pub fn nowhere() -> ResumeMark {
+        ResumeMark(Mark::default())
     }
 
     /// Where the caller had read to, in the caller's own terms.
@@ -133,12 +130,12 @@ pub enum Start {
     /// From a directory a stopped read published: its systems back out of
     /// the resume point, its names back off the chunks, and the read
     /// carrying on from the mark.
-    Resuming(LeftOff),
+    Resuming(ResumeMark),
 }
 
 /// What to do with a read that was stopped part way.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Ending {
+pub enum OnStop {
     /// Publish nothing. The directory stands for a whole galaxy and a
     /// prefix of one would replace it with less than it had — which is
     /// what a rebuild from the database is, the rows being read in
@@ -156,8 +153,8 @@ pub enum Ending {
 /// [`None`] where no build has published one, or where what is there
 /// cannot be read — a mark that will not decode is a read starting over,
 /// not a run failing.
-pub fn left_off(checkpoint: &Path) -> Option<LeftOff> {
-    read_meta::<Mark>(&mark_path(checkpoint)).ok().map(LeftOff)
+pub fn resume_mark(checkpoint: &Path) -> Option<ResumeMark> {
+    read_meta::<Mark>(&mark_path(checkpoint)).ok().map(ResumeMark)
 }
 
 /// A cold build a caller pushes into: the galaxy read once, as it arrives.
@@ -176,15 +173,15 @@ pub fn left_off(checkpoint: &Path) -> Option<LeftOff> {
 /// to sit through one, nor throw away what it read. `stop` is asked per
 /// record in [`push`](Self::push), which is the read and where the time
 /// goes; the caller then calls [`finish`](Self::finish), and what that does
-/// with a read cut short is the caller's [`Ending`].
+/// with a read cut short is the caller's [`OnStop`].
 ///
-/// [`Ending::Publish`] raises the tree over what was read and writes the
+/// [`OnStop::Publish`] raises the tree over what was read and writes the
 /// directory, the resume point and the mark, so the galaxy read so far is
 /// one a map can open and the next run carries on from. The passes that
 /// does — the offers and the raise, each a read of every spill — do not
 /// ask `stop` again: a caller that has decided not to wait has the second
 /// Ctrl-C, which leaves the directory where it stands rather than half
-/// written. [`Ending::Abandon`] is the older answer and still the right
+/// written. [`OnStop::Abandon`] is the older answer and still the right
 /// one for a derivation whose directory already holds more than the read
 /// reached.
 ///
@@ -209,19 +206,6 @@ pub struct Build<'a> {
     stop: &'a dyn Fn() -> bool,
 }
 
-/// Whether a build is still taking records.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[must_use]
-pub enum Taking {
-    /// The record is in. Push the next one.
-    More,
-    /// The run has been asked to stop, and this build has taken nothing
-    /// further. The caller stops reading and calls
-    /// [`finish`](Build::finish), which answers [`Built::Stopped`] rather
-    /// than raising a tree nobody is waiting for.
-    Stopped,
-}
-
 /// What a cold build came to.
 #[derive(Copy, Clone, Debug)]
 pub enum Built {
@@ -229,11 +213,11 @@ pub enum Built {
     /// the index file over them, the resume point beside them and the mark
     /// saying how far the read behind them got.
     ///
-    /// A read that was stopped and ended [`Ending::Publish`] comes here
+    /// A read that was stopped and ended [`OnStop::Publish`] comes here
     /// too, the galaxy it published being what it read.
-    Index(ColdReport),
+    Index(Summary),
     /// Nothing was published: a read stopped with nothing to publish, or
-    /// one ended [`Ending::Abandon`]. The directory is as the build found
+    /// one ended [`OnStop::Abandon`]. The directory is as the build found
     /// it.
     Stopped(Abandoned),
 }
@@ -347,19 +331,24 @@ impl<'a> Build<'a> {
     ///
     /// The stop is asked here rather than every so many records because
     /// this is the read, which at the galaxy's size is hours of it, and
-    /// asking costs a call against a record parsed and spilled. A build
-    /// that has answered [`Taking::Stopped`] takes nothing more.
+    /// asking costs a call against a record parsed and spilled.
+    ///
+    /// [`ControlFlow::Continue`] is the record in, and the next one wanted.
+    /// [`ControlFlow::Break`] is the run asked to stop: this build has taken
+    /// nothing further and takes nothing more, and the caller stops reading
+    /// and calls [`finish`](Build::finish), which answers [`Built::Stopped`]
+    /// rather than raising a tree nobody is waiting for.
     pub fn push(
         &mut self,
         system: System,
         name: NameEntry,
-    ) -> io::Result<Taking> {
+    ) -> io::Result<ControlFlow<()>> {
         if (self.stop)() {
-            return Ok(Taking::Stopped);
+            return Ok(ControlFlow::Break(()));
         }
         self.names.push(name)?;
         self.buckets.push(system)?;
-        Ok(Taking::More)
+        Ok(ControlFlow::Continue(()))
     }
 
     /// Form the regions from the buckets, raise the tree off them, and
@@ -367,7 +356,7 @@ impl<'a> Build<'a> {
     ///
     /// `by` is what derived the resume point, and so what `cursor` means; a
     /// source with no clock of its own has none to record. `ending` is what
-    /// a read that was stopped part way comes to — see [`Ending`].
+    /// a read that was stopped part way comes to — see [`OnStop`].
     ///
     /// Two passes over the spills, because the crown must be settled before
     /// any region can be built: a region cannot know which of its systems a
@@ -387,9 +376,9 @@ impl<'a> Build<'a> {
     /// state this is careful never to publish.
     pub fn finish(
         self,
-        by: By,
+        by: Provenance,
         cursor: Option<NaiveDateTime>,
-        ending: Ending,
+        ending: OnStop,
     ) -> io::Result<Built> {
         let Build {
             dir,
@@ -407,7 +396,7 @@ impl<'a> Build<'a> {
 
         // Nothing to publish, or a caller whose directory already holds
         // more than this read reached.
-        if stop() && (taken == 0 || ending == Ending::Abandon) {
+        if stop() && (taken == 0 || ending == OnStop::Abandon) {
             return stopped(&scratch, names, Abandoned { systems: taken });
         }
         let formed =
@@ -476,12 +465,12 @@ impl<'a> Build<'a> {
                 true,
             ),
         )?;
-        // The dead records the body shards carry, which a re-import leaves
-        // one of for every system it rewrote: see
-        // [`crate::store::bodies::sweep_bodies`]. After the index file, as the cell
-        // sweep is, though less turns on the order — every live record is
-        // in hand throughout a compaction, so an interruption here leaves
-        // a directory that is merely larger.
+        // The dead records the body shards carry, which a re-import leaves one
+        // of for every system it rewrote: see
+        // [`crate::store::bodies::sweep_bodies`]. After the index file, as the
+        // cell sweep is, though less turns on the order — every live record is
+        // in hand throughout a compaction, so an interruption here leaves a
+        // directory that is merely larger.
         //
         // **The stop is not asked.** None of the publish's passes ask it
         // (see this type's docs), a shard is compacted whole, and a caller
@@ -503,7 +492,7 @@ impl<'a> Build<'a> {
                 ),
             )?;
         }
-        Ok(Built::Index(ColdReport::of_index(
+        Ok(Built::Index(Summary::of_index(
             systems as usize,
             points,
             regions,
@@ -579,7 +568,7 @@ struct Tidied {
 
 /// What a cold build came to, for a caller to print and check.
 #[derive(Copy, Clone, Debug)]
-pub struct ColdReport {
+pub struct Summary {
     /// Systems read into a region, which is what the tree was built from.
     pub systems: usize,
     /// Systems owned by a cell, across the whole tree. Equal to `systems`
@@ -613,7 +602,7 @@ pub struct ColdReport {
     pub reclaimed: Reclaimed,
 }
 
-impl ColdReport {
+impl Summary {
     /// The report over a tree whose payloads are no longer in hand.
     ///
     /// A regional build drops each region's payloads, so `points` is counted
@@ -626,7 +615,7 @@ impl ColdReport {
         pass: Pass,
         tidied: Tidied,
         index: &Index,
-    ) -> ColdReport {
+    ) -> Summary {
         let leaves = index.cells().filter(|c| c.is_leaf()).count();
         let deepest_level =
             index.cells().map(|c| c.id.level).max().unwrap_or(0);
@@ -636,7 +625,7 @@ impl ColdReport {
             .map(|c| c.slice_len() as usize)
             .max()
             .unwrap_or(0);
-        ColdReport {
+        Summary {
             systems,
             points,
             cells: index.len(),
@@ -658,7 +647,7 @@ impl ColdReport {
     }
 }
 
-impl fmt::Display for ColdReport {
+impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -697,8 +686,7 @@ impl fmt::Display for ColdReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::layout::HEAD_FILE;
-    use crate::format::layout::NAMES_DIR;
+    use crate::format::layout::{HEAD_FILE, NAMES_DIR};
     use crate::store::names::Names;
     use std::cell::Cell;
     use std::collections::{BTreeMap, HashMap, HashSet};
@@ -841,7 +829,7 @@ mod tests {
         params: BuildParams,
         budget: u64,
         systems: &[System],
-    ) -> io::Result<ColdReport> {
+    ) -> io::Result<Summary> {
         let never = || false;
         let mut build = Build::begin(
             &at.join(name),
@@ -852,9 +840,12 @@ mod tests {
             &never,
         )?;
         for &system in systems {
-            assert_eq!(build.push(system, entry(&system))?, Taking::More);
+            assert_eq!(
+                build.push(system, entry(&system))?,
+                ControlFlow::Continue(())
+            );
         }
-        match build.finish(By::Database, None, Ending::Abandon)? {
+        match build.finish(Provenance::Database, None, OnStop::Abandon)? {
             Built::Index(report) => Ok(report),
             Built::Stopped(abandoned) => {
                 panic!("nothing asked it to stop: {}", abandoned)
@@ -1061,14 +1052,15 @@ mod tests {
                 .expect("a build");
         for &system in &systems {
             match build.push(system, entry(&system)).expect("a push") {
-                Taking::More => pushed.set(pushed.get() + 1),
-                Taking::Stopped => break,
+                ControlFlow::Continue(()) => pushed.set(pushed.get() + 1),
+                ControlFlow::Break(()) => break,
             }
         }
         assert_eq!(pushed.get(), 66_000);
 
-        let stopped =
-            build.finish(By::Database, None, Ending::Abandon).expect("a build");
+        let stopped = build
+            .finish(Provenance::Database, None, OnStop::Abandon)
+            .expect("a build");
         let Built::Stopped(abandoned) = stopped else {
             panic!("it ran to its end: {:?}", stopped)
         };
@@ -1102,7 +1094,7 @@ mod tests {
     /// to the directory a build that was never stopped comes to
     ///
     /// Two claims in one, and both are silent failures in a directory. The
-    /// first is that [`Ending::Publish`] leaves an index a map can open
+    /// first is that [`OnStop::Publish`] leaves an index a map can open
     /// over exactly the systems that were read. The second is that
     /// [`Start::Resuming`] takes every one of them back out of the resume
     /// point — lose one and it is a name the map can find and never draw,
@@ -1133,20 +1125,20 @@ mod tests {
         let mut took = 0usize;
         for &system in &systems {
             match build.push(system, entry(&system)).expect("a push") {
-                Taking::More => {
+                ControlFlow::Continue(()) => {
                     pushed.set(pushed.get() + 1);
                     took += 1;
                 }
                 // The record was refused, so the mark stands for what went
                 // in before it — which is what the caller counted.
-                Taking::Stopped => {
+                ControlFlow::Break(()) => {
                     build.mark(took.to_string().as_bytes());
                     break;
                 }
             }
         }
         let Built::Index(part) = build
-            .finish(By::Database, None, Ending::Publish)
+            .finish(Provenance::Database, None, OnStop::Publish)
             .expect("a stopped build publishes")
         else {
             panic!("a stopped read published nothing")
@@ -1159,7 +1151,7 @@ mod tests {
         );
         assert_eq!(Names::open(&dir).expect("the names table").len(), 40_000,);
 
-        let left = left_off(&checkpoint).expect("a mark to take up");
+        let left = resume_mark(&checkpoint).expect("a mark to take up");
         assert_eq!(left.systems(), 40_000);
         let from: usize = std::str::from_utf8(left.cursor())
             .expect("the cursor is the caller's")
@@ -1180,11 +1172,12 @@ mod tests {
         for &system in &systems[from..] {
             assert_eq!(
                 build.push(system, entry(&system)).expect("a push"),
-                Taking::More,
+                ControlFlow::Continue(()),
             );
         }
-        let Built::Index(report) =
-            build.finish(By::Database, None, Ending::Publish).expect("a build")
+        let Built::Index(report) = build
+            .finish(Provenance::Database, None, OnStop::Publish)
+            .expect("a build")
         else {
             panic!("the resumed build stopped")
         };

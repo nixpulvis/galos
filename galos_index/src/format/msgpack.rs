@@ -14,11 +14,11 @@ use std::path::Path;
 /// Serialize a metadata value to a file, MessagePack-encoded. The builder's
 /// writer half; the reader half is [`read_meta`].
 ///
-/// Written beside the file and renamed over it, as [`crate::format::checkpoint::Checkpoint`] is.
-/// A metadata table carries no length, count or magic, so a torn write is
-/// the one failure the format cannot detect. The rename is the only step
-/// that touches `path`, so a builder killed mid-write leaves the table it
-/// published last intact.
+/// Written beside the file and renamed over it, as
+/// [`crate::format::checkpoint::Checkpoint`] is. A metadata table carries no
+/// length, count or magic, so a torn write is the one failure the format cannot
+/// detect. The rename is the only step that touches `path`, so a builder killed
+/// mid-write leaves the table it published last intact.
 pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = encoded(value)?;
     if let Some(parent) = path.parent() {

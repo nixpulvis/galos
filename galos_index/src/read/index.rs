@@ -13,8 +13,7 @@
 //! version is refused rather than misread. The payloads beside it are read
 //! through here too, one cell at a time.
 
-use crate::core::aggregate::AGE_BUCKETS;
-use crate::core::aggregate::Cell;
+use crate::core::aggregate::{AGE_BUCKETS, Cell};
 use crate::core::codec::{Decode, Encode, FixedCodec};
 use crate::core::geometry::CellId;
 use crate::core::record::Point;
