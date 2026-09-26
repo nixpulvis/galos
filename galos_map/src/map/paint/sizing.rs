@@ -24,10 +24,7 @@ use crate::map::screen::{depth, depth_of, world_per_pixel};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::{CellCoord, Grid};
-use galos_photometry::psf::{
-    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind,
-    Psf,
-};
+use galos_photometry::psf::{Aureole, ProfileKind, Psf};
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -712,19 +709,12 @@ pub(crate) const CORE_WIDTHS: f64 = 32.0;
 
 /// The instrument every star in the sky is drawn through
 ///
-/// `galos_sky`'s own stack, which is the benchmark this view is read against:
-/// a seeing core of `core` pixels and the reference aureole laid behind it at
-/// [`AUREOLE_WEIGHT`] of the light. One profile for the whole sky — what
-/// differs between two stars is their energy and nothing else.
+/// The one `galos_sky` draws with too ([`Psf::instrument`]): a seeing core of
+/// `core` pixels and the reference aureole laid behind it. One profile for the
+/// whole sky — what differs between two stars is their energy and nothing
+/// else.
 pub(crate) fn instrument(kind: ProfileKind, core: f32) -> Psf {
-    let core = f64::from(core);
-    let psf = Psf::new(kind, core);
-    let width = core * AUREOLE_WIDTH;
-    let halo = match kind {
-        ProfileKind::Moffat => Kernel::moffat(width, AUREOLE_BETA),
-        ProfileKind::Gaussian => Kernel::gaussian(width),
-    };
-    psf.with_layer(Layer::new(halo, AUREOLE_WEIGHT / (1.0 - AUREOLE_WEIGHT)))
+    Psf::instrument(kind, f64::from(core), &[Aureole::DEFAULT])
 }
 
 /// What a star is painted as: the radius its disc reaches, in pixels, and the
