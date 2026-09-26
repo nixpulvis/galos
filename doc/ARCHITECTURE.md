@@ -94,8 +94,8 @@ journal format, the shared event model everything else speaks, and the reader
 that follows a journal directory), `eddn` (the EDDN ZMQ gateway), `edsm` and
 `eddb` (dumps and APIs from two third-party sites, one of them defunct).
 
-`galos_gui` (196 lines) is commented out of the workspace members list, as
-are `elite_dat` and `galos_worker`, whose directories are gone.
+`elite_dat` and `galos_worker` are commented out of the workspace members
+list; neither directory exists.
 
 ## 1. Ingest
 

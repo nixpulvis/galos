@@ -126,7 +126,6 @@ members = [
     "galos_catalog",
     "galos_sky",
     "galos_map",
-    # "galos_gui",
     "galos_server",
     # "galos_worker",
 ]
