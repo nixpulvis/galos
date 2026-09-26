@@ -81,7 +81,7 @@
 use crate::meta::NameEntry;
 use crate::name::SystemName;
 use crate::rows::{self, Sheet};
-use crate::source::{names_delta_path, names_dir, names_head_path};
+use crate::source::{names_delta_path, names_dir, names_head_path, naming};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -935,19 +935,25 @@ impl Delta {
         if self.pending.is_empty() {
             return Ok(0);
         }
-        std::fs::create_dir_all(names_dir(dir))?;
+        let names = names_dir(dir);
+        std::fs::create_dir_all(&names).map_err(naming(&names))?;
         let path = names_delta_path(dir);
-        let file = File::options().create(true).append(true).open(&path)?;
+        let file = File::options()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(naming(&path))?;
         let mut out = BufWriter::new(file);
         let mut bytes = 0u64;
         for said in &self.pending {
             let row = rmp_serde::to_vec(said)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            out.write_all(&(row.len() as u32).to_le_bytes())?;
-            out.write_all(&row)?;
+            out.write_all(&(row.len() as u32).to_le_bytes())
+                .map_err(naming(&path))?;
+            out.write_all(&row).map_err(naming(&path))?;
             bytes += row.len() as u64 + 4;
         }
-        out.flush()?;
+        out.flush().map_err(naming(&path))?;
         let written = self.pending.len();
         self.pending.clear();
         self.read += bytes;

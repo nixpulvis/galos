@@ -351,11 +351,29 @@ pub fn migrate(
 pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let bytes = encoded(value)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(naming(parent))?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    std::fs::write(&tmp, bytes).map_err(naming(&tmp))?;
+    std::fs::rename(&tmp, path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "renaming {} over {}: {err}",
+                tmp.display(),
+                path.display(),
+            ),
+        )
+    })
+}
+
+/// Name `path` in an I/O error, keeping its kind.
+///
+/// A bare error says "No such file or directory" and not which one, and a
+/// publish touches a dozen files: a log line that cannot say which of them
+/// failed leaves the reader guessing.
+pub(crate) fn naming(path: &Path) -> impl Fn(io::Error) -> io::Error + '_ {
+    move |err| io::Error::new(err.kind(), format!("{}: {err}", path.display()))
 }
 
 /// The same file, written where nothing stands to be kept.

@@ -27,8 +27,8 @@ use crate::meta::{
 };
 use crate::names::Names;
 use crate::source::{
-    boosts_path, factions_path, populated_path, reaches_path, read_meta,
-    write_meta,
+    boosts_path, factions_path, names_dir, naming, populated_path,
+    reaches_path, read_meta, write_meta,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -188,7 +188,7 @@ impl Sidecars {
     /// The per-system body files are not here: one side writes them from the
     /// rows it read and the other from the store the galaxy keeps them in.
     pub fn write(&mut self, dir: &Path, moved: Moved) -> io::Result<usize> {
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir).map_err(naming(dir))?;
         if moved.populated {
             write_populated(dir, &self.populated)?;
         }
@@ -219,8 +219,12 @@ impl Sidecars {
         if !self.names.worth_compacting() {
             return Ok(false);
         }
-        crate::names::compact(dir)?;
-        self.names = Names::open(dir)?;
+        // The fold is a build's road — scratch, sort runs, a generation —
+        // and any of it can fail, so what is named is the table and not
+        // the file.
+        let names = names_dir(dir);
+        crate::names::compact(dir).map_err(naming(&names))?;
+        self.names = Names::open(dir).map_err(naming(&names))?;
         Ok(true)
     }
 
