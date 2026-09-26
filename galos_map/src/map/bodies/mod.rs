@@ -200,7 +200,7 @@ impl Clock {
     ///
     /// Ours rather than the game's, which runs 1286 years ahead: a span is the
     /// same either way and only a year written down is not, so the calendar is
-    /// turned once, where it is said. See `crate::ui::AHEAD_BY`.
+    /// turned once, where it is said. See `crate::ui::clock::AHEAD_BY`.
     pub fn moment(&self) -> DateTime<Utc> {
         self.now + chrono::TimeDelta::seconds(self.offset as i64)
     }
@@ -529,7 +529,7 @@ impl Contents {
     /// What the rail under the date is geared to with nothing picked out: run
     /// the map on by this and every arrangement the system passes through has
     /// been passed through once, so its far end is where a control over the
-    /// whole of a system belongs. See [`crate::ui::clock_control`].
+    /// whole of a system belongs. See [`crate::ui::clock::clock_control`].
     ///
     /// Stars and barycentres count. In a multiple system they are the widest
     /// thing there is, the bodies going round one of the stars well inside the
@@ -547,7 +547,7 @@ impl Contents {
     /// What the rail under the date is geared to while a body is picked out:
     /// one turn of the thing being watched, which is the span its own phase
     /// slider covers and the only one that says anything about it. See
-    /// [`crate::ui::clock_control`].
+    /// [`crate::ui::clock::clock_control`].
     ///
     /// Nothing for a thing whose period nobody recorded, and nothing for an
     /// id this system has no row for -- a selection outlives the system it
