@@ -1,3 +1,8 @@
+// TODO: reorganize. This measures a local `GALOS_PERF_DIR` and passes
+// silently without one, so it is not an integration test of anything a user
+// runs. Revisit alongside `examples/names_bench.rs` when setting up proper
+// criterion benchmarks.
+
 //! What a zoom costs: the walk that decides what is drawn, and the read
 //! that follows it.
 //!

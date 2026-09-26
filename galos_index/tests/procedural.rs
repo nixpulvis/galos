@@ -1,3 +1,8 @@
+// TODO: reorganize. This measures a local `GALOS_PERF_DIR` and passes
+// silently without one, so it is not an integration test of anything a user
+// runs. Revisit alongside `examples/names_bench.rs` when setting up proper
+// criterion benchmarks.
+
 //! What a whole galaxy's names say about deriving them.
 //!
 //! `galos_index::procedural` spells a system's name from its address, and
