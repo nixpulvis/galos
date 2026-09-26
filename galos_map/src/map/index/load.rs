@@ -40,7 +40,6 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use galos_index::meta::{Faction, PopulatedSystem};
 use galos_index::{Index, Inhabitance, SystemBoost};
 use std::sync::Arc;
@@ -52,14 +51,6 @@ pub fn plugin(app: &mut App) {
     // Outside `MapSet`, which is gated on the state this sets: a system that
     // waits for the map to be drawn cannot be the one that says it is.
     app.add_systems(Update, finish.run_if(in_state(Opening::Reading)));
-    app.add_systems(
-        EguiPrimaryContextPass,
-        screen
-            .run_if(in_state(Opening::Reading))
-            // After the lettering the map is drawn in, which is set on the
-            // context once and which this borrows rather than styling itself.
-            .after(crate::ui::lettering),
-    );
 }
 
 /// Whether the index is in hand yet
@@ -83,7 +74,7 @@ pub enum Opening {
 /// order the parts are read, so the reader watching it sees it run down the
 /// list rather than jump about.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Step {
+pub(crate) enum Step {
     Stamps,
     Cells,
     Populated,
@@ -96,7 +87,7 @@ enum Step {
 
 impl Step {
     /// What is being read, in the words the map uses for it elsewhere
-    fn said(self) -> &'static str {
+    pub(crate) fn said(self) -> &'static str {
         match self {
             Step::Stamps => "what the directory holds",
             Step::Cells => "the cells",
@@ -130,7 +121,7 @@ impl Step {
 
 /// The read under way
 #[derive(Resource)]
-struct Reading {
+pub(crate) struct Reading {
     task: Task<Result<Loaded, String>>,
     /// Which part it has reached, written from the task
     step: Arc<AtomicU8>,
@@ -140,6 +131,18 @@ struct Reading {
     /// commonest thing to get wrong about running the map, and a backtrace out
     /// of a task pool thread is a poor way to be told which path was tried.
     failed: Option<String>,
+}
+
+impl Reading {
+    /// Which part the read has reached
+    pub(crate) fn step(&self) -> Step {
+        Step::from(self.step.load(Ordering::Relaxed))
+    }
+
+    /// What went wrong, where something did
+    pub(crate) fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
 }
 
 /// Everything the map is stood up with, built and ready to be handed over
@@ -394,86 +397,11 @@ fn stood_up(
     }
 }
 
-/// Say that the map is coming, and what it is waiting on
-fn screen(
-    mut contexts: EguiContexts,
-    reading: Option<Res<Reading>>,
-    dir: Res<IndexDir>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let step = reading
-        .as_ref()
-        .map_or(Step::Stamps, |it| Step::from(it.step.load(Ordering::Relaxed)));
-    let failed = reading.as_ref().and_then(|it| it.failed.clone());
-
-    egui::Area::new(egui::Id::new("loading"))
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| waiting(ui, &dir.0, step, failed.as_deref()));
-
-    Ok(())
-}
-
-/// The words on the loading screen
-///
-/// The directory first, since which index is being read is the thing a reader
-/// with two of them wants to know, and it is the answer to the commonest way
-/// of getting this wrong. Then what is happening: the part being read while
-/// the read is going, and what went wrong where it did not.
-fn waiting(ui: &mut egui::Ui, dir: &str, step: Step, failed: Option<&str>) {
-    ui.vertical_centered(|ui| {
-        ui.label(egui::RichText::new(dir).weak());
-        match failed {
-            Some(said) => {
-                ui.label(egui::RichText::new(said).color(egui::Color32::RED));
-            }
-            None => {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new());
-                    ui.label(format!("Reading {}", step.said()));
-                });
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::map::schedule::MapSet;
-    use crate::testing::words;
     use bevy::state::app::StatesPlugin;
-
-    /// The screen says which index it is reading and what it has reached
-    ///
-    /// A spinner alone says the map is busy, which the black window said
-    /// already. What a reader wants is which of their directories is being
-    /// read and which part of it is being read now, the parts taking long
-    /// enough apart that a stuck one is worth naming.
-    #[test]
-    fn the_screen_says_what_it_is_reading() {
-        let said = words(|ui| waiting(ui, ".galos_index", Step::Names, None));
-
-        assert!(said.contains(&".galos_index".to_owned()), "{said:?}");
-        assert!(said.contains(&"Reading the names".to_owned()), "{said:?}");
-    }
-
-    /// And says what went wrong rather than spinning at nothing
-    ///
-    /// A directory that is not there is the commonest thing to get wrong about
-    /// running the map. Read on a task pool thread, the panic that used to say
-    /// so would be a backtrace with the path buried in it.
-    #[test]
-    fn the_screen_says_what_went_wrong() {
-        let said = words(|ui| {
-            waiting(ui, "/nowhere", Step::Cells, Some("no such directory"))
-        });
-
-        assert!(said.contains(&"no such directory".to_owned()), "{said:?}");
-        assert!(
-            !said.iter().any(|line| line.starts_with("Reading")),
-            "a failed read said it was still going: {said:?}"
-        );
-    }
 
     /// The map does not run until the index is in hand
     ///

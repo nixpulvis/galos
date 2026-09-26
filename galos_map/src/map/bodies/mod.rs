@@ -23,6 +23,9 @@ use galos_index::meta::{
 use galos_index::orbit::Orbits;
 
 // Held in: the map reaches a system's insides through `bodies::plugin`.
+/// Seconds in a day
+pub(crate) const DAY: f64 = 86_400.;
+
 pub(crate) mod fetch;
 pub(crate) mod spawn;
 

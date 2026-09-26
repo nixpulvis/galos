@@ -39,11 +39,11 @@
 use crate::map::bodies::{Clock, Contents};
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::System;
-use crate::map::labels::world_per_pixel;
 use crate::map::paint::sphere::Roundness;
 use crate::map::pointing::Indicator;
 use crate::map::route::{LineList, LineStrip};
 use crate::map::schedule::MapSet;
+use crate::map::screen::world_per_pixel;
 use crate::map::selection::Selection;
 use crate::map::space;
 use bevy::ecs::system::SystemParam;
@@ -1827,7 +1827,7 @@ mod tests {
         let Some(seen) = places.seen(body, orbit) else { return };
 
         let ringed_at = |offset| {
-            crate::map::labels::outline(
+            crate::map::screen::outline(
                 orbit,
                 RINGED_COT,
                 RINGED_VIEWPORT,
@@ -1858,8 +1858,8 @@ mod tests {
         radius: f32,
         aside: f64,
     ) -> (Vec2, Vec2) {
+        use crate::input::{PointerOverUi, PressOwner};
         use crate::map::galaxy::Spyglass;
-        use crate::ui::{PointerOverUi, PressOwner};
         use bevy::input::mouse::{
             AccumulatedMouseMotion, AccumulatedMouseScroll,
         };
@@ -2039,7 +2039,7 @@ mod tests {
         // Wound on by hand rather than followed: nothing here reads the
         // game's clock, and what is being watched is the offset.
         app.insert_resource(Clock {
-            offset: through * 400. * crate::ui::panels::DAY,
+            offset: through * 400. * crate::map::bodies::DAY,
             ..default()
         });
         app.insert_resource(Contents {
@@ -2052,7 +2052,7 @@ mod tests {
                     // run on to.
                     let mut row = crate::map::bodies::tests::body(out as f32);
                     row.orbit.orbital_period =
-                        (400. * crate::ui::panels::DAY) as f32;
+                        (400. * crate::map::bodies::DAY) as f32;
                     row
                 }],
                 ..default()
@@ -2166,7 +2166,7 @@ mod tests {
     fn carried_on(out: f64, back: f64, through: f64) -> (f64, f64) {
         use crate::map::bodies::{Clock, Contents, FetchState};
 
-        let year = 400. * crate::ui::panels::DAY;
+        let year = 400. * crate::map::bodies::DAY;
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.init_resource::<Assets<Mesh>>();

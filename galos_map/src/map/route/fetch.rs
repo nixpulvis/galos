@@ -84,7 +84,7 @@ pub fn fetch_route(
     // well: the same leg flown in two trips is two answers, each belonging to
     // its own trip, and one shared between them would land in whichever
     // asked first.
-    let trip = (stops.len() > 2).then(|| stops.join(crate::ui::ARROW));
+    let trip = (stops.len() > 2).then(|| stops.join(crate::map::route::ARROW));
     let legs: Vec<FetchIndex> = stops
         .windows(2)
         .map(|leg| {
@@ -319,7 +319,7 @@ fn ask_leg(
             label: format!(
                 "{}{}{}",
                 crate::map::route::said(names, start),
-                crate::ui::ARROW,
+                crate::map::route::ARROW,
                 crate::map::route::said(names, end),
             ),
             systems: vec![start, end],

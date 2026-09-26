@@ -64,7 +64,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         EguiPrimaryContextPass,
         diagnostics
-            .after(crate::ui::lettering)
+            .in_set(crate::map::schedule::PaintSet::Ui)
             .run_if(in_state(crate::map::index::load::Opening::Drawn)),
     );
 }

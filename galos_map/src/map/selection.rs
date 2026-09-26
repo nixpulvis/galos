@@ -31,22 +31,25 @@
 //! What the map knows about the selected system beyond its name is written
 //! out by [`mod@crate::ui::panels`], which the user asks for separately.
 
+use crate::input::Gesture;
 use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
-use crate::map::labels::{color32, screen_position};
 use crate::map::pointing::{
     DRAG_THRESHOLD, DragDistance, Indicator, PointedAt, RING_STROKE,
 };
 use crate::map::schedule::MapSet;
-use crate::ui::Gesture;
+use crate::map::schedule::PaintSet;
+use crate::map::screen::screen_position;
+use crate::style::color32;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
+    app.add_message::<ClickedEmptySky>();
     // Both answer to what is pointed at this frame, which `point_at`
     // decides. Clearing before following keeps the mark from outliving the
     // selection by a frame.
@@ -66,7 +69,7 @@ pub fn plugin(app: &mut App) {
     // drawn whole. See [`crate::map::labels::draw_names`].
     app.add_systems(
         EguiPrimaryContextPass,
-        ring.before(crate::map::labels::draw_names),
+        ring.before(crate::map::labels::draw_names).in_set(PaintSet::Map),
     );
 }
 
@@ -638,21 +641,17 @@ fn clear_not_drawn(
 /// means nothing: let go of what is held, and put away whatever was asking
 /// about it.
 ///
-/// Every pane rather than the bar's form alone, and through
-/// [`crate::ui::Panes`], which is the same code the escape key goes through.
-/// The gesture says nothing is wanted, and a clock's rail left standing over
-/// a map that has just been cleared is the one thing on screen still asking
-/// something.
-///
-/// They are put away before the selection is looked at, since clicking empty
-/// sky with nothing held is still a click on nothing.
-fn nothing_clicked(
+/// The putting away is the chrome's, told through [`ClickedEmptySky`]: the
+/// map says what the gesture was and knows nothing of what is open over it.
+/// Said before the selection is looked at, since clicking empty sky with
+/// nothing held is still a click on nothing.
+pub(crate) fn nothing_clicked(
     gesture: Gesture,
     dragged: Query<&DragDistance>,
     pointed_at: Query<(), With<PointedAt>>,
     pointed_blob: Res<crate::map::galaxy::blobs::PointedBlob>,
     mut selection: ResMut<Selection>,
-    mut panes: crate::ui::Panes,
+    mut empty: MessageWriter<ClickedEmptySky>,
 ) {
     if !gesture.on_map() {
         return;
@@ -670,7 +669,7 @@ fn nothing_clicked(
         return;
     }
 
-    panes.shut_all();
+    empty.write(ClickedEmptySky);
 
     if selection.is_empty() {
         return;
@@ -681,6 +680,14 @@ fn nothing_clicked(
     // sky could say which of.
     selection.clear();
 }
+
+/// A click on the map that landed on nothing at all
+///
+/// No system, no body, no merged mark, and not the end of a drag: the gesture
+/// that means nothing is wanted. The map lets go of what it holds; whatever is
+/// drawn over it is free to put itself away on hearing it.
+#[derive(Message, Debug, Clone, Copy)]
+pub(crate) struct ClickedEmptySky;
 
 /// Ring the selected system
 ///
@@ -734,7 +741,7 @@ pub(crate) fn ring(
     // [`crate::map::labels::draw_names`] paints the names and their leaders, so the
     // mark and the name it belongs to are one thing.
     let ctx = contexts.ctx_mut()?;
-    let painter = ctx.layer_painter(crate::map::labels::annotations_layer());
+    let painter = ctx.layer_painter(crate::map::screen::annotations_layer());
     let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));
 
     // Whatever inside a system is picked out, read off the grid holding it, as
@@ -819,9 +826,9 @@ fn ringed(dim: &DimTo, filtered: bool) -> Srgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::PRIMARY;
+    use crate::input::PressOwner;
     use crate::map::galaxy::tests::system;
-    use crate::map::pointing::PRIMARY;
-    use crate::ui::PressOwner;
 
     /// A system picked out, which is what most of these are about
     fn picked(address: i64) -> Picked {
@@ -980,9 +987,7 @@ mod tests {
         app.init_resource::<ButtonInput<MouseButton>>();
         app.init_resource::<PressOwner>();
         app.init_resource::<crate::map::galaxy::blobs::PointedBlob>();
-        // Asked to put its panes away by the same click that lets go.
-        app.init_resource::<crate::ui::BarFields>();
-        app.init_resource::<crate::ui::ClockControl>();
+        app.add_message::<ClickedEmptySky>();
 
         let mut selection = Selection::default();
         selection.set(picked(1));
@@ -1121,62 +1126,44 @@ mod tests {
         assert!(holding(&app), "a click on a merged mark let go");
     }
 
-    /// Whether the bar has been asked to put its form away
-    fn shutting(app: &App) -> bool {
-        app.world().resource::<crate::ui::BarFields>().shutting
+    /// How many clicks on empty sky have been said since the last asking
+    fn said_empty(app: &App) -> usize {
+        let messages = app.world().resource::<Messages<ClickedEmptySky>>();
+        messages.iter_current_update_messages().count()
     }
 
-    /// Whether the clock's scrubber is out
-    fn scrubbing(app: &App) -> bool {
-        app.world().resource::<crate::ui::ClockControl>().out
-    }
-
-    /// Open everything the chrome opens, as a reader working would have it
-    fn opened(app: &mut App) {
-        app.world_mut()
-            .resource_mut::<crate::ui::BarFields>()
-            .open(crate::ui::AskMode::System);
-        app.world_mut().resource_mut::<crate::ui::ClockControl>().out = true;
-    }
-
-    /// And puts every pane the chrome has open away with it
+    /// And says so, for whatever is drawn over the map to put itself away
     ///
     /// Reported: the form stayed open whatever was clicked, once a press off
     /// it stopped being spent shutting it. A click on nothing is the gesture
-    /// that means nothing: let go of what is held, and put away whatever was
-    /// asking about it — the bar's form and the clock's rail alike, through
-    /// the same [`crate::ui::Panes`] the escape key goes through.
+    /// that means nothing, and the chrome hears it through
+    /// [`ClickedEmptySky`].
     #[test]
-    fn a_click_on_nothing_puts_the_panes_away() {
+    fn a_click_on_nothing_says_so() {
         let mut app = clicked_on();
-        opened(&mut app);
 
         frame(&mut app, false, |buttons| buttons.press(PRIMARY));
-        assert!(!shutting(&app), "shut before the button came up");
-        assert!(scrubbing(&app), "shut before the button came up");
+        assert_eq!(said_empty(&app), 0, "said before the button came up");
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
-        assert!(shutting(&app));
-        assert!(!scrubbing(&app));
+        assert_eq!(said_empty(&app), 1);
     }
 
-    /// A click on something leaves them standing
+    /// A click on something is not a click on nothing
     ///
     /// Which is what the form is open for: what a route runs through is
     /// gathered by picking systems out, so a form that shut itself on the
     /// first of them could never be given the second.
     #[test]
-    fn a_click_on_something_leaves_the_panes_standing() {
+    fn a_click_on_something_says_nothing_of_empty_sky() {
         let mut app = clicked_on();
-        opened(&mut app);
         // Something under the pointer, as `pointing` marks it.
         app.world_mut().spawn(PointedAt::reached(0.));
 
         frame(&mut app, false, |buttons| buttons.press(PRIMARY));
         frame(&mut app, false, |buttons| buttons.release(PRIMARY));
 
-        assert!(!shutting(&app));
-        assert!(scrubbing(&app));
+        assert_eq!(said_empty(&app), 0);
         assert!(holding(&app), "let go of a selection over a system");
     }
 

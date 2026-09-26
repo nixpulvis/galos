@@ -25,6 +25,7 @@
 //! while a form is out and the strip while the scrubber is; the rows never do,
 //! being a readout.
 
+use crate::input::{Keyboard, PointerOverUi, PressOwner};
 use crate::map::bodies::spawn::ShowOrbits;
 use crate::map::bodies::{Clock, Contents, mark_if_moved};
 use crate::map::camera::{MoveCamera, OrbitCamera};
@@ -42,7 +43,7 @@ use crate::map::labels::ShowBodyNames;
 use crate::map::labels::{NameLimit, NameRadius};
 use crate::map::paint::glow::FieldExposure;
 use crate::map::paint::sizing::{ScalePopulation, View};
-use crate::map::pointing::PRIMARY;
+use crate::map::route::ARROW;
 use crate::map::route::SelectedFilter;
 use crate::map::route::frontier::Frontiers;
 use crate::map::route::graph::{
@@ -50,8 +51,9 @@ use crate::map::route::graph::{
 };
 use crate::map::route::highway;
 use crate::map::route::tour::Shape;
+use crate::map::schedule::{MapSet, PaintSet};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults, Searching};
-use crate::map::selection::{Picked, SELECTION, Selection};
+use crate::map::selection::{ClickedEmptySky, Picked, SELECTION, Selection};
 use crate::ui::panels::Panels;
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
@@ -62,105 +64,32 @@ use chrono::Datelike;
 use galos_index::meta::{Faction as DbFaction, NameEntry};
 use galos_photometry::psf::ProfileKind;
 
+pub(crate) mod keys;
+pub(crate) mod loading;
 pub(crate) mod panels;
 
 pub fn plugin(app: &mut App) {
+    app.add_plugins(keys::plugin);
+    app.add_plugins(loading::plugin);
     app.add_plugins(panels::plugin);
-    app.init_resource::<PointerOverUi>();
-    app.init_resource::<Keyboard>();
     app.init_resource::<SettingsOpen>();
     app.init_resource::<ClockControl>();
     app.init_resource::<ShowClock>();
     app.init_resource::<KeysOpen>();
-    app.init_resource::<PressOwner>();
     app.init_resource::<BarFields>();
-    // The lettering leads, being what everything after it is drawn in. It is
-    // drawn while the index is still being read, since the loading screen is
-    // lettered the same way; the bar is not, holding tables that read does
-    // not deliver until it lands. See [`crate::map::index::load`].
+    app.add_systems(
+        Update,
+        shut_on_empty_sky
+            .in_set(MapSet::Present)
+            .after(crate::map::selection::nothing_clicked),
+    );
     app.add_systems(
         EguiPrimaryContextPass,
-        (
-            lettering,
-            chrome.run_if(in_state(crate::map::index::load::Opening::Drawn)),
-        )
-            .chain(),
+        chrome
+            .in_set(PaintSet::Ui)
+            .run_if(in_state(crate::map::index::load::Opening::Drawn)),
     );
 }
-
-/// Set every style the chrome is drawn in
-///
-/// Once. A style set on the context is the style it keeps, and a font asked
-/// for every frame is a font asked for sixty times a second to no end.
-pub(crate) fn lettering(
-    mut contexts: EguiContexts,
-    mut set: Local<bool>,
-) -> Result {
-    if *set {
-        return Ok(());
-    }
-    let ctx = contexts.ctx_mut()?;
-    ctx.all_styles_mut(styled);
-    *set = true;
-
-    Ok(())
-}
-
-/// Set the chrome's lettering and the marks that stand in it
-///
-/// The map is read in names and numbers standing in columns: how far off each
-/// system is, how long each jump of a route is, how much of the sky is getting
-/// through the filters. Set proportionally those columns are ragged, digits
-/// being narrower than the letters beside them.
-///
-/// And what a route is called is one system, an arrow, and another. The hyphen
-/// and the angle of an ASCII arrow are drawn to a width apiece in a monospaced
-/// face and meet as an arrow; set proportionally the hyphen is short and low
-/// and the two read as punctuation that happened to land side by side.
-///
-/// A point smaller than egui letters them, each of them, so that what stands
-/// over what is unchanged. A monospaced face is wider than the proportional
-/// one it stands in for, and the chrome is read at a glance off the top of a
-/// map rather than paragraph by paragraph.
-///
-/// The marks egui draws for itself are sized here as well: the fold arrow on a
-/// panel's title bar, the mark that shuts it, and the boxes in the settings
-/// pane. They are set for lettering a size larger than this, and a mark drawn
-/// to one scale beside words drawn to another reads as two pieces of chrome
-/// that came from different maps.
-pub(crate) fn styled(style: &mut egui::Style) {
-    use egui::FontFamily::Monospace;
-    use egui::{FontId, TextStyle};
-
-    style.text_styles = [
-        (TextStyle::Small, FontId::new(8., Monospace)),
-        (TextStyle::Body, FontId::new(11.5, Monospace)),
-        (TextStyle::Button, FontId::new(11.5, Monospace)),
-        (TextStyle::Monospace, FontId::new(11., Monospace)),
-        (TextStyle::Heading, FontId::new(17., Monospace)),
-    ]
-    .into();
-
-    style.spacing.icon_width = 12.;
-    style.spacing.icon_width_inner = 7.;
-}
-
-/// Whether the pointer is busy with the UI
-///
-/// Only the UI knows which of a window's pixels are its own, so it answers
-/// here rather than the map guessing from rectangles it would have to be told
-/// about.
-///
-/// Where the pointer is now, which is the question a wheel asks: a scroll
-/// belongs to no press and so has no owner to be asked about. What a press
-/// belongs to is [`PressOwner`], and everything weighing a click or a drag asks
-/// that instead.
-///
-/// Egui lays out during its own pass, so this is what the last frame's layout
-/// concluded. A wheel turned over a pane that was not there last frame turns
-/// the map as well, which is a pane the user has only just opened.
-#[derive(Resource, Default)]
-pub(crate) struct PointerOverUi(pub(crate) bool);
 
 /// Whether the settings pane is out
 ///
@@ -250,191 +179,6 @@ impl Default for ShowClock {
 fn hidden(clock: &mut Clock, control: &mut ClockControl) {
     clock.reset();
     control.out = false;
-}
-
-/// What the chrome has taken of the keyboard
-///
-/// The map is driven by bare keys and so is most of what a field wants, so the
-/// two have to be told apart. See [`crate::map::keys`], which is the whole of what
-/// reads this.
-///
-/// Two questions rather than one, because the chrome takes the keyboard at two
-/// strengths. A field being typed into takes every letter. Anything holding the
-/// focus takes only space and enter, which egui reads as a click on whatever
-/// holds it.
-///
-/// Settled at the end of the chrome's own pass and read by the next frame's
-/// [`crate::map::schedule::MapSet::Search`], as [`PointerOverUi`] is.
-#[derive(Resource, Default)]
-pub(crate) struct Keyboard {
-    /// Whether a field is being typed into
-    ///
-    /// A text field alone. Egui goes on holding a focus wherever tab last
-    /// reached, a checkbox on the settings pane among them, and a checkbox does
-    /// nothing with a letter. Reading [`Keyboard::focused`] instead would leave
-    /// every letter the map is driven by dead until the focus was let go of.
-    pub(crate) typing: bool,
-    /// Whether anything in the chrome holds the focus
-    ///
-    /// What a binding on space or enter has to read instead. Egui reads either
-    /// of those as a click on whatever holds the focus, so the chrome answers
-    /// them before the map does, and a control tabbed onto and left holding it
-    /// would be clicked again by every press of the key that flies the camera.
-    ///
-    /// Wider than [`Keyboard::typing`] only while the user is stepping the
-    /// chrome by keyboard: a click grants no focus, so nothing else puts it on
-    /// a control that is not a field.
-    pub(crate) focused: bool,
-}
-
-/// Whose a press is
-///
-/// Decided once, when the button goes down, and held until it comes up. The
-/// pointer is doing one thing at a time and the thing it is doing belongs to
-/// somebody: a drag that began on a slider is the slider's for as long as it
-/// lasts, wherever the pointer wanders, and a press that shut the bar's form
-/// is the form's even though it landed on the sky.
-/// Never named outside this module. What the rest of the map asks is whose a
-/// press is, and every answer to that is a `bool` on [`PressOwner`] or
-/// [`Gesture`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Owner {
-    /// The pointer was over a control, or the press was spent on one
-    Ui,
-    /// The map's to answer
-    Map,
-}
-
-/// Who the press under way belongs to
-///
-/// Egui draws from `PostUpdate`, after every system that answers a click, so
-/// what the UI made of a press is a frame behind whoever asks. Settling it
-/// once at the press rather than asking afresh at the release is what makes
-/// the lateness harmless: a release is a frame after its own press at worst,
-/// by which time this has been written.
-///
-/// Reached through [`Gesture`] rather than read directly, that being where the
-/// one case this cannot answer straight away is handled.
-#[derive(Resource, Default)]
-pub(crate) struct PressOwner {
-    /// Whose the press under way is, while a button is down
-    owner: Option<Owner>,
-    /// Whose a press was that came up in the same frame it went down
-    ///
-    /// A frame long enough to hold a whole click puts the map's reading of it
-    /// before the UI's, so whose it was is news that has to keep until the
-    /// next frame. Standing for one frame and no longer.
-    ///
-    /// A second whole click in that next frame takes its place and the first
-    /// goes unanswered. Two entire clicks inside two frames is a frame rate
-    /// with troubles this cannot help with.
-    carried_over: Option<Owner>,
-}
-
-impl PressOwner {
-    /// Every button the map answers to
-    ///
-    /// One owner for the pointer rather than one per button. The pointer is
-    /// doing one thing, and a press landing while another is already down is
-    /// part of whatever that was.
-    const BUTTONS: [MouseButton; 3] =
-        [MouseButton::Left, MouseButton::Right, MouseButton::Middle];
-
-    /// Settle who the pointer belongs to, the UI having now spoken
-    ///
-    /// `wanted` is whether the UI took this press: the pointer was over a
-    /// control, or the press was spent shutting something. Called at the end
-    /// of the UI's own pass, that being the first moment either is known.
-    ///
-    /// Wants reaching every frame. Nothing else clears an owner, so a frame
-    /// that draws no UI at all leaves the last press held, and a press held
-    /// after the button came up reads as a drag of the map that never ends
-    /// and as a click on every release after it. [`crate::ui::chrome`] gives
-    /// up before here when there is no egui context to draw into, which is a
-    /// map with no window rather than a map with a stuck pointer, so this is
-    /// left as the simpler arrangement of the two. Should it ever be seen,
-    /// the fix is to settle from a system of its own, reading what the UI
-    /// wanted out of a resource rather than off the end of drawing.
-    pub(crate) fn settle(
-        &mut self,
-        buttons: &ButtonInput<MouseButton>,
-        wanted: bool,
-    ) {
-        // Last frame's, which has now been read by everything that reads it.
-        self.carried_over = None;
-
-        let began = buttons.any_just_pressed(Self::BUTTONS);
-        if began && self.owner.is_none() {
-            self.owner = Some(if wanted { Owner::Ui } else { Owner::Map });
-        }
-
-        if !buttons.any_pressed(Self::BUTTONS) {
-            if began && buttons.just_released(PRIMARY) {
-                self.carried_over = self.owner;
-            }
-            self.owner = None;
-        }
-    }
-
-    /// Whether the press under way is the UI's
-    ///
-    /// The question for whoever cannot wait to be told. A press nobody owns
-    /// yet answers no: picking reports a click before the UI has settled
-    /// whose the press was, and a star that cannot be picked out on a slow
-    /// map would be a worse answer than one picked out during a gesture the
-    /// UI turned out to want.
-    pub(crate) fn taken_by_ui(&self) -> bool {
-        self.owner == Some(Owner::Ui)
-    }
-}
-
-/// What the pointer has just done, and whether it was the map's to answer
-///
-/// The one question every system weighing a click asks, so that none of them
-/// works out an answer of its own from the button and where the pointer was.
-/// Both halves are needed together: the button says what happened this frame
-/// and [`PressOwner`] says whose it was.
-#[derive(SystemParam)]
-pub(crate) struct Gesture<'w> {
-    buttons: Res<'w, ButtonInput<MouseButton>>,
-    press: Res<'w, PressOwner>,
-}
-
-impl Gesture<'_> {
-    /// Whether the map is being dragged
-    ///
-    /// False for the first frame of a drag, the UI not having said whose it
-    /// is until the end of that frame. A frame of a map that has not started
-    /// turning yet, against a frame of one that turns under a press meant for
-    /// a slider.
-    pub(crate) fn dragging_map(&self) -> bool {
-        self.press.owner == Some(Owner::Map)
-    }
-
-    /// Whether `button` is down
-    ///
-    /// Which of them is being dragged with, once [`Self::dragging_map`] has
-    /// said the drag is the map's at all. Offered here so that asking takes
-    /// one thing rather than a system holding its own copy of the input
-    /// beside this, which would be two readings of the same buttons sitting
-    /// where they could be told apart.
-    pub(crate) fn pressed(&self, button: MouseButton) -> bool {
-        self.buttons.pressed(button)
-    }
-
-    /// Whether a click the map owns has just finished
-    ///
-    /// On the release, where the press landed in an earlier frame and the
-    /// owner is already standing. A frame holding the whole click answers a
-    /// frame later, through [`PressOwner::carried_over`], which is the one
-    /// place that
-    /// wait is spelled out.
-    pub(crate) fn on_map(&self) -> bool {
-        if self.buttons.just_released(PRIMARY) {
-            return self.press.owner == Some(Owner::Map);
-        }
-        self.press.carried_over == Some(Owner::Map)
-    }
 }
 
 // TODO: Form validation.
@@ -1658,6 +1402,22 @@ impl Panes<'_> {
                 pane.shut();
             }
         }
+    }
+}
+
+/// Put every pane away on a click that landed on nothing
+///
+/// The gesture that means nothing is wanted: the map lets go of what it holds
+/// and says so, and whatever was asking about it goes too — the bar's form and
+/// the clock's rail alike, through the same [`Panes`] the escape key goes
+/// through. A clock's rail left standing over a map that has just been cleared
+/// is the one thing on screen still asking something.
+fn shut_on_empty_sky(
+    mut clicks: MessageReader<ClickedEmptySky>,
+    mut panes: Panes,
+) {
+    if clicks.read().count() > 0 {
+        panes.shut_all();
     }
 }
 
@@ -3620,12 +3380,10 @@ pub(crate) fn waited(took: std::time::Duration) -> String {
     }
 }
 
-/// How a route is written: the two systems it runs between, in order
-pub(crate) const ARROW: &str = " -> ";
-
 #[cfg(test)]
 mod marks {
-    use super::{ARROW, CLOSE, CUT, INFO, STOP};
+    use super::{CLOSE, CUT, INFO, STOP};
+    use crate::map::route::ARROW;
     use crate::testing::context;
     use bevy_egui::egui;
 
@@ -9486,7 +9244,7 @@ mod tests {
                 let ctx = ui.ctx().clone();
                 // A ring, as `selection::ring` paints one, into the layer the
                 // map puts its annotations in.
-                ctx.layer_painter(crate::map::labels::annotations_layer())
+                ctx.layer_painter(crate::map::screen::annotations_layer())
                     .circle_stroke(
                         egui::pos2(PANE_WIDTH * 0.5, 300.),
                         12.,
@@ -10448,21 +10206,6 @@ mod tests {
         });
 
         assert!(said.is_empty(), "{said:?}");
-    }
-
-    /// Every style the chrome is drawn in is lettered the same
-    ///
-    /// Egui keeps a font per text style, and one left proportional is one
-    /// heading or one button standing among columns that no longer line up
-    /// with it.
-    #[test]
-    fn the_chrome_is_lettered_in_one_width() {
-        let mut style = egui::Style::default();
-        styled(&mut style);
-
-        for (kind, font) in &style.text_styles {
-            assert_eq!(font.family, egui::FontFamily::Monospace, "{kind:?}");
-        }
     }
 
     /// The gear hangs about the height it is given

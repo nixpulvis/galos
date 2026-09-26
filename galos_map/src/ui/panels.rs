@@ -11,6 +11,7 @@
 //! selection does: a system flown away from is despawned, and a panel opened
 //! for it has no reason to go with it.
 
+use crate::map::bodies::DAY;
 use crate::map::bodies::mark_if_moved;
 use crate::map::camera::{MoveCamera, OrbitCamera};
 use crate::map::filter::{Filter, Filters, Plotted};
@@ -18,6 +19,7 @@ use crate::map::galaxy::System;
 use crate::map::index::{Factions, Names, Populated};
 use crate::map::route::graph::Crossing;
 use crate::map::schedule::MapSet;
+use crate::map::schedule::PaintSet;
 use crate::map::selection::{Picked, Selection};
 use crate::ui::MARGIN;
 use crate::ui::SystemAction;
@@ -46,7 +48,7 @@ pub fn plugin(app: &mut App) {
     // are counted in the same frame they are shown rather than the next.
     app.add_systems(
         EguiPrimaryContextPass,
-        panels.after(crate::ui::lettering).before(crate::ui::chrome),
+        panels.in_set(PaintSet::Ui).before(crate::ui::chrome),
     );
 }
 
@@ -1068,9 +1070,6 @@ const GRAVITY: f64 = 9.80665;
 
 /// Pascals in an atmosphere
 const ATMOSPHERE: f64 = 101_325.;
-
-/// Seconds in a day
-pub(crate) const DAY: f64 = 86_400.;
 
 /// Days in an Earth year, for reading a span too long to say in days
 const YEAR: f64 = 365.25;

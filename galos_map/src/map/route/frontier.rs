@@ -42,9 +42,9 @@
 
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::fetch::FetchIndex;
-use crate::map::labels::world_per_pixel;
 use crate::map::route::LineList;
 use crate::map::route::graph::{Drawn, Frontier};
+use crate::map::screen::world_per_pixel;
 use crate::map::space::Galaxy;
 use bevy::math::DVec3;
 use bevy::platform::time::Instant;

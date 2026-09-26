@@ -9,6 +9,7 @@
 //! stages are spelled out here as `MapSet` rather than left to chance.
 
 use bevy::prelude::*;
+use bevy_egui::EguiPrimaryContextPass;
 
 pub fn plugin(app: &mut App) {
     app.configure_sets(
@@ -28,6 +29,28 @@ pub fn plugin(app: &mut App) {
             // run without it. See [`crate::map::index::load`].
             .run_if(in_state(crate::map::index::load::Opening::Drawn)),
     );
+    app.configure_sets(
+        EguiPrimaryContextPass,
+        (PaintSet::Map, PaintSet::Style, PaintSet::Ui).chain(),
+    );
+}
+
+/// What is painted flat over the frame, in the order it stacks
+///
+/// The egui pass runs after `Update`, so none of this is in [`MapSet`]. The
+/// map's own annotations go first and under everything — the readouts, the
+/// rings, the names — then the lettering is set, then whatever chrome is
+/// drawn over the map. The map puts its painters in [`PaintSet::Map`] without
+/// knowing whether any chrome is there to follow them.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PaintSet {
+    /// The map's annotations, pinned among themselves where they are
+    /// registered
+    Map,
+    /// The face everything is lettered in; see [`crate::style`]
+    Style,
+    /// The chrome over the map, and anything else drawn over it
+    Ui,
 }
 
 /// The stages of a frame, in the order they run

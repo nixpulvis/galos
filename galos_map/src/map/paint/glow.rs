@@ -81,9 +81,9 @@ use crate::map::galaxy::spawn::{
     ColorBy, Hue, allegiance_hue, government_hue, security_hue,
 };
 use crate::map::index::{ResidentIndex, Settled};
-use crate::map::labels::{screen_position, world_per_pixel};
 use crate::map::paint::sizing::View;
 use crate::map::schedule::MapSet;
+use crate::map::screen::{screen_position, world_per_pixel};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::image::{Image, ImageSampler};

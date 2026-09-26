@@ -10,13 +10,16 @@ use crate::map::camera::OrbitCamera;
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
 use crate::map::galaxy::spawn::Shell;
-use crate::map::labels::{
-    Label, PlateText, Silhouette, color32, depth, depth_of, name_rect, outline,
-    screen_offset, screen_position, world_per_pixel,
-};
+use crate::map::labels::{Label, PlateText, name_rect};
 use crate::map::paint::sizing::{Drawn, ScalePopulation, View};
 use crate::map::schedule::MapSet;
+use crate::map::schedule::PaintSet;
+use crate::map::screen::{
+    Silhouette, depth, depth_of, outline, screen_offset, screen_position,
+    world_per_pixel,
+};
 use crate::map::selection::Selected;
+use crate::style::color32;
 use bevy::camera::RenderTarget;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
@@ -70,7 +73,8 @@ pub fn plugin(app: &mut App) {
     app.add_systems(
         EguiPrimaryContextPass,
         ring.before(crate::map::labels::draw_names)
-            .before(crate::map::selection::ring),
+            .before(crate::map::selection::ring)
+            .in_set(PaintSet::Map),
     );
     app.add_observer(start_drag);
     app.add_observer(track_drag);
@@ -251,14 +255,6 @@ pub struct Indicator(pub f32);
 /// takes its place from the ones around it, so a claim staked in passing
 /// takes away the very name that was being reached for.
 const DWELL: f32 = 0.25;
-
-/// The button that answers for whatever is under the pointer
-///
-/// Picking knows it as [`PointerButton::Primary`], and [`ButtonInput`] knows
-/// it by where it sits, so the two names are put together here. What a press
-/// selects and what a press clears are then the same button by construction
-/// rather than by two files happening to agree.
-pub const PRIMARY: MouseButton = MouseButton::Left;
 
 /// How far a pointer may travel while pressed before it is dragging
 ///
@@ -932,7 +928,7 @@ pub fn ring(
     let up = orbit.rotation * Vec3::Y;
 
     let ctx = contexts.ctx_mut()?;
-    let painter = ctx.layer_painter(crate::map::labels::annotations_layer());
+    let painter = ctx.layer_painter(crate::map::screen::annotations_layer());
     let stroke = |color: Srgba| egui::Stroke::new(RING_STROKE, color32(color));
     // A point given in pixels from the middle of the screen, laid out in screen
     // space. A stop's marks are placed about the middle, where the leader they
