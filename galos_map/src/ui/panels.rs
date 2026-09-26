@@ -39,9 +39,7 @@ use std::time::Duration;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Panels>();
     app.init_resource::<StarClasses>();
-    app.init_resource::<FactionNames>();
     app.add_systems(Update, refresh.in_set(MapSet::Present));
-    app.add_systems(Update, name_factions.in_set(MapSet::Present));
     app.add_systems(Update, fill_filters.in_set(MapSet::Present));
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
@@ -456,67 +454,6 @@ fn tile(slot: usize, down: usize, across: usize) -> (usize, usize) {
     (slot % down, slot / down)
 }
 
-/// What each faction the map has had to name is called
-///
-/// A [`System`] carries the ids of the factions present in it, since that is
-/// what is asked of it in bulk: which of them a filter admits, over every
-/// system drawn, every frame. What they are called is asked for rarely and a
-/// panel at a time, so it is looked up when a panel wants it and kept.
-///
-/// Kept for the session. A faction's name does not change, and there are only
-/// as many of them here as the user has opened panels for.
-#[derive(Resource, Default)]
-pub struct FactionNames(HashMap<i32, String>);
-
-impl FactionNames {
-    /// What the faction with `id` is called, if it has been looked up
-    pub fn get(&self, id: i32) -> Option<&str> {
-        self.0.get(&id).map(String::as_str)
-    }
-}
-
-/// Look up the names of any factions an open panel cannot name yet
-///
-/// One query for everything unnamed across every open panel, and none at all
-/// once they are named, which is every frame but the one after a panel opens.
-///
-/// Asked for and waited on, as a search is. This is the answer to something
-/// the user just did, it is a primary key lookup over a handful of ids, and a
-/// panel that filled itself in a moment later would be a panel that looked
-/// broken when it opened.
-fn name_factions(
-    mut names: ResMut<FactionNames>,
-    panels: Res<Panels>,
-    factions: Res<Factions>,
-) {
-    let wanted: Vec<i32> = panels
-        .open
-        .iter()
-        .filter_map(|panel| match &panel.subject {
-            Subject::System(system) => Some(system),
-            // A filter panel lists systems by name and says nothing about
-            // whose they are, and nothing inside a system belongs to anyone:
-            // a faction holds a system, not a rock in one.
-            Subject::Star(_) | Subject::Body(_) | Subject::Filter { .. } => {
-                None
-            }
-        })
-        .flat_map(|system| system.factions.iter().copied())
-        .filter(|id| names.get(*id).is_none())
-        .collect();
-    if wanted.is_empty() {
-        return;
-    }
-
-    // From the resident faction table, which the whole galaxy's names are held
-    // in, so a panel names its factions without a fetch.
-    for id in wanted {
-        if let Some(name) = factions.name(id) {
-            names.0.insert(id, name.to_string());
-        }
-    }
-}
-
 /// Keep each panel on whatever the map last heard about its system
 ///
 /// A panel is drawn from the row it was opened with, and a fetch replaces
@@ -652,7 +589,7 @@ fn asked_of_panel(clicked: bool) -> Option<crate::ui::RowGesture> {
 fn panels(
     mut contexts: EguiContexts,
     mut panels: ResMut<Panels>,
-    names: Res<FactionNames>,
+    names: Res<Factions>,
     mut selection: ResMut<Selection>,
     mut filters: ResMut<Filters>,
     mut selected: ResMut<crate::map::route::SelectedFilter>,
@@ -971,7 +908,7 @@ fn panels(
 fn described(
     ui: &mut Ui,
     system: &System,
-    names: &FactionNames,
+    names: &Factions,
     eye: Option<DVec3>,
     moved: &mut Option<MoveCamera>,
     wanted: &mut Option<Filter>,
@@ -2266,9 +2203,9 @@ fn admitted(
 /// database is in no order at all, and a fetch that replaced the row would
 /// otherwise shuffle the list under whoever was reading it.
 ///
-/// A faction whose name has not arrived yet is still one of the factions
-/// here, so it keeps its line. Naming them is one query behind the panel
-/// opening, and a list that grew a line a frame later would jump.
+/// A faction the resident [`Factions`] table has no name for is still one of
+/// the factions here, so it keeps its line: a list that grew a line once the
+/// name turned up would jump.
 ///
 /// Clicking one asks the map for it: the faction becomes a filter, and
 /// everything it is absent from goes dim. A system's panel is where the user
@@ -2281,7 +2218,7 @@ fn admitted(
 fn factions(
     ui: &mut Ui,
     present: &[i32],
-    names: &FactionNames,
+    names: &Factions,
     wanted: &mut Option<Filter>,
 ) {
     if present.is_empty() {
@@ -2316,10 +2253,10 @@ fn factions(
 /// asks for a filter, and a filter tests a system against the id.
 fn listed<'a>(
     present: &[i32],
-    names: &'a FactionNames,
+    names: &'a Factions,
 ) -> Vec<(i32, Option<&'a str>)> {
     let mut listed: Vec<(i32, Option<&str>)> =
-        present.iter().map(|id| (*id, names.get(*id))).collect();
+        present.iter().map(|id| (*id, names.name(*id))).collect();
     listed.sort_unstable_by_key(|(id, name)| (name.is_none(), *name, *id));
     listed
 }
@@ -2494,8 +2431,8 @@ mod tests {
     use elite_journal::system::Economy;
 
     /// A registry naming each of `known`
-    fn known(known: &[(i32, &str)]) -> FactionNames {
-        FactionNames(
+    fn known(known: &[(i32, &str)]) -> Factions {
+        Factions(
             known.iter().map(|(id, name)| (*id, name.to_string())).collect(),
         )
     }
@@ -4176,10 +4113,11 @@ mod tests {
         assert_eq!(listed(&[7], &names), vec![(7, Some("Alliance of Sol"))]);
     }
 
-    /// A faction whose name has not arrived keeps its line, at the end
+    /// A faction without a name keeps its line, at the end
     ///
-    /// Naming them is one query behind the panel opening, and a list that
-    /// grew a line a frame later would jump under the reader. Held at the
+    /// Named from the resident [`Factions`] table, which may not hold every
+    /// id a system carries, and a list that grew a line once a name turned
+    /// up would jump under the reader. Held at the
     /// end rather than sorted in, since the placeholder is punctuation and
     /// would otherwise sit above every name and then jump the length of the
     /// list as soon as its own arrived.

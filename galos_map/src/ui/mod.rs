@@ -627,477 +627,7 @@ pub(crate) fn chrome(
 
     // The pane first, since where it has reached is where the gear stands.
     let edge = settings_pane(ctx, open.0, |ui| {
-        heading(ui, "Spyglass", false);
-        // The spyglass is now a bound on the LoD walk rather than a source of
-        // its own: enabled, the walk is clamped to the reach and only the near
-        // sky draws; disabled, the whole sky draws, thinned by the level of
-        // detail alone. What is under it only settles where that bound falls,
-        // so it nests under the toggle the way the other sections nest theirs.
-        // "Enable" is the spyglass's `clear`: to bound the view is to clear
-        // away what the reach does not hold.
-        check(
-            ui,
-            &mut settings.spyglass.clear,
-            "Enable",
-            "Only draw systems near the camera",
-        );
-        if settings.spyglass.clear {
-            ui.indent("spyglass", |ui| {
-                check(
-                    ui,
-                    &mut settings.spyglass.follow_camera,
-                    "Follow Camera",
-                    "Set the radius from the camera's zoom",
-                );
-                ui.add_space(FIELD_GAP);
-                titled(
-                    ui,
-                    "Radius (Ly)",
-                    "How far from the camera to draw systems",
-                );
-                // Greyed while the camera sets it: dragging it would be
-                // overwritten on the next frame, and a control that springs
-                // back is worse than one that says it is not yours to move.
-                ui.add_enabled_ui(!settings.spyglass.follow_camera, |ui| {
-                    radius_slider(
-                        ui,
-                        &mut settings.spyglass.radius,
-                        Spyglass::CEILING,
-                    );
-                });
-                // The camera cannot both be told where to stand and be asked
-                // where it is standing, so the one that reads the camera hides
-                // the one that writes it.
-                if !settings.spyglass.follow_camera {
-                    ui.add_space(FIELD_GAP);
-                    check(
-                        ui,
-                        &mut settings.spyglass.lock_camera,
-                        "Lock Camera",
-                        "Stop the camera leaving the radius",
-                    );
-                }
-            });
-        }
-
-        // The map-wide actions apply whether or not the spyglass bounds the
-        // view, so they stand outside it; the two buttons are debug escapes.
-        ui.add_space(FIELD_GAP);
-        // How often the map goes back for what it already holds. Out here
-        // rather than under the spyglass because it is not the spyglass's:
-        // `bodies::fetch` asks the inside of a system on it, `filter::mark`
-        // re-cuts the time filter on it, and `crate::map::index::refresh` picks up a
-        // republished index on it. Not one of them is about the reach.
-        ui.horizontal(|ui| poll_value(ui, &mut settings.poll.0));
-
-        // What belongs to both views, which is what this section is for and
-        // what it is named for. The galaxy drawn as a map or as a sky, and a
-        // system seen from inside it, are two views with their own sections
-        // below; a switch that governs both filed under either would read as
-        // turning off only that half of it.
-        //
-        // The labels are that: a name is drawn over a system out among the
-        // stars and over a body within one, and one key turns both off (see
-        // [`crate::map::keys`]). They stood in the two view sections, which is
-        // where a reader who wanted the names off had to find them twice. The
-        // ruling is the same argument — one ruled plane carries the map from
-        // light years down to light seconds.
-        heading(ui, "General", true);
-        // Named apart, where the two sections named both of them "Show
-        // Labels" and left the heading over each to say which was meant.
-        // Together they have to say it themselves.
-        check(
-            ui,
-            &mut settings.show_names.0,
-            "System Names",
-            "Show system names on the map",
-        );
-        if settings.show_names.0 {
-            // Indented under what turns them on, since neither means anything
-            // without it. The rule egui draws down the side of an indent says
-            // as much, and says it without a heading standing over nothing
-            // whenever the box is unchecked.
-            ui.indent("names", |ui| {
-                // The reach controls answer a map-view question — how far about
-                // the center to name — and say nothing in the realistic view,
-                // where a star earns its name by being bright enough to draw
-                // rather than by standing near the center. See
-                // [`crate::map::labels::worth_placing`].
-                if *settings.view == View::Map {
-                    check(
-                        ui,
-                        &mut settings.name_radius.follow_spyglass,
-                        "Names Follow Spyglass",
-                        "Name systems out to the spyglass radius",
-                    );
-                    if !settings.name_radius.follow_spyglass {
-                        // A name can only be drawn for a system that is drawn,
-                        // and the spyglass decides that. One that is not
-                        // clearing draws everything loaded, and then names may
-                        // be asked for beyond its reach.
-                        let ceiling = if settings.spyglass.clear {
-                            settings.spyglass.radius
-                        } else {
-                            Spyglass::CEILING
-                        };
-                        titled(
-                            ui,
-                            "Name Radius (Ly)",
-                            "How far from the center to show names",
-                        );
-                        radius_slider(
-                            ui,
-                            &mut settings.name_radius.radius,
-                            ceiling,
-                        );
-                    }
-                } else {
-                    // The realistic view has no reach to hold names to, so it
-                    // holds them to a brightness instead: named brightest
-                    // first, down to this limiting magnitude. Turning it down
-                    // names fewer of them, the way Name Radius names fewer in
-                    // the map view. A star past the exposure's floor is not
-                    // drawn and so cannot be named whatever this says.
-                    titled(
-                        ui,
-                        "Name Limit (mag)",
-                        "Only name stars brighter than this",
-                    );
-                    let mut mag = settings.name_limit.0;
-                    fill_width(ui, VALUE_WIDTH);
-                    let slider = ui
-                        .horizontal(|ui| {
-                            let rail = ui.add(
-                                egui::Slider::new(&mut mag, -2.0..=12.0)
-                                    .step_by(0.5)
-                                    .show_value(false),
-                            );
-                            let typed = value_box(
-                                ui,
-                                egui::DragValue::new(&mut mag)
-                                    .range(-2.0..=12.0)
-                                    .speed(0.1)
-                                    .suffix(" mag"),
-                            );
-                            rail | typed
-                        })
-                        .inner;
-                    // Only when it lands somewhere new, as the exposure slider
-                    // is, so a still slider does not mark the resource changed.
-                    if slider.changed() && settings.name_limit.0 != mag {
-                        settings.name_limit.0 = mag;
-                    }
-                }
-            });
-        }
-
-        check(
-            ui,
-            &mut settings.show_body_names.0,
-            "Body Names",
-            "Show body names inside a system",
-        );
-        // The one reading among the switches, and here because it is drawn
-        // over both views as the names and the ruling are: what the map is
-        // standing at is as true inside a system as out among the stars.
-        //
-        // Turning it off is the map at the present, which the hint says
-        // because the reading is the only place a run-on is shown and the
-        // only way back from one.
-        check(
-            ui,
-            &mut settings.show_clock.0,
-            "Clock",
-            "Show the date, and draw the map at the present",
-        );
-        ui.add_space(FIELD_GAP);
-        check(ui, &mut settings.show_grid.0, "Grid", "Show the measuring grid");
-        if settings.show_grid.0 {
-            // Indented under what turns them on, the same as the names are,
-            // since a unit for a ruler that is not drawn is a choice about
-            // nothing. Left to the map by default, which turns the ruler over
-            // as it descends into a system; pinned either way for reading a
-            // system's distances in light years or a neighbourhood's in light
-            // seconds.
-            ui.indent("said", |ui| {
-                check(
-                    ui,
-                    &mut settings.show_middle.0,
-                    "Show Center Position",
-                    "Show coordinates of the view center",
-                );
-                check(
-                    ui,
-                    &mut settings.show_picked.0,
-                    "Show Selected Positions",
-                    "Show coordinates of selected systems",
-                );
-                ui.add_space(FIELD_GAP);
-                // How loudly the whole ruling is drawn, lines and numbers
-                // together. Past a hundred for a ruler that has to be read off
-                // a bright field, under it for one that should stay out of the
-                // way of a busy sky.
-                titled(ui, "Brightness (%)", "How bright the grid is drawn");
-                let mut bright = settings.bright.0 * 100.;
-                fill_width(ui, VALUE_WIDTH);
-                let slider = ui
-                    .horizontal(|ui| {
-                        let rail = ui.add(
-                            egui::Slider::new(&mut bright, 0.0..=100.)
-                                .step_by(5.)
-                                .show_value(false),
-                        );
-                        let typed = value_box(
-                            ui,
-                            egui::DragValue::new(&mut bright)
-                                .range(0.0..=100.)
-                                .suffix("%"),
-                        );
-                        rail | typed
-                    })
-                    .inner;
-                // Only on a change. Written every frame it would mark the
-                // resource changed every frame, and the planes are rebuilt
-                // from it.
-                if slider.changed() {
-                    settings.bright.0 = bright / 100.;
-                }
-                ui.add_space(FIELD_GAP);
-                titled(ui, "Units", "What the grid is measured in");
-                choose(
-                    ui,
-                    &mut *settings.unit,
-                    RulerUnit::Automatic,
-                    "Automatic",
-                    "Light years in space, light seconds in a system",
-                );
-                choose(
-                    ui,
-                    &mut *settings.unit,
-                    RulerUnit::LightYears,
-                    "Light Years",
-                    "Always light years",
-                );
-                choose(
-                    ui,
-                    &mut *settings.unit,
-                    RulerUnit::LightSeconds,
-                    "Light Seconds",
-                    "Always light seconds",
-                );
-            });
-        }
-
-        // Which of the two ways the sky itself is drawn, and what each of
-        // them offers. What is named over it went up to General, a name being
-        // drawn either way.
-        heading(ui, "Galaxy View", true);
-        choose(
-            ui,
-            &mut *settings.view,
-            View::Map,
-            "Map",
-            "Flat colored dots, one per system",
-        );
-        choose(
-            ui,
-            &mut *settings.view,
-            View::Realistic,
-            "Realistic",
-            "Stars at their real color and brightness",
-        );
-        if *settings.view == View::Map {
-            ui.add_space(FIELD_GAP);
-            titled(ui, "Color By", "What a system's color means");
-            choose(
-                ui,
-                &mut *settings.color_by,
-                ColorBy::Allegiance,
-                "Allegiance",
-                "Color by controlling power",
-            );
-            choose(
-                ui,
-                &mut *settings.color_by,
-                ColorBy::Government,
-                "Government",
-                "Color by government type",
-            );
-            choose(
-                ui,
-                &mut *settings.color_by,
-                ColorBy::Security,
-                "Security",
-                "Color by security level",
-            );
-            ui.add_space(FIELD_GAP);
-            check(
-                ui,
-                &mut settings.population_scale.0,
-                "Scale w/ Population",
-                "Size systems by population; hide empty ones",
-            );
-            ui.add_space(FIELD_GAP);
-            // How many stops the field behind the marks is lifted by. The
-            // map is a political instrument at one setting and a picture of
-            // where anybody has been at another, and which of those a reader
-            // wants is theirs to say; the roll-off on the packed end goes on
-            // holding the core down either way. The marks are not on this
-            // dial, a drawn system being an object at a set brightness.
-            //
-            // **Three stops at the top, and the rail spends its length on
-            // what is below.** The field's own level is settled against
-            // the reach now (`glow::TILT`), so the dial is no longer
-            // carrying three stops of that on top of a reading — and read
-            // off the map, three stops over the rest is as bright as the
-            // galaxy is ever wanted. A rail that ran to eight spent more
-            // than half its travel past anything usable, which is a dial
-            // that cannot be set finely where it is actually set.
-            titled(
-                ui,
-                "Field Exposure (EV)",
-                "How brightly the galaxy behind the marks is drawn",
-            );
-            let mut field_ev = settings.field_exposure.0;
-            fill_width(ui, VALUE_WIDTH);
-            let slider = ui
-                .horizontal(|ui| {
-                    let rail = ui.add(
-                        egui::Slider::new(&mut field_ev, -9.0..=3.0)
-                            .step_by(0.25)
-                            .show_value(false),
-                    );
-                    let typed = value_box(
-                        ui,
-                        egui::DragValue::new(&mut field_ev)
-                            .range(-9.0..=3.0)
-                            .speed(0.1)
-                            .suffix(" EV"),
-                    );
-                    rail | typed
-                })
-                .inner;
-            // Only when it lands somewhere new, so a still slider does not
-            // mark the resource changed every frame.
-            if slider.changed() && settings.field_exposure.0 != field_ev {
-                settings.field_exposure.0 = field_ev;
-            }
-        }
-        if *settings.view == View::Realistic {
-            ui.add_space(FIELD_GAP);
-            // The point-spread profile the stars wear: a Moffat with its wings
-            // or a tighter Gaussian. Read into a local and written back only on
-            // a change, so drawing the radios does not mark the resource changed
-            // every frame and cut the texture again; see
-            // [`crate::map::galaxy::spawn::reprofile`].
-            titled(ui, "Point spread", "How a star's light blurs");
-            let mut profile = settings.star_profile.0;
-            for choice in ProfileKind::ALL {
-                choose(
-                    ui,
-                    &mut profile,
-                    choice,
-                    choice.name(),
-                    spread_hint(choice),
-                );
-            }
-            if profile != settings.star_profile.0 {
-                settings.star_profile.0 = profile;
-            }
-            ui.add_space(FIELD_GAP);
-            // How many stops the star field is lifted to the display. From a
-            // sky bright enough for only the most luminous stars, up through
-            // the dark-adapted field at zero to several stops past it, where
-            // the faint sky fills in.
-            titled(ui, "Exposure (EV)", "How brightly the stars are exposed");
-            let mut ev = settings.star_exposure.0;
-            fill_width(ui, VALUE_WIDTH);
-            let slider = ui
-                .horizontal(|ui| {
-                    let rail = ui.add(
-                        egui::Slider::new(&mut ev, -12.0..=8.0)
-                            .step_by(0.5)
-                            .show_value(false),
-                    );
-                    let typed = value_box(
-                        ui,
-                        egui::DragValue::new(&mut ev)
-                            .range(-12.0..=8.0)
-                            .speed(0.1)
-                            .suffix(" EV"),
-                    );
-                    rail | typed
-                })
-                .inner;
-            // Only when it lands somewhere new, so a slider reporting the same
-            // value frame after frame does not mark `StarExposure` changed and
-            // trip every reader of it needlessly.
-            if slider.changed() && settings.star_exposure.0 != ev {
-                settings.star_exposure.0 = ev;
-            }
-        }
-
-        // What is drawn once the camera is inside a system, rather than what
-        // the galaxy is drawn as. Its own section for that reason, and not
-        // under the view above it: which of the two ways the sky is drawn says
-        // nothing about what a system looks like from within. The body names
-        // went up to General with the system names, one key turning both off
-        // and a reader wanting them off having had to find them twice.
-        heading(ui, "System View", true);
-        check(
-            ui,
-            &mut settings.show_orbits.0,
-            "Orbit Lines",
-            "Show the orbit each body follows",
-        );
-
-        // How the filters answer, rather than which they are: the filters
-        // themselves are asked for in the bar, and this is the one thing
-        // about them that is set once and left alone.
-        heading(ui, "Filters", true);
-        titled(
-            ui,
-            "Filtered Opacity (%)",
-            "How faintly unmatched systems are drawn",
-        );
-        let mut showing = filter.dim.0 * 100.;
-        fill_width(ui, VALUE_WIDTH);
-        let slider = ui
-            .horizontal(|ui| {
-                let rail = ui.add(
-                    egui::Slider::new(&mut showing, 0.0..=100.)
-                        .step_by(5.)
-                        .show_value(false),
-                );
-                let typed = value_box(
-                    ui,
-                    egui::DragValue::new(&mut showing)
-                        .range(0.0..=100.)
-                        .suffix("%"),
-                );
-                rail | typed
-            })
-            .inner;
-        // Only when it lands on a value the resource does not already hold. The
-        // step and the f32 round-trip can have the slider report a change frame
-        // after frame at a value it is already at — 0.30 is not exactly
-        // representable, so `dim.0 * 100` snapped back to `/ 100` never settles
-        // — and writing that every frame marks the resource changed every
-        // frame, which repaints every dimmed star and re-marks the whole sky
-        // without end.
-        if slider.changed() {
-            let set = showing / 100.;
-            if filter.dim.0 != set {
-                filter.dim.0 = set;
-            }
-        }
-        // Which is a filter in the plainer sense: this kind of system and
-        // none of the rest. At zero the excluded are not dimmed but dropped —
-        // never loaded, and evicted if already on the map — so the sign is that
-        // they are not there rather than that they are faint.
-        if filter.dim.0 == 0. {
-            ui.label(egui::RichText::new("Not loaded").weak());
-        }
+        settings_body(ui, &mut settings, &mut filter.dim);
     });
 
     // Its own window rather than a fold at the foot of the pane. It is a
@@ -1257,6 +787,588 @@ pub(crate) fn chrome(
     }
 
     Ok(())
+}
+
+/// What the settings pane holds, section by section
+///
+/// Drawn into the pane [`settings_pane`] slides out. Everything it sets is
+/// reached through [`Settings`] but the dimming, which is the filters' own and
+/// is handed over from [`FilterBar`] alone.
+///
+/// Every setting a widget works on is handed to it through [`edited`], so a
+/// pane that is open and left alone marks nothing changed.
+fn settings_body(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    dim: &mut ResMut<DimTo>,
+) {
+    heading(ui, "Spyglass", false);
+    // The spyglass is now a bound on the LoD walk rather than a source of
+    // its own: enabled, the walk is clamped to the reach and only the near
+    // sky draws; disabled, the whole sky draws, thinned by the level of
+    // detail alone. What is under it only settles where that bound falls,
+    // so it nests under the toggle the way the other sections nest theirs.
+    // "Enable" is the spyglass's `clear`: to bound the view is to clear
+    // away what the reach does not hold.
+    edited(
+        &mut settings.spyglass,
+        |x| &mut x.clear,
+        |on| check(ui, on, "Enable", "Only draw systems near the camera"),
+    );
+    if settings.spyglass.clear {
+        ui.indent("spyglass", |ui| {
+            edited(
+                &mut settings.spyglass,
+                |x| &mut x.follow_camera,
+                |on| {
+                    check(
+                        ui,
+                        on,
+                        "Follow Camera",
+                        "Set the radius from the camera's zoom",
+                    )
+                },
+            );
+            ui.add_space(FIELD_GAP);
+            titled(
+                ui,
+                "Radius (Ly)",
+                "How far from the camera to draw systems",
+            );
+            // Greyed while the camera sets it: dragging it would be
+            // overwritten on the next frame, and a control that springs
+            // back is worse than one that says it is not yours to move.
+            ui.add_enabled_ui(!settings.spyglass.follow_camera, |ui| {
+                edited(
+                    &mut settings.spyglass,
+                    |x| &mut x.radius,
+                    |radius| radius_slider(ui, radius, Spyglass::CEILING),
+                );
+            });
+            // The camera cannot both be told where to stand and be asked
+            // where it is standing, so the one that reads the camera hides
+            // the one that writes it.
+            if !settings.spyglass.follow_camera {
+                ui.add_space(FIELD_GAP);
+                edited(
+                    &mut settings.spyglass,
+                    |x| &mut x.lock_camera,
+                    |on| {
+                        check(
+                            ui,
+                            on,
+                            "Lock Camera",
+                            "Stop the camera leaving the radius",
+                        )
+                    },
+                );
+            }
+        });
+    }
+
+    // The map-wide actions apply whether or not the spyglass bounds the
+    // view, so they stand outside it; the two buttons are debug escapes.
+    ui.add_space(FIELD_GAP);
+    // How often the map goes back for what it already holds. Out here
+    // rather than under the spyglass because it is not the spyglass's:
+    // `bodies::fetch` asks the inside of a system on it, `filter::mark`
+    // re-cuts the time filter on it, and `crate::map::index::refresh` picks up a
+    // republished index on it. Not one of them is about the reach.
+    ui.horizontal(|ui| {
+        edited(&mut settings.poll, |x| &mut x.0, |wait| poll_value(ui, wait))
+    });
+
+    // What belongs to both views, which is what this section is for and
+    // what it is named for. The galaxy drawn as a map or as a sky, and a
+    // system seen from inside it, are two views with their own sections
+    // below; a switch that governs both filed under either would read as
+    // turning off only that half of it.
+    //
+    // The labels are that: a name is drawn over a system out among the
+    // stars and over a body within one, and one key turns both off (see
+    // [`crate::map::keys`]). They stood in the two view sections, which is
+    // where a reader who wanted the names off had to find them twice. The
+    // ruling is the same argument — one ruled plane carries the map from
+    // light years down to light seconds.
+    heading(ui, "General", true);
+    // Named apart, where the two sections named both of them "Show
+    // Labels" and left the heading over each to say which was meant.
+    // Together they have to say it themselves.
+    edited(
+        &mut settings.show_names,
+        |x| &mut x.0,
+        |on| check(ui, on, "System Names", "Show system names on the map"),
+    );
+    if settings.show_names.0 {
+        // Indented under what turns them on, since neither means anything
+        // without it. The rule egui draws down the side of an indent says
+        // as much, and says it without a heading standing over nothing
+        // whenever the box is unchecked.
+        ui.indent("names", |ui| {
+            // The reach controls answer a map-view question — how far about
+            // the center to name — and say nothing in the realistic view,
+            // where a star earns its name by being bright enough to draw
+            // rather than by standing near the center. See
+            // [`crate::map::labels::worth_placing`].
+            if *settings.view == View::Map {
+                edited(
+                    &mut settings.name_radius,
+                    |x| &mut x.follow_spyglass,
+                    |on| {
+                        check(
+                            ui,
+                            on,
+                            "Names Follow Spyglass",
+                            "Name systems out to the spyglass radius",
+                        )
+                    },
+                );
+                if !settings.name_radius.follow_spyglass {
+                    // A name can only be drawn for a system that is drawn,
+                    // and the spyglass decides that. One that is not
+                    // clearing draws everything loaded, and then names may
+                    // be asked for beyond its reach.
+                    let ceiling = if settings.spyglass.clear {
+                        settings.spyglass.radius
+                    } else {
+                        Spyglass::CEILING
+                    };
+                    titled(
+                        ui,
+                        "Name Radius (Ly)",
+                        "How far from the center to show names",
+                    );
+                    edited(
+                        &mut settings.name_radius,
+                        |x| &mut x.radius,
+                        |radius| radius_slider(ui, radius, ceiling),
+                    );
+                }
+            } else {
+                // The realistic view has no reach to hold names to, so it
+                // holds them to a brightness instead: named brightest
+                // first, down to this limiting magnitude. Turning it down
+                // names fewer of them, the way Name Radius names fewer in
+                // the map view. A star past the exposure's floor is not
+                // drawn and so cannot be named whatever this says.
+                titled(
+                    ui,
+                    "Name Limit (mag)",
+                    "Only name stars brighter than this",
+                );
+                let mut mag = settings.name_limit.0;
+                fill_width(ui, VALUE_WIDTH);
+                let slider = ui
+                    .horizontal(|ui| {
+                        let rail = ui.add(
+                            egui::Slider::new(&mut mag, -2.0..=12.0)
+                                .step_by(0.5)
+                                .show_value(false),
+                        );
+                        let typed = value_box(
+                            ui,
+                            egui::DragValue::new(&mut mag)
+                                .range(-2.0..=12.0)
+                                .speed(0.1)
+                                .suffix(" mag"),
+                        );
+                        rail | typed
+                    })
+                    .inner;
+                // Only when it lands somewhere new, as the exposure slider
+                // is, so a still slider does not mark the resource changed.
+                if slider.changed() && settings.name_limit.0 != mag {
+                    settings.name_limit.0 = mag;
+                }
+            }
+        });
+    }
+
+    edited(
+        &mut settings.show_body_names,
+        |x| &mut x.0,
+        |on| check(ui, on, "Body Names", "Show body names inside a system"),
+    );
+    // The one reading among the switches, and here because it is drawn
+    // over both views as the names and the ruling are: what the map is
+    // standing at is as true inside a system as out among the stars.
+    //
+    // Turning it off is the map at the present, which the hint says
+    // because the reading is the only place a run-on is shown and the
+    // only way back from one.
+    edited(
+        &mut settings.show_clock,
+        |x| &mut x.0,
+        |on| {
+            check(
+                ui,
+                on,
+                "Clock",
+                "Show the date, and draw the map at the present",
+            )
+        },
+    );
+    ui.add_space(FIELD_GAP);
+    edited(
+        &mut settings.show_grid,
+        |x| &mut x.0,
+        |on| check(ui, on, "Grid", "Show the measuring grid"),
+    );
+    if settings.show_grid.0 {
+        // Indented under what turns them on, the same as the names are,
+        // since a unit for a ruler that is not drawn is a choice about
+        // nothing. Left to the map by default, which turns the ruler over
+        // as it descends into a system; pinned either way for reading a
+        // system's distances in light years or a neighbourhood's in light
+        // seconds.
+        ui.indent("said", |ui| {
+            edited(
+                &mut settings.show_middle,
+                |x| &mut x.0,
+                |on| {
+                    check(
+                        ui,
+                        on,
+                        "Show Center Position",
+                        "Show coordinates of the view center",
+                    )
+                },
+            );
+            edited(
+                &mut settings.show_picked,
+                |x| &mut x.0,
+                |on| {
+                    check(
+                        ui,
+                        on,
+                        "Show Selected Positions",
+                        "Show coordinates of selected systems",
+                    )
+                },
+            );
+            ui.add_space(FIELD_GAP);
+            // How loudly the whole ruling is drawn, lines and numbers
+            // together. Past a hundred for a ruler that has to be read off
+            // a bright field, under it for one that should stay out of the
+            // way of a busy sky.
+            titled(ui, "Brightness (%)", "How bright the grid is drawn");
+            let mut bright = settings.bright.0 * 100.;
+            fill_width(ui, VALUE_WIDTH);
+            let slider = ui
+                .horizontal(|ui| {
+                    let rail = ui.add(
+                        egui::Slider::new(&mut bright, 0.0..=100.)
+                            .step_by(5.)
+                            .show_value(false),
+                    );
+                    let typed = value_box(
+                        ui,
+                        egui::DragValue::new(&mut bright)
+                            .range(0.0..=100.)
+                            .suffix("%"),
+                    );
+                    rail | typed
+                })
+                .inner;
+            // Only on a change. Written every frame it would mark the
+            // resource changed every frame, and the planes are rebuilt
+            // from it.
+            if slider.changed() {
+                settings.bright.0 = bright / 100.;
+            }
+            ui.add_space(FIELD_GAP);
+            titled(ui, "Units", "What the grid is measured in");
+            edited(
+                &mut settings.unit,
+                |x| x,
+                |unit| {
+                    choose(
+                        ui,
+                        unit,
+                        RulerUnit::Automatic,
+                        "Automatic",
+                        "Light years in space, light seconds in a system",
+                    );
+                    choose(
+                        ui,
+                        unit,
+                        RulerUnit::LightYears,
+                        "Light Years",
+                        "Always light years",
+                    );
+                    choose(
+                        ui,
+                        unit,
+                        RulerUnit::LightSeconds,
+                        "Light Seconds",
+                        "Always light seconds",
+                    );
+                },
+            );
+        });
+    }
+
+    // Which of the two ways the sky itself is drawn, and what each of
+    // them offers. What is named over it went up to General, a name being
+    // drawn either way.
+    heading(ui, "Galaxy View", true);
+    edited(
+        &mut settings.view,
+        |x| x,
+        |view| {
+            choose(
+                ui,
+                view,
+                View::Map,
+                "Map",
+                "Flat colored dots, one per system",
+            );
+            choose(
+                ui,
+                view,
+                View::Realistic,
+                "Realistic",
+                "Stars at their real color and brightness",
+            );
+        },
+    );
+    if *settings.view == View::Map {
+        ui.add_space(FIELD_GAP);
+        titled(ui, "Color By", "What a system's color means");
+        edited(
+            &mut settings.color_by,
+            |x| x,
+            |color_by| {
+                choose(
+                    ui,
+                    color_by,
+                    ColorBy::Allegiance,
+                    "Allegiance",
+                    "Color by controlling power",
+                );
+                choose(
+                    ui,
+                    color_by,
+                    ColorBy::Government,
+                    "Government",
+                    "Color by government type",
+                );
+                choose(
+                    ui,
+                    color_by,
+                    ColorBy::Security,
+                    "Security",
+                    "Color by security level",
+                );
+            },
+        );
+        ui.add_space(FIELD_GAP);
+        edited(
+            &mut settings.population_scale,
+            |x| &mut x.0,
+            |on| {
+                check(
+                    ui,
+                    on,
+                    "Scale w/ Population",
+                    "Size systems by population; hide empty ones",
+                )
+            },
+        );
+        ui.add_space(FIELD_GAP);
+        // How many stops the field behind the marks is lifted by. The
+        // map is a political instrument at one setting and a picture of
+        // where anybody has been at another, and which of those a reader
+        // wants is theirs to say; the roll-off on the packed end goes on
+        // holding the core down either way. The marks are not on this
+        // dial, a drawn system being an object at a set brightness.
+        //
+        // **Three stops at the top, and the rail spends its length on
+        // what is below.** The field's own level is settled against
+        // the reach now (`glow::TILT`), so the dial is no longer
+        // carrying three stops of that on top of a reading — and read
+        // off the map, three stops over the rest is as bright as the
+        // galaxy is ever wanted. A rail that ran to eight spent more
+        // than half its travel past anything usable, which is a dial
+        // that cannot be set finely where it is actually set.
+        titled(
+            ui,
+            "Field Exposure (EV)",
+            "How brightly the galaxy behind the marks is drawn",
+        );
+        let mut field_ev = settings.field_exposure.0;
+        fill_width(ui, VALUE_WIDTH);
+        let slider = ui
+            .horizontal(|ui| {
+                let rail = ui.add(
+                    egui::Slider::new(&mut field_ev, -9.0..=3.0)
+                        .step_by(0.25)
+                        .show_value(false),
+                );
+                let typed = value_box(
+                    ui,
+                    egui::DragValue::new(&mut field_ev)
+                        .range(-9.0..=3.0)
+                        .speed(0.1)
+                        .suffix(" EV"),
+                );
+                rail | typed
+            })
+            .inner;
+        // Only when it lands somewhere new, so a still slider does not
+        // mark the resource changed every frame.
+        if slider.changed() && settings.field_exposure.0 != field_ev {
+            settings.field_exposure.0 = field_ev;
+        }
+    }
+    if *settings.view == View::Realistic {
+        ui.add_space(FIELD_GAP);
+        // The point-spread profile the stars wear: a Moffat with its wings
+        // or a tighter Gaussian. Read into a local and written back only on
+        // a change, so drawing the radios does not mark the resource changed
+        // every frame and cut the texture again; see
+        // [`crate::map::galaxy::spawn::reprofile`].
+        titled(ui, "Point spread", "How a star's light blurs");
+        let mut profile = settings.star_profile.0;
+        for choice in ProfileKind::ALL {
+            choose(
+                ui,
+                &mut profile,
+                choice,
+                choice.name(),
+                spread_hint(choice),
+            );
+        }
+        if profile != settings.star_profile.0 {
+            settings.star_profile.0 = profile;
+        }
+        ui.add_space(FIELD_GAP);
+        // How many stops the star field is lifted to the display. From a
+        // sky bright enough for only the most luminous stars, up through
+        // the dark-adapted field at zero to several stops past it, where
+        // the faint sky fills in.
+        titled(ui, "Exposure (EV)", "How brightly the stars are exposed");
+        let mut ev = settings.star_exposure.0;
+        fill_width(ui, VALUE_WIDTH);
+        let slider = ui
+            .horizontal(|ui| {
+                let rail = ui.add(
+                    egui::Slider::new(&mut ev, -12.0..=8.0)
+                        .step_by(0.5)
+                        .show_value(false),
+                );
+                let typed = value_box(
+                    ui,
+                    egui::DragValue::new(&mut ev)
+                        .range(-12.0..=8.0)
+                        .speed(0.1)
+                        .suffix(" EV"),
+                );
+                rail | typed
+            })
+            .inner;
+        // Only when it lands somewhere new, so a slider reporting the same
+        // value frame after frame does not mark `StarExposure` changed and
+        // trip every reader of it needlessly.
+        if slider.changed() && settings.star_exposure.0 != ev {
+            settings.star_exposure.0 = ev;
+        }
+    }
+
+    // What is drawn once the camera is inside a system, rather than what
+    // the galaxy is drawn as. Its own section for that reason, and not
+    // under the view above it: which of the two ways the sky is drawn says
+    // nothing about what a system looks like from within. The body names
+    // went up to General with the system names, one key turning both off
+    // and a reader wanting them off having had to find them twice.
+    heading(ui, "System View", true);
+    edited(
+        &mut settings.show_orbits,
+        |x| &mut x.0,
+        |on| check(ui, on, "Orbit Lines", "Show the orbit each body follows"),
+    );
+
+    // How the filters answer, rather than which they are: the filters
+    // themselves are asked for in the bar, and this is the one thing
+    // about them that is set once and left alone.
+    heading(ui, "Filters", true);
+    titled(
+        ui,
+        "Filtered Opacity (%)",
+        "How faintly unmatched systems are drawn",
+    );
+    let mut showing = dim.0 * 100.;
+    fill_width(ui, VALUE_WIDTH);
+    let slider = ui
+        .horizontal(|ui| {
+            let rail = ui.add(
+                egui::Slider::new(&mut showing, 0.0..=100.)
+                    .step_by(5.)
+                    .show_value(false),
+            );
+            let typed = value_box(
+                ui,
+                egui::DragValue::new(&mut showing)
+                    .range(0.0..=100.)
+                    .suffix("%"),
+            );
+            rail | typed
+        })
+        .inner;
+    // Only when it lands on a value the resource does not already hold. The
+    // step and the f32 round-trip can have the slider report a change frame
+    // after frame at a value it is already at — 0.30 is not exactly
+    // representable, so `dim.0 * 100` snapped back to `/ 100` never settles
+    // — and writing that every frame marks the resource changed every
+    // frame, which repaints every dimmed star and re-marks the whole sky
+    // without end.
+    if slider.changed() {
+        let set = showing / 100.;
+        if dim.0 != set {
+            dim.0 = set;
+        }
+    }
+    // Which is a filter in the plainer sense: this kind of system and
+    // none of the rest. At zero the excluded are not dimmed but dropped —
+    // never loaded, and evicted if already on the map — so the sign is that
+    // they are not there rather than that they are faint.
+    if dim.0 == 0. {
+        ui.label(egui::RichText::new("Not loaded").weak());
+    }
+}
+
+/// Draw `widget` over a copy of what `at` picks out of `resource`, and write
+/// it back only where the widget changed it
+///
+/// A widget takes a `&mut` to what it sets, and a `ResMut` handed out as one
+/// reads as written whether or not anything was, so a pane that passed its
+/// settings straight in would mark every one of them changed every frame it
+/// stood open. What reads the mark does the work again:
+/// [`crate::map::galaxy::walk`] reconciles the whole sky on a [`View`] or a
+/// [`ScalePopulation`] said to have moved, and the blobs are rebuilt on a
+/// [`ColorBy`]. The copy is what the widget works on, and the resource is
+/// touched only when the copy comes back different.
+///
+/// The sliders that settle a value of their own first — the exposures, the
+/// grid's brightness, the dimming — and [`StarProfile`] already write back
+/// only on a change, and are left as they are.
+fn edited<R, T, W>(
+    resource: &mut R,
+    at: impl Fn(&mut R::Inner) -> &mut T,
+    widget: impl FnOnce(&mut T) -> W,
+) -> W
+where
+    R: DetectChangesMut,
+    T: Clone + PartialEq,
+{
+    let mut value = at(resource.bypass_change_detection()).clone();
+    let drawn = widget(&mut value);
+    let held = at(resource.bypass_change_detection());
+    if *held != value {
+        *held = value;
+        resource.set_changed();
+    }
+    drawn
 }
 
 /// Slide the settings pane in from the left, and draw `contents` in it
@@ -7878,6 +7990,160 @@ mod tests {
     use crate::map::selection::PickedBody;
     use crate::testing::{painted, words};
     use chrono::{DateTime, Utc};
+
+    /// A world holding everything the settings pane sets, over `view`
+    ///
+    /// Every switch that folds more of the pane out is on, so that every
+    /// widget in it is drawn, and the trackers are cleared: whatever reads
+    /// as changed afterwards was marked by what the pane did.
+    fn pane_world(view: View) -> World {
+        let mut world = World::new();
+        world.insert_resource(view);
+        world.insert_resource(Spyglass {
+            radius: 50.,
+            clear: true,
+            lock_camera: false,
+            follow_camera: false,
+        });
+        world.insert_resource(ColorBy::Allegiance);
+        world.insert_resource(ScalePopulation(false));
+        world.insert_resource(StarExposure::default());
+        world.insert_resource(FieldExposure(0.));
+        world.insert_resource(StarProfile::default());
+        world.insert_resource(ShowNames(true));
+        world.insert_resource(Poll(Some(10.)));
+        world.insert_resource(NameRadius {
+            follow_spyglass: false,
+            radius: 20.,
+        });
+        world.insert_resource(NameLimit(6.));
+        world.insert_resource(ShowOrbits(true));
+        world.insert_resource(Clock::default());
+        world.insert_resource(ClockControl::default());
+        world.insert_resource(ShowClock::default());
+        world.insert_resource(ShowBodyNames(true));
+        world.insert_resource(ShowGrid(true));
+        world.insert_resource(RulerUnit::default());
+        world.insert_resource(ShowMiddle(false));
+        world.insert_resource(ShowPicked(false));
+        world.insert_resource(Bright(1.));
+        world.insert_resource(DimTo(0.3));
+        world.clear_trackers();
+        world
+    }
+
+    /// Draw the settings pane over `world` once for each of `inputs`
+    ///
+    /// Answers with what the last pass drew.
+    fn pane_drawn(
+        world: &mut World,
+        inputs: Vec<egui::RawInput>,
+    ) -> egui::FullOutput {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let ctx = crate::testing::context();
+        world
+            .run_system_once(
+                move |mut settings: Settings, mut dim: ResMut<DimTo>| {
+                    let mut last = None;
+                    for input in inputs.clone() {
+                        last = Some(ctx.run_ui(input, |ui| {
+                            settings_body(ui, &mut settings, &mut dim);
+                        }));
+                    }
+                    last.expect("the pane was drawn at least once")
+                },
+            )
+            .expect("the pane's resources are all there")
+    }
+
+    /// Whether `R` has been marked changed since the world last cleared its
+    /// trackers
+    fn touched<R: Resource>(world: &World) -> bool {
+        world.is_resource_changed::<R>()
+    }
+
+    /// A pane standing open and left alone marks nothing it sets as changed
+    ///
+    /// Every widget in it is handed a `&mut`, and a `ResMut` reads as written
+    /// the moment one is taken. Handed over straight, an open pane marked
+    /// every setting changed every frame, and [`crate::map::galaxy::walk`]
+    /// reconciled the whole sky again on a [`View`] nobody had touched.
+    ///
+    /// Drawn over both views, each having a section of its own.
+    #[test]
+    fn an_untouched_pane_leaves_its_settings_unchanged() {
+        for view in [View::Map, View::Realistic] {
+            let mut world = pane_world(view);
+            // Fonts are built on the first pass; the second is the pane as it
+            // stands frame after frame.
+            let _ = pane_drawn(
+                &mut world,
+                vec![egui::RawInput::default(), egui::RawInput::default()],
+            );
+
+            let changed: Vec<&str> = [
+                ("View", touched::<View>(&world)),
+                ("ColorBy", touched::<ColorBy>(&world)),
+                ("ScalePopulation", touched::<ScalePopulation>(&world)),
+                ("Spyglass", touched::<Spyglass>(&world)),
+                ("StarExposure", touched::<StarExposure>(&world)),
+                ("FieldExposure", touched::<FieldExposure>(&world)),
+                ("StarProfile", touched::<StarProfile>(&world)),
+                ("ShowNames", touched::<ShowNames>(&world)),
+                ("Poll", touched::<Poll>(&world)),
+                ("NameRadius", touched::<NameRadius>(&world)),
+                ("NameLimit", touched::<NameLimit>(&world)),
+                ("ShowOrbits", touched::<ShowOrbits>(&world)),
+                ("ShowClock", touched::<ShowClock>(&world)),
+                ("ShowBodyNames", touched::<ShowBodyNames>(&world)),
+                ("ShowGrid", touched::<ShowGrid>(&world)),
+                ("RulerUnit", touched::<RulerUnit>(&world)),
+                ("ShowMiddle", touched::<ShowMiddle>(&world)),
+                ("ShowPicked", touched::<ShowPicked>(&world)),
+                ("Bright", touched::<Bright>(&world)),
+                ("DimTo", touched::<DimTo>(&world)),
+            ]
+            .into_iter()
+            .filter_map(|(name, touched)| touched.then_some(name))
+            .collect();
+            assert!(
+                changed.is_empty(),
+                "an untouched pane over {view:?} marked {changed:?} changed",
+            );
+        }
+    }
+
+    /// And a switch clicked in it is written, and marked
+    ///
+    /// The other half of the guard: a pane that wrote back nothing would be a
+    /// picture of the settings rather than a way to set them.
+    #[test]
+    fn a_switch_clicked_in_the_pane_is_written() {
+        let mut world = pane_world(View::Map);
+        let output = pane_drawn(
+            &mut world,
+            vec![egui::RawInput::default(), egui::RawInput::default()],
+        );
+        let switch =
+            spoken_at(&output, "Orbit Lines").expect("the switch is drawn");
+
+        let _ = pane_drawn(
+            &mut world,
+            vec![
+                egui::RawInput::default(),
+                egui::RawInput::default(),
+                clicking(switch.center()),
+            ],
+        );
+
+        assert!(!world.resource::<ShowOrbits>().0, "the click went unwritten");
+        assert!(touched::<ShowOrbits>(&world));
+        assert!(
+            !touched::<View>(&world),
+            "a click on one switch marked the view"
+        );
+    }
 
     /// A plot short enough that the form has nothing to suggest
     ///
