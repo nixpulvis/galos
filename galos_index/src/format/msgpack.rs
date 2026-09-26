@@ -4,8 +4,7 @@
 //! Every sidecar the client reads beside the cells — the populated systems,
 //! the reaches, the supercharges, the factions — and every small record a
 //! builder keeps beside its resume point is one of these. The writer half is
-//! [`write_meta`] (or [`raise_meta`], where nothing stands to be kept); the
-//! reader half is [`read_meta`].
+//! [`write_meta`]; the reader half is [`read_meta`].
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -28,23 +27,6 @@ pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
-}
-
-/// The same file, written where nothing stands to be kept.
-///
-/// [`write_meta`]'s guarantee costs a second directory entry made and
-/// unmade for every file written, which over a galaxy of one small file a
-/// system is most of what writing one costs: measured against Spansh's
-/// dump, the rename alone was an eighth of the whole read. A build raising
-/// a directory from nothing overwrites nothing and is abandoned whole if it
-/// fails, so it is paying for a guarantee it cannot use. See
-/// [`crate::accumulate::bodies::Published::raising`], which is the one caller.
-pub fn raise_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
-    let bytes = encoded(value)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, bytes)
 }
 
 /// One metadata value's bytes, for either writer.

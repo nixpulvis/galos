@@ -23,15 +23,15 @@ use crate::core::codec::FixedCodec;
 
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.
-pub const ROOT_EDGE_LY: f64 = 131072.0;
+pub(crate) const ROOT_EDGE_LY: f64 = 131072.0;
 
 /// Where the root cube is centred, in light years. The galaxy's disc is thin in
 /// `y` and pushed out in `z`, so the cube is placed over it rather than on the
 /// origin.
-pub const ROOT_CENTER_LY: [f64; 3] = [0.0, 900.0, 24400.0];
+pub(crate) const ROOT_CENTER_LY: [f64; 3] = [0.0, 900.0, 24400.0];
 
 /// The low corner of the root cube, from which every cell's origin is measured.
-pub const ROOT_MIN_LY: [f64; 3] = [
+pub(crate) const ROOT_MIN_LY: [f64; 3] = [
     ROOT_CENTER_LY[0] - ROOT_EDGE_LY / 2.0,
     ROOT_CENTER_LY[1] - ROOT_EDGE_LY / 2.0,
     ROOT_CENTER_LY[2] - ROOT_EDGE_LY / 2.0,
@@ -237,13 +237,13 @@ fn compact3(m: u64) -> u32 {
 
 /// Interleave three coordinates into one Morton key, `x` in the low bit of each
 /// triple, then `y`, then `z`.
-pub fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
+pub(crate) fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
     split3(x) | split3(y) << 1 | split3(z) << 2
 }
 
 /// Recover three coordinates from a Morton key, the inverse of
 /// [`morton_encode`].
-pub fn morton_decode(m: u64) -> (u32, u32, u32) {
+pub(crate) fn morton_decode(m: u64) -> (u32, u32, u32) {
     (compact3(m), compact3(m >> 1), compact3(m >> 2))
 }
 

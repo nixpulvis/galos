@@ -27,7 +27,6 @@
 //! they were.
 
 use crate::core::codec::Decode as _;
-use crate::core::geometry::CellId;
 use crate::core::record::StarKind;
 use crate::format::layout::payload_path;
 use crate::format::payload::{
@@ -248,11 +247,6 @@ fn read_any_version(dir: &Path) -> io::Result<Index> {
         cells.push(cell);
     }
     Ok(Index::from_cells(cells))
-}
-
-/// Which cells a directory holds payloads for, in the old layout.
-pub fn legacy_cells(dir: &Path) -> io::Result<Vec<CellId>> {
-    Ok(read_any_version(dir)?.cells().map(|cell| cell.id).collect())
 }
 
 #[cfg(test)]

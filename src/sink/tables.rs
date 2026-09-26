@@ -27,7 +27,7 @@
 //! write — so what is published stands untouched for the life of the run.
 //! See `galos_index::accumulate::galaxy`.
 
-use galos_index::records::PopulatedSystem;
+use galos_index::accumulate::merge;
 use galos_index::store::sidecars::{Counts, Moved, Sidecars};
 use galos_index::Galaxy;
 use std::collections::HashSet;
@@ -176,7 +176,28 @@ impl Tables {
         let mut moved = Moved::default();
         for &address in touched {
             if let Some(said) = galaxy.populated_of(address) {
-                let row = over(self.held.published(address), said);
+                // What an event says about a system, over what the directory
+                // publishes.
+                //
+                // A row derived from events is thinner than one derived from
+                // the database and always will be: a journal names factions and
+                // numbers none of them, so `Galaxy` publishes an empty faction
+                // list by construction, and the body counts arrive in their own
+                // events rather than with the arrival. Writing such a row
+                // straight over a published one took the faction ids off every
+                // populated system a feed happened to mention — a thousand of
+                // them in the directory this was found in — and the map colours
+                // and filters by exactly those.
+                //
+                // So the event wins where it says something and what stands is
+                // kept where it does not, which is the rule the database's own
+                // write path states column by column. `merge::populated_over`
+                // with `newer` set is that rule, stated once in `galos_index`
+                // for this and for a merge of two directories.
+                let row = match self.held.published(address) {
+                    Some(stood) => merge::populated_over(stood, said, true),
+                    None => said,
+                };
                 moved.populated |= self.held.populate(row);
             }
 
@@ -209,42 +230,5 @@ impl Tables {
         let folded = self.held.compact_names(dir)?;
         self.absent = Moved::default();
         Ok(Wrote { name_rows, folded, tables })
-    }
-}
-
-/// What an event says about a system, over what the directory publishes.
-///
-/// A row derived from events is thinner than one derived from the database
-/// and always will be: a journal names factions and numbers none of them,
-/// so [`galos_index::Galaxy`] publishes an empty faction list by
-/// construction, and the body counts arrive in their own events rather than
-/// with the arrival. Writing such a row straight over a published one took
-/// the faction ids off every populated system a feed happened to mention —
-/// a thousand of them in the directory this was found in — and the map
-/// colours and filters by exactly those.
-///
-/// So the event wins where it says something and what stands is kept where
-/// it does not, which is the rule the database's own write path states
-/// column by column and the rule this side already follows for a scan
-/// arriving after an arrival.
-fn over(
-    published: Option<&PopulatedSystem>,
-    said: PopulatedSystem,
-) -> PopulatedSystem {
-    let Some(stood) = published else { return said };
-    PopulatedSystem {
-        security: said.security.or(stood.security),
-        government: said.government.or(stood.government),
-        allegiance: said.allegiance.or(stood.allegiance),
-        primary_economy: said.primary_economy.or(stood.primary_economy),
-        secondary_economy: said.secondary_economy.or(stood.secondary_economy),
-        // Never stated by an event, so never taken away by one.
-        factions: match said.factions.is_empty() {
-            true => stood.factions.clone(),
-            false => said.factions,
-        },
-        body_count: said.body_count.or(stood.body_count),
-        non_body_count: said.non_body_count.or(stood.non_body_count),
-        ..said
     }
 }

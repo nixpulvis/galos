@@ -117,7 +117,8 @@ static SECTOR_TABLE: LazyLock<Sectors> = LazyLock::new(|| {
 });
 
 /// How many sectors the dictionary holds.
-pub fn sector_count() -> usize {
+#[cfg(test)]
+pub(crate) fn sector_count() -> usize {
     SECTOR_TABLE.by_key.len()
 }
 
@@ -144,7 +145,7 @@ pub fn sector_at(key: u32) -> Option<&'static str> {
 }
 
 /// The sector coordinates of the sector named `name`, upper case.
-pub fn sector_named(name: &str) -> Option<[u8; 3]> {
+pub(crate) fn sector_named(name: &str) -> Option<[u8; 3]> {
     let held = &*SECTOR_TABLE;
     let at =
         held.by_name.binary_search_by_key(&name, |(name, _)| *name).ok()?;
@@ -191,33 +192,6 @@ pub fn spells(address: i64, name: &str) -> bool {
     name_of(address).is_some_and(|held| held == *name)
 }
 
-/// Which sectors hold a word beginning with `needle`, at most `limit`.
-///
-/// The mid-name half of a search over *derived* names, and the reason it
-/// costs nothing: a derived name is a sector and a boxel code, so the only
-/// word in it anybody types is in this dictionary — 11,662 names and 192
-/// KB, compiled in and swept in microseconds. What a caller does with a
-/// sector is walk its run of the by-name order, the sector being what a
-/// procedural name begins with.
-///
-/// A word start rather than any offset, for [`crate::store::names`]'s reason:
-/// matching mid-word would answer `EUQ` with every sector merely holding
-/// those letters.
-pub fn sectors_holding(needle: &str, limit: usize) -> Vec<&'static str> {
-    if needle.is_empty() || limit == 0 {
-        return Vec::new();
-    }
-    SECTOR_TABLE
-        .by_name
-        .iter()
-        .filter(|(sector, _)| {
-            sector.split(' ').any(|word| word.starts_with(needle))
-        })
-        .map(|(sector, _)| *sector)
-        .take(limit)
-        .collect()
-}
-
 /// How many letters of a *word* may be wrong before it says nothing
 ///
 /// [`EXACTLY_UNDER`] is about a whole sector name; a word of one is three
@@ -244,7 +218,7 @@ pub fn slack(word: &str) -> usize {
 /// The one rule a query's word is matched by, wherever it is matched — the
 /// sector vocabulary here, and the rows a caller sieves behind it. A prefix
 /// counts because that is what a search is; the edits are [`slack`]'s.
-pub fn matches_word(word: &str, held: &str) -> bool {
+pub(crate) fn matches_word(word: &str, held: &str) -> bool {
     edits_to(word, held).is_some()
 }
 
@@ -253,7 +227,7 @@ pub fn matches_word(word: &str, held: &str) -> bool {
 /// Nought for a prefix, which is what a search is, and otherwise the edit
 /// distance — so a caller with more answers than room offers the nearest
 /// rather than whichever it swept first.
-pub fn edits_to(word: &str, held: &str) -> Option<usize> {
+pub(crate) fn edits_to(word: &str, held: &str) -> Option<usize> {
     if held.starts_with(word) {
         return Some(0);
     }
@@ -278,7 +252,7 @@ pub fn edits_to(word: &str, held: &str) -> Option<usize> {
 ///
 /// `near` is where the reader is looking, in light years, and is what
 /// settles which of sixty sectors named `EUQ` are offered.
-pub fn sectors_holding_all(
+pub(crate) fn sectors_holding_all(
     words: &[&str],
     near: Option<[f64; 3]>,
     limit: usize,
@@ -362,7 +336,7 @@ pub fn sectors_holding_all(
 /// `EUQ YE-Q` used to answer nothing while every sector named `EUQ` held a
 /// `YE-Q`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Coded {
+pub(crate) struct Coded {
     /// The boxel's ordinal within its run, from the three letters.
     pub code: u32,
     /// The mass class, where a class letter was typed.
@@ -379,7 +353,7 @@ pub struct Coded {
 /// before the last, and `D5-0` or `D5`, a mass class and its numbers. A
 /// caller matching words against a vocabulary skips these, there being no
 /// sector spelled like one.
-pub fn is_coordinate(word: &str) -> bool {
+pub(crate) fn is_coordinate(word: &str) -> bool {
     code_of(word).is_some() || class_of(word).is_some()
 }
 
@@ -425,7 +399,7 @@ fn class_of(word: &str) -> Option<(u8, Option<u32>, Option<u32>)> {
 /// The code is what makes a query coordinates at all: a class on its own
 /// (`D5`) says nothing about *where*, only which of a boxel's systems, so
 /// it is read only beside one.
-pub fn coded(words: &[&str]) -> Option<Coded> {
+pub(crate) fn coded(words: &[&str]) -> Option<Coded> {
     let code = words.iter().find_map(|word| code_of(word))?;
     let class = words.iter().find_map(|word| class_of(word));
     Some(match class {
@@ -454,7 +428,7 @@ const INDICES: u32 = 8;
 /// The enumeration is [`RUNS`] deep by [`INDICES`] wide over eight mass
 /// classes, and a sector that holds none of them holds none: this is the
 /// bound on what a miss costs, at an address lookup each.
-pub const TRIED: usize = 128;
+pub(crate) const TRIED: usize = 128;
 
 /// And how many sectors are tried, where the query named a word that
 /// several of them hold
@@ -465,7 +439,7 @@ pub const TRIED: usize = 128;
 /// because a coordinate query is about a place: measured over the v4 table,
 /// `EUQ YE-Q` answered in 891 ms over twenty-five sectors and 128 ms over
 /// eight, and the answers are the eight the reader is nearest.
-pub const TRIED_SECTORS: usize = 8;
+pub(crate) const TRIED_SECTORS: usize = 8;
 
 /// Every address `coded` could name in the sector `key` stands for, most
 /// likely first
@@ -480,7 +454,7 @@ pub const TRIED_SECTORS: usize = 8;
 /// At most `most` of them, and the order is what makes that bound worth
 /// having: a caller filling a screenful stops at the first answers rather
 /// than the last.
-pub fn addresses_in(key: u32, coded: &Coded, most: usize) -> Vec<i64> {
+pub(crate) fn addresses_in(key: u32, coded: &Coded, most: usize) -> Vec<i64> {
     let sector = sector_of(key);
     let masses: Vec<u8> = match coded.mass {
         Some(mass) => vec![mass],
@@ -523,7 +497,7 @@ pub fn addresses_in(key: u32, coded: &Coded, most: usize) -> Vec<i64> {
 /// names a boxel of *every* sector, so which sectors are worth trying is
 /// the only question, and where the reader is looking is the only answer
 /// there is.
-pub fn sectors_near(at: [f64; 3], limit: usize) -> Vec<u32> {
+pub(crate) fn sectors_near(at: [f64; 3], limit: usize) -> Vec<u32> {
     let away = |key: u32| {
         let sector = sector_of(key);
         (0..3)

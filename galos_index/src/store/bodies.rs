@@ -246,7 +246,7 @@ fn tail_bound(base: usize) -> usize {
 /// replaced, or one a tombstone withdrew. Reclaiming it is the shard's
 /// live bytes written out again, so the bar is what that write is worth.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Dead {
+pub(crate) enum Dead {
     /// Half the file. What the write path keeps: a feed appending to a
     /// shard it has appended to for months pays the rewrite once the file
     /// holds twice the bytes it needs, and no sooner.
@@ -1283,7 +1283,7 @@ pub fn sweep_bodies(
 /// Interruptible, a galaxy of scans being minutes of them, and what it
 /// abandons costs nothing: the caller is filling in a column it can fill
 /// again.
-pub fn each_arrival_class(
+pub(crate) fn each_arrival_class(
     dir: &Path,
     stop: &dyn Fn() -> bool,
     each: &mut dyn FnMut(i64, &str),

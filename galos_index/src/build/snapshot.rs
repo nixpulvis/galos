@@ -28,7 +28,7 @@ use std::path::Path;
 ///
 /// Small: budget granularity matters most at coarse levels, where one
 /// expansion moves many points.
-pub const INTERNAL_SLICE: usize = 512;
+pub(crate) const INTERNAL_SLICE: usize = 512;
 
 /// The most systems a cell holds before it splits, and the most a leaf owns.
 ///

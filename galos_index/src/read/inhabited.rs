@@ -53,20 +53,20 @@ use std::collections::HashMap;
 /// [`Allegiance::None`], which is the game saying a populated system answers
 /// to nobody. Both draw grey and the two are kept apart anyway, for the same
 /// reason an absent `factions.bin` is not an empty one.
-pub const ALLEGIANCE_BUCKETS: usize = 11;
+pub(crate) const ALLEGIANCE_BUCKETS: usize = 11;
 
 /// Buckets the government histogram counts in, plus one unknown at zero.
-pub const GOVERNMENT_BUCKETS: usize = 18;
+pub(crate) const GOVERNMENT_BUCKETS: usize = 18;
 
 /// Buckets the security histogram counts in, plus one unknown at zero.
-pub const SECURITY_BUCKETS: usize = 6;
+pub(crate) const SECURITY_BUCKETS: usize = 6;
 
 /// Which bucket a system's allegiance counts in.
 ///
 /// A `match` and never a comparison: `Allegiance` carries a hand-written
 /// `PartialEq` under which `None != None`, so `==` answers falsely for the one
 /// variant a histogram most needs to place.
-pub fn allegiance_bucket(allegiance: Option<Allegiance>) -> usize {
+pub(crate) fn allegiance_bucket(allegiance: Option<Allegiance>) -> usize {
     match allegiance {
         None => 0,
         Some(Allegiance::Alliance) => 1,
@@ -101,7 +101,7 @@ pub fn allegiance_at(bucket: usize) -> Option<Allegiance> {
 }
 
 /// Which bucket a system's government counts in.
-pub fn government_bucket(government: Option<Government>) -> usize {
+pub(crate) fn government_bucket(government: Option<Government>) -> usize {
     match government {
         None => 0,
         Some(Government::Anarchy) => 1,
@@ -149,7 +149,7 @@ pub fn government_at(bucket: usize) -> Option<Government> {
 }
 
 /// Which bucket a system's security rating counts in.
-pub fn security_bucket(security: Option<Security>) -> usize {
+pub(crate) fn security_bucket(security: Option<Security>) -> usize {
     match security {
         None => 0,
         Some(Security::High) => 1,
