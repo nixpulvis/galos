@@ -91,10 +91,10 @@ mod tests {
         let mut code = Vec::new();
         code_under(&map, &mut code);
 
-        let reaching: Vec<_> = code
-            .iter()
-            .filter(|(_, line)| line.contains("crate::ui"))
-            .collect();
+        // Put together, so that this line is not itself a line naming it.
+        let chrome = ["crate", "ui"].join("::");
+        let reaching: Vec<_> =
+            code.iter().filter(|(_, line)| line.contains(&chrome)).collect();
         assert!(reaching.is_empty(), "the map names the chrome: {reaching:#?}");
     }
 }
