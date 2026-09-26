@@ -6,8 +6,8 @@
 //! destinations is flown in when nobody said which ([`tour`]).
 //!
 //! Pure over the index: no renderer and no database. The map draws a search
-//! while it runs from what [`graph::Frontier`] samples, and keeps the
-//! settings and the graph as resources under the `bevy` feature.
+//! while it runs from what [`graph::Frontier`] samples, and holds the
+//! settings and the graph in resources of its own.
 
 mod boosts;
 pub mod graph;

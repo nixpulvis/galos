@@ -55,7 +55,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// The same four hundred and fifty-eight jumps either way here, for a
 /// twentieth of the wait — but only the second row *proves* it is the
 /// fewest, and that proof is nearly all of the time.
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Routing {
     /// How many jumps over the fewest it may settle for, in percent
@@ -441,7 +440,6 @@ const LONG_ROUTE_LY: f64 = 1_500.;
 /// So they are settings, with the defaults measured rather than assumed.
 /// Only [`Routing::QUICK`] reads any of them: `Direct` and `Shortest` are
 /// proven fewest-jumps routes and have nothing to trade.
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tuning {
     /// How large a gap the plan strings together to begin with, in whole
@@ -715,7 +713,6 @@ pub enum Crossing {
 /// half again, and there are seven thousand of them against ninety-four
 /// thousand neutron stars in the data — so what they change is a route with a
 /// gap in its neutron chain, and little else.
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub enum Drive {
     /// No supercharging: every jump is the range the ship reaches unaided.
@@ -1889,7 +1886,6 @@ impl Sampler {
 /// used to be a grid of its own — 32 bytes a system of points, an address
 /// map beside them and a bucket per occupied cell, 13.7 GB and 32 s at
 /// 200 M, paid on the click that asked for a route.
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 #[derive(Clone, Default)]
 pub struct Jumps {
     /// The graph, once a route has asked for one.

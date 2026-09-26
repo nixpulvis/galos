@@ -34,6 +34,7 @@ use crate::map::index::refresh::Held;
 use crate::map::index::{
     Factions, IndexDir, Names, Populated, ResidentIndex, Settled, Transport,
 };
+use crate::map::route::Router;
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -158,9 +159,8 @@ struct Loaded {
     populated: Populated,
     settled: Settled,
     names: Names,
-    boosts: Boosts,
     factions: Factions,
-    jumps: Jumps,
+    router: Router,
 }
 
 /// Set the read going, on the frame the window comes up
@@ -272,32 +272,23 @@ fn finish(
     let Some(found) = block_on(future::poll_once(&mut reading.task)) else {
         return;
     };
-    let Loaded {
-        held,
-        index,
-        populated,
-        settled,
-        names,
-        boosts,
-        factions,
-        jumps,
-    } = match found {
-        Ok(loaded) => loaded,
-        Err(said) => {
-            error!("galos: {said}");
-            reading.failed = Some(said);
-            return;
-        }
-    };
+    let Loaded { held, index, populated, settled, names, factions, router } =
+        match found {
+            Ok(loaded) => loaded,
+            Err(said) => {
+                error!("galos: {said}");
+                reading.failed = Some(said);
+                return;
+            }
+        };
 
     commands.insert_resource(held);
     commands.insert_resource(index);
     commands.insert_resource(populated);
     commands.insert_resource(settled);
     commands.insert_resource(names);
-    commands.insert_resource(boosts);
     commands.insert_resource(factions);
-    commands.insert_resource(jumps);
+    commands.insert_resource(router);
     // All of them together, and the gate opened after: the first frame the map
     // draws is a frame in which every one of them answers.
     commands.remove_resource::<Reading>();
@@ -384,14 +375,16 @@ fn stood_up(
 
     Loaded {
         held,
-        jumps: sky.clone().map_or_else(Jumps::default, Jumps::over),
+        router: Router {
+            jumps: sky.clone().map_or_else(Jumps::default, Jumps::over),
+            boosts,
+        },
         index: ResidentIndex(index),
         populated: Populated(Arc::new(
             populated.into_iter().map(|s| (s.address, s)).collect(),
         )),
         settled,
         names: Names::packed(table, reaches, sky),
-        boosts,
         factions: Factions(
             factions.into_iter().map(|f| (f.id, f.name)).collect(),
         ),

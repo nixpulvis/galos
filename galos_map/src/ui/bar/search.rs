@@ -2,6 +2,7 @@
 
 use crate::map::camera::MoveCamera;
 use crate::map::route::frontier::Frontiers;
+use crate::map::route::{RouteSettings, Router};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults, Searching};
 use crate::map::selection::{Picked, Selection};
 use crate::ui::list::{
@@ -14,7 +15,6 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::Ui;
 use galos_index::records::NameEntry;
-use galos_route::graph::{Drive, Routing, Tuning};
 
 /// The whole of the bar's searching
 ///
@@ -33,14 +33,12 @@ pub(crate) struct SearchBar<'w> {
     pub(in crate::ui) pending: Res<'w, Searching>,
     /// How the route last asked for is getting on
     pub(in crate::ui) plot: ResMut<'w, Plot>,
-    /// Which of the fewest-jumps routes to ask for
-    pub(in crate::ui) how: ResMut<'w, Routing>,
-    pub(in crate::ui) drive: ResMut<'w, Drive>,
-    /// How a long supercharged route is planned; see `planning`
-    pub(in crate::ui) tune: ResMut<'w, Tuning>,
+    /// How the next route is asked for: which of the fewest-jumps routes,
+    /// on what drive, and how a long supercharged one is planned
+    pub(in crate::ui) route: ResMut<'w, RouteSettings>,
     /// Whether the index publishes a supercharge table at all, which is what
     /// a route for a supercharging drive needs before it can be asked for
-    pub(in crate::ui) boosts: Res<'w, galos_route::Boosts>,
+    pub(in crate::ui) router: Res<'w, Router>,
     pub(in crate::ui) searching: Res<'w, Frontiers>,
 }
 

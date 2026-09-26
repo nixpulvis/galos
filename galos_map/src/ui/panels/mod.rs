@@ -400,7 +400,7 @@ fn panels(
     searching: Res<crate::map::route::frontier::Frontiers>,
     // Which systems can supercharge, which is the one thing about a star's
     // kind the index publishes for all of them.
-    boosts: Res<galos_route::Boosts>,
+    router: Res<crate::map::route::Router>,
     // And the real class of the stars a panel lists, looked up by address:
     // a list is finite where the galaxy is not. See [`StarClasses`].
     mut classes: ResMut<StarClasses>,
@@ -601,7 +601,7 @@ fn panels(
                     timed,
                     outstanding,
                     state,
-                    &boosts,
+                    &router.boosts,
                     &classes,
                     center,
                     &mut picked,

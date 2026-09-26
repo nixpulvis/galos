@@ -43,6 +43,7 @@ use crate::map::galaxy::walk::{
 use crate::map::index::{
     Factions, Names, Populated, ResidentIndex, Settled, Transport,
 };
+use crate::map::route::Router;
 use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
@@ -54,7 +55,6 @@ use galos_index::records::{
 use galos_index::store::names::Delta;
 use galos_index::{CellId, Index, Part, Point, Stamp};
 use galos_route::Boosts;
-use galos_route::graph::Jumps;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -360,8 +360,7 @@ fn apply(
     mut settled: ResMut<Settled>,
     mut names: ResMut<Names>,
     mut factions: ResMut<Factions>,
-    mut boosts: ResMut<Boosts>,
-    mut jumps: ResMut<Jumps>,
+    mut router: ResMut<Router>,
 ) {
     let Some(task) = refreshing.task.as_mut() else { return };
     let Some(found) = block_on(future::poll_once(task)) else { return };
@@ -403,7 +402,7 @@ fn apply(
     // megabyte and written whole, so there is no part of it to read.
     let found_boosts = found.boosts.is_some();
     if let Some((read, stamp)) = found.boosts {
-        *boosts = read.map_or_else(Boosts::absent, Boosts::of);
+        router.boosts = read.map_or_else(Boosts::absent, Boosts::of);
         held.boosts = stamp;
     }
 
@@ -440,9 +439,9 @@ fn apply(
     //
     // Dropped rather than rebuilt, and it costs nothing to drop: the graph
     // is a handle on the index, not a structure over it, so the next route
-    // asked for opens another. See [`Jumps::built`].
+    // asked for opens another. See [`galos_route::graph::Jumps::built`].
     if rebased || found_boosts {
-        jumps.graph = None;
+        router.jumps.graph = None;
     }
 
     // A replaced payload is a new set of points in the same cell, so whatever
@@ -588,8 +587,10 @@ mod tests {
             crate::map::index::names::Reaches::of(reaches),
             Some(Arc::clone(&sky)),
         );
-        app.insert_resource(Jumps::over(sky));
-        app.insert_resource(boosts);
+        app.insert_resource(Router {
+            jumps: galos_route::graph::Jumps::over(sky),
+            boosts,
+        });
         app.insert_resource(names);
         app.insert_resource(ResidentIndex(
             block_on(source.index()).expect("a published index"),
@@ -830,11 +831,10 @@ mod tests {
         let read_to = app.world().resource::<Names>().read_to();
         // As a route asks for it: the graph is opened on the first ask and
         // held thereafter, so there is one here to be dropped at all.
-        let boosts = app.world().resource::<Boosts>().clone();
         let graph = app
             .world_mut()
-            .resource_mut::<Jumps>()
-            .built(&boosts)
+            .resource_mut::<Router>()
+            .built()
             .expect("a graph over the galaxy the map opened");
 
         // The same two systems reported again, exactly as the table has them.
@@ -854,7 +854,7 @@ mod tests {
         assert_eq!(names.len(), 2, "two systems named, each counted once");
         assert!(
             matches!(
-                &app.world().resource::<Jumps>().graph,
+                &app.world().resource::<Router>().jumps.graph,
                 Some(now) if Arc::ptr_eq(&graph, now)
             ),
             "the router's graph was dropped to take in nothing"
@@ -1000,9 +1000,8 @@ mod tests {
         );
 
         // As a route asks for it, so there is a graph to drop at all.
-        let boosts = app.world().resource::<Boosts>().clone();
         assert!(
-            app.world_mut().resource_mut::<Jumps>().built(&boosts).is_some(),
+            app.world_mut().resource_mut::<Router>().built().is_some(),
             "the galaxy the map opened should route"
         );
 
@@ -1028,7 +1027,7 @@ mod tests {
         assert_eq!(names.len(), 2, "both systems are still named");
         assert_eq!(names.address("Second"), Some(2), "out of the new base");
         assert!(
-            app.world().resource::<Jumps>().graph.is_none(),
+            app.world().resource::<Router>().jumps.graph.is_none(),
             "the graph read beside the old base was kept"
         );
     }

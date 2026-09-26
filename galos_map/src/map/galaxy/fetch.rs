@@ -22,8 +22,7 @@ pub fn plugin(app: &mut App) {
     // landed. An absent supercharge table is what the map says where it
     // cannot say where a jet cone is, which is exactly the right answer
     // before the read — see [`galos_route::Boosts::absent`].
-    app.init_resource::<galos_route::Boosts>();
-    app.init_resource::<galos_route::graph::Jumps>();
+    app.init_resource::<crate::map::route::Router>();
     // And how the form says a plot is getting on, which the route fetch
     // writes: a click that takes a route back leaves nothing to wait on,
     // and the spinner has to stop. The form's own plugin inits this too;
@@ -169,16 +168,25 @@ pub fn fetch_searched(
     mut tasks: ResMut<FetchTasks>,
     mut searching: ResMut<crate::map::route::frontier::Frontiers>,
     time: Res<Time<Real>>,
-    mut jumps: ResMut<galos_route::graph::Jumps>,
+    mut router: ResMut<crate::map::route::Router>,
     names: Res<Names>,
-    boosts: Res<galos_route::Boosts>,
     populated: Res<Populated>,
     mut plot: ResMut<crate::map::search::Plot>,
-    tune: Res<galos_route::graph::Tuning>,
+    settings: Res<crate::map::route::RouteSettings>,
     mut filters: ResMut<crate::map::filter::Filters>,
     mut selected: ResMut<crate::map::route::SelectedFilter>,
 ) {
+    let now = time.last_update().unwrap_or(time.startup());
     for event in search_events.read() {
+        let mut asking = crate::map::route::fetch::Asking {
+            tasks: &mut tasks,
+            searching: &mut searching,
+            filters: &mut filters,
+            router: &mut router,
+            names: &names,
+            populated: &populated,
+            now,
+        };
         match event {
             // A search finds and picks out nothing, so there is nothing
             // here to fetch yet. Whatever the user picks out of what it
@@ -192,34 +200,30 @@ pub fn fetch_searched(
             // [`crate::map::search::Search::Stop`].
             Search::Stop => {
                 crate::map::route::fetch::stop_routes(
-                    &mut tasks,
-                    &mut searching,
-                    &mut filters,
+                    asking.tasks,
+                    asking.searching,
+                    asking.filters,
                 );
                 // Nothing is left for the form to wait on, and the only
                 // other thing that clears `Working` is a route landing.
                 *plot = crate::map::search::Plot::Nothing;
             }
             Search::Route { stops, range, drive, how } => {
+                // The tuning is read where the route is asked for, as the
+                // range and the drive are: what a plot is, is what was
+                // asked for, and a knob moved while it runs does not change
+                // the answer under it.
+                let asked = crate::map::route::RouteSettings {
+                    how: *how,
+                    drive: *drive,
+                    tune: settings.tune,
+                };
                 fetch_route(
                     stops.clone(),
                     range.into(),
-                    *drive,
-                    &mut tasks,
-                    &mut searching,
-                    &time,
-                    &mut jumps,
-                    *how,
-                    // Read where the route is asked for, as the range and
-                    // the drive are: what a plot is, is what was asked for,
-                    // and a knob moved while it runs does not change the
-                    // answer under it.
-                    *tune,
-                    &names,
-                    &boosts,
-                    &populated,
-                    &mut filters,
+                    asked,
                     &mut selected,
+                    &mut asking,
                 );
             }
             // And one leg asked again, on its own ask rather than the
@@ -227,17 +231,7 @@ pub fn fetch_searched(
             // plot tells it: the row's own spinner is the bar's, and the
             // stop button is the one way out of either.
             Search::Replot(route) => {
-                if crate::map::route::fetch::replot(
-                    route,
-                    &mut tasks,
-                    &mut searching,
-                    &time,
-                    &mut jumps,
-                    &names,
-                    &boosts,
-                    &populated,
-                    &mut filters,
-                ) {
+                if crate::map::route::fetch::replot(route, &mut asking) {
                     *plot = crate::map::search::Plot::Working;
                 }
             }
@@ -351,8 +345,7 @@ pub(crate) mod tests {
         ));
         app.add_message::<Search>();
         app.init_resource::<Selection>();
-        app.init_resource::<galos_route::graph::Routing>();
-        app.init_resource::<galos_route::graph::Tuning>();
+        app.init_resource::<crate::map::route::RouteSettings>();
         app.init_resource::<crate::map::route::frontier::Frontiers>();
         // The rows a plot puts up, and which route is the one being looked
         // at: a leg's row goes up when it is asked for, so the ask writes
@@ -364,7 +357,10 @@ pub(crate) mod tests {
         let dir = crate::testing::Scratch::new("fetch");
         let sky = crate::testing::sky_of(dir.path(), &entries);
         let names = Names::reaching(entries, Vec::new());
-        app.insert_resource(galos_route::graph::Jumps::over(sky));
+        app.insert_resource(crate::map::route::Router {
+            jumps: galos_route::graph::Jumps::over(sky),
+            ..default()
+        });
         app.insert_resource(names);
         app.insert_resource(Populated::default());
         app.add_plugins(plugin);

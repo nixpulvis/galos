@@ -4058,7 +4058,6 @@ dependencies = [
 name = "galos_route"
 version = "0.0.1"
 dependencies = [
- "bevy_ecs",
  "elite_journal",
  "galos_index",
  "glam",

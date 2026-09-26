@@ -2,6 +2,7 @@
 //! what jump range
 
 use crate::map::route::frontier::Frontiers;
+use crate::map::route::{RouteSettings, Router};
 use crate::map::search::{Plot, Search};
 use crate::map::selection::Selection;
 use crate::ui::bar::tuning::{approximating, planned, searching_says, trading};
@@ -13,7 +14,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::{Response, Ui};
-use galos_route::graph::{Drive, Routing, Tuning};
+use galos_route::graph::Drive;
 use galos_route::tour::Shape;
 
 /// The jump range asked for, or what is wrong with what was asked
@@ -263,12 +264,12 @@ pub(super) fn route_body(
     selection: &Selection,
     searched: &mut MessageWriter<Search>,
     plot: &mut Plot,
-    how: &mut Routing,
-    drive: &mut Drive,
-    tune: &mut Tuning,
-    boosts: &galos_route::Boosts,
+    route: &mut RouteSettings,
+    router: &Router,
     searching: &Frontiers,
 ) -> Response {
+    let RouteSettings { how, drive, tune } = route;
+    let boosts = &router.boosts;
     // Which systems it runs through is not said here. They are the rows in
     // the state bar below, named there and in that order, and a form that
     // spelled them out again would say the same thing twice -- at six stops,
