@@ -28,7 +28,7 @@ without a database.
 
 The **near field** — a system's own stars and planets at real geometry, and
 reaching them — is the code under
-[`src/systems/bodies`](./src/systems/bodies).
+[`src/map/bodies`](./src/map/bodies).
 
 What it draws is a moment rather than a pile of scans. A system's rows arrive
 from as many commanders as have ever flown there, so each orbit carries how
@@ -62,7 +62,7 @@ and the grid. Hiding it puts the map back to the present: the reading is the
 only place a run-on is shown and the only way back from one.
 
 The two meet in two places only: the sizing law's context scalar in
-[`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale
+[`src/map/paint/sizing.rs`](./src/map/paint/sizing.rs), and the photometric scale
 the local star is lit by.
 
 Everything reaches the screen flat. A single float resolves one part in
@@ -72,9 +72,10 @@ the `f32` clip transform. So every mark and every note — the star field, the
 names and their leaders, the rings around what is pointed at and picked out,
 and the ruled plane's readouts — is projected to a pixel on the processor in
 `f64` and painted flat with egui. The star field is
-[`src/systems/field.rs`](./src/systems/field.rs), the names and leaders
-[`src/systems/labels.rs`](./src/systems/labels.rs), and the cameras and the
-order they draw in [`src/camera.rs`](./src/camera.rs).
+[`src/map/paint/field.rs`](./src/map/paint/field.rs), the names and leaders
+[`src/map/labels.rs`](./src/map/labels.rs), the projection they all share
+[`src/map/screen.rs`](./src/map/screen.rs), and the cameras and the
+order they draw in [`src/map/camera.rs`](./src/map/camera.rs).
 
 ## Mouse
 

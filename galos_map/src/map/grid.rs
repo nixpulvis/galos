@@ -408,7 +408,7 @@ const DIMMEST: f32 = 0.3;
 /// still galactic coordinates over them.
 ///
 /// Only the system the map is holding ever has a mark that goes out (see
-/// `fade` in `systems::bodies::spawn`), so a wide neighbour whose own
+/// `fade` in `map::bodies::spawn`), so a wide neighbour whose own
 /// measure would have its mark nearly gone from four light years off cannot
 /// take the ruler while the camera stands somewhere else.
 ///

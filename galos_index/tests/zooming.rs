@@ -14,7 +14,7 @@
 //!
 //! An integration test, everything it touches being this crate's public
 //! surface. The routing half of what used to be one guard is `galos_map`'s
-//! `systems::route::perf`, which cannot live out here: it measures settings
+//! `galos_route`'s `perf`, which cannot live out here: it measures settings
 //! the map keeps to itself.
 //!
 //! Stands down without `GALOS_PERF_DIR` naming a built index directory:

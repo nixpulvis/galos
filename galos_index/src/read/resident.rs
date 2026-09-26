@@ -176,7 +176,7 @@ mod tests {
     /// What is fetched is needed and absent, and what is needed and resident
     /// is what the draw reads off `iter`. Which of the resident cells are
     /// dropped again is the client's policy and not this cache's: see
-    /// `galos_map`'s `systems::bounded::evict_payloads`.
+    /// `galos_map`'s `map::galaxy::walk::evict_payloads`.
     #[test]
     fn the_fetch_set_is_what_is_needed_and_absent() {
         let (a, b, c) = (at(4, 0), at(4, 1), at(4, 2));
