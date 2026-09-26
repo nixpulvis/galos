@@ -56,7 +56,7 @@ pub use crate::core::geometry::CellId;
 pub use crate::core::index::Index;
 pub use crate::core::moments::Moments;
 pub use crate::core::name::SystemName;
-pub use crate::core::record::{Boost, Point, StarKind, System};
+pub use crate::core::record::{Boost, Fsd, Point, StarKind, System};
 pub use crate::format::lock::Lock;
 pub use crate::format::payload::INDEX_VERSION;
 pub use crate::read::sky::Sky;

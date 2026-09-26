@@ -244,8 +244,8 @@ impl StarKind {
 
     /// What it can supercharge a drive on, where it can
     ///
-    /// The same answer [`Boost::of`] reads off the class string, off the
-    /// byte instead: a cone is a white dwarf's or a neutron star's.
+    /// A cone is a white dwarf's or a neutron star's; see [`boostable`] for
+    /// the same answer off a class string.
     pub fn boost(&self) -> Option<Boost> {
         match self {
             StarKind::WhiteDwarf => Some(Boost::WhiteDwarf),
@@ -334,9 +334,9 @@ impl FixedCodec for StarKind {
 /// worth is a fact about the system a ship is standing in and not about how it
 /// got there — which is what lets the router read it as a property of a place.
 ///
-/// Which of the two, rather than the multiplier: what a boost is worth depends
-/// on the drive fitted, and the table is about the sky. See
-/// `galos_route::graph::Drive`.
+/// Which of the two, rather than the multiplier: the table is about the sky,
+/// and what a boost is worth depends on the drive taking it — see
+/// [`Boost::factor`] and [`Fsd`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Boost {
     /// A white dwarf: half again, and a much larger exclusion zone to be
@@ -347,20 +347,24 @@ pub enum Boost {
 }
 
 impl Boost {
-    /// What the star of class `primary_star_class` can supercharge, if it can
+    /// What a jump out of here is multiplied by, on a drive of `fsd`
     ///
-    /// The arrival star's class, which is the one that matters: a ship drops in
-    /// at the main star and can reach its jet cone without crossing the system.
-    /// A neutron star is class `N`; every white dwarf class begins with `D`
-    /// (`DA`, `DB`, `DC` and their variants). Nothing else has a jet cone to
-    /// fly — a black hole is class `H` and gives nothing, whatever it looks
-    /// like it should.
-    pub fn of(primary_star_class: &str) -> Option<Boost> {
-        match primary_star_class {
-            "N" => Some(Boost::Neutron),
-            class if class.starts_with('D') => Some(Boost::WhiteDwarf),
-            _ => None,
+    /// Four times off a neutron star and half again off a white dwarf on a
+    /// standard drive; six and three on the Mk II, which is built for it.
+    /// The boost is what is worth having and the drive only how much of it
+    /// is taken, so the figure is the boost's to say.
+    pub fn factor(self, fsd: Fsd) -> f64 {
+        match (self, fsd) {
+            (Boost::WhiteDwarf, Fsd::MkI) => 1.5,
+            (Boost::Neutron, Fsd::MkI) => 4.,
+            (Boost::WhiteDwarf, Fsd::MkII) => 3.,
+            (Boost::Neutron, Fsd::MkII) => 6.,
         }
+    }
+
+    /// The largest factor any boost gives on `fsd`: a neutron star's
+    pub fn widest(fsd: Fsd) -> f64 {
+        Boost::Neutron.factor(fsd)
     }
 
     /// What the star is called, for a reader rather than for a router
@@ -375,6 +379,32 @@ impl Boost {
             Boost::WhiteDwarf => "white dwarf",
         }
     }
+}
+
+/// Which frame shift drive takes a jet cone's charge
+///
+/// What a [`Boost`] is worth depends on it, and nothing else about the ship
+/// does. A ship with no drive that can be supercharged is no `Fsd` at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Fsd {
+    /// A standard frame shift drive: four times off a neutron star, half
+    /// again off a white dwarf.
+    MkI,
+    /// The Mk II Supercharge Optimised drive: six times and three.
+    MkII,
+}
+
+/// What a ship can supercharge on at a star of this class, if anything
+///
+/// The arrival star's class, which is the one that matters: a ship drops in
+/// at the main star and can reach its jet cone without crossing the system.
+/// A neutron star is class `N`; every white dwarf class begins with `D`
+/// (`DA`, `DB`, `DC` and their variants). Nothing else has a jet cone to fly
+/// — a black hole is class `H` and gives nothing, whatever it looks like it
+/// should. Read through [`StarKind::of`], as [`scoopable`] is, so the two
+/// questions asked of a class are answered off the one reading of it.
+pub fn boostable(primary_star_class: &str) -> Option<Boost> {
+    StarKind::of(primary_star_class).boost()
 }
 
 /// Whether a ship can refuel at a star of this class
@@ -436,6 +466,30 @@ mod tests {
             assert_eq!(back.temp_bucket, p.temp_bucket);
             assert_eq!(back.updated_at, p.updated_at);
             assert_eq!(back.magnitude, p.magnitude);
+        }
+    }
+
+    /// What a boost is worth is the boost's, told which drive takes it
+    #[test]
+    fn a_boost_says_what_it_multiplies_a_jump_by() {
+        assert_eq!(Boost::Neutron.factor(Fsd::MkI), 4.);
+        assert_eq!(Boost::WhiteDwarf.factor(Fsd::MkI), 1.5);
+        assert_eq!(Boost::Neutron.factor(Fsd::MkII), 6.);
+        assert_eq!(Boost::WhiteDwarf.factor(Fsd::MkII), 3.);
+        for fsd in [Fsd::MkI, Fsd::MkII] {
+            assert_eq!(Boost::widest(fsd), Boost::Neutron.factor(fsd));
+        }
+    }
+
+    /// A class is boostable off the one reading of it `scoopable` uses
+    #[test]
+    fn a_class_says_what_it_can_supercharge() {
+        assert_eq!(boostable("N"), Some(Boost::Neutron));
+        for dwarf in ["D", "DA", "DAB", "DBV", "DC", "DQ", "DX"] {
+            assert_eq!(boostable(dwarf), Some(Boost::WhiteDwarf), "{dwarf}");
+        }
+        for none in ["", "G", "K_OrangeGiant", "H", "MS", "TTS", "Neutron"] {
+            assert_eq!(boostable(none), None, "{none}");
         }
     }
 }

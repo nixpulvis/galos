@@ -541,7 +541,7 @@ fn write_boosts(
 /// Which star that is, is [`derive::arrival_class`] and not a query, over the
 /// rows the caller has already read for the body files and the reaches. SQL
 /// says only which systems are eligible: positioned, and with a class to read
-/// at all. The classification is [`galos_index::Boost::of`], so a class that
+/// at all. The classification is [`galos_index::core::record::boostable`], so a class that
 /// supercharges nothing is left out and the caller takes such a system out of
 /// the table it stands in.
 ///
@@ -572,7 +572,9 @@ async fn boosts_of(
         let inside = grouped.get(&address);
         let class =
             inside.and_then(derive::arrival_class).or(routed.as_deref());
-        if let Some(boost) = class.and_then(galos_index::Boost::of) {
+        if let Some(boost) =
+            class.and_then(galos_index::core::record::boostable)
+        {
             let position = place_from_row(&row)?;
             boosts.push(records::SystemBoost { address, boost, position });
         }
@@ -675,7 +677,7 @@ impl Scanned {
         let position = self.position?;
         let class =
             derive::arrival_class(&self.inside).or(self.routed.as_deref());
-        let boost = class.and_then(galos_index::Boost::of)?;
+        let boost = class.and_then(galos_index::core::record::boostable)?;
         Some(records::SystemBoost { address: self.address, boost, position })
     }
 }

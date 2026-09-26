@@ -789,7 +789,7 @@ struct Relit {
 fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
     let class = derive::arrival_class(inside)?;
     let kind = StarKind::of(class);
-    let boost = Boost::of(class);
+    let boost = crate::core::record::boostable(class);
     let stars = inside.stars.iter().map(|star| {
         let t = star.temperature as f64;
         let m = Magnitude(star.absolute_magnitude as f64);

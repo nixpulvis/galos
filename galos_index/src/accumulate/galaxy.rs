@@ -77,7 +77,7 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
-use crate::core::record::{Boost, StarKind, System};
+use crate::core::record::{StarKind, System, boostable};
 use crate::records::{
     NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
 };
@@ -407,7 +407,8 @@ impl Galaxy {
     /// a router reads, and a cone with no place is no waypoint. Which is
     /// the same rule the database derivation's `placed` carries.
     pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
-        let boost = Boost::of(&self.arrival_class(address)?)?;
+        let boost =
+            boostable(&self.arrival_class(address)?)?;
         let at = self.systems.get(&address)?.placed()?;
         Some(SystemBoost {
             address,
@@ -576,6 +577,7 @@ impl TableWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::record::Boost;
     use elite_journal::entry::Entry;
     use elite_journal::prelude::{Allegiance, Economy};
     use galos_photometry::ClassLight;

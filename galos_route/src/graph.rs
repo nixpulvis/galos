@@ -10,8 +10,8 @@
 
 use crate::Boosts;
 use crate::highway::Highway;
-use galos_index::Boost;
 use galos_index::read::sky::Node;
+use galos_index::{Boost, Fsd};
 use galos_index::{CellId, Sky};
 use glam::DVec3;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -698,10 +698,10 @@ pub enum Crossing {
 ///
 /// Flying the jet of a neutron star or a white dwarf charges a frame shift
 /// drive for one jump. What that multiplies the range by is a fact about the
-/// drive, not about the star: a standard drive takes four times off a neutron
-/// star and half again off a white dwarf, and the Mk II Supercharge Optimised
-/// drive takes six and three. Where the boost can be had at all is
-/// [`galos_index::Boost`], published per system.
+/// drive, not about the star: see [`Boost::factor`], which says what each
+/// [`Fsd`] takes off each. Where the boost can be had at all is
+/// [`galos_index::Boost`], published per system; this is only which drive,
+/// if any, is fitted to take it.
 ///
 /// Asked per route rather than set once, for the reason a jump range is: the
 /// same two ends flown by a different ship is a different route through
@@ -726,17 +726,24 @@ pub enum Drive {
 }
 
 impl Drive {
+    /// The drive fitted, where it can be supercharged at all
+    pub fn fsd(&self) -> Option<Fsd> {
+        match self {
+            Drive::Unaided => None,
+            Drive::Standard => Some(Fsd::MkI),
+            Drive::Optimised => Some(Fsd::MkII),
+        }
+    }
+
     /// What a jump out of a system offering `boost` is multiplied by
     ///
-    /// One where there is no boost to be had or no drive to take it, so a
-    /// caller can scale by this unconditionally.
+    /// The boost's own [`factor`](Boost::factor) on this drive, and one
+    /// where there is no boost to be had or no drive to take it, so a caller
+    /// can scale by this unconditionally.
     pub fn factor(&self, boost: Option<Boost>) -> f64 {
-        match (self, boost) {
-            (Drive::Unaided, _) | (_, None) => 1.,
-            (Drive::Standard, Some(Boost::WhiteDwarf)) => 1.5,
-            (Drive::Standard, Some(Boost::Neutron)) => 4.,
-            (Drive::Optimised, Some(Boost::WhiteDwarf)) => 3.,
-            (Drive::Optimised, Some(Boost::Neutron)) => 6.,
+        match (self.fsd(), boost) {
+            (Some(fsd), Some(boost)) => boost.factor(fsd),
+            _ => 1.,
         }
     }
 
@@ -750,7 +757,7 @@ impl Drive {
     /// a weaker estimate and more of the graph searched, which is the price of
     /// the answer being true.
     pub fn widest(&self) -> f64 {
-        self.factor(Some(Boost::Neutron))
+        self.fsd().map_or(1., Boost::widest)
     }
 
     /// What the row for a route says it was plotted for, where anything.
