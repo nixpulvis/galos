@@ -22,7 +22,7 @@ csv = "1"
 # consumer that only wants to read a catalog can drop it and not pull the
 # index and its serde stack; see the `index` feature below for why it is on
 # by default all the same.
-galos_index = { path = "../galos_index", default-features = false, optional = true }
+galos_index = { path = "../galos_index", optional = true }
 
 clap = { version = "4", features = ["derive"], optional = true }
 

@@ -52,7 +52,7 @@ big_space = { git = "https://github.com/aevyrie/big_space", branch = "bevy-0.19"
 ] }
 chrono = "*"
 elite_journal = { path = "../elite_journal" }
-galos_index = { path = "../galos_index", default-features = false }
+galos_index = { path = "../galos_index" }
 galos_photometry = { path = "../galos_photometry" }
 # The search state is a map keyed by a system, and a route across the galaxy
 # looks at tens of millions of neighbours: `SipHash` is the whole of where
