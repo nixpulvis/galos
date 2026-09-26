@@ -142,6 +142,7 @@ impl Held {
     }
 
     /// Forget every cell, the map having let go of every payload at once
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.cells.clear();
     }

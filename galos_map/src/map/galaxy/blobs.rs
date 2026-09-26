@@ -29,8 +29,9 @@ use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::walk::{Blob, Blobs, build_from_point};
 use crate::map::galaxy::{MapSet, System};
 use crate::map::index::{Names, Populated, Transport};
-use crate::map::labels::screen_position;
 use crate::map::pointing::{DRAG_THRESHOLD, DragDistance, PointedAt};
+use crate::map::schedule::PaintSet;
+use crate::map::screen::screen_position;
 use crate::map::selection::{Picked, Selection};
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -70,6 +71,7 @@ pub fn plugin(app: &mut App) {
         ring_blob
             .after(crate::map::pointing::ring)
             .before(crate::map::labels::draw_names)
+            .in_set(PaintSet::Map)
             .run_if(in_state(crate::map::index::load::Opening::Drawn)),
     );
 }
@@ -110,10 +112,9 @@ fn ring_blob(
     };
 
     let ctx = contexts.ctx_mut()?;
-    let painter = ctx.layer_painter(crate::map::labels::annotations_layer());
-    let color = crate::map::labels::color32(crate::map::labels::marked_tint(
-        true, false,
-    ));
+    let painter = ctx.layer_painter(crate::map::screen::annotations_layer());
+    let color =
+        crate::style::color32(crate::map::labels::marked_tint(true, false));
     painter.circle_stroke(
         egui::pos2(at.x, at.y),
         CATCH_PX,
@@ -150,7 +151,7 @@ fn ring_blob(
     painter.rect_filled(
         egui::Rect::from_min_size(origin, galley.size()).expand(pad),
         0.,
-        crate::map::labels::color32(crate::map::labels::GROUND),
+        crate::style::color32(crate::map::labels::GROUND),
     );
     painter.galley(origin, galley, color);
     Ok(())
@@ -357,7 +358,7 @@ const PREFIX: usize = 16;
 /// selection, which spawns it, rings it and flies to it exactly as it
 /// would one that had been on the map all along.
 fn click_blobs(
-    gesture: crate::ui::Gesture,
+    gesture: crate::input::Gesture,
     pointed: Res<PointedBlob>,
     prominent: Res<Prominent>,
     dragged: Query<&DragDistance>,
@@ -382,14 +383,7 @@ fn click_blobs(
     };
     // Held down, a modifier gathers rather than replaces, exactly as it
     // does over a drawn system; see `crate::map::galaxy::spawn::select_on_click`.
-    let gathering = keys.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-        KeyCode::ShiftLeft,
-        KeyCode::ShiftRight,
-    ]);
+    let gathering = crate::input::gathering(&keys);
     let system: System = build_from_point(point, &populated, &names);
     selection.pick(Picked::System(system), gathering);
 }

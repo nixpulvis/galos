@@ -36,9 +36,9 @@ use crate::map::galaxy::System;
 use crate::map::galaxy::spawn::{
     ColorBy, Shell, StarExposure, StarSprite, hue, photometric_emissive,
 };
-use crate::map::labels::{screen_position, world_per_pixel};
 use crate::map::paint::sizing::{Drawn, UNSEEN, View};
 use crate::map::schedule::MapSet;
+use crate::map::screen::{screen_position, world_per_pixel};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ScalingMode};

@@ -13,6 +13,8 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use elite_journal::Boxel;
+/// How a route is written: the two systems it runs between, in order
+pub(crate) const ARROW: &str = " -> ";
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
@@ -286,7 +288,7 @@ fn thin(
             }
             continue;
         }
-        let at = crate::map::labels::screen_position(
+        let at = crate::map::screen::screen_position(
             orbit,
             cot_half_fov,
             viewport,
@@ -666,7 +668,7 @@ impl UnflownLeg {
             label: format!(
                 "{}{}{}",
                 said(names, ends.0),
-                crate::ui::ARROW,
+                crate::map::route::ARROW,
                 said(names, ends.1),
             ),
             systems: vec![ends.0, ends.1],
@@ -753,7 +755,7 @@ pub(crate) fn placed_at(leg: &Filter, filters: &Filters) -> usize {
 
 /// Which trip a route is a leg of, and which leg of it it is
 ///
-/// A trip is named for its stops joined by [`crate::ui::ARROW`] and a leg for
+/// A trip is named for its stops joined by [`crate::map::route::ARROW`] and a leg for
 /// its two ends the same way, so which leg it is, is where its own pair falls
 /// among them. Spelled either way: the trip holds what the user typed and a
 /// line is named as the rows name it.
@@ -762,8 +764,8 @@ pub(crate) fn placed_at(leg: &Filter, filters: &Filters) -> usize {
 /// are not a pair of its trip's stops.
 fn leg_of(leg: &Filter) -> Option<(&str, usize)> {
     let trip = leg.trip()?;
-    let (start, end) = leg.name().split_once(crate::ui::ARROW)?;
-    let stops: Vec<&str> = trip.split(crate::ui::ARROW).collect();
+    let (start, end) = leg.name().split_once(crate::map::route::ARROW)?;
+    let stops: Vec<&str> = trip.split(crate::map::route::ARROW).collect();
     let at = stops.windows(2).position(|pair| {
         start.eq_ignore_ascii_case(pair[0]) && end.eq_ignore_ascii_case(pair[1])
     })?;
@@ -1700,7 +1702,7 @@ mod tests {
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
         app.add_systems(Update, plotted);
-        let trip = stops.join(crate::ui::ARROW);
+        let trip = stops.join(crate::map::route::ARROW);
 
         // Backwards, which is as good an order as any other: what decides it
         // is which walk finished first.
@@ -1711,7 +1713,7 @@ mod tests {
                     label: format!(
                         "{}{}{}",
                         stops[leg],
-                        crate::ui::ARROW,
+                        crate::map::route::ARROW,
                         stops[leg + 1]
                     ),
                     systems: vec![leg as i64],
@@ -1752,7 +1754,7 @@ mod tests {
         app.init_resource::<Filters>();
         app.init_resource::<SelectedFilter>();
         app.add_systems(Update, plotted);
-        let trip = stops.join(crate::ui::ARROW);
+        let trip = stops.join(crate::map::route::ARROW);
 
         for range in ["10", "20"] {
             // Backwards again: what decides the order they land in is which
@@ -1764,7 +1766,7 @@ mod tests {
                         label: format!(
                             "{}{}{}",
                             stops[leg],
-                            crate::ui::ARROW,
+                            crate::map::route::ARROW,
                             stops[leg + 1]
                         ),
                         systems: vec![leg as i64],

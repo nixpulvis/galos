@@ -181,7 +181,7 @@ fn capture(
             let away =
                 crate::map::space::metres(camera.eye_from(at)).length() as f32;
             let per_pixel =
-                crate::map::labels::world_per_pixel(cot, height, away.max(1.));
+                crate::map::screen::world_per_pixel(cot, height, away.max(1.));
             if crate::map::paint::field::drawn_radius(
                 &view, drawn.0, per_pixel, floor,
             )

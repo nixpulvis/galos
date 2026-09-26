@@ -58,15 +58,17 @@
 use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::System;
-use crate::map::labels::{annotations_layer, color32, screen_offset};
 use crate::map::ruled::{
     self, Decade, DistanceUnit, EDGE_ON, FIGURES_ACROSS, Family, INK, Located,
     NUMBERED, Number, Numbered, Painted, Plane, Reading, RuledPlugin, drawn_at,
     faded, numbering, off_plane, ruling, snapped_to, ticked, told,
 };
 use crate::map::schedule::MapSet;
+use crate::map::schedule::PaintSet;
+use crate::map::screen::{annotations_layer, screen_offset};
 use crate::map::selection::Selected;
 use crate::map::space::{self, Map};
+use crate::style::color32;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -102,7 +104,7 @@ pub fn plugin(app: &mut App) {
     // there.
     //
     // First of the four painters writing into that one shared layer
-    // ([`crate::map::labels::annotations_layer`]), where paint order is
+    // ([`crate::map::screen::annotations_layer`]), where paint order is
     // stacking order and so run order is what decides which mark ends up on
     // top. The readouts are the plane's own ruling, the substrate the map is
     // read against rather than anything picked out on it, so they go under
@@ -120,7 +122,7 @@ pub fn plugin(app: &mut App) {
             .before(crate::map::pointing::ring)
             .before(crate::map::selection::ring)
             .before(crate::map::labels::draw_names)
-            .before(crate::ui::lettering),
+            .in_set(PaintSet::Map),
     );
 }
 

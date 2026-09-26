@@ -1,8 +1,8 @@
+use crate::input::{Gesture, PointerOverUi};
 use crate::map::bodies::Contents;
 use crate::map::bodies::spawn::{Body, Inside};
 use crate::map::galaxy::{Spyglass, System};
 use crate::map::schedule::MapSet;
-use crate::ui::{Gesture, PointerOverUi};
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{Exposure, Hdr};
 use bevy::core_pipeline::tonemapping::Tonemapping;
@@ -1490,8 +1490,8 @@ mod tests {
         );
     }
 
-    use crate::map::pointing::PRIMARY;
-    use crate::ui::PressOwner;
+    use crate::input::PRIMARY;
+    use crate::input::PressOwner;
     use bevy::input::mouse::AccumulatedMouseScroll;
 
     /// A world holding a grid, a camera `back` light years out, and one

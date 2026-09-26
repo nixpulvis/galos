@@ -12,7 +12,9 @@
 //! map owns. [`dev::plugin`] is a diagnostics window over both.
 
 pub mod dev;
+mod input;
 pub mod map;
+mod style;
 #[cfg(test)]
 pub(crate) mod testing;
 pub mod ui;

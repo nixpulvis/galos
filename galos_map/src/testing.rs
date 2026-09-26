@@ -153,7 +153,7 @@ pub fn sky_of(dir: &Path, entries: &[galos_index::NameEntry]) -> Arc<Sky> {
 /// was built in.
 pub(crate) fn context() -> egui::Context {
     let ctx = egui::Context::default();
-    ctx.all_styles_mut(crate::ui::styled);
+    ctx.all_styles_mut(crate::style::styled);
     ctx.options_mut(|options| options.warn_on_id_clash = true);
     ctx
 }

@@ -1,6 +1,8 @@
+use crate::input::{Gesture, PressOwner};
 use crate::map::bodies::spawn::{Body, Places};
 use crate::map::camera::MoveCamera;
 use crate::map::index::{Names, Populated};
+use crate::map::route::ARROW;
 use crate::map::route::graph::{Drive, Routing, Tuning};
 use crate::map::schedule::MapSet;
 use crate::map::search::Plot;
@@ -16,7 +18,6 @@ use crate::map::{
     route::{self, PlottedRoute, Route},
     selection::{Picked, PickedBody, Selection},
 };
-use crate::ui::{ARROW, Gesture, PressOwner};
 use bevy::asset::RenderAssetUsages;
 use bevy::diagnostic::FrameCount;
 use bevy::image::{Image, ImageSampler};
@@ -383,22 +384,7 @@ fn select_on_click(
     // has already settled which system that is, weighing a name over a star
     // lying nearer behind it. Asking it rather than working the hit out
     // again keeps the click on whatever the ring and the tint are on.
-    // Held down, a modifier gathers systems up rather than replacing what is
-    // held, and lets go of one already held, so the same gesture builds a set
-    // and takes it apart.
-    //
-    // Any of the three, and both sides of each. Which one means "as well as
-    // that one" is a matter of what the user came from: control on Windows
-    // and Linux, command on macOS. Shift is offered beside them because it is
-    // the one no platform reads as asking for something else.
-    let gathering = keys.any_pressed([
-        KeyCode::ControlLeft,
-        KeyCode::ControlRight,
-        KeyCode::SuperLeft,
-        KeyCode::SuperRight,
-        KeyCode::ShiftLeft,
-        KeyCode::ShiftRight,
-    ]);
+    let gathering = crate::input::gathering(&keys);
     // A body first, as everywhere: once the camera is close enough to see
     // what is inside a system, what is inside it is what a click means.
     //
