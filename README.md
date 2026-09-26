@@ -17,9 +17,21 @@ feed and the journal together merges the world and the commander as they are
 written, so the map draws the pair out of one directory with no database in
 the path.
 
-[doc/ARCHITECTURE.md](./doc/ARCHITECTURE.md) is the map of it: what each of the nine
-crates is for, which way the data runs, what crosses the seam between the
-database and the index, and which module header to open for a given decision.
+The crates, and where to start reading each: its `lib.rs` header.
+
+- [`galos_map`](./galos_map): the 3D map, a bevy client of an index directory.
+- [`galos_index`](./galos_index): the octree, its on-disk format, the builders
+  that fill it and the walks that read it.
+- [`galos_db`](./galos_db): the Postgres store, and deriving an index from it.
+- [`galos_photometry`](./galos_photometry): magnitudes, temperatures, colour and
+  the point spread.
+- [`galos_catalog`](./galos_catalog): Earth-measured star catalogs, compared
+  against Elite's sky.
+- [`galos_sky`](./galos_sky): a CPU renderer for one patch of sky.
+- [`spansh`](./spansh): Spansh's galaxy dumps, read a line at a time.
+- [`galos_server`](./galos_server): an HTML front end over the database.
+- `elite_journal`, `eddn`, `edsm`, `eddb`: submodules for the game's events and
+  the sites that publish them.
 
 `galos` is one command: `galos ingest` fills the database, the directory the
 map draws, or both from one reading; `galos index` and `galos db` are what is

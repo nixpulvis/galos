@@ -27,8 +27,6 @@ galos_catalog/data/*
 # Working notes, plans and design write-ups, kept out of the repository and
 # sorted by state: `todo/`, `doing/`, `done/`. Ignored rather than left
 # merely untracked because a wide `git add` has swept them in before.
-# `doc/ARCHITECTURE.md` is not one: it describes the code that exists
-# rather than work that does not, and the top-level README points at it.
 /.working/
 
 # Downloaded reference imagery from edastro.com: pretty maps to compare a

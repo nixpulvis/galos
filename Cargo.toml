@@ -49,9 +49,8 @@ galos_db = { path = "./galos_db", optional = true }
 galos_catalog = { path = "./galos_catalog", default-features = false, optional = true }
 # The index format and the event accumulator that fills it. Both stores are
 # filled from the same readings, and the accumulator that turns an event
-# into one lives here whichever store is being written to. Default features
-# off, so no command line follows them in.
-galos_index = { path = "./galos_index", default-features = false }
+# into one lives here whichever store is being written to.
+galos_index = { path = "./galos_index" }
 # The journal's events, and the reader that tails a directory of them.
 elite_journal = { path = "./elite_journal", features = ["watch"] }
 prettytable-rs = "0.10"
