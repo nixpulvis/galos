@@ -138,7 +138,7 @@ pub(crate) fn gather(
     let order: Vec<Stands> =
         order.into_iter().map(|(_, stands)| stands).collect();
 
-    info!(systems = order.len(), "gathered who lives where");
+    debug!(systems = order.len(), "gathered who lives where");
     *cells = PopulatedOrder { order };
 }
 
