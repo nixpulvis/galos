@@ -4,12 +4,54 @@ use crate::map::galaxy::spawn::build_system;
 use crate::map::index::{Names, Populated};
 use crate::map::route::SelectedFilter;
 use crate::map::route::frontier::Frontiers;
+use crate::map::route::{RouteSettings, Router};
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use elite_journal::Boxel;
-use galos_route::graph::{Drive, Frontier, Jumps, Routing, Tuning};
-
+use galos_route::graph::Frontier;
 use std::sync::Arc;
+
+/// What asking for a route reaches
+///
+/// The tables a leg is resolved and named against, the router it is searched
+/// over, and where the ask is recorded — the task under way, the frontier
+/// being drawn, and the row standing for it. Gathered once by whichever
+/// system is asking, and handed down to each leg as one.
+pub struct Asking<'a> {
+    pub tasks: &'a mut FetchTasks,
+    pub searching: &'a mut Frontiers,
+    pub filters: &'a mut Filters,
+    pub router: &'a mut Router,
+    pub names: &'a Names,
+    pub populated: &'a Populated,
+    /// When the ask is made, which the task is stamped with
+    pub now: bevy::platform::time::Instant,
+}
+
+/// Stop every route being searched, and ask for nothing
+///
+/// Dropping the tasks is not enough on its own: a body the pool has begun
+/// does not stop for being dropped, so each search is told to give up as
+/// well ([`Frontiers::abandon_others`] with nothing to keep) and reads that
+/// on its next expansion — measured at 90–150 µs for a ten-minute galactic
+/// crossing.
+///
+/// Every leg of every trip at once, because that is what the gesture means:
+/// the form is waiting on the plot as a whole, and a trip half stopped is a
+/// spinner nothing will ever clear.
+pub fn stop_routes(
+    tasks: &mut FetchTasks,
+    searching: &mut Frontiers,
+    filters: &mut Filters,
+) {
+    tasks.fetched.retain(|index, _| !matches!(index, FetchIndex::Route(..)));
+    searching.abandon_others(&[]);
+    // The rows stand, each saying it was stopped. A leg that never landed
+    // used to leave no row at all, so a trip of three legs stopped after two
+    // read as a "3 Leg Route" over two rows with nothing to say where the
+    // third went. See [`Filters::stopped_searching`].
+    filters.stopped_searching();
+}
 
 /// Ask for a trip through `stops`, in order, at a ship's jump `range`
 ///
@@ -24,53 +66,19 @@ use std::sync::Arc;
 /// behind `Arc`s, and each walk is its own task on the compute pool, so a trip
 /// costs about what its longest leg costs rather than the sum of them.
 ///
-/// Stop every route being searched, and ask for nothing
-///
-/// Dropping the tasks is not enough on its own: a body the pool has begun
-/// does not stop for being dropped, so each search is told to give up as
-/// well ([`Frontiers::abandon_others`] with nothing to keep) and reads that
-/// on its next expansion — measured at 90–150 µs for a ten-minute galactic
-/// crossing.
-///
-/// Every leg of every trip at once, because that is what the gesture means:
-/// the form is waiting on the plot as a whole, and a trip half stopped is a
-/// spinner nothing will ever clear.
-pub fn stop_routes(
-    tasks: &mut ResMut<FetchTasks>,
-    searching: &mut ResMut<Frontiers>,
-    filters: &mut ResMut<Filters>,
-) {
-    tasks.fetched.retain(|index, _| !matches!(index, FetchIndex::Route(..)));
-    searching.abandon_others(&[]);
-    // The rows stand, each saying it was stopped. A leg that never landed
-    // used to leave no row at all, so a trip of three legs stopped after two
-    // read as a "3 Leg Route" over two rows with nothing to say where the
-    // third went. See [`Filters::stopped_searching`].
-    filters.stopped_searching();
-}
-
 /// Answers whether anything is now being searched: a route asked for while
 /// it is still being searched is **taken back** rather than asked twice, so
 /// a second click on the plot button stops the work and the form stops
 /// waiting. A trip whose legs are not the ones under way cancels those and
 /// asks for its own, which is the same gesture meaning the other thing.
-#[allow(clippy::too_many_arguments)]
 pub fn fetch_route(
     stops: Vec<String>,
     range: String,
-    drive: Drive,
-    tasks: &mut ResMut<FetchTasks>,
-    searching: &mut ResMut<Frontiers>,
-    time: &Res<Time<Real>>,
-    jumps: &mut ResMut<Jumps>,
-    how: Routing,
-    tune: Tuning,
-    names: &Res<Names>,
-    boosts: &Res<galos_route::Boosts>,
-    populated: &Res<Populated>,
-    filters: &mut ResMut<Filters>,
-    selected: &mut ResMut<SelectedFilter>,
+    asked: RouteSettings,
+    selected: &mut SelectedFilter,
+    asking: &mut Asking,
 ) {
+    let RouteSettings { how, drive, tune } = asked;
     // Every leg this trip is made of, in the order flown. The key is the leg
     // rather than the trip, so a leg asked for twice — the same pair turning
     // up in two trips, or a trip asked for again while it is still landing —
@@ -110,15 +118,15 @@ pub fn fetch_route(
     // route walk has nothing to await. So the frontier it was filling in is
     // told to give up as well — which takes its layers off the map and stops
     // the search where it is. See `Frontier::abandon`.
-    tasks.fetched.retain(|index, _| {
+    asking.tasks.fetched.retain(|index, _| {
         !matches!(index, FetchIndex::Route(..)) || legs.contains(index)
     });
-    searching.abandon_others(&legs);
+    asking.searching.abandon_others(&legs);
 
     // The legs of the trip before this one are stopped, not forgotten: their
     // rows stand saying so, and whichever of them this ask is also made of
     // are told they are searching again below.
-    filters.stopped_searching();
+    asking.filters.stopped_searching();
     // A route just asked for is the one being looked at, so whichever was
     // picked out before it stands down. Cleared rather than set to this one,
     // the last route held being what [`crate::map::route::active`] falls back to. Here
@@ -127,26 +135,8 @@ pub fn fetch_route(
         selected.0.clear();
     }
 
-    let now = time.last_update().unwrap_or(time.startup());
-
     for (leg, index) in stops.windows(2).zip(legs) {
-        ask_leg(
-            (&leg[0], &leg[1]),
-            index,
-            trip.clone(),
-            &range,
-            drive,
-            how,
-            tune,
-            tasks,
-            searching,
-            filters,
-            jumps,
-            names,
-            boosts,
-            populated,
-            now,
-        );
+        ask_leg((&leg[0], &leg[1]), index, trip.clone(), &range, asked, asking);
     }
 }
 
@@ -162,18 +152,7 @@ pub fn fetch_route(
 /// taken back and told to give up before the new one starts, and a trip's
 /// other legs are left exactly as they were. Answers whether anything was
 /// asked: a route whose two ends are one system is no route to ask for.
-#[allow(clippy::too_many_arguments)]
-pub fn replot(
-    route: &Filter,
-    tasks: &mut ResMut<FetchTasks>,
-    searching: &mut ResMut<Frontiers>,
-    time: &Res<Time<Real>>,
-    jumps: &mut ResMut<Jumps>,
-    names: &Res<Names>,
-    boosts: &Res<galos_route::Boosts>,
-    populated: &Res<Populated>,
-    filters: &mut ResMut<Filters>,
-) -> bool {
+pub fn replot(route: &Filter, asking: &mut Asking) -> bool {
     let Filter::Route { systems, range, trip, drive, how, tune, .. } = route
     else {
         return false;
@@ -193,8 +172,8 @@ pub fn replot(
     // for.
     let asks = |held: &FetchIndex| match held {
         FetchIndex::Route(from, to, at, under, fitted, worked, planned) => {
-            names.address(from) == Some(start)
-                && names.address(to) == Some(end)
+            asking.names.address(from) == Some(start)
+                && asking.names.address(to) == Some(end)
                 && at == range
                 && under == trip
                 && fitted == drive
@@ -203,16 +182,21 @@ pub fn replot(
         }
         _ => false,
     };
-    let running: Vec<FetchIndex> =
-        tasks.fetched.keys().filter(|held| asks(held)).cloned().collect();
+    let running: Vec<FetchIndex> = asking
+        .tasks
+        .fetched
+        .keys()
+        .filter(|held| asks(held))
+        .cloned()
+        .collect();
     for held in &running {
-        tasks.fetched.remove(held);
-        searching.abandon(held);
+        asking.tasks.fetched.remove(held);
+        asking.searching.abandon(held);
     }
 
     let (from, to) = (
-        crate::map::route::said(names, start),
-        crate::map::route::said(names, end),
+        crate::map::route::said(asking.names, start),
+        crate::map::route::said(asking.names, end),
     );
     let index = FetchIndex::Route(
         from.clone(),
@@ -223,24 +207,8 @@ pub fn replot(
         *how,
         *tune,
     );
-    let now = time.last_update().unwrap_or(time.startup());
-    ask_leg(
-        (&from, &to),
-        index,
-        trip.clone(),
-        range,
-        *drive,
-        *how,
-        *tune,
-        tasks,
-        searching,
-        filters,
-        jumps,
-        names,
-        boosts,
-        populated,
-        now,
-    );
+    let asked = RouteSettings { how: *how, drive: *drive, tune: *tune };
+    ask_leg((&from, &to), index, trip.clone(), range, asked, asking);
     true
 }
 
@@ -253,24 +221,18 @@ pub fn replot(
 /// — belongs to the caller, and there are two of those: a trip asked for
 /// through the form ([`fetch_route`]) and one leg asked again on its own
 /// ([`replot`]).
-#[allow(clippy::too_many_arguments)]
 fn ask_leg(
     leg: (&str, &str),
     index: FetchIndex,
     trip: Option<String>,
     range: &str,
-    drive: Drive,
-    how: Routing,
-    tune: Tuning,
-    tasks: &mut ResMut<FetchTasks>,
-    searching: &mut ResMut<Frontiers>,
-    filters: &mut ResMut<Filters>,
-    jumps: &mut ResMut<Jumps>,
-    names: &Res<Names>,
-    boosts: &Res<galos_route::Boosts>,
-    populated: &Res<Populated>,
-    now: bevy::platform::time::Instant,
+    asked: RouteSettings,
+    asking: &mut Asking,
 ) {
+    let RouteSettings { how, drive, tune } = asked;
+    let Asking { tasks, searching, filters, router, names, populated, now } =
+        asking;
+    let now = *now;
     // Resolved against the resident names table before the walk, so a leg
     // to a name that is not on record is nothing rather than a walk with
     // nowhere to end. The form has already been told which name it was.
@@ -285,7 +247,7 @@ fn ask_leg(
     // payload after a sphere query the size of that boxel. Measured at
     // 0.8–5 ms by mass class, and a route asks it twice — against the
     // 2.4 GB of positions a row apiece that it replaces.
-    let sky = jumps.sky.clone();
+    let sky = router.jumps.sky.clone();
     let placed = |name: &str| {
         let address = names.address(name)?;
         // **The galaxy's answer, or nothing.** Where there is a tree to
@@ -356,10 +318,10 @@ fn ask_leg(
     // walked, named and colored on the task's own thread rather than on
     // the main one. The graph is a handle on the mapped index, so this
     // is the first route's only cost.
-    let graph = jumps.built(boosts);
+    let graph = router.built();
     let reach = range.parse::<f64>().ok();
-    let names = Names::clone(names);
-    let populated = Populated::clone(populated);
+    let names = Names::clone(*names);
+    let populated = Populated::clone(*populated);
 
     let task = bevy::tasks::AsyncComputeTaskPool::get().spawn(async move {
         // The search as one zone, named with the leg's reach: this is the

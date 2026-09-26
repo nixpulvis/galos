@@ -10,6 +10,7 @@ use crate::map::bodies::Contents;
 use crate::map::camera::MoveCamera;
 use crate::map::filter::{Filter, Lookup, LookupNote};
 use crate::map::route::frontier::Frontiers;
+use crate::map::route::{RouteSettings, Router};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults};
 use crate::map::selection::{Picked, Selection};
 use crate::ui::bar::applied::{RowAsk, applied, reaching};
@@ -28,7 +29,6 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::{Context, Response, Ui};
-use galos_route::graph::{Drive, Routing, Tuning};
 
 pub(super) mod applied;
 pub(super) mod filter;
@@ -333,10 +333,8 @@ pub(super) fn ask_bar(
     panels: &mut Panels,
     camera: &mut MessageWriter<MoveCamera>,
     plot: &mut Plot,
-    how: &mut Routing,
-    drive: &mut Drive,
-    tune: &mut Tuning,
-    boosts: &galos_route::Boosts,
+    route: &mut RouteSettings,
+    router: &Router,
     searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> Asked {
@@ -498,8 +496,8 @@ pub(super) fn ask_bar(
                         camera,
                     );
                     let range = route_body(
-                        ui, search, selection, searched, plot, how, drive,
-                        tune, boosts, searching,
+                        ui, search, selection, searched, plot, route, router,
+                        searching,
                     );
                     taken |= range.gained_focus();
                     range_box = Some(range.id);

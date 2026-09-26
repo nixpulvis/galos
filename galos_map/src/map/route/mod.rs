@@ -12,18 +12,56 @@ use bevy::mesh::PrimitiveTopology;
 use bevy::platform::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use elite_journal::Boxel;
+use galos_route::Boosts;
 use galos_route::graph;
-use galos_route::graph::{Drive, Routing, Tuning};
+use galos_route::graph::{Drive, Jumps, Routing, Tuning};
+use std::sync::Arc;
 /// How a route is written: the two systems it runs between, in order
 pub(crate) const ARROW: &str = " -> ";
+
+/// How the next route is to be asked for: the three settings the form edits
+///
+/// One resource rather than three, since nothing reads one of them without
+/// the others: a route is asked with all three, and a row carries all three
+/// to be asked again with. See [`galos_route::graph`] for what each means.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Debug)]
+pub(crate) struct RouteSettings {
+    /// How far over the fewest jumps a route may settle, and what it weighs
+    pub(crate) how: Routing,
+    /// What the ship can supercharge on
+    pub(crate) drive: Drive,
+    /// How a long supercharged route is planned
+    pub(crate) tune: Tuning,
+}
+
+/// What routes are searched over: the jump graph and the supercharge table
+///
+/// Held together because the graph is built weighed by the table, and a
+/// refresh that replaces the table has to let go of the graph built on the
+/// old one. An absent table is what the map says where it cannot say where
+/// a jet cone is, which is exactly the right answer before the index is
+/// read — see [`Boosts::absent`].
+#[derive(Resource, Default, Clone)]
+pub(crate) struct Router {
+    /// The graph, once a route has asked for one, and the galaxy it reads
+    pub(crate) jumps: Jumps,
+    /// Which systems can supercharge a drive, as published
+    pub(crate) boosts: Boosts,
+}
+
+impl Router {
+    /// The graph, opening it if this is the first route of the session
+    pub(crate) fn built(&mut self) -> Option<Arc<graph::JumpGraph>> {
+        self.jumps.built(&self.boosts)
+    }
+}
 
 pub fn plugin(app: &mut App) {
     app.add_message::<PlottedRoute>();
     app.add_message::<UnflownLeg>();
     app.init_resource::<SelectedFilter>();
-    app.init_resource::<graph::Routing>();
-    app.init_resource::<graph::Drive>();
-    app.init_resource::<graph::Tuning>();
+    app.init_resource::<RouteSettings>();
+    app.init_resource::<Router>();
     // After the fetch it answers has been drawn, and before the camera is
     // pointed, since where it asks the camera to go is what `move_camera`
     // then works out.

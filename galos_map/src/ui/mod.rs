@@ -329,10 +329,8 @@ pub(crate) fn chrome(
         &mut panels,
         &mut camera,
         &mut bar.plot,
-        &mut bar.how,
-        &mut bar.drive,
-        &mut bar.tune,
-        &bar.boosts,
+        &mut bar.route,
+        &bar.router,
         &bar.searching,
         &mut filter,
     );

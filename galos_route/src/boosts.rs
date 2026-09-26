@@ -35,7 +35,6 @@ use std::sync::Arc;
 /// cannot answer, which the map says rather than answering the unaided
 /// one under the supercharged drive's name.
 #[derive(Default, Clone)]
-#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct Boosts {
     /// The rows, ascending by address.
     rows: Arc<Vec<galos_index::records::SystemBoost>>,

@@ -54,7 +54,7 @@ chrono = "*"
 elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index" }
 galos_photometry = { path = "../galos_photometry" }
-galos_route = { path = "../galos_route", features = ["bevy"] }
+galos_route = { path = "../galos_route" }
 # Maps keyed by the index's own numbering — cells and addresses — which
 # nobody can choose collisions in, so `SipHash` buys nothing there and costs
 # the hot loops most of their time. The map's other maps are keyed by what

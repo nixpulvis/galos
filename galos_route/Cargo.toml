@@ -20,12 +20,6 @@ glam = "0.32"
 # choose collisions in.
 rustc-hash = "2"
 tracing = "0.1"
-# `bevy` puts `Resource` on the router's settings and graph, so the map holds
-# them as they are rather than wrapped. Off, nothing of bevy follows.
-bevy_ecs = { version = "0.19", optional = true }
-
-[features]
-bevy = ["dep:bevy_ecs"]
 
 [dev-dependencies]
 elite_journal = { path = "../elite_journal" }
