@@ -29,9 +29,8 @@ use crate::schedule::MapSet;
 use crate::systems::scale::View;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::{
-    CellId, Inhabited, Mode, Moments, Needed, View as Viewpoint,
-};
+use galos_index::read::inhabited::Inhabited;
+use galos_index::{CellId, Mode, Moments, Needed, View as Viewpoint};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -59,7 +58,7 @@ pub struct Planned(pub Needed);
 ///
 /// The other half of the plan, and the thing that keeps the two halves from
 /// drawing the same systems twice. A cell can be marked *and* splatted in the
-/// same walk — the two tests are independent, and `galos_index::walk` means
+/// same walk — the two tests are independent, and `galos_index::read::walk` means
 /// them to be — so a cell whose systems are on the map would also have its
 /// whole subtree laid into the field behind them. The field subtracts this and
 /// draws the rest.
@@ -149,7 +148,7 @@ pub(crate) fn plan(
     // The spyglass is a clamp on the walk and not a filter after it: a
     // subtree the bubble does not touch is never descended into, so the
     // sets the map works over are the sets it draws from. See
-    // [`galos_index::Reach`], and [`super::bounded::reach`] for why the
+    // [`galos_index::read::walk::Reach`], and [`super::bounded::reach`] for why the
     // clamp is the spyglass's `clear` rather than its radius alone.
     let bubble = spyglass.clear.then(|| (orbit.center(), spyglass.radius));
     let key = (orbit.eye(), mode, size, bubble);
@@ -157,10 +156,11 @@ pub(crate) fn plan(
         return;
     }
     *last = Some(key);
-    let within = bubble.map(|(center, radius)| galos_index::Reach {
-        center: center.to_array(),
-        radius: f64::from(radius),
-    });
+    let within =
+        bubble.map(|(center, radius)| galos_index::read::walk::Reach {
+            center: center.to_array(),
+            radius: f64::from(radius),
+        });
     planned.0 = index.0.needed(&view, mode, within);
 }
 

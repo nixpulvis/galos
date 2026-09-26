@@ -22,9 +22,10 @@
 //! inside it — so once it is built there is nothing left to ask it.
 
 use crate::read::spansh;
-use galos_index::{
-    region_budget, Build, BuildParams, Built, By, Ending, Rows, Start,
-};
+use galos_index::build::cold::{region_budget, Build, Built, Ending, Start};
+use galos_index::format::checkpoint::By;
+use galos_index::store::sidecars::Rows;
+use galos_index::BuildParams;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{info, warn};
@@ -80,7 +81,9 @@ pub fn cold(
     // this same file. The clock comes back with it: a build ages every
     // system against one moment, and a run carrying on with its own would
     // bin half the galaxy's Recency against another.
-    let (taking_up, place) = match galos_index::left_off(checkpoint) {
+    let (taking_up, place) = match galos_index::build::cold::left_off(
+        checkpoint,
+    ) {
         Some(left) => match spansh::Place::of(&left, &source.path) {
             Some(place) => {
                 info!(

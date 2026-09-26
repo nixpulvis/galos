@@ -145,7 +145,7 @@ pub(crate) fn gather(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::meta::PopulatedSystem;
+    use galos_index::records::PopulatedSystem;
     use std::collections::HashMap;
     use std::sync::Arc;
 

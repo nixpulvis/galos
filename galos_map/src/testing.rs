@@ -7,7 +7,13 @@
 //! and the same records the map reads, rather than a second implementation
 //! of them that happens to agree.
 
-use galos_index::{BuildParams, Sky, Snapshot, System};
+use galos_index::BuildParams;
+
+use galos_index::Sky;
+
+use galos_index::Snapshot;
+
+use galos_index::System;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -115,7 +121,10 @@ pub fn boxel_at(place: [f64; 3]) -> i64 {
     .expect("a boxel inside the grid")
 }
 
-pub fn sky_of(dir: &Path, entries: &[galos_index::NameEntry]) -> Arc<Sky> {
+pub fn sky_of(
+    dir: &Path,
+    entries: &[galos_index::records::NameEntry],
+) -> Arc<Sky> {
     let places: Vec<(i64, [f64; 3])> = entries
         .iter()
         .map(|entry| {

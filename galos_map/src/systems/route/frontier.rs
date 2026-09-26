@@ -637,7 +637,8 @@ fn mark(at: Vec3, across: f32) -> [Vec3; 4] {
 mod tests {
     use super::*;
     use crate::systems::route::graph::Frontier;
-    use galos_index::{CellId, Node};
+    use galos_index::CellId;
+    use galos_index::read::sky::Node;
     use rustc_hash::FxHashMap;
 
     /// A place `along` light years down the x axis

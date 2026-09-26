@@ -41,8 +41,9 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::meta::{Faction, PopulatedSystem};
-use galos_index::{Index, Inhabitance, SystemBoost};
+use galos_index::Index;
+use galos_index::read::inhabited::Inhabitance;
+use galos_index::records::{Faction, PopulatedSystem, SystemBoost};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 

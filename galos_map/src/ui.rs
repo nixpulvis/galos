@@ -59,7 +59,7 @@ use bevy::prelude::*;
 use bevy_egui::egui::{Context, Response, Ui};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use chrono::Datelike;
-use galos_index::meta::{Faction as DbFaction, NameEntry};
+use galos_index::records::{Faction as DbFaction, NameEntry};
 use galos_photometry::psf::ProfileKind;
 
 pub fn plugin(app: &mut App) {

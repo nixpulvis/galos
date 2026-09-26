@@ -31,9 +31,9 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use chrono::Utc;
 use elite_journal::{Allegiance, Government, system::Security};
-use galos_index::aggregate::bucket_temperature;
-use galos_index::meta::Economies;
-use galos_index::name::SystemName;
+use galos_index::SystemName;
+use galos_index::core::aggregate::bucket_temperature;
+use galos_index::records::Economies;
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
 use std::{
@@ -1408,7 +1408,7 @@ fn reprofile(
 /// Off the reading rather than off a system, so that the aggregate field
 /// colors a cell's allegiance histogram through the same mapping a mark is
 /// painted by and the two cannot drift apart. See
-/// [`galos_index::inhabited::allegiance_at`], which names the reading a
+/// [`galos_index::read::inhabited::allegiance_at`], which names the reading a
 /// bucket counts.
 pub(crate) fn allegiance_hue(allegiance: Option<Allegiance>) -> Hue {
     match allegiance {
@@ -1510,7 +1510,7 @@ mod tests {
         // falling where they fall: enough that reading the row instead of
         // the payload is a different answer.
         let at = [5., 0., 0.];
-        let entries = vec![galos_index::NameEntry {
+        let entries = vec![galos_index::records::NameEntry {
             address: crate::testing::boxel_at(at),
             name: "SOMEWHERE".into(),
             position: [at[0] as f32, at[1] as f32, at[2] as f32],

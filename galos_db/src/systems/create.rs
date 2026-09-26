@@ -3,7 +3,8 @@ use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
-use galos_index::{procedural, SystemName, SystemReport};
+use galos_index::core::procedural;
+use galos_index::{SystemName, SystemReport};
 use geozero::wkb;
 
 impl System {

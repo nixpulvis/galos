@@ -10,9 +10,9 @@ use elite_journal::{
     Government,
     system::Security,
 };
-use galos_index::aggregate::{bucket_temperature, temp_bucket};
-use galos_index::meta::{Economies, NameEntry};
-use galos_index::name::SystemName;
+use galos_index::SystemName;
+use galos_index::core::aggregate::{bucket_temperature, temp_bucket};
+use galos_index::records::{Economies, NameEntry};
 use galos_photometry::ClassLight;
 
 pub fn plugin(app: &mut App) {

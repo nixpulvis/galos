@@ -62,7 +62,8 @@ use galos_db::{
     testing::Scratch,
     Database, Error,
 };
-use galos_index::{merge, meta, SystemName, SystemReport};
+use galos_index::accumulate::merge;
+use galos_index::{records, SystemName, SystemReport};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -2619,7 +2620,7 @@ async fn a_scanned_arrival_star_names_the_system() {
 /// `updated_by` is not one of them. It is a column on this row and nothing
 /// the index publishes, and the two sides fill it differently on purpose: an
 /// EDDN uploader id is an anonymised sender rather than a commander. See
-/// `galos_index::report`'s header.
+/// `galos_index::accumulate::report`'s header.
 #[derive(Debug, PartialEq)]
 struct Columns {
     name: Option<String>,
@@ -2699,7 +2700,7 @@ fn arrived(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
 /// The `systems` upsert says what `SystemReport::over` says
 ///
 /// The rule for merging two reports of one system is stated once, in
-/// `galos_index::report::SystemReport::over`. The `ON CONFLICT DO UPDATE`
+/// `galos_index::SystemReport::over`. The `ON CONFLICT DO UPDATE`
 /// clauses below it are a second copy of that rule, and they are kept:
 /// Postgres merges against a row Postgres holds, so doing it in Rust would
 /// mean reading the row back first — a round trip per message and a lost
@@ -2789,7 +2790,7 @@ async fn the_upsert_says_what_the_merge_rule_says() {
     db.done().await;
 }
 
-/// The `stars` upsert says what `galos_index::merge::star` says
+/// The `stars` upsert says what `galos_index::accumulate::merge::star` says
 ///
 /// The peer of [`the_upsert_says_what_the_merge_rule_says`], one level down.
 /// `merge::star` is the statement of the rule for a rescan; the `ON CONFLICT
@@ -2906,7 +2907,7 @@ async fn the_star_upsert_says_what_the_merge_rule_says() {
         );
 
         assert_eq!(
-            meta::Star::from(wrote),
+            records::Star::from(wrote),
             merged,
             "{}: Postgres and the merge rule disagree",
             what,
@@ -2916,7 +2917,7 @@ async fn the_star_upsert_says_what_the_merge_rule_says() {
     db.done().await;
 }
 
-/// The `bodies` upsert says what `galos_index::merge::body` says
+/// The `bodies` upsert says what `galos_index::accumulate::merge::body` says
 ///
 /// The same pinning for a body, where the rule has one more clause than a
 /// star's: the game writes a surface block only where it looked at one, so a
@@ -3028,7 +3029,7 @@ async fn the_body_upsert_says_what_the_merge_rule_says() {
     );
 
     assert_eq!(
-        meta::Body::from(wrote),
+        records::Body::from(wrote),
         merged,
         "Postgres and the merge rule disagree about a rescanned body",
     );

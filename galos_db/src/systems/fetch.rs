@@ -1,7 +1,8 @@
 use super::{Economies, System};
 use crate::{Database, Error};
 use elite_journal::prelude::*;
-use galos_index::{procedural, SystemName};
+use galos_index::core::procedural;
+use galos_index::SystemName;
 use geozero::wkb;
 
 impl System {
