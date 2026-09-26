@@ -84,29 +84,12 @@ fn main() {
     // The two the read itself needs: where to read from, and what to read
     // through. Everything the read comes back with is handed over by
     // `loading` when it lands.
-    app.insert_resource(IndexDir(dir));
-    app.insert_resource(Transport(Arc::new(source)));
+    app.insert_resource(map::index::IndexDir(dir));
+    app.insert_resource(map::index::Transport(Arc::new(source)));
 
-    app.add_plugins(schedule::plugin);
-    // Before the plugins it gates, so the state exists by the time their run
-    // conditions are built against it.
-    app.add_plugins(loading::plugin);
-    app.add_plugins(space::plugin);
-    app.add_plugins(camera::plugin);
-    app.add_plugins(systems::plugin);
-    // After the systems, whose bounded source holds the payloads a refresh
-    // replaces and the stamps it asks about.
-    app.add_plugins(refresh::plugin);
-    // After the systems, whose descent into a star is what carries the ruled
-    // plane from light years to light seconds.
-    app.add_plugins(grid::plugin);
+    app.add_plugins(map::plugin);
     app.add_plugins(ui::plugin);
-    app.add_plugins(search::plugin);
-    app.add_plugins(keys::plugin);
-    // After `ui`, whose `lettering` the diagnostics panel is drawn in.
     app.add_plugins(dev::plugin);
-    // Throwaway: the scripted capture, only when GALOS_SHOT names a file.
-    app.add_plugins(shot::plugin);
 
     #[cfg(feature = "inspector")]
     app.add_plugins(WorldInspectorPlugin::new());
