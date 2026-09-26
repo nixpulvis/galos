@@ -24,21 +24,12 @@ galos_catalog/data/*
 /.index
 *.checkpoint*
 
-# Working notes and design write-ups, gathered in one place and kept out of
-# the repository. Listed rather than left merely untracked because a wide
-# `git add` has swept them in before. `ARCHITECTURE.md` is the exception:
-# it describes the code that exists rather than work that does not, and the
-# top-level README points a reader at it.
-/doc/*
-!/doc/ARCHITECTURE.md
-
-# Whatever is open, in whatever shape it is in. Not under `doc/`: a TODO is
-# a scratch file that wants to be in the way, and one collapsed file today
-# is several again the moment a new thread starts.
-/TODO.md
-TODO-*
-PLAN-*
-NOTE-*
+# Working notes, plans and design write-ups, kept out of the repository and
+# sorted by state: `todo/`, `doing/`, `done/`. Ignored rather than left
+# merely untracked because a wide `git add` has swept them in before.
+# `doc/ARCHITECTURE.md` is not one: it describes the code that exists
+# rather than work that does not, and the top-level README points at it.
+/.working/
 
 # Downloaded reference imagery from edastro.com: pretty maps to compare a
 # render against, not inputs to anything the workspace builds.

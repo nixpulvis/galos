@@ -35,8 +35,8 @@
 //! `populated.bin` up a tree the client already holds, which is the whole
 //! column for the price of one pass over a table that is resident anyway. The
 //! record carries its own codec so the builder can publish it as
-//! `agg/inhabited.bin` once cells have a stable order — `doc/index-format.md`
-//! decision 2 — and nothing reading it has to change when they do.
+//! `agg/inhabited.bin` once cells have a stable order, and nothing reading it
+//! has to change when they do.
 
 use crate::geometry::CellId;
 use crate::meta::PopulatedSystem;
@@ -353,7 +353,7 @@ impl FromIterator<Inhabited> for Inhabited {
 /// Keyed by address and never by ordinal, which is the same rule the published
 /// per-column files are held to: `index.bin` has no stable cell order, so
 /// anything keyed by file position is rewritten whole whenever the tree's shape
-/// moves (`doc/index-format.md` decision 2).
+/// moves.
 ///
 /// Sparse on purpose. Only the cells with somebody under them get a record —
 /// tens of thousands of a few hundred thousand — and a cell absent from here

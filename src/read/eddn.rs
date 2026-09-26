@@ -29,8 +29,8 @@
 //!
 //! Nothing below this line knows whether the messages came off the wire or
 //! off a disk. A live subscription and a recorded one are the same messages
-//! in the same order, so which one a run reads is a constructor argument —
-//! see `doc/PLAN-EDDN-SPOOL.md`. The alternative is this whole file twice.
+//! in the same order, so which one a run reads is a constructor argument.
+//! The alternative is this whole file twice.
 
 use crate::sink::{Reporter, Sink};
 use crate::Shutdown;
@@ -101,9 +101,9 @@ impl Eddn {
     ///
     /// The cursor is not *committed* yet: doing that honestly means
     /// writing it after the publish it covers is durable, which is a
-    /// position carried to the sink's beat rather than known here. See
-    /// `PLAN-EDDN-SPOOL.md` §11, which is where that authority is being
-    /// settled.
+    /// position carried to the sink's beat rather than known here. Whether
+    /// the index's checkpoint or the spool's cursor file is the authority
+    /// for that position is not yet settled.
     pub fn spooled(
         dir: &std::path::Path,
         start: eddn::spool::Start,

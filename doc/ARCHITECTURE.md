@@ -745,18 +745,6 @@ say why. The ones worth reading first, in order: `galos_index/src/walk.rs`,
 **`galos_map/README.md`** covers using the map: the mouse gestures, the key
 bindings, and a short account of how it draws.
 
-The rest of `doc/` is **kept out of the repository** (see the note in
-`.gitignore`), so a fresh clone holds this file and nothing else beside it:
-`doc/ROUTING-INDEX.md` (the routing-index spike the router grew out of),
-`doc/galaxy.md` (the spatial hierarchy and the level of detail, ~2,150
-lines), `doc/sky.md` (the photometry, and a record of the colour-luminance
-bug), `doc/serving.md` (what serving the index over HTTP would take — a plan,
-not built), `doc/name_mapping.md` (resolving catalog names against Elite's —
-a plan, not built) and `doc/IDEAS.md`. `TODO.md` stays at the root, where it
-is in the way: it is everything still open — including what is designed and
-not built, which `CONTINUE.md` used to hold — with the measurement behind
-each item.
-
 ## Honest notes
 
 Two files are much larger than their stated scope, and the seams are already

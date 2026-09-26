@@ -49,10 +49,10 @@
 //! fine cell beside a coarse one needs no stitching: the weights the walk
 //! hands out conserve, so the total is right whatever level each region
 //! resolved at. Where two cells of different dominant colour overlap they add
-//! toward white, which is the mixing reading; `doc/galaxy.md`'s offscreen
-//! per-category resolve would instead desaturate by measured entropy and keep
-//! the intensity, and nothing here forecloses it — the deposited quantity is
-//! the same either way.
+//! toward white, which is the mixing reading; an offscreen per-category
+//! resolve would instead desaturate by measured entropy and keep the
+//! intensity, and nothing here forecloses it — the
+//! deposited quantity is the same either way.
 //!
 //! **Every splat is a pixel or two by construction**, which is what makes
 //! one isotropic Gaussian enough. A cell hands its light to its children
