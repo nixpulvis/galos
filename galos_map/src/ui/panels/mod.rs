@@ -45,9 +45,14 @@ pub fn plugin(app: &mut App) {
     // `ui::chrome` concludes at its end whether the pointer is busy with the
     // UI, from every window drawn in the pass so far. Drawn before it, these
     // are counted in the same frame they are shown rather than the next.
+    // Behind the same gate as the chrome: a panel names factions out of the
+    // table the index read delivers, which is not there while it reads.
     app.add_systems(
         EguiPrimaryContextPass,
-        panels.in_set(PaintSet::Ui).before(crate::ui::chrome),
+        panels
+            .in_set(PaintSet::Ui)
+            .before(crate::ui::chrome)
+            .run_if(in_state(crate::map::index::load::Opening::Drawn)),
     );
 }
 
