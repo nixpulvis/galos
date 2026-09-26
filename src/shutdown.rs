@@ -1,5 +1,6 @@
 //! Whether a run has been asked to stop.
 
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -54,16 +55,23 @@ impl Shutdown {
 /// handler that half the tools install is a tool that kills a directory.
 pub fn on_interrupt(shutdown: Shutdown) {
     let installed = ctrlc::set_handler(move || {
+        // Written with `let _`, never `eprintln!`: a SIGHUP is what a closed
+        // terminal sends, and by then stderr is revoked. `eprintln!` panics
+        // on that, which here kills the handler thread before the run is
+        // asked to stop — leaving a writer nobody can see that ignores every
+        // signal after, still holding the directory.
+        let say = |said: &str| {
+            let _ = writeln!(std::io::stderr(), "{said}");
+        };
         if shutdown.asked() {
-            eprintln!("stopping now; what is being written may be half done");
+            say("stopping now; what is being written may be half done");
             std::process::exit(130);
         }
-        eprintln!(
-            "stopping: the last publish and the resume point still have to \
-             be written, so this takes a moment. Interrupt again to stop \
-             now."
-        );
         shutdown.ask();
+        say(
+            "stopping: the last publish and the resume point still have to \
+             be written, so this takes a moment. Interrupt again to stop now.",
+        );
     });
     if let Err(err) = installed {
         tracing::warn!(
