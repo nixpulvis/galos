@@ -15,7 +15,8 @@
 //! So each such rule is kept here once, this crate being the format both
 //! sides agree on.
 
-use crate::records::SystemBodies;
+use crate::core::record::StarKind;
+use crate::records::{SystemBodies, SystemBoost};
 use chrono::NaiveDateTime;
 use galos_photometry::{ClassLight, Flux, Magnitude};
 
@@ -36,7 +37,7 @@ pub const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 /// — falls in bucket 0 with everything else fresh.
 ///
 /// A `u32` and not the `usize` an array index wants, because where it is kept
-/// is a [`System`](crate::System), and that record is written to disk as its
+/// is an [`ExactSystem`](crate::ExactSystem), and that record is written to disk as its
 /// own bytes; see its doc.
 pub fn age_bucket(days: i64) -> u32 {
     AGE_EDGES.iter().filter(|&&edge| days >= edge).count() as u32
@@ -126,6 +127,25 @@ pub fn arrival_class(bodies: &SystemBodies) -> Option<&str> {
                 .then(one.id.cmp(&other.id))
         })
         .map(|star| star.star_class.as_str())
+}
+
+/// One system's row in the supercharge table, by the one rule both
+/// derivations publish it by.
+///
+/// The arrival star is [`arrival_class`] over what has been scanned, and
+/// where nothing has, `routed`: the class a plotted route named, the only
+/// other statement about the same star (`systems.primary_star_class` on the
+/// database side, the route file's class on the journal side). A system
+/// nothing has placed has no row — the caller hands `position` over only
+/// where it has one — because a cone with no place is no waypoint.
+pub fn boost(
+    address: i64,
+    inside: Option<&SystemBodies>,
+    routed: Option<&str>,
+    position: [f32; 3],
+) -> Option<SystemBoost> {
+    let class = inside.and_then(arrival_class).or(routed)?;
+    SystemBoost::of(address, StarKind::of(class), position)
 }
 
 #[cfg(test)]

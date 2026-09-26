@@ -251,7 +251,7 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::System;
+    use crate::core::record::ExactSystem;
 
     /// A scratch directory removed with the test.
     struct Scratch(PathBuf);
@@ -270,7 +270,7 @@ mod tests {
     }
 
     /// A lattice of systems, one every `step` light years on a side.
-    fn lattice(side: usize, step: f64) -> Vec<System> {
+    fn lattice(side: usize, step: f64) -> Vec<ExactSystem> {
         let span = (side.saturating_sub(1)) as f64 * step;
         let base = [-span / 2.0, 900.0 - span / 2.0, 24400.0 - span / 2.0];
         let mut out = Vec::new();
@@ -278,7 +278,7 @@ mod tests {
         for x in 0..side {
             for y in 0..side {
                 for z in 0..side {
-                    out.push(System {
+                    out.push(ExactSystem {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,
@@ -298,7 +298,7 @@ mod tests {
         out
     }
 
-    fn built(dir: &Path, systems: &[System]) {
+    fn built(dir: &Path, systems: &[ExactSystem]) {
         Snapshot::build(systems, &BuildParams::default())
             .write(dir)
             .expect("a build");

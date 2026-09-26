@@ -1,12 +1,20 @@
 //! The fixed-width records the whole format is built from.
 //!
-//! Three of them, and they are what every layer above names. A [`System`]
-//! is one system as the build reads it — sixty-four bytes, `repr(C)`, which
-//! is also what a resume point holds a galaxy of. A [`Point`] is the same
-//! system as a cell's payload carries it, which is what the client draws and
-//! the router measures. A [`StarKind`] is the one byte both carry about the
-//! star a ship arrives at, and [`Boost`] is what that star can supercharge a
-//! drive by.
+//! Three of them, and they are what every layer above names. An
+//! [`ExactSystem`] is one system at full precision, as the build reads it —
+//! sixty-four bytes, `repr(C)`, which is also what a resume point holds a
+//! galaxy of. A [`Point`] is the same system packed for a cell's payload,
+//! which is what the client draws and the router measures. A [`StarKind`] is
+//! the one byte both carry about the star a ship arrives at, and [`Boost`] is
+//! what that star can supercharge a drive by.
+//!
+//! **Where precision is needed.** Everything that *writes* the index works in
+//! [`ExactSystem`]: a cell's aggregate sums flux off the `f64` magnitude and
+//! counts systems by `age_bucket`, the payload order is `f64` magnitude with
+//! the id breaking ties, and a resume point has to rebuild the very galaxy a
+//! cold build would. Everything that *reads* the index — the map, the router,
+//! the walks — works in [`Point`], which drops what only those need.
+//! [`Point::of`] is the one place the precision is given up.
 //!
 //! Here, below everything, because everything uses them: the codecs, the
 //! build, the walks and the resume point. They carry no behaviour past their
@@ -16,8 +24,9 @@ use crate::core::aggregate::temp_bucket;
 use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use serde::{Deserialize, Serialize};
 
-/// One system as the build reads it: where it is, the photometry the ordering
-/// and the glow need, and when it was last updated.
+/// One system at full precision, as the build reads it: where it is, the
+/// photometry the ordering and the aggregates need, and when it was last
+/// updated. Build-side only; a reader gets a [`Point`].
 ///
 /// Absolute magnitude and temperature are the finished figures from the
 /// photometry fallback chain (scanned stars summed, else the primary's class,
@@ -26,11 +35,17 @@ use serde::{Deserialize, Serialize};
 /// unbinned, Unix seconds, so the Recency filter has something finer than a
 /// day to test. The caller bins one from the other off one reading.
 ///
-/// The record is written to disk as its own bytes, so it is `repr(C)`, fifty
-/// six bytes, and padding-free; see [`crate::format::checkpoint`].
+/// What [`Point`] does not keep, and why the build cannot do without it:
+/// the `f64` magnitude, which a cell's flux is summed from and the payload
+/// is ordered by; the raw temperature, which the aggregate buckets itself;
+/// and `age_bucket`, which is binned against the clock the report was read
+/// at and cannot be worked out again from `updated_at` later.
+///
+/// The record is written to disk as its own bytes, so it is `repr(C)`,
+/// sixty-four bytes, and padding-free; see [`crate::format::checkpoint`].
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct System {
+pub struct ExactSystem {
     pub id64: u64,
     pub position: [f64; 3],
     pub absolute_magnitude: f64,
@@ -54,19 +69,21 @@ pub struct System {
 /// point written at the old width would be read as another galaxy, so
 /// [`crate::format::checkpoint`]'s `VERSION` moved with it and a stale one is
 /// refused rather than misread.
-const _: () = assert!(std::mem::size_of::<System>() == 64);
-const _: () = assert!(std::mem::align_of::<System>() == 8);
+const _: () = assert!(std::mem::size_of::<ExactSystem>() == 64);
+const _: () = assert!(std::mem::align_of::<ExactSystem>() == 8);
 
-/// One system as the payload carries it: its id, its exact position, the
-/// two photometric fields, and when it was last updated.
+/// One system packed for a cell's payload: its id, its exact position, the
+/// two photometric fields at the precision a reader needs, and when it was
+/// last updated. What the map draws and the router measures; made only by
+/// [`Point::of`].
 ///
 /// Position is three `f64` in light years, the system's own galactic
 /// coordinates carried through unchanged, so a system is drawn exactly where
 /// it sits however coarse the cell that owns it. The magnitude is the
-/// system's combined absolute magnitude, carried at the `f32` the catalogue
-/// holds it at, which its flux and the ordering are read from, and the
-/// temperature bucket is the blackbody tint, already binned so the client
-/// needs no per-star join.
+/// system's combined absolute magnitude narrowed to `f32`, which its flux is
+/// drawn from, and the temperature bucket is the blackbody tint, already
+/// binned so the client needs no per-star join. Neither is fit to build an
+/// aggregate or an order from; that is [`ExactSystem`]'s.
 ///
 /// `updated_at` is Unix seconds, and the one field here that is not about
 /// where a system is or what it looks like. It is what the Recency filter
@@ -98,25 +115,19 @@ pub struct Point {
 }
 
 impl Point {
-    /// A system packed into a payload point, its position carried through at
-    /// full precision. The one place a record becomes a point, so the
-    /// temperature bucketing lives here rather than at each caller that emits a
-    /// payload.
-    pub fn new(
-        id64: u64,
-        position: [f64; 3],
-        magnitude: f64,
-        temperature: f64,
-        updated_at: u32,
-        kind: StarKind,
-    ) -> Point {
+    /// Pack a system for the payload: the one place precision is given up.
+    ///
+    /// The position and `updated_at` are carried through whole; the
+    /// magnitude narrows to `f32`, the temperature to its bucket, and
+    /// `age_bucket` is dropped, the aggregates having already counted it.
+    pub fn of(system: &ExactSystem) -> Point {
         Point {
-            id64,
-            pos: position,
-            magnitude: magnitude as f32,
-            temp_bucket: temp_bucket(temperature) as u8,
-            updated_at,
-            kind,
+            id64: system.id64,
+            pos: system.position,
+            magnitude: system.absolute_magnitude as f32,
+            temp_bucket: temp_bucket(system.temperature) as u8,
+            updated_at: system.updated_at,
+            kind: system.kind,
         }
     }
 }
@@ -244,8 +255,13 @@ impl StarKind {
 
     /// What it can supercharge a drive on, where it can
     ///
-    /// A cone is a white dwarf's or a neutron star's; see [`boostable`] for
-    /// the same answer off a class string.
+    /// Asked of the arrival star, which is the one that matters: a ship drops
+    /// in at the main star and can reach its jet cone without crossing the
+    /// system. A neutron star is class `N`; every white dwarf class begins
+    /// with `D` (`DA`, `DB`, `DC` and their variants). Nothing else has a jet
+    /// cone to fly — a black hole is class `H` and gives nothing, whatever it
+    /// looks like it should. The row a table publishes from this is
+    /// [`crate::records::derive::boost`].
     pub fn boost(&self) -> Option<Boost> {
         match self {
             StarKind::WhiteDwarf => Some(Boost::WhiteDwarf),
@@ -394,19 +410,6 @@ pub enum Fsd {
     MkII,
 }
 
-/// What a ship can supercharge on at a star of this class, if anything
-///
-/// The arrival star's class, which is the one that matters: a ship drops in
-/// at the main star and can reach its jet cone without crossing the system.
-/// A neutron star is class `N`; every white dwarf class begins with `D`
-/// (`DA`, `DB`, `DC` and their variants). Nothing else has a jet cone to fly
-/// — a black hole is class `H` and gives nothing, whatever it looks like it
-/// should. Read through [`StarKind::of`], as [`scoopable`] is, so the two
-/// questions asked of a class are answered off the one reading of it.
-pub fn boostable(primary_star_class: &str) -> Option<Boost> {
-    StarKind::of(primary_star_class).boost()
-}
-
 /// Whether a ship can refuel at a star of this class
 ///
 /// A fuel scoop takes hydrogen out of a star's corona, and a star either has
@@ -481,15 +484,16 @@ mod tests {
         }
     }
 
-    /// A class is boostable off the one reading of it `scoopable` uses
+    /// A class supercharges off the one reading of it `scoopable` uses
     #[test]
     fn a_class_says_what_it_can_supercharge() {
-        assert_eq!(boostable("N"), Some(Boost::Neutron));
+        let boost = |class| StarKind::of(class).boost();
+        assert_eq!(boost("N"), Some(Boost::Neutron));
         for dwarf in ["D", "DA", "DAB", "DBV", "DC", "DQ", "DX"] {
-            assert_eq!(boostable(dwarf), Some(Boost::WhiteDwarf), "{dwarf}");
+            assert_eq!(boost(dwarf), Some(Boost::WhiteDwarf), "{dwarf}");
         }
         for none in ["", "G", "K_OrangeGiant", "H", "MS", "TTS", "Neutron"] {
-            assert_eq!(boostable(none), None, "{none}");
+            assert_eq!(boost(none), None, "{none}");
         }
     }
 }

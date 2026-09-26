@@ -4,7 +4,7 @@
 //! ([`galos_index::Sky`]), so a test that asks for a route needs a built
 //! directory and not a list of places.
 
-use galos_index::{BuildParams, Sky, Snapshot, System};
+use galos_index::{BuildParams, ExactSystem, Sky, Snapshot};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -62,9 +62,9 @@ fn built(
     places: &[(i64, [f64; 3])],
     params: &BuildParams,
 ) -> Arc<Sky> {
-    let systems: Vec<System> = places
+    let systems: Vec<ExactSystem> = places
         .iter()
-        .map(|&(address, position)| System {
+        .map(|&(address, position)| ExactSystem {
             id64: address as u64,
             position,
             absolute_magnitude: address as f64 * 0.001 - 3.0,

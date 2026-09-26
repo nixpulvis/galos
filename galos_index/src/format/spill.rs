@@ -1,4 +1,4 @@
-//! A file of [`System`] records, appended once and then mapped.
+//! A file of [`ExactSystem`] records, appended once and then mapped.
 //!
 //! What a build that cannot hold the galaxy writes it into: a region's
 //! systems are streamed out of the database into one of these and the
@@ -6,27 +6,27 @@
 //! heap. [`crate::build::region`] does the building; this is only the bytes.
 //!
 //! The same records the resume point's base is made of: `56` bytes of
-//! `repr(C)` [`System`] as the machine holds one, no header, no framing. A
+//! `repr(C)` [`ExactSystem`] as the machine holds one, no header, no framing. A
 //! spill is scratch — written, read once, deleted — so unlike the base it
 //! carries no magic and no version.
 
-use crate::System;
+use crate::ExactSystem;
 use memmap2::Mmap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 /// Bytes one system occupies, which is the whole of the format.
-pub const RECORD: usize = std::mem::size_of::<System>();
+pub const RECORD: usize = std::mem::size_of::<ExactSystem>();
 
 /// The bytes of `systems`, for a write.
 ///
 /// # Safety of the cast
 ///
-/// `System` is `repr(C)` with no padding in it — asserted where it is
+/// `ExactSystem` is `repr(C)` with no padding in it — asserted where it is
 /// declared — so every byte of the slice is an initialised byte of a field,
 /// and a `u8` has no alignment to violate.
-pub fn as_bytes(systems: &[System]) -> &[u8] {
+pub fn as_bytes(systems: &[ExactSystem]) -> &[u8] {
     unsafe {
         std::slice::from_raw_parts(
             systems.as_ptr().cast::<u8>(),
@@ -39,19 +39,19 @@ pub fn as_bytes(systems: &[System]) -> &[u8] {
 ///
 /// Answers [`None`] where the length is not a whole number of records or
 /// the bytes are not aligned to hold one, which are the two things that
-/// make the cast below unsound. Every bit pattern of `System`'s `u64`,
+/// make the cast below unsound. Every bit pattern of `ExactSystem`'s `u64`,
 /// `f64` and `u32` fields is a valid value of that field, so there is
 /// nothing else to check.
-pub fn of_bytes(bytes: &[u8]) -> Option<&[System]> {
+pub fn of_bytes(bytes: &[u8]) -> Option<&[ExactSystem]> {
     if bytes.len() % RECORD != 0 {
         return None;
     }
-    if bytes.as_ptr().align_offset(std::mem::align_of::<System>()) != 0 {
+    if bytes.as_ptr().align_offset(std::mem::align_of::<ExactSystem>()) != 0 {
         return None;
     }
     Some(unsafe {
         std::slice::from_raw_parts(
-            bytes.as_ptr().cast::<System>(),
+            bytes.as_ptr().cast::<ExactSystem>(),
             bytes.len() / RECORD,
         )
     })
@@ -80,7 +80,7 @@ impl Spill {
     }
 
     /// One more system.
-    pub fn push(&mut self, system: System) -> io::Result<()> {
+    pub fn push(&mut self, system: ExactSystem) -> io::Result<()> {
         self.out.write_all(as_bytes(std::slice::from_ref(&system)))?;
         self.count += 1;
         Ok(())
@@ -143,7 +143,7 @@ impl Spilled {
     }
 
     /// The systems, pointing into the mapping.
-    pub fn systems(&self) -> &[System] {
+    pub fn systems(&self) -> &[ExactSystem] {
         match &self.map {
             None => &[],
             // SAFETY: `open` checked the length and the alignment, and the
@@ -169,8 +169,8 @@ impl Spilled {
 mod tests {
     use super::*;
 
-    fn system(id: u64) -> System {
-        System {
+    fn system(id: u64) -> ExactSystem {
+        ExactSystem {
             id64: id,
             position: [id as f64, -(id as f64), 0.5],
             absolute_magnitude: 4.0 - id as f64,
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn round_trips_through_the_mapping() {
         let path = scratch("round-trip");
-        let written: Vec<System> = (0..5_000).map(system).collect();
+        let written: Vec<ExactSystem> = (0..5_000).map(system).collect();
 
         let mut spill = Spill::create(&path).unwrap();
         for &s in &written {

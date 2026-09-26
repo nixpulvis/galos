@@ -19,7 +19,7 @@ use crate::build::region::{Crown, Offer};
 use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::build::{bucket, region};
 use crate::core::index::Index;
-use crate::core::record::System;
+use crate::core::record::ExactSystem;
 use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::layout::{INDEX_FILE, mark_path, spill_dir};
 use crate::format::msgpack::{read_meta, write_meta};
@@ -340,7 +340,7 @@ impl<'a> Build<'a> {
     /// rather than raising a tree nobody is waiting for.
     pub fn push(
         &mut self,
-        system: System,
+        system: ExactSystem,
         name: NameEntry,
     ) -> io::Result<ControlFlow<()>> {
         if (self.stop)() {
@@ -736,7 +736,7 @@ mod tests {
     }
 
     /// A galaxy lumpy enough that a cut by count is not a cut by level.
-    fn galaxy(n: u64) -> Vec<System> {
+    fn galaxy(n: u64) -> Vec<ExactSystem> {
         let mut rng = Rng(0x5EED);
         let clumps: Vec<[f64; 3]> =
             (0..6).map(|_| [rng.coord(), rng.coord(), rng.coord()]).collect();
@@ -748,7 +748,7 @@ mod tests {
                     (rng.next() % 2_000) as f64 / 1_000.0 * spread
                         - spread / 2.0
                 };
-                System {
+                ExactSystem {
                     id64: id,
                     position: [
                         near[0] + off(&mut rng),
@@ -767,7 +767,7 @@ mod tests {
     }
 
     /// The name a test galaxy carries for a system.
-    fn entry(system: &System) -> NameEntry {
+    fn entry(system: &ExactSystem) -> NameEntry {
         NameEntry {
             address: system.id64 as i64,
             name: format!("Sys {}", system.id64).into(),
@@ -783,7 +783,7 @@ mod tests {
     /// bucket, so a bucket overflows and has to be split; a disc around
     /// it; and a scattering of lone systems out to the corners of the
     /// cube, so buckets holding a handful have to be grouped instead.
-    fn lumpy(n: u64) -> Vec<System> {
+    fn lumpy(n: u64) -> Vec<ExactSystem> {
         /// Anywhere in the cube.
         fn wide(rng: &mut Rng) -> f64 {
             (rng.next() % 120_001) as f64 - 60_000.0
@@ -807,7 +807,7 @@ mod tests {
                         5_000.0 + tight(&mut rng),
                     ]
                 };
-                System {
+                ExactSystem {
                     id64: id,
                     position,
                     absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0
@@ -828,7 +828,7 @@ mod tests {
         name: &str,
         params: BuildParams,
         budget: u64,
-        systems: &[System],
+        systems: &[ExactSystem],
     ) -> io::Result<Summary> {
         let never = || false;
         let mut build = Build::begin(
@@ -864,7 +864,7 @@ mod tests {
         at: &Scratch,
         dir: &Path,
         params: BuildParams,
-        systems: &[System],
+        systems: &[ExactSystem],
     ) {
         let whole_dir = at.join("whole");
         let whole = Snapshot::build(systems, &params);
@@ -974,8 +974,8 @@ mod tests {
         let at = Scratch::new("stuck");
         let mut rng = Rng(0x5EED);
         let on = [1_000.0, 200.0, 5_000.0];
-        let systems: Vec<System> = (1..=400)
-            .map(|id| System {
+        let systems: Vec<ExactSystem> = (1..=400)
+            .map(|id| ExactSystem {
                 id64: id,
                 position: on,
                 absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0 - 5.0,

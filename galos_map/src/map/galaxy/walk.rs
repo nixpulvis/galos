@@ -2493,8 +2493,8 @@ mod tests {
         // Five systems a few light years apart, faintest last, and the faction
         // is in that faintest one.
         let held = 5i64;
-        let inputs: Vec<galos_index::System> = (1..=5)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::ExactSystem> = (1..=5)
+            .map(|id| galos_index::ExactSystem {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
@@ -2597,8 +2597,8 @@ mod tests {
             [at[0], at[1], -25.]
         };
 
-        let inputs: Vec<galos_index::System> = (1..=5)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::ExactSystem> = (1..=5)
+            .map(|id| galos_index::ExactSystem {
                 id64: id as u64,
                 position: in_view(id as i64),
                 absolute_magnitude: id as f64,
@@ -2682,8 +2682,8 @@ mod tests {
         use galos_index::records::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
-        let inputs: Vec<galos_index::System> = (1..=4)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::ExactSystem> = (1..=4)
+            .map(|id| galos_index::ExactSystem {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
@@ -2843,7 +2843,7 @@ mod tests {
     fn a_republished_cell_rebuilds_the_systems_already_drawn() {
         use galos_index::{BuildParams, Snapshot};
 
-        let at = |id: u64, when: u32| galos_index::System {
+        let at = |id: u64, when: u32| galos_index::ExactSystem {
             id64: id,
             position: placed(id as i64),
             absolute_magnitude: id as f64,

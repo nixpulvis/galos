@@ -9,7 +9,7 @@
 //!
 //! ## What is merged, and by what clock
 //!
-//! [`System::updated_at`] is the one clock a directory merge has. It is Unix
+//! [`ExactSystem::updated_at`] is the one clock a directory merge has. It is Unix
 //! seconds, it is on every record, and it is what the tree already sorts
 //! Recency by — so the rule is the rule the rest of the program already states
 //! twice: **the newer record wins, a tie goes to the arriving one, and an
@@ -121,7 +121,7 @@ use crate::build::cold::{
     resume_mark,
 };
 use crate::build::snapshot::BuildParams;
-use crate::core::record::{Boost, StarKind, System};
+use crate::core::record::{ExactSystem, StarKind};
 use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::{layout, msgpack};
 use crate::records::{
@@ -411,7 +411,7 @@ impl std::error::Error for Refused {
 /// Which pass a fold is in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
-    /// The union of the two resume points, by [`System::updated_at`].
+    /// The union of the two resume points, by [`ExactSystem::updated_at`].
     Systems,
     /// The names of the systems the incoming directory won.
     Names,
@@ -651,8 +651,8 @@ fn older(
 /// hands out and the log is the `Vec` the read decoded; this is only the
 /// arithmetic that makes the two read as one.
 struct Flat<'c> {
-    base: &'c [System],
-    log: &'c [System],
+    base: &'c [ExactSystem],
+    log: &'c [ExactSystem],
 }
 
 impl<'c> Flat<'c> {
@@ -664,7 +664,7 @@ impl<'c> Flat<'c> {
         self.base.len() + self.log.len()
     }
 
-    fn at(&self, i: usize) -> &'c System {
+    fn at(&self, i: usize) -> &'c ExactSystem {
         match self.base.get(i) {
             Some(system) => system,
             None => &self.log[i - self.base.len()],
@@ -760,8 +760,6 @@ struct Relit {
     temperature: f64,
     /// How far the merged contents reach, [`SystemBodies::extent`].
     reach: Option<f32>,
-    /// What the merged arrival star supercharges, where it supercharges.
-    boost: Option<Boost>,
     /// Where the winning record puts the system, filled in by the union.
     ///
     /// A supercharge row carries a place — a router's question is where the
@@ -789,7 +787,6 @@ struct Relit {
 fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
     let class = derive::arrival_class(inside)?;
     let kind = StarKind::of(class);
-    let boost = crate::core::record::boostable(class);
     let stars = inside.stars.iter().map(|star| {
         let t = star.temperature as f64;
         let m = Magnitude(star.absolute_magnitude as f64);
@@ -801,7 +798,6 @@ fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
         absolute_magnitude,
         temperature,
         reach: inside.extent(address),
-        boost,
         position: None,
     })
 }
@@ -811,7 +807,10 @@ fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
 ///
 /// Also takes down where the winner puts the system, which is the place the
 /// supercharge row is written at.
-fn relight(record: &System, relit: &mut HashMap<i64, Relit>) -> System {
+fn relight(
+    record: &ExactSystem,
+    relit: &mut HashMap<i64, Relit>,
+) -> ExactSystem {
     let mut record = *record;
     let Some(afresh) = relit.get_mut(&(record.id64 as i64)) else {
         return record;
@@ -929,7 +928,7 @@ fn walk(
     say(&Folding { phase: Phase::Systems, done, total });
 
     {
-        let mut fold = |stood: &System| -> Result<(), Refused> {
+        let mut fold = |stood: &ExactSystem| -> Result<(), Refused> {
             if stop() {
                 return Err(Refused::Stopped {
                     phase: Phase::Systems,
@@ -1190,13 +1189,14 @@ fn carry_sidecars(
             moved.reaches = true;
             carried.reaches += 1;
         }
-        let changed = match (afresh.boost, afresh.position) {
-            (Some(boost), Some(position)) => {
-                ours.boost(SystemBoost { address, boost, position })
-            }
+        let row = afresh.position.and_then(|position| {
+            SystemBoost::of(address, afresh.kind, position)
+        });
+        let changed = match row {
+            Some(row) => ours.boost(row),
             // The merged arrival star supercharges nothing, so a row
             // saying it does is wrong rather than merely unheard.
-            _ => ours.unboost(address),
+            None => ours.unboost(address),
         };
         if changed {
             moved.boosts = true;
@@ -1387,6 +1387,7 @@ fn rebuild(
 mod tests {
     use super::*;
     use crate::core::index::Index;
+    use crate::core::record::Boost;
     use crate::records::{Body, NameEntry, Star};
     use crate::store::sidecars::{write_boosts, write_reaches};
     use chrono::{DateTime, Utc};
@@ -1433,7 +1434,7 @@ mod tests {
     /// One system, spread over the cube by its address and photometered by
     /// its stamp — so which of two records of an address won is visible in
     /// the payload the merged directory publishes.
-    fn system(id: u64, at: u32) -> System {
+    fn system(id: u64, at: u32) -> ExactSystem {
         let spread = |salt: u64| {
             let mut x = id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt;
             x ^= x >> 29;
@@ -1441,7 +1442,7 @@ mod tests {
             x ^= x >> 32;
             (x % 20_000) as f64 - 10_000.0
         };
-        System {
+        ExactSystem {
             id64: id,
             position: [spread(1), spread(2), spread(3)],
             absolute_magnitude: 4.83 - (at % 97) as f64 / 10.0,
@@ -1460,7 +1461,7 @@ mod tests {
     fn raise(
         scratch: &Scratch,
         name: &str,
-        systems: &[System],
+        systems: &[ExactSystem],
         tag: &str,
         by: Provenance,
         cursor: Option<NaiveDateTime>,
@@ -1501,8 +1502,8 @@ mod tests {
 
     /// The union the merge is supposed to come to: newest wins, a tie to
     /// the arriving record.
-    fn union(xs: &[System], ys: &[System]) -> Vec<System> {
-        let mut held: BTreeMap<u64, System> = BTreeMap::new();
+    fn union(xs: &[ExactSystem], ys: &[ExactSystem]) -> Vec<ExactSystem> {
+        let mut held: BTreeMap<u64, ExactSystem> = BTreeMap::new();
         for &x in xs {
             held.insert(x.id64, x);
         }
@@ -1567,10 +1568,10 @@ mod tests {
     #[test]
     fn the_fold_is_the_whole_build_over_the_union() {
         let scratch = Scratch::new("oracle");
-        let xs: Vec<System> = (1..=5_000)
+        let xs: Vec<ExactSystem> = (1..=5_000)
             .map(|id| system(id, 1_700_000_000 + id as u32))
             .collect();
-        let ys: Vec<System> = (4_000..=9_000)
+        let ys: Vec<ExactSystem> = (4_000..=9_000)
             .map(|id| {
                 // Below the overlap's midpoint the arriving record is older,
                 // at it they are the same second, and above it newer.
@@ -1666,13 +1667,13 @@ mod tests {
 
         // Each side's record as its own build derived it: over its own
         // star, and nothing else.
-        let xs = [System {
+        let xs = [ExactSystem {
             absolute_magnitude: dwarf_lit,
             temperature: dwarf_hot,
             kind: StarKind::of("G"),
             ..system(1, 1_700_000_000)
         }];
-        let ys = [System {
+        let ys = [ExactSystem {
             absolute_magnitude: neutron_lit,
             temperature: neutron_hot,
             kind: StarKind::of("N"),
@@ -1763,9 +1764,9 @@ mod tests {
     #[test]
     fn folding_twice_is_folding_once() {
         let scratch = Scratch::new("idempotent");
-        let xs: Vec<System> =
+        let xs: Vec<ExactSystem> =
             (1..=800).map(|id| system(id, 1_700_000_000 + id as u32)).collect();
-        let ys: Vec<System> = (600..=1_400)
+        let ys: Vec<ExactSystem> = (600..=1_400)
             .map(|id| system(id, 1_700_001_000 + id as u32))
             .collect();
 
@@ -1922,9 +1923,9 @@ mod tests {
     #[test]
     fn a_dry_run_writes_nothing() {
         let scratch = Scratch::new("dry");
-        let xs: Vec<System> =
+        let xs: Vec<ExactSystem> =
             (1..=400).map(|id| system(id, 1_700_000_000 + id as u32)).collect();
-        let ys: Vec<System> = (300..=700)
+        let ys: Vec<ExactSystem> = (300..=700)
             .map(|id| system(id, 1_700_001_000 + id as u32))
             .collect();
         let into =

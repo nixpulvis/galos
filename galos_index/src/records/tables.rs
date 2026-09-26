@@ -15,7 +15,7 @@
 //! so the tedium a fixed layout would trade for is not worth its speed here.
 
 use crate::core::name::SystemName;
-use crate::core::record::Boost;
+use crate::core::record::{Boost, StarKind};
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -83,6 +83,18 @@ pub struct SystemBoost {
     /// publishes: a route resolves a waypoint by descending to the place,
     /// so a light year of rounding changes nothing.
     pub position: [f32; 3],
+}
+
+impl SystemBoost {
+    /// The row for a system whose arrival star is `kind`, at `position`, or
+    /// [`None`] where that star has no jet cone to fly.
+    pub fn of(
+        address: i64,
+        kind: StarKind,
+        position: [f32; 3],
+    ) -> Option<Self> {
+        Some(SystemBoost { address, boost: kind.boost()?, position })
+    }
 }
 
 /// A name and where it is: the search index and the routing graph in one.

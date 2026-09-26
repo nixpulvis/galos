@@ -493,8 +493,8 @@ mod tests {
     }
 
     /// One system for the builder, placed along the x axis
-    fn input(id: u64, at: f64) -> galos_index::System {
-        galos_index::System {
+    fn input(id: u64, at: f64) -> galos_index::ExactSystem {
+        galos_index::ExactSystem {
             id64: id,
             position: [at, 900.0, 24400.0],
             absolute_magnitude: id as f64,
@@ -508,7 +508,7 @@ mod tests {
     /// Publish `systems` to `dir` and hand back the built tree
     fn publish(
         dir: &std::path::Path,
-        systems: &[galos_index::System],
+        systems: &[galos_index::ExactSystem],
     ) -> Snapshot {
         let built = Snapshot::build(systems, &BuildParams::default());
         built.write(dir).expect("the build should write");

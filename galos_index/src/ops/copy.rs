@@ -353,7 +353,7 @@ mod tests {
     use super::*;
     use crate::Lock;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::System;
+    use crate::core::record::ExactSystem;
     use crate::format::checkpoint::{Checkpoint, Provenance, pending};
     use crate::format::layout::{PAYLOAD_DIR, lock_path};
     use std::cell::Cell;
@@ -385,7 +385,7 @@ mod tests {
     /// A cube lattice of systems well inside the root cube, enough of them
     /// to fill a few hundred cells across a few hundred shard directories —
     /// which is what makes the walk a walk rather than one `readdir`.
-    fn systems(n: usize) -> Vec<System> {
+    fn systems(n: usize) -> Vec<ExactSystem> {
         let side = (n as f64).cbrt().ceil() as usize;
         let step = 80.0;
         let span = (side.saturating_sub(1)) as f64 * step;
@@ -398,7 +398,7 @@ mod tests {
                     if out.len() >= n {
                         break 'lattice;
                     }
-                    out.push(System {
+                    out.push(ExactSystem {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,

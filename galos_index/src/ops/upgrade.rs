@@ -255,7 +255,7 @@ mod tests {
     use crate::build::snapshot::BuildParams;
     use crate::build::tree::Tree;
     use crate::core::codec::Encode as _;
-    use crate::core::record::System;
+    use crate::core::record::ExactSystem;
     use crate::format::payload::payload_points;
     use crate::records::{Star, SystemBodies};
 
@@ -269,8 +269,8 @@ mod tests {
     }
 
     /// One system, placed.
-    fn system(id: u64, at: [f64; 3]) -> System {
-        System {
+    fn system(id: u64, at: [f64; 3]) -> ExactSystem {
+        ExactSystem {
             id64: id,
             position: at,
             absolute_magnitude: 4.83,
@@ -282,7 +282,7 @@ mod tests {
     }
 
     /// A payload in the layout written before the columns.
-    fn legacy_bytes(systems: &[System]) -> Vec<u8> {
+    fn legacy_bytes(systems: &[ExactSystem]) -> Vec<u8> {
         let mut out = Vec::new();
         for held in systems {
             held.id64.encode(&mut out);
@@ -320,7 +320,7 @@ mod tests {
             if points.is_empty() {
                 continue;
             }
-            let legacy: Vec<System> = points
+            let legacy: Vec<ExactSystem> = points
                 .iter()
                 .map(|point| system(point.id64, point.pos))
                 .collect();

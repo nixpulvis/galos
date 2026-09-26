@@ -207,7 +207,7 @@ fn payload_cell(name: &str) -> Option<CellId> {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::System;
+    use crate::core::record::ExactSystem;
     use crate::store::cells::fixtures::{Scratch, systems};
     use std::path::PathBuf;
 
@@ -358,7 +358,7 @@ mod tests {
         // The shapes churn takes: one system moved within the ordering, one
         // new faint system, one dropped.
         s[100].absolute_magnitude += 2.0;
-        s.push(System {
+        s.push(ExactSystem {
             id64: 999_999,
             position: [40.0, 940.0, 24440.0],
             absolute_magnitude: 9.0,

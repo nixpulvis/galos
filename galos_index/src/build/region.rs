@@ -47,7 +47,7 @@ use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::CellId;
 use crate::core::index::Index;
-use crate::core::record::{Point, System};
+use crate::core::record::{ExactSystem, Point};
 use std::collections::{HashMap, HashSet};
 
 /// Which cells a galaxy is built a region at a time from.
@@ -167,7 +167,7 @@ pub struct Offer {
     pub region: CellId,
     /// Its brightest systems, brightest first, at most as many as the crown
     /// could possibly claim.
-    brightest: Vec<System>,
+    brightest: Vec<ExactSystem>,
     /// Everything in the region, rolled up.
     total: Aggregate,
 }
@@ -179,11 +179,11 @@ impl Offer {
     /// kept is `region.level × internal_slice` of them, plus one aggregate.
     pub fn of(
         region: CellId,
-        systems: impl IntoIterator<Item = System>,
+        systems: impl IntoIterator<Item = ExactSystem>,
         params: &BuildParams,
     ) -> Offer {
         let room = region.level as usize * params.internal_slice;
-        let mut brightest: Vec<System> = Vec::with_capacity(room + 1);
+        let mut brightest: Vec<ExactSystem> = Vec::with_capacity(room + 1);
         let mut total = Aggregate::ZERO;
 
         for system in systems {
@@ -219,7 +219,7 @@ impl Offer {
 }
 
 /// Brightest first, ties by id: the order the build settles ownership in.
-fn brighter(a: &System, b: &System) -> bool {
+fn brighter(a: &ExactSystem, b: &ExactSystem) -> bool {
     a.absolute_magnitude
         .total_cmp(&b.absolute_magnitude)
         .then(a.id64.cmp(&b.id64))
@@ -260,7 +260,7 @@ impl Crown {
 
         // The candidates, brightest first across every region. Each carries
         // the level its region sits at, which is where the crown stops.
-        let mut candidates: Vec<(&System, u8)> = offers
+        let mut candidates: Vec<(&ExactSystem, u8)> = offers
             .iter()
             .flat_map(|offer| {
                 offer.brightest.iter().map(|s| (s, offer.region.level))
@@ -287,14 +287,7 @@ impl Crown {
                 if *count < params.internal_slice {
                     *count += 1;
                     taken = Some(level);
-                    payloads.entry(cid).or_default().push(Point::new(
-                        system.id64,
-                        system.position,
-                        system.absolute_magnitude,
-                        system.temperature,
-                        system.updated_at,
-                        system.kind,
-                    ));
+                    payloads.entry(cid).or_default().push(Point::of(system));
                     break;
                 }
             }
@@ -377,7 +370,7 @@ mod tests {
 
     /// A galaxy with the lumpiness the real one has: most systems in a few
     /// places, the rest scattered, so a cut by count is not a cut by level.
-    fn galaxy(n: u64) -> Vec<System> {
+    fn galaxy(n: u64) -> Vec<ExactSystem> {
         let mut rng = Rng(0x5EED);
         let clumps: Vec<[f64; 3]> =
             (0..6).map(|_| [rng.coord(), rng.coord(), rng.coord()]).collect();
@@ -389,7 +382,7 @@ mod tests {
                     (rng.next() % 2_000) as f64 / 1_000.0 * spread
                         - spread / 2.0
                 };
-                System {
+                ExactSystem {
                     id64: id,
                     position: [
                         near[0] + off(&mut rng),
@@ -409,7 +402,7 @@ mod tests {
 
     /// A cut of `systems` under `budget`, the way a caller makes one: count
     /// a fine grid, then divide from the root until every region fits.
-    fn cut(systems: &[System], budget: u64, params: &BuildParams) -> Cut {
+    fn cut(systems: &[ExactSystem], budget: u64, params: &BuildParams) -> Cut {
         const GRID: u8 = 6;
         let mut counted: HashMap<CellId, u64> = HashMap::new();
         for s in systems {
@@ -421,7 +414,7 @@ mod tests {
 
     /// The systems of one region, which is what a caller reads out of a
     /// region's spill file.
-    fn inside(systems: &[System], region: CellId) -> Vec<System> {
+    fn inside(systems: &[ExactSystem], region: CellId) -> Vec<ExactSystem> {
         systems
             .iter()
             .filter(|s| CellId::of_point(s.position, region.level) == region)

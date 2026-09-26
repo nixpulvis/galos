@@ -18,7 +18,7 @@
 //! derivations had already disagreed once about which events name a system.
 //! What differs is where it lands: `galos_db::record` writes fourteen tables and a
 //! build reads them back, while this keeps the two shapes the index wants -
-//! [`crate::System`] and the metadata records - and skips the round trip.
+//! [`crate::ExactSystem`] and the metadata records - and skips the round trip.
 //!
 //! Narrower below system level, and not above it. `galos_db::record` also records
 //! dockings, settlements, body signals and codex entries, and the index has
@@ -77,7 +77,7 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
-use crate::core::record::{StarKind, System, boostable};
+use crate::core::record::{ExactSystem, StarKind};
 use crate::records::{
     NameEntry, PopulatedSystem, SystemBodies, SystemBoost, SystemReach, derive,
 };
@@ -362,7 +362,7 @@ impl Galaxy {
     /// rarer than it sounds — the game writes `StarPos` on the arrival event
     /// and on every scan — and a system named only by an event that omitted
     /// it is one the map has nothing to draw for anyway.
-    pub fn systems(&self) -> Vec<System> {
+    pub fn systems(&self) -> Vec<ExactSystem> {
         self.systems
             .keys()
             .filter_map(|&address| self.system_of(address))
@@ -374,7 +374,7 @@ impl Galaxy {
     /// What a sink following a feed asks, against the handful of addresses a
     /// pass touched, rather than deriving the whole galaxy to publish fifty
     /// systems. [`Self::systems`] is this over everything.
-    pub fn system_of(&self, address: i64) -> Option<System> {
+    pub fn system_of(&self, address: i64) -> Option<ExactSystem> {
         let report = self.systems.get(&address)?;
         Some(self.system(report, report.placed()?))
     }
@@ -401,20 +401,17 @@ impl Galaxy {
         self.inside.read(address).extent(address)
     }
 
-    /// What one system's arrival star can supercharge, and where it sits.
-    ///
-    /// Nothing for a system nothing has placed: the published table is what
-    /// a router reads, and a cone with no place is no waypoint. Which is
-    /// the same rule the database derivation's `placed` carries.
+    /// What one system's arrival star can supercharge, and where it sits,
+    /// by [`derive::boost`].
     pub fn boost_of(&self, address: i64) -> Option<SystemBoost> {
-        let boost =
-            boostable(&self.arrival_class(address)?)?;
-        let at = self.systems.get(&address)?.placed()?;
-        Some(SystemBoost {
+        let report = self.systems.get(&address)?;
+        let at = report.placed()?;
+        derive::boost(
             address,
-            boost,
-            position: [at[0] as f32, at[1] as f32, at[2] as f32],
-        })
+            Some(&self.inside.read(address)),
+            report.star_class.as_deref(),
+            [at[0] as f32, at[1] as f32, at[2] as f32],
+        )
     }
 
     /// One system's political columns, where anybody lives in it.
@@ -432,7 +429,7 @@ impl Galaxy {
     /// index answer with: its scanned stars if it has any, failing that the
     /// arrival star's class, which only a plotted route states here, failing
     /// that the default M dwarf the galaxy is mostly made of.
-    fn system(&self, report: &SystemReport, position: [f64; 3]) -> System {
+    fn system(&self, report: &SystemReport, position: [f64; 3]) -> ExactSystem {
         let inside = self.inside.read(report.address);
         // The scanned magnitude is bolometric — the star's whole output as
         // one figure — so it is turned into the visual magnitude the sky
@@ -449,7 +446,7 @@ impl Galaxy {
             derive::lit(stars, report.star_class.as_deref().unwrap_or(""));
         let (age_bucket, updated_at) =
             derive::updated(report.at.naive_utc(), self.now.naive_utc());
-        System {
+        ExactSystem {
             id64: report.address as u64,
             position,
             absolute_magnitude,

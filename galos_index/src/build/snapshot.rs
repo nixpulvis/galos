@@ -12,7 +12,7 @@
 use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::index::Index;
-use crate::core::record::{Point, System};
+use crate::core::record::{ExactSystem, Point};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
@@ -91,7 +91,7 @@ impl Snapshot {
     /// first. For the live, editable form raise a [`Tree`](crate::Tree) with
     /// [`Tree::build`](crate::Tree::build), which builds this and holds it
     /// open.
-    pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
+    pub fn build(systems: &[ExactSystem], params: &BuildParams) -> Snapshot {
         Snapshot::of_region(CellId::ROOT, systems, &HashSet::new(), params)
     }
 
@@ -108,7 +108,7 @@ impl Snapshot {
     /// region and the rest of the galaxy.
     pub fn of_region(
         region: CellId,
-        systems: &[System],
+        systems: &[ExactSystem],
         claimed: &HashSet<u64>,
         params: &BuildParams,
     ) -> Snapshot {
@@ -170,7 +170,7 @@ impl Snapshot {
     /// lands the same directory.
     pub fn rebuild(
         &self,
-        systems: &[System],
+        systems: &[ExactSystem],
         params: &BuildParams,
     ) -> (Snapshot, CellDiff) {
         let next = Snapshot::build(systems, params);
@@ -188,7 +188,7 @@ impl Snapshot {
 /// handed over must fall inside it.
 fn split_into_leaves(
     root: CellId,
-    systems: &[System],
+    systems: &[ExactSystem],
     leaf_cap: usize,
 ) -> HashMap<CellId, Vec<usize>> {
     let mut leaves: HashMap<CellId, Vec<usize>> = HashMap::new();
@@ -250,7 +250,7 @@ fn tree_of(
 /// parent. The result at the root is the whole galaxy, and every cell between
 /// is the exact total of the systems beneath it.
 fn roll_up(
-    systems: &[System],
+    systems: &[ExactSystem],
     leaves: &HashMap<CellId, Vec<usize>>,
     cells: &HashSet<CellId>,
 ) -> HashMap<CellId, Aggregate> {
@@ -309,7 +309,7 @@ struct Slices {
 /// and an empty claim.
 fn assign_slices(
     root: CellId,
-    systems: &[System],
+    systems: &[ExactSystem],
     leaves: &HashMap<CellId, Vec<usize>>,
     claimed: &HashSet<u64>,
     params: &BuildParams,
@@ -354,14 +354,7 @@ fn assign_slices(
                 if *count < cap {
                     *count += 1;
                     owner = level;
-                    payloads.entry(cid).or_default().push(Point::new(
-                        s.id64,
-                        s.position,
-                        s.absolute_magnitude,
-                        s.temperature,
-                        s.updated_at,
-                        s.kind,
-                    ));
+                    payloads.entry(cid).or_default().push(Point::of(s));
                     break;
                 }
             }
@@ -434,7 +427,7 @@ mod tests {
     /// brighter than the last so the ordering is unambiguous. Positions are
     /// pulled toward the cube centre so they sit well inside it whatever `n`
     /// and `step` are.
-    fn grid(n: usize, step: f64) -> Vec<System> {
+    fn grid(n: usize, step: f64) -> Vec<ExactSystem> {
         let mut out = Vec::new();
         let span = (n as f64 - 1.0) * step;
         let base = [-span / 2.0, 900.0 - span / 2.0, 24400.0 - span / 2.0];
@@ -442,7 +435,7 @@ mod tests {
         for x in 0..n {
             for y in 0..n {
                 for z in 0..n {
-                    out.push(System {
+                    out.push(ExactSystem {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,

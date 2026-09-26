@@ -29,7 +29,7 @@ use crate::build::snapshot::{BuildParams, CellDiff, Snapshot};
 use crate::core::aggregate::{Aggregate, Cell};
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::index::Index;
-use crate::core::record::{Point, StarKind, System};
+use crate::core::record::{ExactSystem, Point, StarKind};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// One system as the live tree holds it: its place and its photometry, the
@@ -43,6 +43,21 @@ struct Record {
     updated_at: u32,
     /// What kind of star a ship arrives at, for the payload to carry.
     kind: StarKind,
+}
+
+impl Record {
+    /// The system this is, at the precision it was inserted at.
+    fn exact(&self, id64: u64) -> ExactSystem {
+        ExactSystem {
+            id64,
+            position: self.position,
+            absolute_magnitude: self.magnitude,
+            temperature: self.temperature,
+            age_bucket: self.age_bucket,
+            updated_at: self.updated_at,
+            kind: self.kind,
+        }
+    }
 }
 
 /// A monotonic `u64` image of a magnitude, so a `BTreeSet` orders systems
@@ -118,7 +133,7 @@ impl Tree {
     ///
     /// The first build is the batch [`Snapshot::build`]; every edit after it
     /// is incremental.
-    pub fn build(systems: &[System], params: &BuildParams) -> Tree {
+    pub fn build(systems: &[ExactSystem], params: &BuildParams) -> Tree {
         let built = Snapshot::build(systems, params);
         let records = systems
             .iter()
@@ -228,14 +243,14 @@ impl Tree {
     ///
     /// A system already known is moved to its new record; one never seen is
     /// added. What a feed calls with the systems a run of messages touched.
-    pub fn apply(&mut self, changed: &[System]) {
+    pub fn apply(&mut self, changed: &[ExactSystem]) {
         for system in changed {
             self.upsert(*system);
         }
     }
 
     /// Add a system, or move one already present to its new record.
-    pub fn upsert(&mut self, system: System) {
+    pub fn upsert(&mut self, system: ExactSystem) {
         if self.records.contains_key(&system.id64) {
             self.remove(system.id64);
         }
@@ -260,7 +275,7 @@ impl Tree {
     }
 
     /// The inputs this tree was built from, reconstructed from its records:
-    /// the full-precision [`System`] values a checkpoint persists so the tree
+    /// the full-precision [`ExactSystem`] values a checkpoint persists so the tree
     /// can be rebuilt without the database. Exact, since a record holds every
     /// field a system carries; order is arbitrary, which the
     /// order-independent [`build`](Self::build) does not care about.
@@ -268,21 +283,13 @@ impl Tree {
     /// An iterator rather than a collection: a galaxy's worth is gigabytes,
     /// streamed past the checkpoint's writer instead of held beside the tree
     /// it was copied out of.
-    pub fn inputs(&self) -> impl Iterator<Item = System> + '_ {
-        self.records.iter().map(|(&id64, rec)| System {
-            id64,
-            position: rec.position,
-            absolute_magnitude: rec.magnitude,
-            temperature: rec.temperature,
-            age_bucket: rec.age_bucket,
-            updated_at: rec.updated_at,
-            kind: rec.kind,
-        })
+    pub fn inputs(&self) -> impl Iterator<Item = ExactSystem> + '_ {
+        self.records.iter().map(|(&id64, rec)| rec.exact(id64))
     }
 
     // --- insertion --------------------------------------------------------
 
-    fn insert(&mut self, system: System) {
+    fn insert(&mut self, system: ExactSystem) {
         let rec = Record {
             position: system.position,
             magnitude: system.absolute_magnitude,
@@ -720,17 +727,7 @@ impl Tree {
         let Some(node) = self.cells.get(&id) else { return Vec::new() };
         node.slice
             .iter()
-            .map(|&(_, pid)| {
-                let r = &self.records[&pid];
-                Point::new(
-                    pid,
-                    r.position,
-                    r.magnitude,
-                    r.temperature,
-                    r.updated_at,
-                    r.kind,
-                )
-            })
+            .map(|&(_, pid)| Point::of(&self.records[&pid].exact(pid)))
             .collect()
     }
 
@@ -810,8 +807,8 @@ mod tests {
         }
     }
 
-    fn input(id: u64, rng: &mut Rng) -> System {
-        System {
+    fn input(id: u64, rng: &mut Rng) -> ExactSystem {
+        ExactSystem {
             id64: id,
             position: rng.position(),
             absolute_magnitude: rng.magnitude(),
@@ -920,7 +917,7 @@ mod tests {
         // moves are exercised as hard as the cascade.
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let mut rng = Rng(seed);
-        let mut present: std::collections::BTreeMap<u64, System> =
+        let mut present: std::collections::BTreeMap<u64, ExactSystem> =
             std::collections::BTreeMap::new();
         let mut next_id = 1u64;
 

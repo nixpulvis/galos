@@ -314,12 +314,12 @@ mod tests {
         use super::{FsSource, Part, Source};
         use crate::build::snapshot::BuildParams;
         use crate::core::geometry::CellId;
-        use crate::core::record::System;
+        use crate::core::record::ExactSystem;
 
         let dir = std::env::temp_dir()
             .join(format!("galos_source_stamp_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let system = |id: u64, at: f64| System {
+        let system = |id: u64, at: f64| ExactSystem {
             id64: id,
             position: [at, 900.0, 24400.0],
             absolute_magnitude: id as f64,

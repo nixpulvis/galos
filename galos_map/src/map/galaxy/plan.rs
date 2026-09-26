@@ -282,8 +282,8 @@ mod tests {
         // touches the camera. Enough of them to be worth reading: the walk
         // marks a cell once it is worth [`galos_index::MARK_LEAST`] marks,
         // so four systems are not a plan whatever the camera does.
-        let inputs: Vec<galos_index::System> = (1..=64)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::ExactSystem> = (1..=64)
+            .map(|id| galos_index::ExactSystem {
                 id64: id as u64,
                 position: [id as f64, 0., 0.],
                 absolute_magnitude: id as f64,
@@ -324,8 +324,8 @@ mod tests {
             }
         }
 
-        let inputs: Vec<galos_index::System> = (1..=64)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::ExactSystem> = (1..=64)
+            .map(|id| galos_index::ExactSystem {
                 id64: id as u64,
                 position: [id as f64, 0., 0.],
                 absolute_magnitude: id as f64 / 8.,

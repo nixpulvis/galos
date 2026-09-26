@@ -30,7 +30,7 @@ use galos_index::format::msgpack::write_meta;
 use galos_index::records;
 use galos_index::records::derive;
 pub(super) use galos_index::store::sidecars::Moved;
-use galos_index::store::sidecars::Sidecars;
+use galos_index::store::sidecars::{write_boosts, Sidecars};
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -517,18 +517,6 @@ fn write_reaches(dir: &Path, reaches: &HashMap<i64, f32>) -> Result<usize> {
     Ok(table.len())
 }
 
-/// Write `boosts.bin`: which systems can supercharge a drive and where each
-/// one sits, in address order so the same table is always the same bytes.
-fn write_boosts(
-    dir: &Path,
-    boosts: &HashMap<i64, records::SystemBoost>,
-) -> Result<usize> {
-    let mut table: Vec<&records::SystemBoost> = boosts.values().collect();
-    table.sort_unstable_by_key(|it| it.address);
-    write_meta(&galos_index::format::layout::boosts_path(dir), &table)?;
-    Ok(table.len())
-}
-
 /// Which of the positioned systems can supercharge a drive, over the rows
 /// already grouped for the body files.
 ///
@@ -541,9 +529,9 @@ fn write_boosts(
 /// Which star that is, is [`derive::arrival_class`] and not a query, over the
 /// rows the caller has already read for the body files and the reaches. SQL
 /// says only which systems are eligible: positioned, and with a class to read
-/// at all. The classification is [`galos_index::core::record::boostable`], so a class that
-/// supercharges nothing is left out and the caller takes such a system out of
-/// the table it stands in.
+/// at all. The row is [`derive::boost`], so a class that supercharges
+/// nothing is left out and the caller takes such a system out of the table
+/// it stands in.
 ///
 /// The place comes off the same row, the published table carrying it: what a
 /// router wants of a supercharge is where to fly for it, and reading that
@@ -569,15 +557,13 @@ async fn boosts_of(
     for row in rows {
         let address: i64 = row.try_get("address")?;
         let routed: Option<String> = row.try_get("primary_star_class")?;
-        let inside = grouped.get(&address);
-        let class =
-            inside.and_then(derive::arrival_class).or(routed.as_deref());
-        if let Some(boost) =
-            class.and_then(galos_index::core::record::boostable)
-        {
-            let position = place_from_row(&row)?;
-            boosts.push(records::SystemBoost { address, boost, position });
-        }
+        let position = place_from_row(&row)?;
+        boosts.extend(derive::boost(
+            address,
+            grouped.get(&address),
+            routed.as_deref(),
+            position,
+        ));
     }
     Ok(boosts)
 }
@@ -670,15 +656,15 @@ impl Scanned {
             || !self.inside.barycenters.is_empty()
     }
 
-    /// This system's row in the supercharge table, the place included, by
-    /// [`boosts_of`]'s rule: the scanned arrival star, else the route's
-    /// class, and nothing for a system nothing has placed.
+    /// This system's row in the supercharge table, by [`derive::boost`], and
+    /// nothing for a system nothing has placed.
     fn boost(&self) -> Option<records::SystemBoost> {
-        let position = self.position?;
-        let class =
-            derive::arrival_class(&self.inside).or(self.routed.as_deref());
-        let boost = class.and_then(galos_index::core::record::boostable)?;
-        Some(records::SystemBoost { address: self.address, boost, position })
+        derive::boost(
+            self.address,
+            Some(&self.inside),
+            self.routed.as_deref(),
+            self.position?,
+        )
     }
 }
 

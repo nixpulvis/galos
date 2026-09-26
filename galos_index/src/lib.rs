@@ -28,7 +28,7 @@
 //! [`build::cold`] takes records — a database's rows, a dump's lines — and
 //! raises the whole tree at once. [`Galaxy`] takes events one at a time,
 //! from a feed or from a commander's own files, and accumulates them into
-//! [`System`] records and the metadata sidecars, keeping what a scan found in
+//! [`ExactSystem`] records and the metadata sidecars, keeping what a scan found in
 //! [`accumulate::bodies`].
 //!
 //! Pure and dependency-light on purpose. Physics is [`galos_photometry`];
@@ -56,7 +56,7 @@ pub use crate::core::geometry::CellId;
 pub use crate::core::index::Index;
 pub use crate::core::moments::Moments;
 pub use crate::core::name::SystemName;
-pub use crate::core::record::{Boost, Fsd, Point, StarKind, System};
+pub use crate::core::record::{Boost, ExactSystem, Fsd, Point, StarKind};
 pub use crate::format::lock::Lock;
 pub use crate::format::payload::INDEX_VERSION;
 pub use crate::read::sky::Sky;

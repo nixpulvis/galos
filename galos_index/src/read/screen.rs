@@ -438,15 +438,15 @@ impl Empty {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::{StarKind, System};
+    use crate::core::record::{ExactSystem, StarKind};
 
     /// A sky of hand-placed systems, built as the galaxy is: one system a
     /// cell and one a slice, so the tree is as deep as the positions allow.
     pub(super) fn sky(at: &[[f64; 3]]) -> Snapshot {
-        let systems: Vec<System> = at
+        let systems: Vec<ExactSystem> = at
             .iter()
             .enumerate()
-            .map(|(n, position)| System {
+            .map(|(n, position)| ExactSystem {
                 id64: n as u64 + 1,
                 position: *position,
                 absolute_magnitude: 4.0,

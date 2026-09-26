@@ -30,7 +30,7 @@
 use crate::build::region::Cut;
 use crate::build::snapshot::BuildParams;
 use crate::core::geometry::{CellId, MAX_LEVEL};
-use crate::core::record::System;
+use crate::core::record::ExactSystem;
 use crate::format::layout::spill_path;
 use crate::format::spill::{Spill, Spilled, as_bytes};
 use std::collections::hash_map::Entry;
@@ -64,7 +64,7 @@ pub struct Buckets {
 /// has taken.
 struct Bucket {
     path: PathBuf,
-    buffer: Vec<System>,
+    buffer: Vec<ExactSystem>,
     count: u64,
 }
 
@@ -91,7 +91,7 @@ impl Buckets {
     }
 
     /// One more system, into the bucket its position falls in.
-    pub fn push(&mut self, system: System) -> io::Result<()> {
+    pub fn push(&mut self, system: ExactSystem) -> io::Result<()> {
         let id = CellId::of_point(system.position, BUCKET_LEVEL);
         let dir = &self.dir;
         let bucket = self.held.entry(id).or_insert_with(|| Bucket {
@@ -326,8 +326,8 @@ mod tests {
         [min[0] + half, min[1] + half, min[2] + half]
     }
 
-    fn system(id: u64, position: [f64; 3], rng: &mut Rng) -> System {
-        System {
+    fn system(id: u64, position: [f64; 3], rng: &mut Rng) -> ExactSystem {
+        ExactSystem {
             id64: id,
             position,
             absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0 - 5.0,
@@ -339,7 +339,12 @@ mod tests {
     }
 
     /// `n` systems scattered through a `span`-wide ball around `at`.
-    fn clump(at: [f64; 3], span: f64, n: u64, rng: &mut Rng) -> Vec<System> {
+    fn clump(
+        at: [f64; 3],
+        span: f64,
+        n: u64,
+        rng: &mut Rng,
+    ) -> Vec<ExactSystem> {
         (0..n)
             .map(|i| {
                 let position = [
@@ -355,7 +360,7 @@ mod tests {
     /// Push `systems` and form the regions, as a build does.
     fn formed(
         dir: &Path,
-        systems: &[System],
+        systems: &[ExactSystem],
         budget: u64,
         params: &BuildParams,
     ) -> Formed {
@@ -369,7 +374,7 @@ mod tests {
     }
 
     /// A region's systems, read back off its spill.
-    fn held(formed: &Formed, region: CellId) -> Vec<System> {
+    fn held(formed: &Formed, region: CellId) -> Vec<ExactSystem> {
         Spilled::open(&formed.spills[&region])
             .expect("a region's spill")
             .systems()
@@ -523,7 +528,7 @@ mod tests {
         let mut rng = Rng(0xDEAD);
         let core = CellId { level: BUCKET_LEVEL, x: 8, y: 8, z: 6 };
         let on = middle(core);
-        let systems: Vec<System> =
+        let systems: Vec<ExactSystem> =
             (1..=400).map(|id| system(id, on, &mut rng)).collect();
 
         let formed = formed(&at.0, &systems, 100, &params);

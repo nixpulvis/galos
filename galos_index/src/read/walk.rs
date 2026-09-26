@@ -1209,7 +1209,7 @@ mod merging {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
     use crate::core::index::contents_center;
-    use crate::core::record::{StarKind, System};
+    use crate::core::record::{ExactSystem, StarKind};
 
     /// Where the test skies are hung: the galactic centre, so the cells a
     /// build makes are the ones a real sky would land in.
@@ -1223,10 +1223,10 @@ mod merging {
     /// against a subtree of millions. At the defaults a handful of systems
     /// is one leaf and there is no frontier to test.
     fn sky(at: &[[f64; 3]]) -> Snapshot {
-        let systems: Vec<System> = at
+        let systems: Vec<ExactSystem> = at
             .iter()
             .enumerate()
-            .map(|(n, position)| System {
+            .map(|(n, position)| ExactSystem {
                 id64: n as u64 + 1,
                 position: *position,
                 absolute_magnitude: 4.0,
