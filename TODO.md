@@ -36,6 +36,25 @@ context in place of a dozen arguments; do the same elsewhere:
   `String` and a trip an `ARROW`-joined string parsed back apart. One `Trip`
   type carrying `RouteSettings`.
 
+## Core parts stand alone, contributed parts add to them
+
+The index's own parts are listed once (`galos_index::format::parts::CorePart`)
+and `--only` names them and each contributed table one to one. What is left:
+
+- Which core parts are required and which the map can do without. Cells and
+  names are held to agree on resume; a missing `populated.bin`,
+  `reaches.bin` or `factions.bin` has not been worked through in the map's
+  loader, which should treat each as a missing feature the way it treats a
+  missing `boosts.bin`.
+- A core-only build from the command line. Every writer hard-wires
+  `galos::tables()`, and only `--from database` honours `--only`: the feed
+  (`src/sink`) and the dump build (`src/read/cold.rs`) always write every
+  contributed table. Needs a flag, or `--only` applied to every source.
+- `galos_index::read::source::Part`, the map's change stamps, is a third
+  list (`Index`, `Cell`, `Names`, `NamesDelta`, …, no bodies) that does not
+  derive from `CorePart`.
+- A map test that loads a directory built with no contributed tables.
+
 ## Benchmarks
 
 `galos_index/tests/{procedural,zooming}.rs` and `galos_route`'s `perf` module

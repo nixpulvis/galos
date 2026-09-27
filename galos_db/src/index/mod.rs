@@ -15,6 +15,7 @@ use galos_index::build::cold::{
     Abandoned, Build, Built, OnStop, Start, Summary,
 };
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::format::parts::CorePart;
 use galos_index::records::derive::{self, NearestStar};
 use galos_index::{BuildParams, ExactSystem, Index, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
@@ -58,15 +59,22 @@ impl Parts {
     /// Every part, the index's own and each of `tables`: what a build with
     /// nothing named writes
     pub fn all(tables: &TableSet) -> Parts {
-        Parts {
-            cells: true,
-            names: true,
-            populated: true,
-            reaches: true,
-            factions: true,
-            bodies: true,
-            tables: tables.names().collect(),
+        let own = IntoIterator::into_iter(CorePart::ALL)
+            .fold(Parts::NONE, Parts::with);
+        Parts { tables: tables.names().collect(), ..own }
+    }
+
+    /// And `part`.
+    pub fn with(mut self, part: CorePart) -> Parts {
+        match part {
+            CorePart::Cells => self.cells = true,
+            CorePart::Names => self.names = true,
+            CorePart::Populated => self.populated = true,
+            CorePart::Reaches => self.reaches = true,
+            CorePart::Factions => self.factions = true,
+            CorePart::Bodies => self.bodies = true,
         }
+        self
     }
 
     /// No part at all, to name them onto

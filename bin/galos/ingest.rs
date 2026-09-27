@@ -296,30 +296,15 @@ pub struct Cli {
     force_lock: bool,
 }
 
-/// The index's own parts, each named on `--only` to rebuild it alone.
-///
-/// What each is derived from differs: `cells` and `names` come out of one
-/// read of every positioned system, `reaches` and `bodies` out of one read
-/// of every scanned thing, and `populated` and `factions` out of a query
-/// apiece. Asking for one reads only what that one needs.
-#[cfg(feature = "db")]
-const OWN_PARTS: [(&str, &str); 6] = [
-    ("cells", "The cell tree and its payloads, which the map draws the galaxy from."),
-    ("names", "Every system's name and place: the search index and the routing graph."),
-    ("populated", "The populated systems the map colors and filters by."),
-    ("reaches", "How far each scanned system reaches, which every shell is sized by."),
-    ("factions", "The faction id-to-name table."),
-    ("bodies", "One file per system of the stars, bodies and barycenters in it."),
-];
-
 /// What `--only` can name: the index's own parts, and each table the
 /// program contributes ([`galos::tables`]) by the name it is written under,
 /// read like the rest off the scanned things.
 #[cfg(feature = "db")]
 fn parts() -> clap::builder::PossibleValuesParser {
     use clap::builder::PossibleValue;
+    use galos_index::format::parts::CorePart;
     let own =
-        OWN_PARTS.map(|(name, about)| PossibleValue::new(name).help(about));
+        CorePart::ALL.map(|it| PossibleValue::new(it.name()).help(it.about()));
     let contributed: Vec<PossibleValue> = galos::tables()
         .iter()
         .map(|it| PossibleValue::new(it.name()).help(it.about()))

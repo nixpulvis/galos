@@ -244,9 +244,9 @@ impl TableSet {
     /// Where the set already holds a table of `T`'s name, or `T` is named
     /// for one of the index's own: two tables would be written to one file.
     pub fn with<T: Table>(mut self) -> TableSet {
-        const OWN: [&str; 3] = ["populated", "reaches", "factions"];
         assert!(
-            !OWN.contains(&T::NAME) && !self.names().any(|it| it == T::NAME),
+            crate::format::parts::CorePart::named(T::NAME).is_none()
+                && !self.names().any(|it| it == T::NAME),
             "two tables called {:?}",
             T::NAME,
         );
