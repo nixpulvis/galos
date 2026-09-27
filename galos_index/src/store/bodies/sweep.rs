@@ -131,7 +131,8 @@ impl Directory<'_> {
     ///
     /// Safe beside a map *reading* the directory: a reader whose data file goes out
     /// from under it reads the index again — see [`find_bodies`](crate::store::Directory::find_bodies). Not safe
-    /// beside anything *writing* it, which is what [`crate::Lock`] is for.
+    /// beside anything *writing* it, which is what
+    /// [`crate::format::lock::Lock`] is for.
     pub fn sweep_bodies(
         self,
         stop: &(dyn Fn() -> bool + Sync),

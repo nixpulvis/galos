@@ -72,8 +72,8 @@ impl Index {
     /// Mapped rather than read, so the pages behind the rows nobody asked
     /// for are never touched. A file that is not a payload of this layout
     /// has no head to map and falls back to
-    /// [`Index::read_payload`](crate::Index::read_payload), which refuses it
-    /// the same way and reads it as empty.
+    /// [`Index::read_payload`](crate::tree::index::Index::read_payload), which
+    /// refuses it the same way and reads it as empty.
     pub fn read_payload_prefix(
         dir: &Path,
         id: CellId,
@@ -91,11 +91,12 @@ impl Index {
 
 /// One cell's payload, mapped rather than decoded.
 ///
-/// [`Index::read_payload`](crate::Index::read_payload) reads the file and
-/// decodes a [`CellSystem`] per record into a `Vec`, which is right for drawing —
-/// the map wants owned points to build entities from — and wrong for anything
-/// that asks repeatedly. The router asks per expansion, half a million times a
-/// route, and the LOD walk asks for 152 M points in a zoom and pays 24 s and
+/// [`Index::read_payload`](crate::tree::index::Index::read_payload) reads the
+/// file and decodes a [`CellSystem`] per record into a `Vec`, which is right
+/// for drawing — the map wants owned points to build entities from — and wrong
+/// for anything that asks repeatedly. The router asks per expansion, half a
+/// million times a route, and the LOD walk asks for 152 M points in a zoom and
+/// pays 24 s and
 /// 6.1 GB of `Vec` for it.
 ///
 /// So: the bytes where they lie, and a field read out of them when asked.
@@ -129,8 +130,8 @@ impl Payload {
     /// layout, as in a directory at an earlier format version.
     ///
     /// The sharded path first and the flat one after it, as
-    /// [`Index::read_payload`](crate::Index::read_payload) does, so a directory
-    /// part way through a reshard answers with what it has.
+    /// [`Index::read_payload`](crate::tree::index::Index::read_payload) does,
+    /// so a directory part way through a reshard answers with what it has.
     pub fn open(dir: &Path, id: CellId) -> io::Result<Option<Payload>> {
         let file = match fs::File::open(payload_path(dir, id)) {
             Ok(file) => file,

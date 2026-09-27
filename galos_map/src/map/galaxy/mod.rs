@@ -11,9 +11,9 @@ use elite_journal::{
     Government,
     system::Security,
 };
-use galos_index::CellSystem;
-use galos_index::SystemName;
 use galos_index::core::aggregate::TempBucket;
+use galos_index::prelude::CellSystem;
+use galos_index::prelude::SystemName;
 use galos_index::records::{Economies, NameEntry, PopulatedSystem};
 use galos_photometry::ClassLight;
 
@@ -64,8 +64,8 @@ pub fn plugin(app: &mut App) {
 #[require(crate::map::bodies::spawn::Strength)]
 pub(crate) struct System {
     pub(crate) address: i64,
-    /// Upper case, and typed so: see [`galos_index::SystemName`]. A label
-    /// draws it as it stands rather than folding case a system a frame.
+    /// Upper case, and typed so: see [`galos_index::prelude::SystemName`]. A
+    /// label draws it as it stands rather than folding case a system a frame.
     pub(crate) name: SystemName,
     /// Absolute galactic position, in light years
     ///
@@ -917,7 +917,7 @@ pub(crate) mod tests {
             temp_bucket: TempBucket::new(0),
             updated_at: u32::try_from(at.timestamp())
                 .expect("a moment a payload can carry"),
-            kind: galos_index::StarKind::Unknown,
+            kind: galos_index::prelude::StarKind::Unknown,
         });
     }
 

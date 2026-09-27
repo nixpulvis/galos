@@ -48,9 +48,9 @@
 //!   idempotent upserts. The other order can catch the old base and the
 //!   cleared log, which loses every publish the log was the only record of.
 //! - **Never `<dir>.lock`.** A lock is a live process's claim on a live
-//!   directory ([`crate::Lock`]). Copied, it hands the destination a pid
-//!   that has never heard of it, and the next writer there is refused by a
-//!   ghost until somebody runs `--force-lock`.
+//!   directory ([`crate::format::lock::Lock`]). Copied, it hands the
+//!   destination a pid that has never heard of it, and the next writer there is
+//!   refused by a ghost until somebody runs `--force-lock`.
 //! - **Not the scratch.**
 //!   [`layout::scratch_dir`](crate::format::layout::scratch_dir) —
 //!   `names/.building/` — is a fold in progress, and
@@ -353,10 +353,10 @@ fn size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Lock;
     use crate::build::snapshot::{BuildParams, Snapshot};
     use crate::format::checkpoint::{Checkpoint, Provenance, pending};
     use crate::format::layout::{PAYLOAD_DIR, lock_path};
+    use crate::format::lock::Lock;
     use crate::system::System;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU32, Ordering};

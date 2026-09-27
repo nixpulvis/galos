@@ -31,10 +31,10 @@
 //! and for the [`Index`] ([`Sky::index`]) when it is about cells.
 //!
 //! Neither is how a reader loads what it draws. That is a
-//! [`crate::Source`], which fetches payloads whole and asynchronously for a
-//! [`crate::read::resident::Resident`] to hold decoded; a [`Sky`] maps them
-//! synchronously, reads a column at a time, and lets them go as a query
-//! moves on.
+//! [`crate::read::source::Source`], which fetches payloads whole and
+//! asynchronously for a [`crate::read::resident::Resident`] to hold decoded; a
+//! [`Sky`] maps them synchronously, reads a column at a time, and lets them go
+//! as a query moves on.
 
 use crate::core::geometry::CellId;
 use crate::store::cells::Payload;

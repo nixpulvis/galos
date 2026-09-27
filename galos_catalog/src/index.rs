@@ -2,10 +2,10 @@
 //! index build.
 //!
 //! `galos_db/src/index/mod.rs` reads Postgres and hands back
-//! `Vec<galos_index::System>`. This does the same from a catalog file, and the
-//! point of it is that everything downstream — the tree, the walks, the cells,
-//! the client — cannot tell which one it got. A tree of real stars drawn by
-//! the map is both a thing worth seeing and the sharpest test that
+//! `Vec<galos_index::prelude::System>`. This does the same from a catalog file,
+//! and the point of it is that everything downstream — the tree, the walks, the
+//! cells, the client — cannot tell which one it got. A tree of real stars drawn
+//! by the map is both a thing worth seeing and the sharpest test that
 //! `galos_index` is not quietly shaped around Elite.
 //!
 //! Two fields have no catalog meaning and are given one here.
@@ -30,7 +30,7 @@
 //!   precisely because a second dataset has nothing to say about it.
 
 use crate::{MAX_ID, Star};
-use galos_index::System;
+use galos_index::prelude::System;
 
 /// The high bit that marks an id as a catalog's rather than a system address.
 ///
@@ -85,7 +85,7 @@ impl Star {
             // are joined on nothing, and a route would read one as the
             // other. Nothing said, which is the honest reading and what
             // every unscanned system carries.
-            kind: galos_index::StarKind::Unknown,
+            kind: galos_index::prelude::StarKind::Unknown,
         }
     }
 }
@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::Source;
     use crate::hyg;
-    use galos_index::{BuildParams, Snapshot};
+    use galos_index::prelude::{BuildParams, Snapshot};
 
     fn bright() -> Vec<Star> {
         hyg::read(include_str!("../data/bright.csv").as_bytes())

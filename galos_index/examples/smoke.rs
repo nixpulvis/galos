@@ -4,7 +4,7 @@
 //!
 //! `cargo run -p galos_index --example smoke -- <dir> [sample]`
 
-use galos_index::Source;
+use galos_index::prelude::Source;
 use galos_index::store::Directory;
 use pollster::block_on;
 use std::path::Path;
@@ -27,7 +27,7 @@ async fn run() {
         .nth(2)
         .map(|it| it.parse().expect("a sample size"))
         .unwrap_or(SAMPLE);
-    let source = galos_index::FsSource::new(&dir);
+    let source = galos_index::prelude::FsSource::new(&dir);
 
     let index = source.index().await.expect("index");
     let populated = source.populated().await.expect("populated");

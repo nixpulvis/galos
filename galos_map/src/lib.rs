@@ -3,7 +3,7 @@
 //! ![](https://github.com/nixpulvis/galos/blob/master/galos_map/demo.gif?raw=true)
 //!
 //! Requires a built `galos_index` directory: the cell tree and the metadata
-//! sidecars beside it, read through one [`galos_index::Source`].
+//! sidecars beside it, read through one [`galos_index::prelude::Source`].
 //!
 //! Two plugins and a third over both. [`map::plugin`] draws the galaxy and
 //! the camera that flies it, and knows nothing of the chrome over it.

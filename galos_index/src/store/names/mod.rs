@@ -45,10 +45,10 @@
 //!    No separate index is held; a `HashMap<i64, usize>` beside the rows
 //!    would be 4.8 GB at 200 M.
 //! 3. **Sorted by name too**, in `byname.bin`. A name is
-//!    [`SystemName`](crate::SystemName), upper case by construction, so
-//!    names compare and sort as bytes with no fold — which is the whole
-//!    reason that type exists. Resolving a route endpoint, four to six
-//!    times per plot, is a binary search over a 4-byte-a-row permutation
+//!    [`SystemName`](crate::core::name::SystemName), upper case by
+//!    construction, so names compare and sort as bytes with no fold — which is
+//!    the whole reason that type exists. Resolving a route endpoint, four to
+//!    six times per plot, is a binary search over a 4-byte-a-row permutation
 //!    rather than a scan of the galaxy.
 //! 4. **A generation, swapped by one rename.** A build reads the galaxy for
 //!    as long as that takes and the table beneath it is served the whole
@@ -170,8 +170,8 @@ impl Names {
     /// 97.4 % of a galaxy and the whole reason `text.bin` is small.
     ///
     /// Upper case either way, every name in the table being a
-    /// [`SystemName`](crate::SystemName) and the arithmetic spelling upper
-    /// case by construction.
+    /// [`SystemName`](crate::core::name::SystemName) and the arithmetic
+    /// spelling upper case by construction.
     pub fn name_of(&self, address: i64) -> Option<Cow<'_, str>> {
         match self.delta.said(address) {
             Some(DeltaAnswer::Named(entry)) => Some(Cow::Borrowed(&entry.name)),

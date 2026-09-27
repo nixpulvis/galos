@@ -39,8 +39,8 @@ pub(super) const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 /// place a place is exact. An address locates its system to within a boxel
 /// ([`elite_journal::Boxel::place`], measured against every name of a
 /// 200 M dump), so whoever wants an exact place asks the tree —
-/// [`crate::Sky::placed`], 0.8–5 ms — and whoever wants a rough one does
-/// arithmetic on the address for nothing.
+/// [`crate::read::sky::Sky::placed`], 0.8–5 ms — and whoever wants a rough one
+/// does arithmetic on the address for nothing.
 ///
 /// Every older version is read by this build too: a v1 generation stores
 /// every name, a v2 one marks a derived row with a span of no length, and
@@ -361,8 +361,8 @@ pub(super) fn map(path: &Path, want: usize) -> io::Result<Mmap> {
 /// oracle (`tests/derivations_agree.rs`) checks exactly that.
 ///
 /// Whoever needs the exact place asks the galaxy, where it is exact:
-/// [`crate::Sky::placed`], which the address locates to within this same
-/// boxel and which a router's endpoints use.
+/// [`crate::read::sky::Sky::placed`], which the address locates to within this
+/// same boxel and which a router's endpoints use.
 pub(super) fn placed(entry: NameEntry) -> NameEntry {
     NameEntry { position: boxel_middle(entry.address), ..entry }
 }

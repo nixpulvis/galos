@@ -782,7 +782,7 @@ enum Waiting {
     /// weighs the queue any more.
     Point {
         /// The index's own cell, not the renderer's grid cell.
-        cell: galos_index::CellId,
+        cell: galos_index::prelude::CellId,
         at: u32,
     },
 }
@@ -807,7 +807,7 @@ struct Offered {
 struct Walked {
     address: i64,
     /// The index's own cell, not the renderer's grid cell.
-    cell: galos_index::CellId,
+    cell: galos_index::prelude::CellId,
     at: u32,
 }
 
@@ -892,7 +892,7 @@ impl PendingSpawns {
     pub(crate) fn offer(
         &mut self,
         address: i64,
-        cell: galos_index::CellId,
+        cell: galos_index::prelude::CellId,
         at: u32,
     ) -> bool {
         if self.walked.len() >= OFFER_BUDGET {
@@ -1660,7 +1660,7 @@ mod tests {
     #[test]
     fn an_offered_point_is_built_only_when_it_is_drawn() {
         let mut pending = PendingSpawns::default();
-        let cell = galos_index::CellId::ROOT;
+        let cell = galos_index::prelude::CellId::ROOT;
         pending.opening(Instant::now());
         assert!(pending.offer(7, cell, 3));
         assert!(pending.offer(8, cell, 4));
@@ -1689,7 +1689,7 @@ mod tests {
     #[test]
     fn a_pass_forgets_what_the_pass_before_it_offered() {
         let mut pending = PendingSpawns::default();
-        let cell = galos_index::CellId::ROOT;
+        let cell = galos_index::prelude::CellId::ROOT;
         pending.opening(Instant::now());
         pending.offer(7, cell, 0);
         pending.offer(8, cell, 1);
@@ -1719,7 +1719,7 @@ mod tests {
     #[test]
     fn a_pass_stops_offering_past_its_budget() {
         let mut pending = PendingSpawns::default();
-        let cell = galos_index::CellId::ROOT;
+        let cell = galos_index::prelude::CellId::ROOT;
         pending.opening(Instant::now());
         for address in 0..OFFER_BUDGET as i64 {
             assert!(pending.offer(address, cell, address as u32));

@@ -5,7 +5,7 @@
 //! it owns, which children it has, and the totals over its whole subtree. A
 //! [`CellSystem`] is one system in that slice, packed at the precision a
 //! reader needs. Both are read-side and fixed: the tree a feed edits is
-//! [`crate::Tree`], which publishes into these.
+//! [`crate::build::tree::Tree`], which publishes into these.
 
 use crate::core::aggregate::{Aggregate, TempBucket};
 use crate::core::codec::{Decode, Encode, FixedCodec, record};

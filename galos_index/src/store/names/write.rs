@@ -246,10 +246,10 @@ pub(super) fn write_base(
 ///
 /// One pass, four sequential streams. A position is not among them: the
 /// cell payload that owns a system is where its place is exact, and the
-/// address says which boxel to look in ([`crate::Sky::placed`]). The sections are separate files
-/// exactly so that this is possible: one file with the sections laid end to
-/// end would need the counts before the first byte of it could be placed,
-/// or a second pass to concatenate gigabytes.
+/// address says which boxel to look in ([`crate::read::sky::Sky::placed`]). The
+/// sections are separate files exactly so that this is possible: one file with
+/// the sections laid end to end would need the counts before the first byte of
+/// it could be placed, or a second pass to concatenate gigabytes.
 pub(super) fn write_sections(
     at: &Path,
     sorted: &rows::Sorted,

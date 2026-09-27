@@ -37,8 +37,8 @@ pub const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 /// — falls in bucket 0 with everything else fresh.
 ///
 /// A `u32` and not the `usize` an array index wants, because where it is kept
-/// is a [`System`](crate::System), and that record is written to disk as its
-/// own bytes; see its doc.
+/// is a [`System`](crate::system::System), and that record is written to disk
+/// as its own bytes; see its doc.
 pub fn age_bucket(days: i64) -> u32 {
     AGE_EDGES.iter().filter(|&&edge| days >= edge).count() as u32
 }

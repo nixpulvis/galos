@@ -43,7 +43,7 @@
 //! later is one stored name over a derived one, which is the overlay this
 //! table already has.
 
-use crate::SystemName;
+use crate::core::name::SystemName;
 use elite_journal::Boxel;
 use std::sync::LazyLock;
 

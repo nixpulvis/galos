@@ -126,6 +126,6 @@ pub use shutdown::Shutdown;
 /// One place, because every writer of a directory has to hold the same set:
 /// a table one writer left out is a table the next one resumes absent. The
 /// router's supercharge table is the one there is.
-pub fn tables() -> galos_index::TableSet {
-    galos_index::TableSet::new().with::<galos_route::BoostTable>()
+pub fn tables() -> galos_index::prelude::TableSet {
+    galos_index::prelude::TableSet::new().with::<galos_route::BoostTable>()
 }

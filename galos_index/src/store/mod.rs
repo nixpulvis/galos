@@ -1,4 +1,6 @@
-//! The stores a served directory is made of, each read and written here.
+//! The stores a served [`Directory`] is made of, each read and written here:
+//! the cells, the bodies, the [`Names`](names::Names) and the
+//! [`Sidecars`](sidecars::Sidecars).
 //!
 //! [`cells`] is the payload files, one a cell. [`bodies`] is every system's
 //! insides, packed a shard to a file. [`names`] is the names table, mapped

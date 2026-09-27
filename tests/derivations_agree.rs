@@ -8,7 +8,7 @@
 //! builds the directory from the rows (`sink::Db`, then
 //! `galos_db::index::catch_up`) — which is `galos ingest --from database
 //! --index DIR`, and the first half of what a run naming `--db --index`
-//! does; the other accumulates the events into `galos_index::Galaxy`
+//! does; the other accumulates the events into `galos_index::prelude::Galaxy`
 //! and publishes the directory from that (`sink::Index`) — which is
 //! `galos ingest --index DIR` off a feed, and the regional build for a
 //! dump too big to hold. Both take the same [`Sink`] trait, so this hands
@@ -54,8 +54,8 @@ use galos::sink::{Db, Index, Reporter, Sink};
 use galos_db::index::{never, Parts};
 use galos_db::testing::Scratch;
 use galos_db::Database;
+use galos_index::prelude::{FsSource, Source as _};
 use galos_index::records::{PopulatedSystem, SystemBodies};
-use galos_index::{FsSource, Source as _};
 use galos_route::{Boost, BoostTable};
 use spansh::System;
 use std::collections::HashMap;

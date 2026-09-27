@@ -18,7 +18,8 @@
 //! fan-outs would be two answers to which events name a system.
 //! What differs is where it lands: `galos_db::record` writes fourteen tables and a
 //! build reads them back, while this keeps the two shapes the index wants -
-//! [`crate::System`] and the metadata records - and skips the round trip.
+//! [`crate::system::System`] and the metadata records - and skips the round
+//! trip.
 //!
 //! Narrower below system level, and not above it. `galos_db::record` also records
 //! dockings, settlements, body signals and codex entries, and the index has

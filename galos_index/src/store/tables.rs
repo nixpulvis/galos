@@ -73,8 +73,8 @@ pub trait Table: Send + Sync + 'static {
     ///
     /// **A function of the record and of nothing else.** Every writer asks
     /// it of every placed system it touches, whatever the record says —
-    /// [`StarKind::Unknown`](crate::StarKind::Unknown) included — so a
-    /// directory kept current by a feed or a database pass holds exactly
+    /// [`StarKind::Unknown`](crate::core::star::StarKind::Unknown) included —
+    /// so a directory kept current by a feed or a database pass holds exactly
     /// what one rebuilt from the same records would.
     fn derive(system: &System) -> Option<Self::Row>;
 

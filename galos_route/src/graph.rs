@@ -11,8 +11,8 @@
 use crate::Boosts;
 use crate::highway::Highway;
 use crate::{Boost, Fsd};
+use galos_index::prelude::{CellId, Sky};
 use galos_index::read::sky::Node;
-use galos_index::{CellId, Sky};
 use glam::DVec3;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -3587,7 +3587,7 @@ impl JumpGraph {
 mod tests {
     use super::*;
     use crate::testing::{Scratch, sky_apart, sky_of};
-    use galos_index::CellId;
+    use galos_index::prelude::CellId;
     use galos_index::records::NameEntry;
 
     /// A system named for its address, at `at`.
@@ -3599,8 +3599,8 @@ mod tests {
     ///
     /// The address and where the names table says it sits: the pair
     /// [`JumpGraph::route`] wants, because the record itself is found by
-    /// descending to that place ([`galos_index::Sky::node_of`]). A test
-    /// knows both, having put the system there.
+    /// descending to that place ([`galos_index::prelude::Sky::node_of`]). A
+    /// test knows both, having put the system there.
     fn end(entries: &[NameEntry], address: i64) -> (i64, [f64; 3]) {
         let found = entries
             .iter()
@@ -4326,7 +4326,7 @@ mod tests {
     /// so it counts the neighbours off and says which of them can charge a
     /// drive by whether the count is in `cones`.
     fn near(at: u32, away: f64) -> (Node, [f64; 3], f64) {
-        let cell = galos_index::CellId { level: 1, x: 0, y: 0, z: 0 };
+        let cell = galos_index::prelude::CellId { level: 1, x: 0, y: 0, z: 0 };
         (Node { cell, at }, [away, 0., 0.], away)
     }
 
@@ -4468,7 +4468,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(at, &leg)| {
-                let cell = galos_index::CellId { level: 1, x: 0, y: 0, z: 0 };
+                let cell =
+                    galos_index::prelude::CellId { level: 1, x: 0, y: 0, z: 0 };
                 (Node { cell, at: at as u32 }, [100. - leg, 0., 0.], leg)
             })
             .collect();

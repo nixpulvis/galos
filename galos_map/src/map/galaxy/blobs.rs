@@ -37,7 +37,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::{CellId, CellSystem};
+use galos_index::prelude::{CellId, CellSystem};
 use rustc_hash::FxHashMap;
 
 pub fn plugin(app: &mut App) {
@@ -393,7 +393,7 @@ mod tests {
     use super::*;
     use crate::map::galaxy::tests::seeing;
     use bevy::window::{PrimaryWindow, Window, WindowResolution};
-    use galos_index::StarKind;
+    use galos_index::prelude::StarKind;
 
     /// A merged mark over `count` systems, of which `colonies` are
     /// imperial: what the aggregate's political histogram would say.
@@ -858,7 +858,7 @@ pub(crate) fn weigh_blobs(
 /// **A faction, a route and a hand-picked set each name a set of
 /// addresses**, and every one of those addresses sits in a known place, so
 /// the cells that hold them are the tree's own descent from the root to
-/// each: [`galos_index::Index::descend`]. That is the whole of what a
+/// each: [`galos_index::prelude::Index::descend`]. That is the whole of what a
 /// merged mark can be asked about them, and it is exact — a mark is
 /// admitted if and only if something it stands for is.
 ///
@@ -900,7 +900,7 @@ impl Named {
         &mut self,
         revision: u32,
         filters: &crate::map::filter::Filters,
-        index: &galos_index::Index,
+        index: &galos_index::prelude::Index,
         populated: &Populated,
         names: &Names,
     ) {

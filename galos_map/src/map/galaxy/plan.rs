@@ -29,8 +29,8 @@ use crate::map::paint::sizing::View;
 use crate::map::schedule::MapSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use galos_index::prelude::{CellId, Mode, Moments, Needed, View as Viewpoint};
 use galos_index::read::inhabited::Inhabited;
-use galos_index::{CellId, Mode, Moments, Needed, View as Viewpoint};
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -112,12 +112,12 @@ impl Accounted {
 /// Re-walked when the eye moves, when the viewport resizes, and when the drawn
 /// [`View`] changes — the shell over a political field, or the photometric sky.
 /// Not when the camera merely turns: every cut the index makes is a pure
-/// function of eye position, [`galos_index::Index::walk_screen`] keeping "no
-/// budget, no frustum" and the Real mode's two walks reading `view.eye` alone,
-/// so a turn about one eye returns the same marks and the same splats. The
-/// viewport earns its place in the key because the separation the marks are cut
-/// at is measured in pixels. Put a frustum back in the walk and the rotation
-/// has to come back into the key with it.
+/// function of eye position, [`galos_index::prelude::Index::walk_screen`]
+/// keeping "no budget, no frustum" and the Real mode's two walks reading
+/// `view.eye` alone, so a turn about one eye returns the same marks and the
+/// same splats. The viewport earns its place in the key because the separation
+/// the marks are cut at is measured in pixels. Put a frustum back in the walk
+/// and the rotation has to come back into the key with it.
 ///
 /// And whenever the aggregates themselves move. The walk plans off
 /// [`ResidentIndex`], so a cell the index has only just published is a cell
@@ -250,7 +250,7 @@ mod tests {
     /// camera. See [`crate::map::index::refresh`].
     #[test]
     fn a_republished_index_is_walked_again_where_it_stands() {
-        use galos_index::{BuildParams, Snapshot};
+        use galos_index::prelude::{BuildParams, Snapshot};
 
         let mut app = App::new();
         app.add_systems(Update, plan);
@@ -268,7 +268,9 @@ mod tests {
         }));
         app.insert_resource(View::Map);
         app.init_resource::<crate::map::galaxy::spawn::StarExposure>();
-        app.insert_resource(ResidentIndex(galos_index::Index::default()));
+        app.insert_resource(ResidentIndex(
+            galos_index::prelude::Index::default(),
+        ));
         app.world_mut().spawn((
             OrbitCamera::default(),
             crate::map::galaxy::tests::seeing(),
@@ -282,15 +284,15 @@ mod tests {
         // touches the camera. Enough of them to be worth reading: the walk
         // marks a cell once it is worth [`galos_index::MARK_LEAST`] marks,
         // so four systems are not a plan whatever the camera does.
-        let inputs: Vec<galos_index::System> = (1..=64)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::prelude::System> = (1..=64)
+            .map(|id| galos_index::prelude::System {
                 id64: id as u64,
                 position: [id as f64, 0., 0.],
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
-                kind: galos_index::StarKind::G,
+                kind: galos_index::prelude::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -313,7 +315,7 @@ mod tests {
     /// still re-walks, which is the half that has to keep working.
     #[test]
     fn a_turn_in_place_does_not_walk_again() {
-        use galos_index::{BuildParams, Snapshot};
+        use galos_index::prelude::{BuildParams, Snapshot};
 
         #[derive(Resource, Default)]
         struct Walks(usize);
@@ -324,15 +326,15 @@ mod tests {
             }
         }
 
-        let inputs: Vec<galos_index::System> = (1..=64)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::prelude::System> = (1..=64)
+            .map(|id| galos_index::prelude::System {
                 id64: id as u64,
                 position: [id as f64, 0., 0.],
                 absolute_magnitude: id as f64 / 8.,
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
-                kind: galos_index::StarKind::G,
+                kind: galos_index::prelude::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());

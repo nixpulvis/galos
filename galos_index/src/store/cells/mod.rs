@@ -6,10 +6,11 @@
 //! rewrites only the cells that changed.
 //!
 //! The byte formats are [`crate::format::payload`] and the tree they hold is
-//! [`crate::Index`]; this is where they meet the filesystem. `read` opens
-//! them — the index whole, a payload decoded or mapped — and `write` puts
-//! them down and sweeps away what the tree no longer names. A reader fetching
-//! cells over HTTP reads the same bytes through its own transport.
+//! [`crate::tree::index::Index`]; this is where they meet the filesystem.
+//! `read` opens them — the index whole, a payload decoded or mapped — and
+//! `write` puts them down and sweeps away what the tree no longer names. A
+//! reader fetching cells over HTTP reads the same bytes through its own
+//! transport.
 
 use crate::format::layout::INDEX_FILE;
 use crate::format::payload::{INDEX_VERSION, index_version};

@@ -310,7 +310,7 @@ impl fmt::Display for Refused {
                  serves {}: bring it forward with `galos index migrate -i \
                  {}` and merge again",
                 dir.display(),
-                crate::INDEX_VERSION,
+                crate::format::payload::INDEX_VERSION,
                 dir.display(),
             ),
             Refused::Adrift { dir, checkpoint, why } => write!(
@@ -715,8 +715,8 @@ impl Bits {
 /// The sort is by id and then by *descending* position, so the last record
 /// an id has sorts first within its run and [`Vec::dedup_by`], which keeps
 /// the first of each run, keeps it. That is the same "later wins" the log
-/// replay has — [`Tree::apply`](crate::Tree::apply) over a base — done in
-/// place rather than into a second vector.
+/// replay has — [`Tree::apply`](crate::build::tree::Tree::apply) over a base —
+/// done in place rather than into a second vector.
 fn ordered(theirs: &Flat) -> Vec<u32> {
     let mut order: Vec<u32> = (0..theirs.len() as u32).collect();
     order.sort_unstable_by(|&a, &b| {

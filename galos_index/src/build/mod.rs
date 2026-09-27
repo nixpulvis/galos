@@ -1,4 +1,6 @@
-//! Raising the tree: at once, a region at a time, or an edit at a time.
+//! Raising the tree: at once as a [`Snapshot`](snapshot::Snapshot), a region
+//! at a time with a [`Build`](cold::Build), or an edit at a time on a
+//! [`Tree`](tree::Tree).
 //!
 //! [`snapshot`] is the batch build of a galaxy held whole and the write of a
 //! built tree. [`cold`] raises the same tree from records without ever

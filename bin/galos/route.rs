@@ -5,7 +5,7 @@
 //! otherwise, where the build has one.
 
 use clap::Args;
-use galos_index::{FsSource, Names, Sky, SystemName};
+use galos_index::prelude::{FsSource, Names, Sky, SystemName};
 use galos_route::{Boosts, Drive, Jumps, Routing, Tuning};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

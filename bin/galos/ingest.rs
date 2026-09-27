@@ -450,8 +450,8 @@ pub async fn run(cli: Cli) -> Result<bool, String> {
     let _lock = match &cli.index {
         Some(dir) => Some(
             match cli.force_lock {
-                true => galos_index::Lock::force(dir),
-                false => galos_index::Lock::take(dir),
+                true => galos_index::prelude::Lock::force(dir),
+                false => galos_index::prelude::Lock::take(dir),
             }
             .map_err(|err| format!("{}: {err}", dir.display()))?,
         ),

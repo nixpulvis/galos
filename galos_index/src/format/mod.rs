@@ -1,5 +1,7 @@
 //! The on-disk format: where each file lives and what is in the ones that
-//! are not a table of records.
+//! are not a table of records, down to the
+//! [`Checkpoint`](checkpoint::Checkpoint) a writer resumes from and the
+//! [`Lock`](lock::Lock) that keeps it alone.
 //!
 //! [`layout`] names every file and directory. [`payload`] is a cell's byte
 //! layout and the version the index file is held to. [`msgpack`] is how a

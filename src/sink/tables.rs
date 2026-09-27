@@ -5,8 +5,8 @@
 //! is the half that cannot be shared: where a row comes from, and what an
 //! absence means.
 //!
-//! A row comes from [`galos_index::Galaxy`], which has already turned the
-//! events into records. And an absence means nothing at all — which is the
+//! A row comes from [`galos_index::prelude::Galaxy`], which has already turned
+//! the events into records. And an absence means nothing at all — which is the
 //! whole difference between this and the database's side:
 //!
 //! - **Nothing is withdrawn.** This cannot tell a system that has emptied
@@ -28,8 +28,8 @@
 //! See `galos_index::accumulate::galaxy`.
 
 use galos_index::accumulate::merge;
+use galos_index::prelude::{Galaxy, System};
 use galos_index::store::sidecars::{Counts, Sidecars};
-use galos_index::{Galaxy, System};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -116,8 +116,8 @@ impl Tables {
     /// turned back into one.
     ///
     /// `drawn` is asked rather than handed over: the tree can answer for one
-    /// address ([`galos_index::Tree::holds`]), and collecting every address
-    /// it holds in order to ask is the galaxy in a hash set. What is
+    /// address ([`galos_index::prelude::Tree::holds`]), and collecting every
+    /// address it holds in order to ask is the galaxy in a hash set. What is
     /// collected here is the orphans, which is what the repair is about and
     /// is nothing on a directory that does not need one.
     pub fn forget_names(&mut self, drawn: impl Fn(i64) -> bool) -> usize {

@@ -250,7 +250,9 @@ mod tests {
         // An index file of a layout this build does not read.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"GIDX");
-        bytes.extend_from_slice(&(crate::INDEX_VERSION - 1).to_le_bytes());
+        bytes.extend_from_slice(
+            &(crate::format::payload::INDEX_VERSION - 1).to_le_bytes(),
+        );
         bytes.extend_from_slice(&0u32.to_le_bytes());
         std::fs::write(dir.join(crate::format::layout::INDEX_FILE), &bytes)
             .expect("an index file writes");
@@ -259,7 +261,7 @@ mod tests {
             .expect("the migration runs");
         assert_eq!(
             done.upgrade,
-            Some(crate::INDEX_VERSION - 1),
+            Some(crate::format::payload::INDEX_VERSION - 1),
             "the layout met was not named",
         );
         // And nothing was moved: the loose file is still loose.

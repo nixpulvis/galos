@@ -1,14 +1,15 @@
 //! The builder's private resume point: a base compacted rarely, and the
 //! deltas since.
 //!
-//! The served index is lossy — a payload [`CellSystem`](crate::CellSystem) downcasts
-//! the magnitude, buckets the temperature and drops the age — so the
-//! editable [`Tree`](crate::Tree) cannot be rebuilt from it. This holds the
+//! The served index is lossy — a payload
+//! [`CellSystem`](crate::tree::cell::CellSystem) downcasts the magnitude,
+//! buckets the temperature and drops the age — so the editable
+//! [`Tree`](crate::build::tree::Tree) cannot be rebuilt from it. This holds the
 //! full-precision inputs the tree was last built from and the database time
-//! they were read at, so a `--watch` restart rebuilds the tree in memory
-//! and follows changes from the cursor. It is server-private and never
-//! served, and it carries what derived it, an event feed and a database
-//! read meaning different things by a cursor — see [`Provenance`].
+//! they were read at, so a `--watch` restart rebuilds the tree in memory and
+//! follows changes from the cursor. It is server-private and never served, and
+//! it carries what derived it, an event feed and a database read meaning
+//! different things by a cursor — see [`Provenance`].
 //!
 //! ## Two files
 //!
@@ -21,8 +22,8 @@
 //!
 //! A 64-byte header and then nothing but [`System`] records, 64 bytes each
 //! as this machine holds one. [`Checkpoint::read`] maps the file and hands
-//! [`Tree::build`](crate::Tree::build) a `&[System]` pointing into the
-//! mapping: mapped, not decoded, so the inputs cost no heap. Decoding *is*
+//! [`Tree::build`](crate::build::tree::Tree::build) a `&[System]` pointing into
+//! the mapping: mapped, not decoded, so the inputs cost no heap. Decoding *is*
 //! the allocation.
 //!
 //! The cost is that the file is one machine's, native order and native
@@ -30,8 +31,8 @@
 //! the magic is a native `u64`, and the record width and a format version
 //! are in the header. Refusal costs a rebuild and nothing else.
 
-use crate::System;
 use crate::format::layout::pending_path;
+use crate::system::System;
 use chrono::NaiveDateTime;
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
@@ -119,8 +120,8 @@ const FOLD_CEILING: u64 = 256 << 20;
 ///
 /// The two halves are handed over separately rather than merged: a tree is
 /// built from the base in one batch and the deltas applied over it with
-/// [`Tree::apply`](crate::Tree::apply). Merged here it would be a `HashMap`
-/// of the galaxy.
+/// [`Tree::apply`](crate::build::tree::Tree::apply). Merged here it would be a
+/// `HashMap` of the galaxy.
 pub struct Checkpoint {
     /// The database time the inputs were read at, in UTC. Opaque here; the
     /// builder reads the changes since it. [`None`] for an event run with no

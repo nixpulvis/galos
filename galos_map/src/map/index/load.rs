@@ -39,7 +39,7 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
-use galos_index::Index;
+use galos_index::prelude::Index;
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::records::{Faction, PopulatedSystem};
 use galos_route::graph::Jumps;
@@ -198,7 +198,7 @@ fn start(
 /// stamp of the publish and never asked for again. See
 /// [`Stamps::before_reading`].
 async fn read(
-    source: &Arc<dyn galos_index::Source>,
+    source: &Arc<dyn galos_index::prelude::Source>,
     step: &Arc<AtomicU8>,
     dir: &str,
 ) -> Result<Loaded, String> {
@@ -221,8 +221,8 @@ async fn read(
     // This was the heaviest part of opening by a long way. A galaxy's names
     // were 8.70 GiB of MessagePack over 3,053 chunks, which had to be read,
     // decoded and packed across the whole task pool to be had in 33 s and
-    // 7.9 GB of resident arrays. [`galos_index::Names::open`] maps the five
-    // sections of the published base and reads the delta log, so what a
+    // 7.9 GB of resident arrays. [`galos_index::prelude::Names::open`] maps the
+    // five sections of the published base and reads the delta log, so what a
     // session touches is what the kernel pages in and the rest costs
     // nothing. See [`crate::map::index::names`].
     //
@@ -238,8 +238,8 @@ async fn read(
     // And the text a search sweeps read once, in order, here rather than
     // on the first query: a cold sweep faults 128 MB a page at a time and
     // was reported as a four-second search for `SOL`. See
-    // [`galos_index::Names::warm`] for what it leaves cold, which is every
-    // other section — the point of the format is not reading those.
+    // [`galos_index::prelude::Names::warm`] for what it leaves cold, which is
+    // every other section — the point of the format is not reading those.
     //
     // Best effort: a warming read that failed is a slow first search, not
     // a directory that cannot be opened, and the table has already been
@@ -309,7 +309,7 @@ fn stood_up(
     held: Stamps,
     index: Index,
     populated: Vec<PopulatedSystem>,
-    table: galos_index::Names,
+    table: galos_index::prelude::Names,
     reaches: names::Reaches,
     boosts: Option<Vec<SystemBoost>>,
     factions: Vec<Faction>,
@@ -360,7 +360,7 @@ fn stood_up(
     // nothing else — no places are copied and no grid is built, which is
     // what a route used to wait 32 s and 13.7 GB for. A directory this
     // process cannot map leaves it absent and nothing routes.
-    let sky = match galos_index::Sky::open(std::path::Path::new(dir)) {
+    let sky = match galos_index::prelude::Sky::open(std::path::Path::new(dir)) {
         Ok(sky) => Some(Arc::new(sky)),
         Err(err) => {
             warn!("{dir} cannot be mapped for routing: {err}");

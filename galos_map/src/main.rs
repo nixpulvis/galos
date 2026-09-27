@@ -5,7 +5,7 @@ use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 #[cfg(feature = "inspector")]
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use clap::Parser;
-use galos_index::FsSource;
+use galos_index::prelude::FsSource;
 use galos_map::*;
 use std::sync::Arc;
 

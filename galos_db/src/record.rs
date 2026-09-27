@@ -42,7 +42,7 @@ use elite_journal::entry::{Entry, Event};
 use elite_journal::station::Station as JournalStation;
 use elite_journal::system::System as JournalSystem;
 use galos_index::accumulate::merge;
-use galos_index::SystemReport;
+use galos_index::prelude::SystemReport;
 use tracing::{debug, info, warn};
 
 /// A write inside a message that was turned away
@@ -184,8 +184,8 @@ pub async fn entry(
 ///
 /// The system it happened in comes first and comes from
 /// [`SystemReport::of`], which is the one fan-out over the events that name
-/// one — the same call `galos_index::Galaxy` makes, so the two halves of
-/// this program cannot disagree about which systems exist. Everything below
+/// one — the same call `galos_index::prelude::Galaxy` makes, so the two halves
+/// of this program cannot disagree about which systems exist. Everything below
 /// is what only Postgres keeps: the stations, the markets, the signals, the
 /// codex sightings and the factions, each hanging off that row by a foreign
 /// key, which is why the row is written before any of them is attempted.
@@ -562,7 +562,7 @@ async fn write(
 ///
 /// The one event that states a system per stop rather than one, which is why
 /// it is [`SystemReport::plotted`] over the destinations here and in
-/// `galos_index::Galaxy` rather than an arm of [`SystemReport::of`].
+/// `galos_index::prelude::Galaxy` rather than an arm of [`SystemReport::of`].
 async fn nav_route(
     conn: &mut PgConnection,
     timestamp: DateTime<Utc>,

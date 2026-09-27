@@ -13,7 +13,7 @@
 //! measures the arithmetic; the first run after a build measures the page
 //! faults, which is what a user opening the map actually waits for.
 
-use galos_index::Names;
+use galos_index::prelude::Names;
 use std::time::Instant;
 
 fn main() {

@@ -117,7 +117,7 @@ impl Table {
     /// address spells where the row stored none.
     ///
     /// Upper case either way — the table is written from
-    /// [`SystemName`](crate::SystemName)s and
+    /// [`SystemName`](crate::core::name::SystemName)s and
     /// [`crate::core::procedural`] spells upper case by construction — and
     /// borrowed wherever there is something to borrow, which is every row
     /// of a version 1 table and every stored exception of a later one.

@@ -8,9 +8,9 @@
 //! ([`BoostTable`]), derived from each system's [`System`] record, and read back
 //! as [`Boosts`].
 
+use galos_index::prelude::{StarKind, System, Table};
 use galos_index::read::source::{Source, table};
 use galos_index::store::Directory;
-use galos_index::{StarKind, System, Table};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -126,8 +126,8 @@ pub struct SystemBoost {
 /// The supercharge table, `boosts.bin`: which systems can supercharge a
 /// drive, contributed to every index directory the program writes.
 ///
-/// Hand it to whatever writes a directory in a [`galos_index::TableSet`];
-/// read it back as [`Boosts`].
+/// Hand it to whatever writes a directory in a
+/// [`galos_index::prelude::TableSet`]; read it back as [`Boosts`].
 pub struct BoostTable;
 
 impl Table for BoostTable {
@@ -197,11 +197,13 @@ impl Table for BoostTable {
         // Asking the tree per address would be a sphere query apiece —
         // milliseconds by four million rows — where the cells hold every
         // place already, in an order this does not care about.
-        let index = galos_index::Index::read(dir)?;
+        let index = galos_index::prelude::Index::read(dir)?;
         let mut table =
             galos_index::store::tables::Keyed::new(Self::NAME, Self::address);
         for cell in index.cells() {
-            for point in galos_index::Index::read_payload(dir, cell.id)? {
+            for point in
+                galos_index::prelude::Index::read_payload(dir, cell.id)?
+            {
                 let Ok(which) = addresses.binary_search(&(point.id64 as i64))
                 else {
                     continue;
@@ -361,7 +363,7 @@ mod tests {
         )
         .expect("a table of the old shape");
 
-        let tables = galos_index::TableSet::new().with::<BoostTable>();
+        let tables = galos_index::prelude::TableSet::new().with::<BoostTable>();
         let rewrite = || {
             galos_index::ops::upgrade::rewrite(
                 dir.path(),

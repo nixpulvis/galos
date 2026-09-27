@@ -647,7 +647,7 @@ use crate::Boosts;
 use crate::graph::{
     Drive, EXPAND, Frontier, JumpGraph, Routing, Tuning, Weigh,
 };
-use galos_index::FsSource;
+use galos_index::prelude::FsSource;
 use glam::DVec3;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -735,7 +735,7 @@ fn routing_stays_quick() {
     // else.
     let at = Instant::now();
     let sky = std::sync::Arc::new(
-        galos_index::Sky::open(&dir).expect("the galaxy maps"),
+        galos_index::prelude::Sky::open(&dir).expect("the galaxy maps"),
     );
     let graph = JumpGraph::over(&sky, &boosts);
     let opened = at.elapsed();

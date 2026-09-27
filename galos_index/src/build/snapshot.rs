@@ -92,9 +92,10 @@ impl Snapshot {
     /// The order of the input does not matter: the split is by position and the
     /// slicing is by magnitude, so the same systems build the same tree however
     /// they arrive. Within a cell's payload the systems come out brightest
-    /// first. For the live, editable form raise a [`Tree`](crate::Tree) with
-    /// [`Tree::build`](crate::Tree::build), which builds this and holds it
-    /// open.
+    /// first. For the live, editable form raise a
+    /// [`Tree`](crate::build::tree::Tree) with
+    /// [`Tree::build`](crate::build::tree::Tree::build), which builds this and
+    /// holds it open.
     pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
         Snapshot::of_region(CellId::ROOT, systems, &HashSet::new(), params)
     }
@@ -170,8 +171,8 @@ impl Snapshot {
     ///
     /// A full rebuild in CPU, but the write cost is only the [`CellDiff`]
     /// cells, positions being immutable and churn clustered. The live
-    /// [`Tree`](crate::Tree) cuts the rebuild itself to an O(depth) edit and
-    /// lands the same directory.
+    /// [`Tree`](crate::build::tree::Tree) cuts the rebuild itself to an
+    /// O(depth) edit and lands the same directory.
     pub fn rebuild(
         &self,
         systems: &[System],

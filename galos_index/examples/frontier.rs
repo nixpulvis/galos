@@ -31,11 +31,11 @@
 //! whatever is in it, and a floor under that figure draws nothing at all in
 //! the finest cells — which is where the sky is densest.
 
+use galos_index::prelude::{CellId, Index, Mode, View};
 use galos_index::read::screen::{
     Empty, frame_marks, share as share_of, wanted,
 };
 use galos_index::read::walk::MERGE_PX;
-use galos_index::{CellId, Index, Mode, View};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -470,7 +470,7 @@ fn face_at(level: u8) -> [f64; 3] {
 fn frontier_level(view: &View, back: f64) -> u8 {
     let want = MERGE_PX * back / view.pixels_per_radian();
     (0..=20u8)
-        .find(|&level| galos_index::CellId::edge_at(level) <= want)
+        .find(|&level| galos_index::prelude::CellId::edge_at(level) <= want)
         .unwrap_or(20)
 }
 
@@ -514,7 +514,7 @@ fn main() {
         let close = Lens::of(&view).magnified(face_at(level), 8.0);
         println!(
             "  close-up across a level-{level} face ({:.0} ly cells)",
-            galos_index::CellId::edge_at(level),
+            galos_index::prelude::CellId::edge_at(level),
         );
 
         let shots = frame(&index, &dir, &view, reach, &[wide, close]);

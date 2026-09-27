@@ -16,9 +16,9 @@ use galos_index::build::cold::{
 };
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::parts::CorePart;
+use galos_index::prelude::{BuildParams, Index, System, TableSet, Tree};
 use galos_index::records::derive::{self, NearestStar};
 use galos_index::store::tables::OpenTable;
-use galos_index::{BuildParams, Index, System, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
 use sqlx::Row;
@@ -52,7 +52,7 @@ pub struct Parts {
     pub reaches: bool,
     pub factions: bool,
     pub bodies: bool,
-    /// The contributed tables, by [`galos_index::Table::NAME`].
+    /// The contributed tables, by [`galos_index::prelude::Table::NAME`].
     pub tables: Vec<&'static str>,
 }
 
@@ -215,7 +215,8 @@ fn input_from_row(
         updated_at,
         // The scanned arrival star, else the class a route named, as the
         // journal side reads it. Neither reads as nothing having been said,
-        // which is what most of the galaxy is: see [`galos_index::StarKind`].
+        // which is what most of the galaxy is: see
+        // [`galos_index::prelude::StarKind`].
         kind: derive::arrival_kind(scanned.arrival.class(), class.as_deref()),
     })
 }
@@ -388,7 +389,7 @@ fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
     if let Some(found) = done.upgrade {
         tracing::warn!(
             found,
-            reads = galos_index::INDEX_VERSION,
+            reads = galos_index::prelude::INDEX_VERSION,
             dir = %dir.display(),
             "the directory's payloads are of another layout; run \
              `galos index migrate` over it",
@@ -1353,7 +1354,7 @@ mod tests {
             temperature,
             age_bucket: 0,
             updated_at: 0,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         }
     }
 
@@ -2060,7 +2061,7 @@ mod tests {
             .expect("the star should write");
         }
 
-        let paged: HashMap<i64, galos_index::StarKind> =
+        let paged: HashMap<i64, galos_index::prelude::StarKind> =
             inputs_for(&db, &[scanned, routed])
                 .await
                 .expect("the paged read")
@@ -2087,7 +2088,8 @@ mod tests {
         )
         .await
         .expect("the cold build should run");
-        let sky = galos_index::Sky::open(&dir).expect("the built galaxy");
+        let sky =
+            galos_index::prelude::Sky::open(&dir).expect("the built galaxy");
         let built = |address: i64| {
             let node =
                 sky.node_of(address, [1., 2., 3.]).expect("a built system");
@@ -2095,8 +2097,8 @@ mod tests {
         };
 
         for (address, want) in [
-            (scanned, galos_index::StarKind::Neutron),
-            (routed, galos_index::StarKind::WhiteDwarf),
+            (scanned, galos_index::prelude::StarKind::Neutron),
+            (routed, galos_index::prelude::StarKind::WhiteDwarf),
         ] {
             assert_eq!(built(address), want, "the cold build, {address}");
             assert_eq!(paged.get(&address), Some(&want), "the paged read");

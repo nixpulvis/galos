@@ -17,7 +17,7 @@
 //! part is now. A stamp is a stat on the filesystem and a conditional
 //! request's worth of work over HTTP, so a still map with a quiet index reads
 //! nothing; what has moved is re-read and nothing else. See
-//! [`galos_index::Source::stamp`].
+//! [`galos_index::prelude::Source::stamp`].
 //!
 //! What is re-read whole and what is patched follows what a publish costs to
 //! write. The aggregates are half a megabyte and rewritten every pass, so they
@@ -48,11 +48,11 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use galos_index::prelude::{CellId, CellSystem, Index, Part, Stamp, Table};
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
 use galos_index::records::{Faction, PopulatedSystem, SystemReach};
 use galos_index::store::names::Delta;
-use galos_index::{CellId, CellSystem, Index, Part, Stamp, Table};
 use galos_route::{BoostTable, Boosts, SystemBoost};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -126,7 +126,9 @@ impl Stamps {
     /// Both halves of the names table are stamped: the base's head, which
     /// moves when the table is recompacted, and the log, which moves on
     /// every publish that named anything.
-    pub async fn before_reading(source: &dyn galos_index::Source) -> Stamps {
+    pub async fn before_reading(
+        source: &dyn galos_index::prelude::Source,
+    ) -> Stamps {
         let stamp = async |part| source.stamp(part).await.ok().flatten();
         Stamps {
             index: stamp(Part::Index).await,
@@ -181,7 +183,7 @@ struct Refreshed {
     /// The names table re-opened whole, with the stamps of both its halves:
     /// the base had been written again, so there is nothing to merge into
     /// the one the map holds. Rare.
-    names: Option<(galos_index::Names, Option<Stamp>, Option<Stamp>)>,
+    names: Option<(galos_index::prelude::Names, Option<Stamp>, Option<Stamp>)>,
     /// The delta log's rows past the offset the map had read to, and the
     /// log's stamp. The common case, and the whole of what a publish that
     /// named something moves.
@@ -261,7 +263,7 @@ fn poll(
         // as unchanged, where taking that for "cannot say" would re-read the
         // same absence on every poll and mark its table changed each time.
         async fn moved(
-            source: &Arc<dyn galos_index::Source>,
+            source: &Arc<dyn galos_index::prelude::Source>,
             part: Part,
             held: Option<Stamp>,
         ) -> (bool, Option<Stamp>) {
@@ -468,9 +470,11 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use galos_index::prelude::{
+        BuildParams, FsSource, Snapshot, Source as IndexSource,
+    };
     use galos_index::records::NameEntry;
     use galos_index::store::Directory;
-    use galos_index::{BuildParams, FsSource, Snapshot, Source as IndexSource};
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch published directory, removed when the guard drops
@@ -494,22 +498,22 @@ mod tests {
     }
 
     /// One system for the builder, placed along the x axis
-    fn input(id: u64, at: f64) -> galos_index::System {
-        galos_index::System {
+    fn input(id: u64, at: f64) -> galos_index::prelude::System {
+        galos_index::prelude::System {
             id64: id,
             position: [at, 900.0, 24400.0],
             absolute_magnitude: id as f64,
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 1_700_000_000 + id as u32,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         }
     }
 
     /// Publish `systems` to `dir` and hand back the built tree
     fn publish(
         dir: &std::path::Path,
-        systems: &[galos_index::System],
+        systems: &[galos_index::prelude::System],
     ) -> Snapshot {
         let built = Snapshot::build(systems, &BuildParams::default());
         built.write(dir).expect("the build should write");
@@ -538,8 +542,8 @@ mod tests {
     /// Name `entries` into `dir`'s delta log the way a feed's publish does,
     /// answering how many rows it appended
     fn name(dir: &std::path::Path, entries: &[NameEntry]) -> usize {
-        let mut table =
-            galos_index::Names::open(dir).expect("the table should open");
+        let mut table = galos_index::prelude::Names::open(dir)
+            .expect("the table should open");
         for entry in entries {
             table.name(entry.clone());
         }
@@ -548,8 +552,8 @@ mod tests {
 
     /// Withdraw `address` through the log, the way a feed's publish does
     fn unname(dir: &std::path::Path, address: i64) {
-        let mut table =
-            galos_index::Names::open(dir).expect("the table should open");
+        let mut table = galos_index::prelude::Names::open(dir)
+            .expect("the table should open");
         assert!(table.unname(address), "{address} was there to withdraw");
         table.publish(dir).expect("the log should append");
     }
@@ -579,7 +583,8 @@ mod tests {
         let boosts = block_on(Boosts::read(&*source))
             .unwrap_or_else(|_| Boosts::absent());
         let sky = Arc::new(
-            galos_index::Sky::open(dir).expect("the galaxy should map"),
+            galos_index::prelude::Sky::open(dir)
+                .expect("the galaxy should map"),
         );
         let names = Names::packed(
             table,
@@ -803,11 +808,11 @@ mod tests {
     ///
     /// The feed republishes every few seconds and names the same systems it
     /// named last pass. A row only reaches the log where it changed something
-    /// ([`galos_index::Names::name`]), so a publish of what the table already
-    /// says appends nothing, moves no stamp, and is read by nobody — and the
-    /// graph a route in flight is searching over is left where it is rather
-    /// than dropped for the nothing that moved. Dropping it is cheap now,
-    /// but it is not free of consequence: the next route pays for another
+    /// ([`galos_index::prelude::Names::name`]), so a publish of what the table
+    /// already says appends nothing, moves no stamp, and is read by nobody —
+    /// and the graph a route in flight is searching over is left where it is
+    /// rather than dropped for the nothing that moved. Dropping it is cheap
+    /// now, but it is not free of consequence: the next route pays for another
     /// and a route already running finishes against the one it holds.
     #[test]
     fn a_republish_of_the_same_names_drops_nothing() {

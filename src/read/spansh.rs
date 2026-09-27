@@ -19,7 +19,7 @@
 //!
 //! [`Dump`] is the fan-out: one reading into a database and an index both,
 //! through the sinks. What the index sink holds while it does that is a live
-//! [`Tree`](galos_index::Tree) and the whole names table, which is a
+//! [`Tree`](galos_index::prelude::Tree) and the whole names table, which is a
 //! kilobyte a system — fine for a day's slice, and two hundred gigabytes for
 //! the whole galaxy. A publish does not shorten that: it writes the cells a
 //! pass dirtied and clears the dirty set, and the tree goes on holding every
@@ -530,8 +530,10 @@ impl Galaxy {
             };
             systems += 1;
             let address = report.address;
-            let mut galaxy =
-                galos_index::Galaxy::keeping(self.now, Box::new(store.clone()));
+            let mut galaxy = galos_index::prelude::Galaxy::keeping(
+                self.now,
+                Box::new(store.clone()),
+            );
             galaxy.hear(report);
             // Nobody flew here and a file was published, so the file's own
             // name is what these bodies are filed under — the same

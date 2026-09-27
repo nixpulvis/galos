@@ -9,7 +9,8 @@
 //! What differs between the two is not here:
 //!
 //! - **Where a row comes from.** One side reads `systems`, the other asks a
-//!   [`Galaxy`](crate::Galaxy), the event path's accumulator.
+//!   [`Galaxy`](crate::accumulate::galaxy::Galaxy), the event path's
+//!   accumulator.
 //! - **What an absence means.** The database re-reads `population > 0` and
 //!   so can withdraw a row that stopped qualifying. A feed cannot: no
 //!   population in hand is the answer for a system that never had one, one

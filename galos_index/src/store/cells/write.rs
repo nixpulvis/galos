@@ -30,7 +30,7 @@ impl Directory<'_> {
     /// Write a payload file for every cell that owns any systems, and no index.
     ///
     /// Existing files are overwritten; a cell with no systems is left without
-    /// one. See [`Snapshot::write`](crate::Snapshot::write).
+    /// one. See [`Snapshot::write`](crate::build::snapshot::Snapshot::write).
     pub(crate) fn write_payloads<'a>(
         self,
         payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
@@ -50,7 +50,7 @@ impl Directory<'_> {
     /// `removed` cells' files deleted, in both layouts.
     ///
     /// The directory ends identical to a full write of the same tree. See
-    /// [`Snapshot::write_diff`](crate::Snapshot::write_diff).
+    /// [`Snapshot::write_diff`](crate::build::snapshot::Snapshot::write_diff).
     pub(crate) fn write_cell_changes<'a>(
         self,
         index: &Index,
@@ -120,9 +120,9 @@ impl Directory<'_> {
     /// A whole-directory build writes its own cells and knows nothing of the tree
     /// that stood before it, so every cell the old tree had and the new one does
     /// not is left behind. The live path has no such debt — a publish deletes what
-    /// [`Snapshot::write_diff`](crate::Snapshot::write_diff) is told went — and the
-    /// names table already retires its stale generations. This is the same sweep
-    /// for the cells.
+    /// [`Snapshot::write_diff`](crate::build::snapshot::Snapshot::write_diff)
+    /// is told went — and the names table already retires its stale
+    /// generations. This is the same sweep for the cells.
     ///
     /// **Call it only once the new index file stands.** An orphan is a file
     /// nothing refers to and a hole is a cell the tree names with no payload

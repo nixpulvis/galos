@@ -1,19 +1,19 @@
 //! Where the things scanned inside a system are kept between one scan and the
 //! next.
 //!
-//! [`Galaxy`](crate::Galaxy) needs a system's *whole* insides every time one
-//! more body of it arrives. Two things ask for them and both are
-//! whole-from-whole: the reach is the far edge over every body, star and
-//! barycentre together, and the published body record is written whole. So the
-//! accumulator cannot look at a scan and forget it.
+//! [`Galaxy`](crate::accumulate::galaxy::Galaxy) needs a system's *whole*
+//! insides every time one more body of it arrives. Two things ask for them and
+//! both are whole-from-whole: the reach is the far edge over every body, star
+//! and barycentre together, and the published body record is written whole. So
+//! the accumulator cannot look at a scan and forget it.
 //!
 //! What it can do is not be the one holding them, and that is the whole of
 //! this module. Two stores, and which is right depends on what is reading:
 //!
 //! - [`InMemory`] holds everything in memory. It is what
-//!   [`Galaxy::new`](crate::Galaxy::new) keeps, for a galaxy with no
-//!   directory behind it; every caller that writes a directory keeps an
-//!   [`OnDisk`] instead.
+//!   [`Galaxy::new`](crate::accumulate::galaxy::Galaxy::new) keeps, for a
+//!   galaxy with no directory behind it; every caller that writes a directory
+//!   keeps an [`OnDisk`] instead.
 //! - [`OnDisk`] keeps them in the index directory's own body pack, which
 //!   is where they are going anyway: a system's record there is what the
 //!   map reads when a click opens the system, and it is written whole. So
@@ -103,8 +103,8 @@ pub trait Bodies: fmt::Debug + Send + Sync {
 
 /// Everything, in memory.
 ///
-/// What [`Galaxy::new`](crate::Galaxy::new) keeps: a galaxy with no
-/// directory behind it, where there is nowhere else to put them.
+/// What [`Galaxy::new`](crate::accumulate::galaxy::Galaxy::new) keeps: a galaxy
+/// with no directory behind it, where there is nowhere else to put them.
 #[derive(Debug, Default)]
 pub struct InMemory(HashMap<i64, SystemBodies>);
 
@@ -332,12 +332,12 @@ impl Bodies for OnDisk {
 /// at a time is the whole point of that road — and a store built with each
 /// of them is a store that can never batch: a flush a system, and a shard's
 /// two files opened to append one record. This is the store behind an
-/// `Arc`, so a run has one of it and each line's [`Galaxy`](crate::Galaxy)
-/// borrows it, which is what lets [`OnDisk::CARRIED`] systems pile up
-/// and go out shard by shard.
+/// `Arc`, so a run has one of it and each line's
+/// [`Galaxy`](crate::accumulate::galaxy::Galaxy) borrows it, which is what lets
+/// [`OnDisk::CARRIED`] systems pile up and go out shard by shard.
 ///
 /// One writer still: the `Arc` is shared within a run, and a run holds the
-/// directory's [`Lock`](crate::Lock).
+/// directory's [`Lock`](crate::format::lock::Lock).
 #[derive(Clone, Debug)]
 pub struct Shared(Arc<Mutex<OnDisk>>);
 

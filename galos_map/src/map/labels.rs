@@ -1420,7 +1420,7 @@ fn capitals(name: &str) -> usize {
 /// states is.
 ///
 /// Nothing is folded here: a [`System`]'s name is upper case by
-/// construction ([`galos_index::SystemName`]), where this used to call
+/// construction ([`galos_index::prelude::SystemName`]), where this used to call
 /// `to_uppercase` on every name on screen every time a label was set.
 fn plate_words(name: &str, jump: Option<f64>) -> String {
     match jump {
@@ -1637,8 +1637,8 @@ mod tests {
     /// A stop says the jump to it, and anything else says its name alone
     ///
     /// The name arrives upper case — a `System` carries a
-    /// [`galos_index::SystemName`] — so what is asked of this is the jump
-    /// and nothing else.
+    /// [`galos_index::prelude::SystemName`] — so what is asked of this is the
+    /// jump and nothing else.
     #[test]
     fn only_a_stop_says_how_far_off_it_is() {
         assert_eq!(plate_words("LUNG", Some(6.74)), "LUNG 6.7 Ly");

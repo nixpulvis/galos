@@ -35,7 +35,8 @@
 //!   index naming the new generation is renamed over in the same step, and a
 //!   reader that finds its data file gone reads the index again. That retry
 //!   is the whole of the concurrency, there being one writer (the
-//!   directory's [`Lock`](crate::Lock)) and any number of readers.
+//!   directory's [`Lock`](crate::format::lock::Lock)) and any number of
+//!   readers.
 //! - **A sweep** is a compaction of every shard, asked for rather than
 //!   waited on: what a whole-galaxy re-import leaves behind, which no
 //!   append reaches. See [`crate::store::Directory::sweep_bodies`].

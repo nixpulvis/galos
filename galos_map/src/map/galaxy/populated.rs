@@ -30,7 +30,7 @@
 use crate::map::galaxy::MapSet;
 use crate::map::index::{Populated, ResidentIndex};
 use bevy::prelude::*;
-use galos_index::CellId;
+use galos_index::prelude::CellId;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PopulatedOrder>();
@@ -100,7 +100,7 @@ impl PopulatedOrder {
 ///
 /// Once, when the index and the table have both arrived. The cell each
 /// lands in is found by the tree's own descent —
-/// [`galos_index::Index::descend`] — so it is a cell the walk can mark
+/// [`galos_index::prelude::Index::descend`] — so it is a cell the walk can mark
 /// rather than one computed beside it.
 pub(crate) fn gather(
     index: Res<ResidentIndex>,
@@ -173,10 +173,10 @@ mod tests {
 
     /// A world holding an index over `at` and the populated table beside it.
     fn gathered(rows: Vec<PopulatedSystem>) -> App {
-        use galos_index::{BuildParams, Snapshot, StarKind};
-        let systems: Vec<galos_index::System> = rows
+        use galos_index::prelude::{BuildParams, Snapshot, StarKind};
+        let systems: Vec<galos_index::prelude::System> = rows
             .iter()
-            .map(|row| galos_index::System {
+            .map(|row| galos_index::prelude::System {
                 id64: row.address as u64,
                 position: [
                     f64::from(row.position[0]),

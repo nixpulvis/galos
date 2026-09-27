@@ -1,14 +1,14 @@
 //! A galaxy on disk, for the tests that route over one.
 //!
 //! The router reads the cell payloads where they lie
-//! ([`galos_index::Sky`]), so a test that asks for a route needs a built
-//! directory and not a list of places. Which is the right shape for a test
-//! to have: what it exercises is then the same mapping, the same descent
+//! ([`galos_index::prelude::Sky`]), so a test that asks for a route needs a
+//! built directory and not a list of places. Which is the right shape for a
+//! test to have: what it exercises is then the same mapping, the same descent
 //! and the same records the map reads, rather than a second implementation
 //! of them that happens to agree.
 
 use bevy_egui::egui;
-use galos_index::{BuildParams, Sky, Snapshot, System};
+use galos_index::prelude::{BuildParams, Sky, Snapshot, System};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -63,7 +63,7 @@ fn built(
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 0,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         })
         .collect();
     Snapshot::build(&systems, params).write(dir).expect("a built galaxy");

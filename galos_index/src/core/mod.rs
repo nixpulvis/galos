@@ -1,5 +1,7 @@
-//! What everything else is built from: the cube, the sums a cell carries,
-//! the codecs, a star's kind, and a system's name.
+//! What everything else is built from: the cube ([`CellId`](geometry::CellId)),
+//! the sums a cell carries ([`Moments`](moments::Moments)), the codecs, a
+//! star's [`StarKind`](star::StarKind), and a system's
+//! [`SystemName`](name::SystemName).
 //!
 //! Nothing here reads a file or knows a table. [`geometry`] is the cube and
 //! its addresses, [`moments`] and [`aggregate`] are the sums that let a

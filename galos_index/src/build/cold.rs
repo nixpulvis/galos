@@ -12,8 +12,8 @@
 //! written, so what is held at the end is every cell in the galaxy, which
 //! is the index file.
 //!
-//! No live [`Tree`](crate::Tree) is raised: a watch gets one by resuming
-//! from the resume point this leaves.
+//! No live [`Tree`](crate::build::tree::Tree) is raised: a watch gets one by
+//! resuming from the resume point this leaves.
 
 use crate::build::bucket::{Buckets, Formed};
 use crate::build::region::{Crown, Offer};

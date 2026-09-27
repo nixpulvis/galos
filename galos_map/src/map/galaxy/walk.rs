@@ -39,12 +39,12 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
+use galos_index::prelude::{CellId, CellSystem, Part, Stamp};
 use galos_index::read::inhabited::Inhabited;
 use galos_index::read::resident::Resident;
 use galos_index::read::screen::{
     Crowded, Empty, crowded_marks, frame_marks, share, wanted,
 };
-use galos_index::{CellId, CellSystem, Part, Stamp};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -427,7 +427,8 @@ pub(crate) fn fetch(
     // touching the index.
     let share = share(population(&planned.0), frame_marks(&view));
     // Whether this is the photometric sky, whose reads are whole cells.
-    let real = matches!(planned.0.mode, galos_index::Mode::Real { .. });
+    let real =
+        matches!(planned.0.mode, galos_index::prelude::Mode::Real { .. });
     // The two halves of the frame's flat cost, measured apart: the set
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
@@ -507,7 +508,7 @@ pub(crate) fn fetch(
 /// held would rise while the map was still reading and every mark already
 /// drawn would shift under it. A cell's slice length is known from the
 /// index the moment the walk marks it.
-fn population(planned: &galos_index::Needed) -> u64 {
+fn population(planned: &galos_index::prelude::Needed) -> u64 {
     let slices: u64 =
         planned.marks.iter().map(|mark| u64::from(mark.slice)).sum();
     // And the sky the merged cells stand for, which is drawn without being
@@ -854,7 +855,7 @@ fn choose_populated(
     filters: &Prepared<'_>,
     now: DateTime<Utc>,
     fill: bool,
-    view: &galos_index::View,
+    view: &galos_index::prelude::View,
     about: DVec3,
     bubble: Option<f64>,
 ) -> Vec<(i64, [f64; 3], CellId)> {
@@ -986,8 +987,8 @@ fn busiest_first<'a>(
 /// There is no share here and there is nothing to divide by. The walk's ask
 /// is already one mark to every [`galos_index::MERGE_PX`] squared of the cell
 /// covers, so what bounds the frame is the frame's own area and not a factor
-/// struck across every cell — see [`galos_index::Index::walk_screen`]. What
-/// this reports is therefore a fact about the view rather than a dial: if
+/// struck across every cell — see [`galos_index::prelude::Index::walk_screen`].
+/// What this reports is therefore a fact about the view rather than a dial: if
 /// `drawn` runs far under `wanted` the payloads have not landed, not that
 /// the frame refused them.
 #[derive(Resource, Default, Debug, Clone, Copy, PartialEq)]
@@ -1120,9 +1121,9 @@ pub(crate) fn reconcile(
     // never does.
     //
     // The merge distance the ask was worked out at is the walk's: a mark's
-    // own width in [`galos_index::Mode::Shell`] and the point spread in
-    // [`galos_index::Mode::Real`], which is why a cluster stays a field of
-    // stars in the sky where the map would collapse it to one mark.
+    // own width in [`galos_index::prelude::Mode::Shell`] and the point spread
+    // in [`galos_index::prelude::Mode::Real`], which is why a cluster stays a
+    // field of stars in the sky where the map would collapse it to one mark.
     if planned.is_changed() {
         let _zone = info_span!("marked set").entered();
         keeping.marks(&planned.0.marks);
@@ -1212,8 +1213,8 @@ pub(crate) fn reconcile(
     // So the share is the Shell mode's alone, and [`Mode::Real`] carries
     // the limit each star is weighed against instead.
     let limit = match planned.0.mode {
-        galos_index::Mode::Real { limit } => Some(limit),
-        galos_index::Mode::Shell => None,
+        galos_index::prelude::Mode::Real { limit } => Some(limit),
+        galos_index::prelude::Mode::Shell => None,
     };
     // What the frame has to spend and what it is spread over. A share of
     // the population is a share of every *other* marked cell's too, so the
@@ -1844,7 +1845,7 @@ mod tests {
             magnitude: 0.,
             temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         };
 
         let system = System::of(
@@ -1877,7 +1878,7 @@ mod tests {
             magnitude: 0.,
             temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: (now - Span::seconds(ago)).timestamp() as u32,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         };
         let built = |point: &CellSystem| {
             System::of(
@@ -1911,7 +1912,7 @@ mod tests {
             magnitude: id as f32,
             temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         }
     }
 
@@ -2245,7 +2246,7 @@ mod tests {
         app.init_resource::<crate::map::galaxy::populated::PopulatedOrder>();
         app.init_resource::<crate::map::galaxy::plan::Drawn>();
         app.insert_resource(crate::map::index::ResidentIndex(
-            galos_index::Index::default(),
+            galos_index::prelude::Index::default(),
         ));
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
@@ -2257,8 +2258,8 @@ mod tests {
             lock_camera: false,
             follow_camera: true,
         });
-        app.insert_resource(Planned(galos_index::Needed {
-            mode: galos_index::Mode::Shell,
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
             marks: Vec::new(),
             blobs: Vec::new(),
             splats: Vec::new(),
@@ -2276,7 +2277,7 @@ mod tests {
     /// the payloads of those it has read: a test that filled one and not the
     /// other would be a map holding a galaxy nothing marks. See
     /// [`evict_payloads`].
-    fn holding(app: &mut App, built: &galos_index::Snapshot) {
+    fn holding(app: &mut App, built: &galos_index::prelude::Snapshot) {
         let mut marks = Vec::new();
         {
             let mut resident = app.world_mut().resource_mut::<ResidentCells>();
@@ -2292,8 +2293,8 @@ mod tests {
                 }
             }
         }
-        app.insert_resource(Planned(galos_index::Needed {
-            mode: galos_index::Mode::Shell,
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
             marks,
             blobs: Vec::new(),
             splats: Vec::new(),
@@ -2449,21 +2450,21 @@ mod tests {
     fn the_walk_keeps_what_the_filters_admit() {
         use crate::map::filter::{Filter, Filters};
         use crate::map::galaxy::tests::system;
+        use galos_index::prelude::{BuildParams, Snapshot};
         use galos_index::records::PopulatedSystem;
-        use galos_index::{BuildParams, Snapshot};
 
         // Five systems a few light years apart, faintest last, and the faction
         // is in that faintest one.
         let held = 5i64;
-        let inputs: Vec<galos_index::System> = (1..=5)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::prelude::System> = (1..=5)
+            .map(|id| galos_index::prelude::System {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
-                kind: galos_index::StarKind::G,
+                kind: galos_index::prelude::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -2545,8 +2546,8 @@ mod tests {
     /// cell's systems come out of it.
     #[test]
     fn the_walk_spends_a_cells_budget_on_the_populated_systems() {
+        use galos_index::prelude::{BuildParams, Snapshot};
         use galos_index::records::PopulatedSystem;
-        use galos_index::{BuildParams, Snapshot};
 
         // In front of the camera, where [`placed`] puts the rest of the
         // fixtures level with it. The populated draw takes one mark to a
@@ -2559,15 +2560,15 @@ mod tests {
             [at[0], at[1], -25.]
         };
 
-        let inputs: Vec<galos_index::System> = (1..=5)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::prelude::System> = (1..=5)
+            .map(|id| galos_index::prelude::System {
                 id64: id as u64,
                 position: in_view(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
-                kind: galos_index::StarKind::G,
+                kind: galos_index::prelude::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -2641,18 +2642,18 @@ mod tests {
     #[test]
     fn a_cell_the_filters_empty_offers_nothing_below_the_dim() {
         use crate::map::filter::{DimTo, Filter, Filters};
+        use galos_index::prelude::{BuildParams, Snapshot};
         use galos_index::records::PopulatedSystem;
-        use galos_index::{BuildParams, Snapshot};
 
-        let inputs: Vec<galos_index::System> = (1..=4)
-            .map(|id| galos_index::System {
+        let inputs: Vec<galos_index::prelude::System> = (1..=4)
+            .map(|id| galos_index::prelude::System {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
                 temperature: 5000.,
                 age_bucket: 0,
                 updated_at: 0,
-                kind: galos_index::StarKind::G,
+                kind: galos_index::prelude::StarKind::G,
             })
             .collect();
         let built = Snapshot::build(&inputs, &BuildParams::default());
@@ -2735,8 +2736,8 @@ mod tests {
         };
 
         let mut app = walking();
-        app.insert_resource(Planned(galos_index::Needed {
-            mode: galos_index::Mode::Shell,
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
             marks: Vec::new(),
             blobs: vec![merged(held)],
             splats: Vec::new(),
@@ -2803,16 +2804,16 @@ mod tests {
     /// what [`crate::map::index::refresh`] exists to keep current.
     #[test]
     fn a_republished_cell_rebuilds_the_systems_already_drawn() {
-        use galos_index::{BuildParams, Snapshot};
+        use galos_index::prelude::{BuildParams, Snapshot};
 
-        let at = |id: u64, when: u32| galos_index::System {
+        let at = |id: u64, when: u32| galos_index::prelude::System {
             id64: id,
             position: placed(id as i64),
             absolute_magnitude: id as f64,
             temperature: 5000.,
             age_bucket: 0,
             updated_at: when,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         };
         let built =
             Snapshot::build(&[at(1, 1_700_000_000)], &BuildParams::default());
@@ -2832,8 +2833,8 @@ mod tests {
             .0
             .insert(owner, built.payload(owner).to_vec());
         // Marked as well as held: the walk draws the cells the plan names.
-        app.insert_resource(Planned(galos_index::Needed {
-            mode: galos_index::Mode::Shell,
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
             marks: vec![galos_index::read::walk::MarkRef {
                 id: owner,
                 slice: built.payload(owner).len() as u32,

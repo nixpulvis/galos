@@ -55,11 +55,11 @@ use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
 use galos_index::accumulate::bodies::{Bodies, OnDisk};
 use galos_index::core::geometry::MAX_LEVEL;
+use galos_index::prelude::{Cell, Index, Names};
 use galos_index::records::{NameEntry, PopulatedSystem, SystemReach};
 use galos_index::store::cells;
 use galos_index::store::tables::Agreement;
 use galos_index::store::Directory;
-use galos_index::{Cell, Index, Names};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::io;
@@ -260,14 +260,14 @@ pub(super) enum Command {
 /// Leave with `code`, having dropped whatever was holding the directory
 ///
 /// **`std::process::exit` runs no destructors**, so a command that exits
-/// out of its error arm while holding [`galos_index::Lock`] leaves the lock
-/// file behind and the next run refuses the directory as "already being
+/// out of its error arm while holding [`galos_index::prelude::Lock`] leaves the
+/// lock file behind and the next run refuses the directory as "already being
 /// written" by a process that is gone. Reported twice in one sitting, once
 /// off `upgrade` and once off `pack`.
 ///
 /// So the lock is handed over and dropped here, on the way out. A command
 /// that holds nothing passes nothing.
-fn leave(lock: Option<galos_index::Lock>, code: i32) -> ! {
+fn leave(lock: Option<galos_index::prelude::Lock>, code: i32) -> ! {
     drop(lock);
     std::process::exit(code)
 }
@@ -395,7 +395,7 @@ fn stopping() -> impl Fn() -> bool + Sync {
 /// against one something is *writing*, which is what [`held`] is for.
 fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
     let lock = locked(dir, forced);
-    let index = match galos_index::Index::read(dir) {
+    let index = match galos_index::prelude::Index::read(dir) {
         Ok(index) => index,
         Err(err) => {
             eprintln!("{}: {err}", dir.display());
@@ -631,7 +631,7 @@ fn verify(dir: &Path, bodies: bool) {
 
     // The names table last, it being the one part a directory can serve
     // without: a build stopped before its fold has chunks and no base.
-    match galos_index::Names::open(dir) {
+    match galos_index::prelude::Names::open(dir) {
         Ok(names) => println!("  names       {} systems named", names.len()),
         Err(err) => println!("  names       unreadable: {err}"),
     }
@@ -815,18 +815,20 @@ fn migrate(dir: &Path, forced: bool) {
 /// A table that cannot be read is not a failure of the payload rewrite
 /// that has already landed, so this reports and leaves the exit code
 /// alone.
-fn names_forward(dir: &Path, lock: &galos_index::Lock) {
+fn names_forward(dir: &Path, lock: &galos_index::prelude::Lock) {
     let _ = lock;
     match Directory::at(dir).names_version() {
         Ok(None) => {}
-        Ok(Some(version)) if version >= galos_index::Names::VERSION => {
+        Ok(Some(version))
+            if version >= galos_index::prelude::Names::VERSION =>
+        {
             println!("the names table is already version {version}");
         }
         Ok(Some(version)) => {
             let at = std::time::Instant::now();
             println!(
                 "rewriting the names table, version {version} to {}",
-                galos_index::Names::VERSION,
+                galos_index::prelude::Names::VERSION,
             );
             match Directory::at(dir).compact_names() {
                 Ok(count) => {
@@ -1082,7 +1084,7 @@ fn merge(
 /// one rename and the chunks removed only after.
 /// Answers whether it folded what was there, so the caller holding the
 /// lock is the one that exits — see [`leave`].
-fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
+fn fold_names(dir: &Path, lock: &galos_index::prelude::Lock) -> bool {
     let _ = lock;
     let start = std::time::Instant::now();
     match Directory::at(dir).fold_name_chunks() {
@@ -1257,11 +1259,12 @@ fn sector_words(name: &str) -> Option<&str> {
 /// `forced` is `--force-lock`, and is for the one thing a refusal cannot
 /// tell apart from a live builder: a lock whose process was killed. The
 /// refusal names the pid, and clearing one that is still running is two
-/// writers over a directory published whole — see [`galos_index::Lock`].
-fn locked(dir: &Path, forced: bool) -> galos_index::Lock {
+/// writers over a directory published whole — see
+/// [`galos_index::prelude::Lock`].
+fn locked(dir: &Path, forced: bool) -> galos_index::prelude::Lock {
     let taken = match forced {
-        true => galos_index::Lock::force(dir),
-        false => galos_index::Lock::take(dir),
+        true => galos_index::prelude::Lock::force(dir),
+        false => galos_index::prelude::Lock::take(dir),
     };
     match taken {
         Ok(lock) => lock,
@@ -1696,51 +1699,53 @@ fn payloads(
 ) -> Verdict {
     let at = std::time::Instant::now();
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let run = |cells: &[(Cell, Cell)]| -> (Vec<galos_index::CellId>, usize) {
-        let weigh = |dir: &Path, cell: &Cell| {
-            payload_file(dir, cell).unwrap_or_else(|e| unreadable(dir, e))
-        };
-        let (mut differing, mut decoded) = (Vec::new(), 0usize);
-        for (cell, _) in cells {
-            // The count is every thread's, so what it says is what has
-            // been done and not what this run of cells has reached.
-            let done = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if done % 4096 == 0 {
-                let total = shared.len();
-                eprint!("\r  payloads      {done} of {total} compared");
-            }
-            let same = match (weigh(a, cell), weigh(b, cell)) {
-                // Neither side keeps a file for a cell that owns nothing,
-                // and two payloads that are not there read as the same
-                // empty one.
-                (None, None) => true,
-                (Some((x, n)), Some((y, m))) => {
-                    n == m
-                        && same_bytes(&x, &y).unwrap_or_else(|(path, e)| {
-                            unreadable(side(&path, a, b), e)
-                        })
-                }
-                _ => false,
+    let run =
+        |cells: &[(Cell, Cell)]| -> (Vec<galos_index::prelude::CellId>, usize) {
+            let weigh = |dir: &Path, cell: &Cell| {
+                payload_file(dir, cell).unwrap_or_else(|e| unreadable(dir, e))
             };
-            if same {
-                continue;
+            let (mut differing, mut decoded) = (Vec::new(), 0usize);
+            for (cell, _) in cells {
+                // The count is every thread's, so what it says is what has
+                // been done and not what this run of cells has reached.
+                let done =
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if done % 4096 == 0 {
+                    let total = shared.len();
+                    eprint!("\r  payloads      {done} of {total} compared");
+                }
+                let same = match (weigh(a, cell), weigh(b, cell)) {
+                    // Neither side keeps a file for a cell that owns nothing,
+                    // and two payloads that are not there read as the same
+                    // empty one.
+                    (None, None) => true,
+                    (Some((x, n)), Some((y, m))) => {
+                        n == m
+                            && same_bytes(&x, &y).unwrap_or_else(|(path, e)| {
+                                unreadable(side(&path, a, b), e)
+                            })
+                    }
+                    _ => false,
+                };
+                if same {
+                    continue;
+                }
+                // Not the same file, which is not yet not the same payload.
+                decoded += 1;
+                let left = Index::read_payload(a, cell.id)
+                    .unwrap_or_else(|e| unreadable(a, e));
+                let right = Index::read_payload(b, cell.id)
+                    .unwrap_or_else(|e| unreadable(b, e));
+                if left != right {
+                    differing.push(cell.id);
+                }
             }
-            // Not the same file, which is not yet not the same payload.
-            decoded += 1;
-            let left = Index::read_payload(a, cell.id)
-                .unwrap_or_else(|e| unreadable(a, e));
-            let right = Index::read_payload(b, cell.id)
-                .unwrap_or_else(|e| unreadable(b, e));
-            if left != right {
-                differing.push(cell.id);
-            }
-        }
-        (differing, decoded)
-    };
+            (differing, decoded)
+        };
 
     let threads = std::thread::available_parallelism().map_or(1, |it| it.get());
     let each = shared.len().div_ceil(threads).max(1);
-    let found: Vec<(Vec<galos_index::CellId>, usize)> =
+    let found: Vec<(Vec<galos_index::prelude::CellId>, usize)> =
         std::thread::scope(|scope| {
             let spawned: Vec<_> = shared
                 .chunks(each)
@@ -1753,7 +1758,7 @@ fn payloads(
         });
     eprint!("\r");
     let decoded: usize = found.iter().map(|(_, it)| it).sum();
-    let differing: Vec<galos_index::CellId> =
+    let differing: Vec<galos_index::prelude::CellId> =
         found.into_iter().flat_map(|(it, _)| it).collect();
 
     // How many cells the bytes could not answer for, because it is the
@@ -1854,8 +1859,8 @@ fn unreadable(dir: &Path, e: io::Error) -> ! {
 /// The names alone are compared, because an entry is its address and its
 /// name: a position is the middle of the address's boxel on the base's
 /// road and `placed` puts the log's rows on that same road
-/// ([`Names::entry_of`](galos_index::Names::entry_of)), so two rows that
-/// agree about the address agree about the position.
+/// ([`Names::entry_of`](galos_index::prelude::Names::entry_of)), so two rows
+/// that agree about the address agree about the position.
 fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
     let at = std::time::Instant::now();
     let left = Names::open(a).unwrap_or_else(|e| fatal(a, e));
@@ -2063,16 +2068,16 @@ fn same_log(a: &Names, b: &Names) -> bool {
 
 /// One names table's rows, by ascending address, held one at a time.
 ///
-/// **[`galos_index::Names::addresses`] is not this order.** It says so —
-/// "in no order a caller may rely on" — and it is the base's addresses,
+/// **[`galos_index::prelude::Names::addresses`] is not this order.** It says so
+/// — "in no order a caller may rely on" — and it is the base's addresses,
 /// which *are* ascending, `addr.bin` being the mapping a lookup binary
 /// searches (`names::Table::addresses`, "Every address, ascending"), with
 /// the log's rows chained on the end out of a `HashMap`, which are not.
 ///
 /// So the order is made here: the base walked where it lies, the log's
 /// live rows sorted once, and the two merged. The log is what a directory
-/// has taken in since its last fold and [`galos_index::Names`] holds the
-/// whole of it already, so sorting it holds nothing new; the base is the
+/// has taken in since its last fold and [`galos_index::prelude::Names`] holds
+/// the whole of it already, so sorting it holds nothing new; the base is the
 /// 200 M rows, and it is never held at all.
 struct Rows<'n> {
     held: &'n Names,

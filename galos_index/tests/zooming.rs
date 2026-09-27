@@ -9,8 +9,8 @@
 //! One walk per frame names the cells a view resolves, and every one of them
 //! is read off the disk. Moving per-system data into the cells makes that
 //! read bigger; sharding `cells/` makes it a different path. The walk is the
-//! cheap half, descending a tree of its own ([`galos_index::Index`]), and the
-//! read is what a zoom waits on, by four orders of magnitude: over
+//! cheap half, descending a tree of its own ([`galos_index::prelude::Index`]),
+//! and the read is what a zoom waits on, by four orders of magnitude: over
 //! `.index/full`, 200,071,629 systems, the walk is 1–2 ms and the 151,619
 //! payloads it marks at the wide zoom are 18.5 s and 6.3 GB to read.
 //!
@@ -28,7 +28,9 @@
 //! what they catch is a change of *shape*.
 
 use galos_index::core::codec::FixedCodec as _;
-use galos_index::{CellSystem, FsSource, Index, Mode, Source as _, View};
+use galos_index::prelude::{
+    CellSystem, FsSource, Index, Mode, Source as _, View,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -100,7 +102,8 @@ fn zooming_out_stays_quick() {
 
         // A frame's budget at 60 fps is 16 ms and the walk is one of the
         // things in it, so the ceiling is a shape and not a frame: the walk
-        // over the index's own flattened tree ([`galos_index::Index`]) is
+        // over the index's own flattened tree ([`galos_index::prelude::Index`])
+        // is
         // 1.0–1.6 ms, and anything an order of magnitude over that is a walk
         // that has stopped reading the flattened tree.
         assert!(

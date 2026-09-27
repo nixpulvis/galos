@@ -3,7 +3,7 @@ use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::prelude::*;
 use galos_index::core::procedural;
-use galos_index::SystemName;
+use galos_index::prelude::SystemName;
 use std::fmt;
 
 #[derive(Debug, Clone)]

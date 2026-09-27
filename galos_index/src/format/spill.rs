@@ -11,7 +11,7 @@
 //! spill is scratch — written, read once, deleted — so unlike the base it
 //! carries no magic and no version.
 
-use crate::System;
+use crate::system::System;
 use memmap2::Mmap;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};

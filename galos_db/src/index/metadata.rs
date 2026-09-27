@@ -26,12 +26,12 @@ use crate::{orbit, Database, Result};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
+use galos_index::prelude::TableSet;
 use galos_index::records;
 use galos_index::store::sidecars::Sidecars;
 use galos_index::store::tables::Keyed;
 use galos_index::store::tables::OpenTable;
 use galos_index::store::Directory;
-use galos_index::TableSet;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -167,7 +167,7 @@ impl Metadata {
         db: &Database,
         dir: &Path,
         touched: &[i64],
-        records: &[galos_index::System],
+        records: &[galos_index::prelude::System],
     ) -> Result<usize> {
         let entries = names_for(db, touched).await?;
         let mut placed = HashSet::with_capacity(entries.len());
@@ -982,8 +982,8 @@ mod tests {
     use super::*;
     use crate::testing::Scratch;
     use galos_index::format::msgpack::write_meta;
+    use galos_index::prelude::Table as _;
     use galos_index::records::Parent;
-    use galos_index::Table as _;
     use galos_route::BoostTable;
 
     /// A system's bodies survive the trip out to disk and back through the
@@ -1000,7 +1000,7 @@ mod tests {
     #[async_std::test]
     async fn a_systems_bodies_round_trip_through_the_fs_source() {
         use elite_journal::body::{AtmosphereType, BodyType, Composition};
-        use galos_index::{FsSource, Source};
+        use galos_index::prelude::{FsSource, Source};
 
         let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let address = 0x1234_5678_9abc_def0_i64;
@@ -1180,7 +1180,7 @@ mod tests {
     /// resume is a full rebuild, which is recoverable.
     #[test]
     fn a_corrupt_contributed_table_refuses_a_resume() {
-        let tables = galos_index::TableSet::new().with::<BoostTable>();
+        let tables = galos_index::prelude::TableSet::new().with::<BoostTable>();
         let dir = std::env::temp_dir()
             .join(format!("galos_db_resume_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

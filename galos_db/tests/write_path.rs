@@ -63,7 +63,10 @@ use galos_db::{
     Database, Error,
 };
 use galos_index::accumulate::merge;
-use galos_index::{records, SystemName, SystemReport};
+use galos_index::{
+    prelude::{SystemName, SystemReport},
+    records,
+};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -2700,7 +2703,7 @@ fn arrived(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
 /// The `systems` upsert says what `SystemReport::over` says
 ///
 /// The rule for merging two reports of one system is stated once, in
-/// `galos_index::SystemReport::over`. The `ON CONFLICT DO UPDATE`
+/// `galos_index::prelude::SystemReport::over`. The `ON CONFLICT DO UPDATE`
 /// clauses below it are a second copy of that rule, and they are kept:
 /// Postgres merges against a row Postgres holds, so doing it in Rust would
 /// mean reading the row back first — a round trip per message and a lost

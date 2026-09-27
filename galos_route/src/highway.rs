@@ -164,7 +164,7 @@ pub struct Highway {
     /// At the `f32` the names table carries, which is what these are read
     /// out of. A coarse plan is waypoints on a 250 light year grid and the
     /// leg that flies to one finds the record by descending to the place
-    /// ([`galos_index::Sky::node_of`]), so a light year's worth of
+    /// ([`galos_index::prelude::Sky::node_of`]), so a light year's worth of
     /// rounding changes nothing and the table is half the bytes.
     place: Vec<[f32; 3]>,
     /// Which system each is, parallel to [`Self::place`].

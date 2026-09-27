@@ -50,7 +50,7 @@ use galos_index::accumulate::bodies::OnDisk;
 use galos_index::accumulate::galaxy::UNKNOWN;
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::layout::pending_path;
-use galos_index::{
+use galos_index::prelude::{
     BuildParams, Galaxy, Index as ServedIndex, StarKind, System, Tree,
 };
 use std::collections::HashSet;
@@ -882,8 +882,8 @@ mod tests {
     use super::*;
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
+    use galos_index::prelude::{FsSource, Source as _, SystemName};
     use galos_index::store::Directory;
-    use galos_index::{FsSource, Source as _, SystemName};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -1050,11 +1050,12 @@ mod tests {
         pollster::block_on(sink.flush()).expect("the publish lands");
         drop(sink);
 
-        let sky = galos_index::Sky::open(&dir).expect("the published galaxy");
+        let sky = galos_index::prelude::Sky::open(&dir)
+            .expect("the published galaxy");
         let node = sky.node_at(address).expect("Sol is drawn");
         assert_eq!(
             sky.payload(node.cell).expect("its cell").kind_at(node.at as usize),
-            galos_index::StarKind::Neutron,
+            galos_index::prelude::StarKind::Neutron,
             "the jump took the kind off the payload",
         );
         let boosts = pollster::block_on(galos_index::read::source::table::<
@@ -1847,7 +1848,7 @@ mod tests {
     /// The payload file of the cell holding `at` at `level`, named as
     /// `galos_index::store::cells` names one.
     fn payload_of(dir: &Path, at: [f64; 3], level: u8) -> PathBuf {
-        let morton = galos_index::CellId::of_point(at, level).morton();
+        let morton = galos_index::prelude::CellId::of_point(at, level).morton();
         dir.join(galos_index::format::layout::PAYLOAD_DIR)
             .join(format!("{:03x}", morton & 0xfff))
             .join(format!("{:02}-{:016x}.bin", level, morton))

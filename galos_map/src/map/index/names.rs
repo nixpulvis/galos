@@ -19,8 +19,8 @@
 //! it is not going to answer with, and resolving a route's endpoint by name
 //! is a search of `byname.bin` rather than the 11.3 s scan of the galaxy
 //! this module's blob had to do. What the map holds is
-//! [`galos_index::Names`]; [`crate::map::index::Names`] is the wrapper that puts it
-//! beside the reaches below.
+//! [`galos_index::prelude::Names`]; [`crate::map::index::Names`] is the wrapper
+//! that puts it beside the reaches below.
 //!
 //! The reaches are still packed here, because they are still read whole.
 //! They are published as one MessagePack table (`reaches.bin`) and not as a

@@ -393,8 +393,8 @@ const FINEST: f32 = 0.5;
 /// root of three
 ///
 /// **A cell reports a radius in three dimensions and the field draws in
-/// two.** [`galos_index::Moments::rms_radius`] is the RMS *distance* of a
-/// cell's systems from their centroid, so for an isotropic cloud it is
+/// two.** [`galos_index::prelude::Moments::rms_radius`] is the RMS *distance*
+/// of a cell's systems from their centroid, so for an isotropic cloud it is
 /// `sqrt(3)` times the deviation along any one axis — and one axis is what a
 /// screen Gaussian's sigma is. Laid as the radius it stands at, every splat
 /// came out 73 % too wide and spread its light over three times the area it
@@ -777,10 +777,12 @@ fn settle_gains(
     }
     let stellar = index
         .0
-        .get(galos_index::CellId::ROOT)
+        .get(galos_index::prelude::CellId::ROOT)
         .map_or(0, |cell| cell.aggregate.count());
-    let peopled =
-        settled.0.get(galos_index::CellId::ROOT).map_or(0, Inhabited::count);
+    let peopled = settled
+        .0
+        .get(galos_index::prelude::CellId::ROOT)
+        .map_or(0, Inhabited::count);
     if stellar > peopled && peopled > 0 {
         let empty = (stellar - peopled) as f64 / peopled as f64;
         gains.backdrop = gains.faint * empty as f32;
@@ -957,7 +959,7 @@ fn build_glow(
         // a unit and nothing was visible at all.
         let total = index
             .0
-            .get(galos_index::CellId::ROOT)
+            .get(galos_index::prelude::CellId::ROOT)
             .map_or(0, |cell| cell.aggregate.count())
             as f32;
         if total <= 0. {
@@ -1859,8 +1861,8 @@ mod exposure {
     use crate::map::camera::OrbitCamera;
     use crate::map::galaxy::plan::Planned;
     use crate::map::index::{Populated, ResidentIndex, Settled};
+    use galos_index::prelude::{FsSource, Source};
     use galos_index::read::inhabited::Inhabitance;
-    use galos_index::{FsSource, Source};
     use std::path::PathBuf;
 
     fn measured() -> Option<PathBuf> {
@@ -1940,8 +1942,8 @@ mod exposure {
         app.init_resource::<Gains>();
         app.init_resource::<FieldExposure>();
         app.init_resource::<Laid>();
-        app.insert_resource(Planned(galos_index::Needed {
-            mode: galos_index::Mode::Shell,
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
             marks: Vec::new(),
             blobs: Vec::new(),
             splats: Vec::new(),
@@ -2317,14 +2319,14 @@ mod exposure {
         let Some(dir) = measured() else { return };
         let source = FsSource::new(&dir);
         let (index, populated) = pollster::block_on(async {
-            use galos_index::Source as _;
+            use galos_index::prelude::Source as _;
             (
                 source.index().await.expect("the index should read"),
                 source.populated().await.unwrap_or_default(),
             )
         });
         let settled = Inhabitance::of(&index, populated.iter());
-        let root = galos_index::CellId::ROOT;
+        let root = galos_index::prelude::CellId::ROOT;
         let stellar = index
             .get(root)
             .and_then(|cell| cell.aggregate.count_centroid())

@@ -1,5 +1,6 @@
-//! The reading side: planning on the resident index and fetching what the
-//! plan wants.
+//! The reading side: planning a [`View`](walk::View) on the resident
+//! [`Index`](crate::tree::index::Index) and fetching what the plan wants
+//! through a [`Source`](source::Source); a router's [`Sky`](sky::Sky) besides.
 //!
 //! [`crate::tree::index`] is the resident cell tree and [`walk`] the
 //! traversals that plan a frame on it, which [`screen`] rations down to what

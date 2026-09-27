@@ -10,12 +10,12 @@ pub(crate) mod refresh;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use galos_index::prelude::{Index, Source as IndexSource, SystemName};
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::records::{
     Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
 use galos_index::store::names::{Delta, Table};
-use galos_index::{Index, Source as IndexSource, SystemName};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -83,9 +83,9 @@ pub struct Names {
     /// The log *is* the overlay the map used to keep beside the table, and
     /// the precedence is the format's rather than the map's: the log answers
     /// first and a withdrawal in it hides a base row. A refresh folds the
-    /// log's tail in ([`galos_index::Names::absorb`]) and never touches the
-    /// base.
-    pub table: galos_index::Names,
+    /// log's tail in ([`galos_index::prelude::Names::absorb`]) and never
+    /// touches the base.
+    pub table: galos_index::prelude::Names,
     /// How far each scanned system reaches, in metres, by address.
     ///
     /// Its own table on disk (`reaches.bin`) and its own packing here, since
@@ -111,7 +111,7 @@ pub struct Names {
     /// route's stops, the systems a filter's panel lists. Opened from the
     /// same directory the table is mapped from, so a table that can name a
     /// system is a table that can place it.
-    pub sky: Option<Arc<galos_index::Sky>>,
+    pub sky: Option<Arc<galos_index::prelude::Sky>>,
 }
 
 /// Faction id to the name it is shown under, read whole and held.
@@ -137,7 +137,10 @@ impl Names {
         reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
         Names {
-            table: galos_index::Names::of(Table::default(), Delta::of(entries)),
+            table: galos_index::prelude::Names::of(
+                Table::default(),
+                Delta::of(entries),
+            ),
             reaches: Arc::new(names::Reaches::of(reaches)),
             sky: None,
         }
@@ -150,7 +153,7 @@ impl Names {
     /// fixture mints each address from the place it wants
     /// (`crate::testing::boxel_at`).
     pub fn over(
-        sky: Arc<galos_index::Sky>,
+        sky: Arc<galos_index::prelude::Sky>,
         entries: Vec<NameEntry>,
         reaches: Vec<galos_index::records::SystemReach>,
     ) -> Names {
@@ -159,13 +162,13 @@ impl Names {
 
     /// The table as the index published it, with the reaches beside it.
     ///
-    /// What the map opens with: [`galos_index::Names::open`] has mapped the
-    /// base and read the log, so there is nothing here to build. See
+    /// What the map opens with: [`galos_index::prelude::Names::open`] has
+    /// mapped the base and read the log, so there is nothing here to build. See
     /// `loading::read`.
     pub fn packed(
-        table: galos_index::Names,
+        table: galos_index::prelude::Names,
         reaches: names::Reaches,
-        sky: Option<Arc<galos_index::Sky>>,
+        sky: Option<Arc<galos_index::prelude::Sky>>,
     ) -> Names {
         Names { table, reaches: Arc::new(reaches), sky }
     }
@@ -232,8 +235,8 @@ impl Names {
     /// The systems whose name *begins* with `query`, at most `limit`.
     ///
     /// One fold, of the query: every name in the table is upper case by
-    /// construction ([`galos_index::SystemName`]), so the comparison is
-    /// bytes against bytes over the mapping and allocates nothing until
+    /// construction ([`galos_index::prelude::SystemName`]), so the comparison
+    /// is bytes against bytes over the mapping and allocates nothing until
     /// something is found. It used to lowercase *both sides of every
     /// comparison*, which over 131 M entries is 131 M allocations to answer
     /// one search.

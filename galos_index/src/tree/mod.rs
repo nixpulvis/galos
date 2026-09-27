@@ -1,4 +1,6 @@
-//! The cell tree as it is served: every cell, and the systems a cell holds.
+//! The cell tree as it is served: every [`Cell`](cell::Cell), the
+//! [`CellSystem`](cell::CellSystem)s a cell holds, and the
+//! [`Index`](index::Index) over them all.
 //!
 //! [`cell`] is one node of the tree and the record each system in its payload
 //! is packed as; [`index`] is the whole tree held in memory for the walks.

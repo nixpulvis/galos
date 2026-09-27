@@ -1,4 +1,5 @@
-//! One system: where it is in the galaxy, and what is inside it.
+//! One [`System`]: where it is in the galaxy, and what is inside it, placed
+//! by each [`Orbit`](bodies::orbit::Orbit).
 //!
 //! [`System`] is a system as a point in the galaxy, at the precision the
 //! build needs. [`bodies`] is what is inside it — the arrangement of its
@@ -17,11 +18,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// **One of two records of a system, and the one that is written.** The
 /// database, a catalog and the feed each hand the build a [`System`]; the live
-/// [`crate::Tree`] holds one per system; a resume point is a galaxy of them on
-/// disk. What the index is built *into* is a [`CellSystem`]: the same system
-/// packed into a cell's payload, which is all a reader — the map, the router,
-/// the walks — ever sees. [`CellSystem::of`] is the one conversion, and it
-/// only goes this way:
+/// [`crate::build::tree::Tree`] holds one per system; a resume point is a
+/// galaxy of them on disk. What the index is built *into* is a [`CellSystem`]:
+/// the same system packed into a cell's payload, which is all a reader — the
+/// map, the router, the walks — ever sees. [`CellSystem::of`] is the one
+/// conversion, and it only goes this way:
 ///
 /// | | [`System`] | [`CellSystem`] |
 /// |---|---|---|

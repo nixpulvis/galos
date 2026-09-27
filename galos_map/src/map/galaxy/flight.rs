@@ -51,7 +51,7 @@ use bevy::log::tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use bevy::log::tracing_subscriber::registry::LookupSpan;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::{CellId, FsSource};
+use galos_index::prelude::{CellId, FsSource};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -189,7 +189,7 @@ impl Flight {
     fn over(dir: &PathBuf) -> Flight {
         let source = FsSource::new(dir);
         let (index, populated) = pollster::block_on(async {
-            use galos_index::Source as _;
+            use galos_index::prelude::Source as _;
             (
                 source.index().await.expect("the index should read"),
                 source.populated().await.unwrap_or_default(),
@@ -227,8 +227,8 @@ impl Flight {
             follow_camera: true,
         });
         app.insert_resource(crate::map::galaxy::plan::Planned(
-            galos_index::Needed {
-                mode: galos_index::Mode::Shell,
+            galos_index::prelude::Needed {
+                mode: galos_index::prelude::Mode::Shell,
                 marks: Vec::new(),
                 blobs: Vec::new(),
                 splats: Vec::new(),
@@ -826,7 +826,7 @@ fn flying_stays_quick() {
     {
         let world = flight.app.world_mut();
         let planned = world.resource::<crate::map::galaxy::plan::Planned>();
-        let marked: rustc_hash::FxHashSet<galos_index::CellId> =
+        let marked: rustc_hash::FxHashSet<galos_index::prelude::CellId> =
             planned.0.marks.iter().map(|mark| mark.id).collect();
         let resident = world.resource::<ResidentCells>();
         let mut held = 0usize;
@@ -924,7 +924,8 @@ fn flying_stays_quick() {
     );
     println!(
         "peak {held} cells, {peak} points, {:.1} MB of payload",
-        (peak * std::mem::size_of::<galos_index::CellSystem>()) as f64 / 1e6,
+        (peak * std::mem::size_of::<galos_index::prelude::CellSystem>()) as f64
+            / 1e6,
     );
     // Every row of the flight, as one line each, is a wall of text to read a
     // shape off; the percentiles are the shape.

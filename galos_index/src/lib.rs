@@ -12,28 +12,15 @@
 //! brightness or lose a star. That is [`core::moments`], and everything else
 //! leans on it.
 //!
-//! The modules are layers, each reading only the ones above it in this list:
-//!
-//! - [`core`]: the cube, the sums a cell carries, the codecs, a star's kind,
-//!   a system's name.
-//! - [`records`]: the serde rows a reader reads beside the cells.
-//! - [`system`]: one system — [`System`], where it is in the galaxy, and
-//!   [`system::bodies`], what is inside it.
-//! - [`tree`]: the cell tree as it is served — [`Cell`], [`Index`], and the
-//!   [`CellSystem`] a cell's payload packs each system as.
-//! - [`format`](mod@format): file names, byte layouts and the resume point.
-//! - [`store`]: the stores a directory is made of, read and written.
-//! - [`read`]: a reader's walks over the resident index.
-//! - [`build`]: raising the tree, whole or a region or an edit at a time.
-//! - [`accumulate`]: events and reports folded into records.
-//! - [`ops`]: what an operator does to a whole directory.
-//!
 //! Two inputs stand beside the format, and neither names a source.
 //! [`build::cold`] takes records — a database's rows, a dump's lines — and
-//! raises the whole tree at once. [`Galaxy`] takes events one at a time,
-//! from a feed or from a commander's own files, and accumulates them into
-//! [`System`] records and the metadata sidecars, keeping what a scan found in
-//! [`accumulate::bodies`].
+//! raises the whole tree at once. [`Galaxy`](prelude::Galaxy) takes events
+//! one at a time, from a feed or from a commander's own files, and
+//! accumulates them into [`System`](prelude::System) records and the
+//! metadata sidecars, keeping what a scan found in [`accumulate::bodies`].
+//!
+//! The core API is gathered in [`prelude`]; everything else is named by its
+//! module path.
 //!
 //! Pure and dependency-light on purpose. Physics is [`galos_photometry`];
 //! nothing here knows the database or how the galaxy is drawn.
@@ -43,30 +30,9 @@ pub mod build;
 pub mod core;
 pub mod format;
 pub mod ops;
+pub mod prelude;
 pub mod read;
 pub mod records;
 pub mod store;
 pub mod system;
 pub mod tree;
-
-// The core API, re-exported at the crate root so a caller writes
-// `galos_index::Tree` rather than reaching through the modules. Everything
-// else is named by its module path, and by that one path only.
-pub use crate::accumulate::galaxy::Galaxy;
-pub use crate::accumulate::report::SystemReport;
-pub use crate::build::snapshot::{BuildParams, Snapshot};
-pub use crate::build::tree::Tree;
-pub use crate::core::geometry::CellId;
-pub use crate::core::moments::Moments;
-pub use crate::core::name::SystemName;
-pub use crate::core::star::StarKind;
-pub use crate::format::lock::Lock;
-pub use crate::format::payload::INDEX_VERSION;
-pub use crate::read::sky::Sky;
-pub use crate::read::source::{FsSource, Part, Source, Stamp};
-pub use crate::read::walk::{Mode, Needed, View};
-pub use crate::store::names::Names;
-pub use crate::store::tables::{Table, TableSet};
-pub use crate::system::System;
-pub use crate::tree::cell::{Cell, CellSystem};
-pub use crate::tree::index::Index;

@@ -1114,7 +1114,7 @@ mod tests {
             .0 = Some(crate::map::galaxy::walk::Blob {
             light: Vec3::splat(0.1),
             fade: 1.,
-            id: galos_index::CellId::ROOT,
+            id: galos_index::prelude::CellId::ROOT,
             count: 12,
             at: [0.; 3],
             m_min: None,

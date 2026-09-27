@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// carries six temperature buckets and a route's stops are built from the
 /// names table, which carries none — but a panel lists tens or hundreds of
 /// systems, not two hundred million, and the index answers one address at a
-/// time ([`galos_index::Source::bodies`]). So the classes are read for
+/// time ([`galos_index::prelude::Source::bodies`]). So the classes are read for
 /// exactly what is listed, off the task pool, once.
 ///
 /// Held per address rather than per panel: two panels listing the same
@@ -157,10 +157,11 @@ const POWERS: [(u8, f64); 7] = [
 ///
 /// The longest run of stops a ship crosses with **nothing to scoop**, and
 /// which stop it sets out from. A fuel scoop takes hydrogen off the main
-/// sequence and off nothing else ([`galos_index::StarKind::scoopable`]), so a
-/// stretch of white dwarfs, brown dwarfs and black holes is a stretch the
-/// ship crosses on the fuel it had — and where that stretch is longer than
-/// the tank, the route is not a slower route, it is a stranded ship.
+/// sequence and off nothing else
+/// ([`galos_index::prelude::StarKind::scoopable`]), so a stretch of white
+/// dwarfs, brown dwarfs and black holes is a stretch the ship crosses on the
+/// fuel it had — and where that stretch is longer than the tank, the route is
+/// not a slower route, it is a stranded ship.
 ///
 /// Said as the **distance** the stretch takes to cross, not as a count of
 /// stops and not as a fuel figure. A count is the wrong reading on its own:
@@ -229,7 +230,10 @@ impl Scooping {
 
         for (name, class, jump) in stops {
             match class {
-                Some(class) if galos_index::StarKind::of(class).scoopable() => {
+                Some(class)
+                    if galos_index::prelude::StarKind::of(class)
+                        .scoopable() =>
+                {
                     // The jump that arrived here was flown before the tank
                     // was filled here, so it is the run's to pay for.
                     jumps.extend(jump);
