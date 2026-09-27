@@ -4,7 +4,7 @@
 //! [`Snapshot::build`] turns a list of systems into a tree in one pass: the
 //! split, the magnitude ordering, the aggregates. The same systems build the
 //! same tree however they arrive, which is what lets a regional build
-//! ([`crate::build::region`]) and the live tree ([`crate::build::tree`]) be
+//! (`crate::build::region`) and the live tree ([`crate::build::tree`]) be
 //! checked against it. A built tree is written whole, or as a [`CellDiff`]
 //! against the one before it, which touches only the cells whose systems
 //! moved.
@@ -102,7 +102,7 @@ impl Snapshot {
     ///
     /// [`build`](Self::build) is this with the root cell and nothing claimed;
     /// rooted lower down, a galaxy is raised a region at a time and never held
-    /// whole. See [`crate::build::region`], which decides the regions, works
+    /// whole. See `crate::build::region`, which decides the regions, works
     /// out what the cells above them own, and joins the pieces.
     ///
     /// `claimed` is the systems of this region that a cell *above* it took:
@@ -399,7 +399,7 @@ impl Snapshot {
     ///
     /// What a regional build writes: its cells are only part of the
     /// galaxy's, so the index file belongs to whoever joins them — see
-    /// [`crate::build::region`]. A whole build is this and then the index.
+    /// `crate::build::region`. A whole build is this and then the index.
     pub fn write_payloads(&self, dir: &Path) -> io::Result<()> {
         crate::store::cells::write::write_payloads(
             dir,

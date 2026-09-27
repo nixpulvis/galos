@@ -6,7 +6,7 @@
 //! The metadata beside the tree is `metadata`.
 //!
 //! The queries are unchecked `sqlx::query`; the columns are read back by
-//! name. A pass reads in chunks of [`CHANGED_CHUNK`] addresses, and the
+//! name. A pass reads in chunks of `CHANGED_CHUNK` addresses, and the
 //! three tables written whole are written once for the pass.
 
 use crate::{Database, Result};
@@ -430,11 +430,11 @@ fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
 /// and a bucketed temperature, so the full-precision inputs are here or
 /// nowhere. A narrowed build writes none.
 ///
-/// A cold build is regional: [`build_cells`] pushes every row into [`Build`]
+/// A cold build is regional: `build_cells` pushes every row into [`Build`]
 /// under [`galos_index::build::cold::region_budget`]. Nothing here holds a
 /// [`Tree`] — a watch gets one by resuming from the resume point it leaves.
 ///
-/// `stop` reaches every step: [`migrate`], which leaves what it has not
+/// `stop` reaches every step: `migrate`, which leaves what it has not
 /// moved for a later open, and the build, which is asked per row and per
 /// region — see [`Build`].
 ///
@@ -573,10 +573,10 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// The clock is read before each pass reads what changed, never after, so a
 /// write racing a pass's read is asked for again by whoever follows the
 /// cursor rather than missed by everyone. Each pass reads back a further
-/// [`CURSOR_OVERLAP`]; applying a system twice is idempotent.
+/// `CURSOR_OVERLAP`; applying a system twice is idempotent.
 ///
 /// A pass ends the catch-up when what it found is smaller than one
-/// [`CHANGED_CHUNK`]: the caller is usually the process writing to the
+/// `CHANGED_CHUNK`: the caller is usually the process writing to the
 /// database, and the residue is already in that process's handoff buffer.
 ///
 /// It leaves a whole resume point standing for exactly the systems the

@@ -148,7 +148,7 @@ pub struct Status {
     /// Both clocks per table, for the three that carry a `received_at`.
     pub clocks: Vec<Clocks>,
 
-    /// Estimated live rows per table of [`WATCHED`], in that order. [`None`]
+    /// Estimated live rows per table of `WATCHED`, in that order. [`None`]
     /// where the table is not in this database at all, which is how a
     /// half-migrated one shows itself.
     pub estimates: Vec<(&'static str, Option<i64>)>,

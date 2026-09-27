@@ -25,7 +25,7 @@ use std::collections::HashMap;
 ///
 /// **Two views of one tree, and the second is why a frame is quick.** The map
 /// is what an address is looked up in — the router asks it half a million
-/// times a route — and [`nodes`](Index::nodes) is what a walk descends: the
+/// times a route — and `nodes` is what a walk descends: the
 /// cells breadth-first with a cell's children next to each other, carrying
 /// the figures a walk reads worked out once. Measured over `.index/full`, a
 /// 204,466-cell tree at 200,071,629 systems: the walk was **23 ms** a frame
@@ -201,7 +201,7 @@ impl Index {
     /// The descent follows the tree's own children rather than asking
     /// [`CellId::of_point`] a level at a time and looking each answer up, so it
     /// invents no cell the index does not hold and costs no hashing: the
-    /// children of a node are contiguous in [`nodes`](Index::nodes), so each
+    /// children of a node are contiguous in `nodes`, so each
     /// step is at most eight comparisons. A point outside the cube clamps to
     /// the nearest edge cell, which is `of_point`'s rule and is what makes this
     /// total.

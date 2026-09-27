@@ -101,8 +101,8 @@ pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Weighed> {
 /// without reading what stood there, so a second import over a published
 /// directory appends a fresh record for every system and the one behind it is
 /// dead the moment the entry naming the new one lands. Nothing on the write
-/// path reclaims those: [`append`](super::write::append) folds when a shard's
-/// tail passes [`tail_bound`](super::tail_bound), and an import leaves every
+/// path reclaims those: `append` folds when a shard's
+/// tail passes `tail_bound`, and an import leaves every
 /// tail well under it. Measured on a re-imported galaxy: `bodies/` at 323 GB,
 /// 49.8 % of it live, and 161 GB of dead record no append was going to reach.
 ///

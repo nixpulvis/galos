@@ -63,7 +63,7 @@
 //! ## Time
 //!
 //! The Recency axis is measured from a clock this derivation holds
-//! ([`Galaxy::now`]) rather than from a database's. That is the same rule
+//! (`Galaxy::now`) rather than from a database's. That is the same rule
 //! `galos_db::index` follows for the same reason — one clock compared against
 //! itself — and here it is simpler, the events carrying their own timestamps
 //! and no upsert standing between them and the reading.

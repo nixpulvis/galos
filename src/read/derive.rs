@@ -124,7 +124,7 @@ pub struct Derive {
     pub checkpoint: PathBuf,
     /// The derive side's own pool, where the run was asked to bring the
     /// directory level with the database before going live. See
-    /// [`Derive::levelled`].
+    /// `Derive::levelled`.
     #[cfg(feature = "db")]
     pub db: Option<Database>,
     /// How often what has been read is written out, where the run follows

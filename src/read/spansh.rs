@@ -37,7 +37,7 @@
 //! [`galos_index::build::cold::region_budget`] is how many systems that is. See
 //! [`main`](crate)'s routing for which run gets which.
 //!
-//! Both read the file through [`Reading`], which holds the reading itself —
+//! Both read the file through `Reading`, which holds the reading itself —
 //! the lines, the bar, the share of the file this process takes and the
 //! lines nothing could parse — and hands back one system at a time. Each
 //! way is the short loop over it that its own side needs.
@@ -467,10 +467,10 @@ impl Galaxy {
     ///
     /// A run asked to stop ends the read where it is and marks the place,
     /// so the next run over the same file takes up the spills rather than
-    /// reading the galaxy again; see [`Build::mark`] and [`Place`]. The
-    /// place is marked every [`MARKED`] systems as well, which is what a
-    /// kill rather than a Ctrl-C falls back to. Nothing of the directory is
-    /// published either way: the flag [`Reading`] asks between lines is the
+    /// reading the galaxy again; see [`Build::mark`] and [`Place`]. The mark
+    /// is kept current after every line, and costs nothing: it is carried,
+    /// not written, until the build writes it out. Nothing of the directory is
+    /// published either way: the flag `Reading` asks between lines is the
     /// one [`Build`] asks per record, so the build behind this answers
     /// `Built::Stopped`.
     ///
@@ -482,7 +482,7 @@ impl Galaxy {
     ///
     /// The body files are written per system rather than held: a dump names
     /// each system once, so a system's file is whole the moment its line has
-    /// been read. The store is [`OnDisk::raising`] for the same reason —
+    /// been read. The store is [`OnDisk::raising`](galos_index::accumulate::bodies::OnDisk::raising) for the same reason —
     /// a build from nothing can only be told back what it has just said, so
     /// nothing is read from the directory it is writing.
     ///
@@ -576,7 +576,7 @@ impl Galaxy {
                 rows.take(&galaxy, galaxy.touched())?;
             }
             // What the store has written since it was last asked. It holds what
-            // it is told until [`OnDisk::CARRIED`] systems have piled up, so
+            // it is told until `OnDisk::CARRIED` systems have piled up, so
             // most lines add nothing here and the line that does adds a shard's
             // worth at a time — see `galos_index::store::bodies`.
             bodies += store.written();

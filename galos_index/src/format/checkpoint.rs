@@ -406,8 +406,8 @@ pub mod pending {
     /// Add what a publish wrote, and answer whether the base should now be
     /// compacted.
     ///
-    /// The answer is two `stat` calls against [`FOLD_AT`], clamped by
-    /// [`FOLD_FLOOR`] and [`FOLD_CEILING`], and it is `true` whenever there
+    /// The answer is two `stat` calls against `FOLD_AT`, clamped by
+    /// `FOLD_FLOOR` and `FOLD_CEILING`, and it is `true` whenever there
     /// is no base at all: the first publish into a fresh directory writes
     /// one rather than logging against nothing.
     ///

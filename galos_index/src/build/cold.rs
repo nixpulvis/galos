@@ -1,9 +1,9 @@
 //! A cold build: the whole galaxy raised from records, a region at a time.
 //!
-//! [`crate::build::region`] is the pieces — the cut, what a region offers, the
+//! `crate::build::region` is the pieces — the cut, what a region offers, the
 //! crown over it, a region's own snapshot, the join. This is the sequence
 //! they go in. A caller pushes every record it has into [`Build`] and the
-//! cut is formed afterwards, from the [`bucket`](crate::build::bucket)s the
+//! cut is formed afterwards, from the `bucket`s the
 //! systems landed in, so the galaxy is read once.
 //!
 //! Nothing the galaxy's size scales is held. Each system goes straight to
@@ -51,8 +51,8 @@ const REGION_BUDGET: u64 = 7_000_000;
 /// region.
 const BUDGET_VAR: &str = "GALOS_REGION_BUDGET";
 
-/// How many systems a region may hold: [`BUDGET_VAR`] where it is set and
-/// readable, [`REGION_BUDGET`] otherwise.
+/// How many systems a region may hold: `BUDGET_VAR` where it is set and
+/// readable, `REGION_BUDGET` otherwise.
 ///
 /// What every caller of [`Build::begin`] passes as its `budget`, so one
 /// setting means one thing whichever half of the program is building the
@@ -160,7 +160,7 @@ pub fn resume_mark(checkpoint: &Path) -> Option<ResumeMark> {
 /// A cold build a caller pushes into: the galaxy read once, as it arrives.
 ///
 /// Each system goes straight into the spill of the fixed coarse
-/// [`bucket`](crate::build::bucket) its position falls in and each name into a
+/// `bucket` its position falls in and each name into a
 /// chunk; [`finish`](Self::finish) forms the regions from the buckets and
 /// raises the tree off them.
 ///

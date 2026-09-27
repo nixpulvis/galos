@@ -74,7 +74,7 @@
 //! statement.
 //!
 //! **Foreign keys fix the order.** Derived rather than written down: the
-//! `contype = 'f'` rows of `pg_constraint` are a graph and [`ordered`]
+//! `contype = 'f'` rows of `pg_constraint` are a graph and `ordered`
 //! topologically sorts it, parents first. A cycle is [`Error::Cyclic`] and
 //! a table with no rule and no usable key is [`Error::Unruled`] or
 //! [`Error::Keyless`] — reported, never quietly dropped. Running with the
@@ -85,7 +85,7 @@
 //! `outfitting` and `shipyard` are replaced as a set by their writer, and
 //! so are `body_materials` and `system_faction_states`. Merging those row
 //! by row unions two market snapshots and invents a station stocking both.
-//! The newer list wins entire; see [`Rule::List`].
+//! The newer list wins entire; see `Rule::List`.
 //!
 //! **Nothing is withdrawn.** An absence on the incoming side says "I have
 //! not heard", never "it is gone". This is where the merge deliberately
@@ -184,7 +184,7 @@ pub struct Merged {
     pub factions: usize,
 
     /// Tables this merge will not carry, by name. Empty is the ordinary
-    /// case for a schema nothing has been added to; see [`Rule::Skipped`]
+    /// case for a schema nothing has been added to; see `Rule::Skipped`
     /// for why any name is here.
     pub skipped: Vec<String>,
 

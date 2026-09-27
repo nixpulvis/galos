@@ -237,7 +237,7 @@ pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
 ///
 /// It stood at zero while the format settled, and a record changed width under
 /// it more than once — the age buckets went from `u64` to `u32` — on the
-/// argument that the length check in [`Index`](crate::Index)'s own `decode`
+/// argument that the length check in [`Index`]'s own `decode`
 /// catches a stale file by its size, so a rebuild is the fix and rebuilding is
 /// cheap against inputs already to hand.
 ///
@@ -260,7 +260,7 @@ pub const INDEX_VERSION: u16 = 3;
 /// not an index file at all.
 ///
 /// A payload block carries no header, so the width of its records is known only
-/// from the version beside them. A reader that [`Index`](crate::Index)'s decode
+/// from the version beside them. A reader that [`Index`]'s decode
 /// refused asks this to say which format it met.
 pub fn index_version(bytes: &[u8]) -> Option<u16> {
     let mut cur = bytes;
@@ -270,7 +270,7 @@ pub fn index_version(bytes: &[u8]) -> Option<u16> {
     u16::decode(&mut cur)
 }
 
-/// The index file's bytes: a header naming [`INDEX_MAGIC`] and
+/// The index file's bytes: a header naming `INDEX_MAGIC` and
 /// [`INDEX_VERSION`], a count, and that many fixed-width [`Cell`] records.
 /// Rewritten whole on every publish, and a file of another width or version
 /// is refused rather than misread.

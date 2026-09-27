@@ -14,7 +14,7 @@
 //! their bytes from their own `to_le_bytes`; a record spells its fields out,
 //! transforms and all (a cell's `id` as level plus Morton key, an aggregate's
 //! `m_min` as a NaN-sentinel `f32`), which is the part a derive could not
-//! express. Each record states its own layout with [`record!`] beside the
+//! express. Each record states its own layout with `record!` beside the
 //! type, so the width and the type cannot be read apart.
 
 /// Append this value's on-disk bytes to a buffer; [`to_bytes`](Self::to_bytes)

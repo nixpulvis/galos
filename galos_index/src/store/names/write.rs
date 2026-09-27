@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// What a build uses in place of [`Names`]: it names each system once, in
 /// whatever order it reads them, and never looks one up. The rows go to a file
 /// as they arrive, the file is sorted by address externally
-/// ([`crate::format::rows`]), and the sections are written from the sorted rows
+/// (`crate::format::rows`), and the sections are written from the sorted rows
 /// in one pass.
 ///
 /// The sort is the price of the format and it is worth saying why it is
@@ -65,7 +65,7 @@ impl Writer {
     /// What a build carrying on from a read a stop published starts with,
     /// and what a [`compact`] folds a log into a base with. The table's own
     /// rows go in first and this read's rows go over them, which is
-    /// [`crate::format::rows`]'s one rule: the last row an address has wins.
+    /// `crate::format::rows`'s one rule: the last row an address has wins.
     ///
     /// Seeded from the table as it *answers*, base under log, so a row the
     /// log renamed is carried at its new name and one it withdrew is not

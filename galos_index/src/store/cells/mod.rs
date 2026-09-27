@@ -6,7 +6,7 @@
 //! rewrites only the cells that changed.
 //!
 //! The byte formats are [`crate::format::payload`] and the tree they hold is
-//! [`crate::Index`]; this is where they meet the filesystem. [`read`] opens
+//! [`crate::Index`]; this is where they meet the filesystem. `read` opens
 //! them — the index whole, a payload decoded or mapped — and [`write`] puts
 //! them down and sweeps away what the tree no longer names. A client fetching
 //! cells over HTTP reads the same bytes through its own transport.

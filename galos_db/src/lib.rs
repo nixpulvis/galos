@@ -196,14 +196,17 @@ pub mod stars;
 pub mod stations;
 pub mod system_signals;
 pub mod systems;
-/// A database of a test's own, made and dropped by the test
-///
-/// Out of an ordinary build, this being a module that makes and drops
-/// databases. `cfg(test)` alone would not do: the tests that want it are
-/// mostly integration tests, which link this library exactly as any other
-/// caller does and see only what a feature turns on. The feature alone would
-/// do, this crate asking for it of itself as a dev-dependency, but then the
-/// unit tests in `index` would be one resolver decision away from not
-/// compiling.
+// A database of a test's own, made and dropped by the test. A comment rather
+// than a doc, since the module's own docs are what render, and an outer doc
+// here would be read in this module's scope, where their links do not
+// resolve.
+//
+// Out of an ordinary build, this being a module that makes and drops
+// databases. `cfg(test)` alone would not do: the tests that want it are
+// mostly integration tests, which link this library exactly as any other
+// caller does and see only what a feature turns on. The feature alone would
+// do, this crate asking for it of itself as a dev-dependency, but then the
+// unit tests in `index` would be one resolver decision away from not
+// compiling.
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

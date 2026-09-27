@@ -357,7 +357,7 @@ impl Sidecars {
 ///
 /// The sort is not held either. [`finish`](Self::finish) sorts the rows a
 /// run at a time and merges the runs, so what the tables cost to write is
-/// one run rather than one galaxy — see [`sort_table`].
+/// one run rather than one galaxy — see `sort_table`.
 ///
 /// Nothing is read back while the rows are being written, so a row does not
 /// merge over a published one. That is the same argument

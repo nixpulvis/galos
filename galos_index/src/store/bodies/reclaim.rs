@@ -20,7 +20,7 @@ pub struct Reclaimed {
     /// Bytes the disk no longer holds.
     pub bytes: u64,
     /// Of those, the bytes punched out in place. The rest were copied —
-    /// see [`How`], which is where the two are chosen between.
+    /// see `How`, which is where the two are chosen between.
     pub punched: u64,
     /// Whether every shard was looked at. A stop part way answers `false`,
     /// as does a shard that would not reclaim.
@@ -38,7 +38,7 @@ pub enum Dead {
     /// shard it has appended to for months pays the rewrite once the file
     /// holds twice the bytes it needs, and no sooner.
     Half,
-    /// A tenth of the file, and at least [`WORTH`] of it. What a sweep
+    /// A tenth of the file, and at least `WORTH` of it. What a sweep
     /// asks by — an operator, or a build that has just rewritten the
     /// galaxy, is paying for the space rather than for the next append.
     Worth,

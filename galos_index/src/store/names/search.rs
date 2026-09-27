@@ -107,7 +107,7 @@ impl Names {
     ///    derived name's words are a sector and a boxel code, so a query
     ///    matching a sector *mid-name* — `EUQ` for `PRAEA EUQ YE-Q D5-0` — is
     ///    answered by asking
-    ///    [`sectors_holding_all`](crate::core::procedural::sectors_holding_all)
+    ///    `sectors_holding_all`
     ///    which sectors hold that word and walking each one's run of the
     ///    by-name order. 11,662 sectors and 192 KB, compiled in, so finding the
     ///    sector costs microseconds and the rows come back through the same
@@ -511,7 +511,7 @@ impl Table {
     /// run of bytes — a banded edit distance has nowhere to start from in a
     /// byte search — and it is swept in parallel, a run of spans a thread.
     ///
-    /// The bound is the word's own ([`crate::core::procedural::matches_word`]),
+    /// The bound is the word's own (`crate::core::procedural::matches_word`),
     /// so a coordinate is never fuzzed and three letters are matched
     /// exactly.
     pub fn rows_near(&self, word: &str, limit: usize) -> Vec<usize> {

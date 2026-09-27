@@ -25,11 +25,11 @@
 //! while a form is out and the strip while the scrubber is; the rows never do,
 //! being a readout.
 //!
-//! The pieces stand in the modules under this one: [`settings`] for the pane
-//! and the gear, [`bar`] for the box and the rows under it, [`clock`] for the
-//! strip, [`help`] for the bindings window, and [`panels`] for the windows a
-//! row or a line opens. What they are built from is shared: [`widgets`],
-//! [`list`] and [`text`].
+//! The pieces stand in the modules under this one: `settings` for the pane
+//! and the gear, `bar` for the box and the rows under it, `clock` for the
+//! strip, `help` for the bindings window, and `panels` for the windows a
+//! row or a line opens. What they are built from is shared: `widgets`,
+//! `list` and `text`.
 
 use crate::input::{Keyboard, PointerOverUi, PressOwner};
 use crate::map::bodies::{Contents, mark_if_moved};

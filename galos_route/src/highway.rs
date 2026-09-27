@@ -24,7 +24,7 @@
 //! worth taking. Which is why only [`crate::graph::Routing::QUICK`] plans
 //! here: a setting that claims the fewest jumps cannot be answered off a
 //! plan over two per cent of the galaxy. See
-//! [`crate::graph::Routing::highway`].
+//! `crate::graph::Routing::highway`.
 //!
 //! The same shape as EDDA's `long_range.rs`, read against its
 //! implementation, and the numbers agree where they can be compared: its
@@ -386,7 +386,7 @@ impl Highway {
     /// at a 405 ly reach against 32 stops in 6.2 ms at 495**.
     ///
     /// So a plan that does not close is tried again one ordinary jump
-    /// wider, up to [`RUNGS`] of them. A wider reach only *adds* edges to
+    /// wider, up to `RUNGS` of them. A wider reach only *adds* edges to
     /// the cone graph, so a rung can never answer worse than the one below
     /// it; what it costs is the scan width of an expansion, and it is only
     /// ever paid where the narrower reach had already failed. This is what

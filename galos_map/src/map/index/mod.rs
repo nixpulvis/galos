@@ -1,8 +1,8 @@
 //! What the map holds of the index: the cell aggregates, the tables
 //! read whole beside them, and the seam they are all read through.
 //!
-//! Read once behind a loading screen ([`load`]) and kept current while a
-//! `--watch` build publishes under it ([`refresh`]).
+//! Read once behind a loading screen (`load`) and kept current while a
+//! `--watch` build publishes under it (`refresh`).
 
 pub(crate) mod load;
 pub(crate) mod names;
@@ -50,14 +50,14 @@ pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
 /// Derived rather than fetched. It is [`Populated`] rolled up the tree
 /// [`ResidentIndex`] already holds — one pass over a table that is resident
 /// anyway — so a political field at any zoom costs no fetch and no server.
-/// Re-derived whenever either of the two moves, which [`refresh`] does.
+/// Re-derived whenever either of the two moves, which `refresh` does.
 ///
 /// Its own weighting and not a reading off [`ResidentIndex`]: a cell's stellar
 /// moments are the wrong place and the wrong size for the colonies under it.
 /// Measured over `.galos_index`, the root's inhabited centroid and its
 /// count-weighted centroid are 12.5 kly apart and their spreads differ
 /// tenfold, so a political splat laid on the stellar moments draws the bubble
-/// out toward the galactic core. See [`galos_index::inhabited`].
+/// out toward the galactic core. See [`galos_index::read::inhabited`].
 #[derive(Resource, Default, Clone)]
 pub struct Settled(pub Arc<Inhabitance>);
 
@@ -71,7 +71,7 @@ pub struct Settled(pub Arc<Inhabitance>);
 ///
 /// **Mapped**, not decoded: the table is the file the index publishes, and
 /// holding it is five `mmap` calls and the delta log — nothing of the 5.8 GB
-/// base is resident until something is looked up. See [`names`] for what
+/// base is resident until something is looked up. See `names` for what
 /// this used to cost. Cheap to clone: both halves sit behind [`Arc`]s, so a
 /// fetch task takes a handle and names and colours its systems off the main
 /// thread.
@@ -148,7 +148,7 @@ impl Names {
     /// What a test that draws a system by address builds: the rows say what
     /// is named, the tree says where it is, and the two agree because the
     /// fixture mints each address from the place it wants
-    /// ([`crate::testing::boxel_at`]).
+    /// (`crate::testing::boxel_at`).
     pub fn over(
         sky: Arc<galos_index::Sky>,
         entries: Vec<NameEntry>,
@@ -202,7 +202,7 @@ impl Names {
     /// *are* the changes, so there is nothing to diff and nothing to
     /// rebuild. The base is untouched and the log is copied on write, so a
     /// fetch task holding a clone keeps reading the table it was handed. See
-    /// [`crate::map::index::refresh`].
+    /// `crate::map::index::refresh`.
     pub fn absorb(&mut self, tail: galos_index::store::names::Delta) {
         self.table.absorb(tail);
     }
@@ -247,7 +247,7 @@ impl Names {
     /// 200,071,629-name table. See `galos_index::store::names::Table::matching`.
     ///
     /// The cap is applied in the index rather than by collecting the
-    /// galaxy and sorting it down. What [`crate::map::search`] does on top is
+    /// galaxy and sorting it down. What `crate::map::search` does on top is
     /// sort the few that come back by how near they are to where the
     /// camera looks.
     pub fn find(

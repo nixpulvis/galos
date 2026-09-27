@@ -774,7 +774,7 @@ impl Tree {
     /// Nothing here reads a system the edits did not touch: the index comes
     /// off the settled totals, one pass over the cells, and a payload is
     /// built only for a cell about to be written. See
-    /// [`settle`](Self::settle): a hundred edits over eight million systems
+    /// `settle`: a hundred edits over eight million systems
     /// publish in 52 ms, against 2.6 s when every payload in the galaxy was
     /// built to write a dozen files.
     pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {

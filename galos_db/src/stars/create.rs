@@ -14,7 +14,7 @@ impl Star {
     ///
     /// Answers the star on record, which is not always the one handed in:
     /// a system already holding a star of this name holds this star, and
-    /// [`settle`] says which of the two records is kept.
+    /// `settle` says which of the two records is kept.
     pub async fn from_journal(
         conn: &mut sqlx::PgConnection,
         timestamp: DateTime<Utc>,

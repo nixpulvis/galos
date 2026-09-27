@@ -480,7 +480,7 @@ impl Index {
     /// — no budget, no frustum, nothing history-dependent — so the same eye
     /// position always returns the same view, whatever path reached it.
     ///
-    /// - **Marks.** [`Index::frontier`] at [`MERGE_PX`]: the cells whose
+    /// - **Marks.** `Index::frontier` at [`MERGE_PX`]: the cells whose
     ///   contents fall inside one mark draw as one, and every cell above them
     ///   lays down as much of its own slice as its footprint can hold apart.
     /// - **Glow.** A cell splats as one aggregate until its contents' spread
@@ -499,7 +499,7 @@ impl Index {
     /// 128–512 Ly cells whose contents subtend far more than the half pixel
     /// the split turns on, so nothing stops short of a leaf and the walk is
     /// linear in the tree with the marked count riding along. Which is why it
-    /// descends [`Index::nodes`] rather than the map, and reads each cell's
+    /// descends `Index::nodes` rather than the map, and reads each cell's
     /// figures rather than working them out: **23 ms to 1.5 ms**, the same
     /// marks and the same field.
     pub fn walk_screen(&self, view: &View, within: Option<Reach>) -> Needed {

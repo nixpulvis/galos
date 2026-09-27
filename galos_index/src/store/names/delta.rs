@@ -177,8 +177,8 @@ impl Delta {
 
     /// Whether the log has grown enough that folding it into the base is
     /// worth the rewrite: either threshold, since one bounds what a client
-    /// holds ([`FOLD_ROWS`]) and the other bounds the file itself
-    /// ([`FOLD_BYTES`]).
+    /// holds (`FOLD_ROWS`) and the other bounds the file itself
+    /// (`FOLD_BYTES`).
     pub fn worth_folding(&self) -> bool {
         self.said.len() >= FOLD_ROWS || self.read >= FOLD_BYTES
     }

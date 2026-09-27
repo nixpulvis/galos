@@ -106,7 +106,7 @@ impl Orbit {
     ///
     /// Elements worked backwards from a position rather than read off a scan:
     /// the size of the circle is how far out `place` stands, and the two
-    /// angles are the ones [`Orbit::place`] needs to land there. Written with
+    /// angles are the ones `Orbit::place` needs to land there. Written with
     /// the periapsis a quarter turn round, which is what puts the answer off
     /// the map's own plane — measured from the node line, an orbit at no
     /// anomaly and no periapsis lies in that plane whatever its inclination.
@@ -192,7 +192,7 @@ impl Orbit {
     /// How far round the ellipse the body stands, `since` seconds after the
     /// moment times are counted from
     ///
-    /// The eccentric anomaly, which is the angle [`Orbit::place`] is written
+    /// The eccentric anomaly, which is the angle `Orbit::place` is written
     /// in and the one [`Orbit::path`] is stepped through.
     ///
     /// Run on from the reading rather than from `since`, so the span is
@@ -239,7 +239,7 @@ impl Orbit {
 
     /// How far apart to lay a ring's points where the camera stands, in radians
     ///
-    /// [`CROSSING`] dashes fall across a view, and a dash and the gap after it
+    /// `CROSSING` dashes fall across a view, and a dash and the gap after it
     /// are a step each, so a view holds twice that many steps. `across` is how
     /// much sky the camera takes in, and a radian of a ring is about its
     /// semi-major axis of arc, which is what turns the one into the other.
@@ -386,7 +386,7 @@ pub struct Spacing {
     ///
     /// One wherever the points are laid to the view, a step being a dash and
     /// the next its gap. More where a ring the view holds is laid evenly with
-    /// more points than its dashes want. See [`DASHES`].
+    /// more points than its dashes want. See `DASHES`.
     pub run: usize,
 }
 
@@ -419,7 +419,7 @@ impl Spacing {
     /// view is laid about the camera, and such a line has to pass through its
     /// own body instead.
     ///
-    /// Cut into as few as [`DASHES`] dashes, which is what a ring smaller than
+    /// Cut into as few as `DASHES` dashes, which is what a ring smaller than
     /// the view wants.
     pub fn even(at: f64, points: usize) -> Spacing {
         let steps = (points / 2).max(1);

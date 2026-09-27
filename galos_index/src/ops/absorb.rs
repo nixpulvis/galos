@@ -33,7 +33,7 @@
 //! rows contributed tables derive from its arrival. Each of those was worked out from one side's bodies, and the
 //! merged directory holds both sides', so each is worked out again over the
 //! merged contents by the calls [`crate::accumulate::galaxy`] makes. See
-//! [`Relit`], which names the directory that said two contradicting things
+//! `Relit`, which names the directory that said two contradicting things
 //! before this existed. It is why the bodies are folded *first*: the contents
 //! have to be settled before the record over them can be written.
 //!
@@ -185,7 +185,7 @@ pub struct Absorbed {
     pub factions: u64,
     /// Systems whose body records were folded together.
     pub bodies: u64,
-    /// The cursor the merged resume point carries — see [`older`].
+    /// The cursor the merged resume point carries — see `older`.
     pub cursor: Option<NaiveDateTime>,
     /// What raising the tree again came to, absent for a dry run.
     pub rebuilt: Option<Summary>,

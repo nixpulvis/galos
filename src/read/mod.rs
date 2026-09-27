@@ -22,7 +22,7 @@
 //! Events are the live input to both. A database is what an index is
 //! rebuilt *from*, not what it is maintained from, so a run following a
 //! publisher never reads the database to keep a directory current — see
-//! [`derive`] for the two paths that do: `--from database`, and the
+//! [`mod@derive`] for the two paths that do: `--from database`, and the
 //! handoff a run naming both sinks starts with.
 //!
 //! The sinks are not interchangeable and are not meant to be. A database

@@ -642,7 +642,7 @@ impl Sink for Index {
     /// publish and the second rides along with it — [`Tables::write`]
     /// writes whatever the directory has no file for. A run that has
     /// published nothing owes the whole of it; see
-    /// [`publish_whole`](Index::publish_whole).
+    /// `publish_whole`.
     ///
     /// The cursor is sampled in the same order [`Sink::flush`] samples one,
     /// and either road leaves the [`pending`] log superseded and dropped.

@@ -34,7 +34,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// - **How many jumps over the fewest** may it settle for, to come back
 ///   sooner ([`Self::over`])? Nothing over is the proof; anything over is
 ///   weighted A\*, which comes back bounded rather than proven.
-/// - **Are ties broken by distance** ([`Self::shortest`])? The chains of one
+/// - **Are ties broken by distance** ([`Weigh::Shortest`])? The chains of one
 ///   length are many, and this is whether the shortest of them is found
 ///   rather than whichever the tie-break happened to like.
 ///
@@ -80,14 +80,14 @@ pub struct Routing {
     /// claim: it bounds *jumps* and says nothing about light years.
     ///
     /// The bound survives the search expanding each system **once**, which
-    /// is what [`JumpGraph::search`] does wherever this is over nothing.
+    /// is what `JumpGraph::search` does wherever this is over nothing.
     /// Weighted A\* that never re-expands a settled system still answers
     /// inside the same `1 + over/100` of the fewest, given a heuristic
     /// that is consistent before the weighting — which the estimate here
     /// is, a jump closing at most the widest jump's worth of what is left.
     /// It is the result `ARA*` is built on, and this used to claim the
     /// opposite: that reopening was what made the bound a theorem. What
-    /// reopening actually bought was work. See [`JumpGraph::walk`].
+    /// reopening actually bought was work. See `JumpGraph::walk`.
     ///
     /// A percent and not a fraction of two integers because that is what the
     /// reader is offered, and the arithmetic stays exact all the same: a
@@ -124,7 +124,7 @@ pub enum Weigh {
     Jumps,
     /// The fewest jumps, and provably the shortest chain of that many
     ///
-    /// Distance goes into the cost under the jump count ([`Cost`]), so the
+    /// Distance goes into the cost under the jump count (`Cost`), so the
     /// search settles the tie itself instead of leaving it to the
     /// tie-break. It costs: the plateau of equally short chains has to be
     /// walked to know which is shortest, where the tie-break merely
@@ -140,8 +140,8 @@ pub enum Weigh {
     /// jumps of a third of a light year to cross three hundred, against the
     /// six the fewest-jumps route flies. Splitting always saves fuel and
     /// nothing in the arithmetic ever stops it, so where to stop is the
-    /// reader's to say and not the map's: see [`floor`] for the trade, which
-    /// is a straight line, and [`Burn`] for the ordering.
+    /// reader's to say and not the map's: see `floor` for the trade, which
+    /// is a straight line, and `Burn` for the ordering.
     ///
     /// **And `expand` is this weighing's own approximation**, which is why
     /// it rides here rather than in [`Routing`]: a route weighed by fuel
@@ -151,7 +151,7 @@ pub enum Weigh {
     /// one lever that makes such a route quicker without touching what it
     /// is weighed by. Nothing for all of them, which is what a proven
     /// route always takes. See [`EXPAND`] for the measurements and
-    /// [`Routing::fanout`] for why the other two weighings have no such
+    /// `Routing::fanout` for why the other two weighings have no such
     /// setting.
     Fuel { hop: u32, expand: u32 },
 }
@@ -371,7 +371,7 @@ impl Routing {
     /// the fewest expands a bounded number of each sphere's systems, and
     /// what a cap drops the search cannot learn — so a plot that was
     /// capped says so. It is a setting for a fuel-weighed route and a
-    /// fixed safety valve for the other two ([`Self::fanout`]), and either
+    /// fixed safety valve for the other two (`Self::fanout`), and either
     /// way the reader is entitled to know it happened rather than to
     /// discover it as a route that went the long way.
     ///
@@ -610,8 +610,8 @@ impl Tuning {
 /// Called a **gap** and not a leg: a leg is what the user means by a part
 /// of a multi-stop trip, which the bar says outright ("3 Leg Route"), and a
 /// hop is what a row calls one jump. This is neither. The router's own
-/// prose still says "leg" internally — [`JumpGraph::leg`],
-/// [`JumpGraph::flown`] — which is the word EDDA uses for it too.
+/// prose still says "leg" internally — `JumpGraph::leg`,
+/// `JumpGraph::flown` — which is the word EDDA uses for it too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Crossing {
     /// Step across the gap, on whatever the route is weighed by
@@ -625,7 +625,7 @@ pub enum Crossing {
     /// **Cheapest by the route's own metric**, which for a jump-counted
     /// route is the candidate *nearest* the next star — a jump costing one
     /// wherever it lands — and for a fuel-weighed one is emphatically not
-    /// that. It was nearness alone until [`JumpGraph::stepped`] read
+    /// that. It was nearness alone until `JumpGraph::stepped` read
     /// [`Weigh`], and a supercharged least-fuel crossing's gaps were
     /// therefore not weighed by fuel at all: measured, the same 166 stops
     /// and the same 157.41 tanks at every position of the hop rail, where
@@ -666,7 +666,7 @@ pub enum Crossing {
     /// search at all, trading "sometimes minutes" for "sometimes a worse
     /// route".
     ///
-    /// Not to be confused with [`Routing::fanout`], which caps how many
+    /// Not to be confused with `Routing::fanout`, which caps how many
     /// *neighbours of one expansion* a search relaxes. That search keeps
     /// its whole frontier and can still come back to anything in it; a beam
     /// throws the frontier away. EDDA has both, and its greedy cone
@@ -941,7 +941,7 @@ pub const HOP: u32 = 50;
 /// stops and 1.251 tanks at 64 or at 512, measured. **Under a quarter it
 /// is not**, and the count the rail last held went on deciding two
 /// percent of the tank where nothing on screen said so — 0.733 tanks
-/// against 0.716 at a 5% hop. So [`Routing::fanout`] holds the valve
+/// against 0.716 at a 5% hop. So `Routing::fanout` holds the valve
 /// there instead, and what this number means is exactly what the rail
 /// shows.
 ///
@@ -1335,7 +1335,7 @@ pub struct Drawn {
     pub reaching: Vec<Vec<DVec3>>,
     /// How far that system is from the goal, in light years
     pub closest: f64,
-    /// How many times anything here has moved; see [`Reached::revision`]
+    /// How many times anything here has moved; see `Reached::revision`
     pub revision: u64,
     /// How many times the closed set has grown or coarsened
     pub cells_at: u64,
@@ -1359,7 +1359,7 @@ impl Frontier {
     /// has not expands in every direction until the reachable component runs
     /// out, and then the geometry bounds nothing — so the cell is widened
     /// again past [`crate::graph::CELL_CEILING`] of them; see
-    /// [`Sampler::flush`].
+    /// `Sampler::flush`.
     pub fn between(from: DVec3, goal: DVec3) -> Arc<Frontier> {
         Arc::new(Frontier {
             reached: Mutex::new(Reached {
@@ -1433,7 +1433,7 @@ impl Frontier {
         self.reached.lock().expect("the frontier lock").from
     }
 
-    /// How many times the picture has moved; see [`Reached::revision`]
+    /// How many times the picture has moved; see `Reached::revision`
     ///
     /// The whole of what the map's frontier painter needs to know whether to
     /// take a copy at all. Asked first and on its own, since [`Self::drawn`]
