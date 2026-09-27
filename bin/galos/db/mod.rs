@@ -358,15 +358,11 @@ async fn backup(to: &Path, jobs: u32) -> Result<bool, String> {
 /// rather than creating one, because `DATABASE_URL` is what says which,
 /// and a verb that quietly created the database named by a typo is a
 /// galaxy restored where nobody will look for it.
-async fn restore(
-    from: &Path,
-    jobs: u32,
-    clean: bool,
-) -> Result<bool, String> {
+async fn restore(from: &Path, jobs: u32, clean: bool) -> Result<bool, String> {
     let url = reachable().await?;
     println!("restoring {} into {}", from.display(), talking_to());
-    let done = galos_db::dump::restore(&url, from, jobs, clean)
-        .map_err(said)?;
+    let done =
+        galos_db::dump::restore(&url, from, jobs, clean).map_err(said)?;
     // `Restored`'s own line already names `galos db verify` and says what
     // the count means, so nothing is added here.
     println!("{done}");

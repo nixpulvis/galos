@@ -551,8 +551,7 @@ mod tests {
             let server = server()?;
             Scratch::new().await?.done().await;
 
-            let name =
-                format!("galos_dump_{}_{}", called, std::process::id());
+            let name = format!("galos_dump_{}_{}", called, std::process::id());
             let to = std::env::temp_dir().join(&name);
             // Whatever a run that was killed left behind.
             fs::remove_file(&to).or_else(|_| fs::remove_dir_all(&to)).ok();
@@ -592,13 +591,10 @@ mod tests {
         /// Drop the database and the dump.
         async fn done(self) {
             let mut conn = connect(&self.server).await;
-            sqlx::query(&format!(
-                "DROP DATABASE {} WITH (FORCE)",
-                self.name
-            ))
-            .execute(&mut conn)
-            .await
-            .expect("this test's database to be dropped");
+            sqlx::query(&format!("DROP DATABASE {} WITH (FORCE)", self.name))
+                .execute(&mut conn)
+                .await
+                .expect("this test's database to be dropped");
             fs::remove_file(&self.to)
                 .or_else(|_| fs::remove_dir_all(&self.to))
                 .ok();
