@@ -2,7 +2,7 @@
 //!
 //! What a directory holds of its own, each part a file or a set of them that
 //! a build writes and a repair can write alone. The tables a dependent
-//! contributes are parts too, named by [`crate::records::Table::NAME`]; these
+//! contributes are parts too, named by [`crate::store::tables::Table::NAME`]; these
 //! are the ones every directory has whatever it was built for.
 
 /// One of the index's own parts.

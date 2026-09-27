@@ -50,7 +50,9 @@ use galos_index::accumulate::bodies::OnDisk;
 use galos_index::accumulate::galaxy::UNKNOWN;
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::layout::pending_path;
-use galos_index::{BuildParams, Galaxy, Index as ServedIndex, System, Tree};
+use galos_index::{
+    BuildParams, Galaxy, Index as ServedIndex, StarKind, System, Tree,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -708,6 +710,31 @@ impl Index {
     /// `touched` is what [`Self::nameable`] took, `cursor` what a resume
     /// point written now would resume from, and `extent` what the line at
     /// the end calls this publish.
+    /// The record this run publishes for a system the galaxy has placed; see
+    /// [`Self::over_held`].
+    fn record_of(&self, address: i64) -> Option<System> {
+        self.galaxy.system_of(address).map(|system| self.over_held(system))
+    }
+
+    /// What the galaxy says of a system, over the record the directory holds.
+    ///
+    /// The event wins where it says something and what stands is kept where
+    /// it does not, which is the rule the database's own write path keeps: a
+    /// jump into a system writes no class, and `systems.primary_star_class`
+    /// keeps the one a route named. The galaxy knows only the classes this
+    /// run has read, so a system it has no kind for keeps the kind the tree
+    /// holds. The payload and every contributed table are derived from this
+    /// one record, so the directory says what a rebuild from the database
+    /// would.
+    fn over_held(&self, mut system: System) -> System {
+        if system.kind == StarKind::Unknown {
+            if let Some(held) = self.tree.held(system.id64 as i64) {
+                system.kind = held.kind;
+            }
+        }
+        system
+    }
+
     fn publish_delta(
         &mut self,
         touched: HashSet<i64>,
@@ -723,7 +750,7 @@ impl Index {
         // carried no `StarPos` joins the tree when something places it.
         let mut moving = Vec::with_capacity(touched.len());
         for &address in &touched {
-            if let Some(system) = self.galaxy.system_of(address) {
+            if let Some(system) = self.record_of(address) {
                 self.tree.upsert(system);
                 moving.push(system);
             }
@@ -739,7 +766,7 @@ impl Index {
             .galaxy
             .settle_bodies()
             .map_err(failed("the body files could not be written"))?;
-        self.tables.patch(&self.galaxy, &touched);
+        self.tables.patch(&self.galaxy, &touched, &moving);
         let wrote = self
             .tables
             .write(&self.dir)
@@ -800,10 +827,11 @@ impl Index {
             .systems()
             .into_iter()
             .filter(|system| self.galaxy.name_of(system.id64 as i64).is_some())
+            .map(|system| self.over_held(system))
             .collect();
         let all: HashSet<i64> =
             placed.iter().map(|system| system.id64 as i64).collect();
-        for system in placed {
+        for &system in &placed {
             self.tree.upsert(system);
         }
         self.touched.clear();
@@ -816,7 +844,7 @@ impl Index {
         self.tree
             .write(&self.dir)
             .map_err(failed("the cell tree could not be written"))?;
-        self.tables.patch(&self.galaxy, &all);
+        self.tables.patch(&self.galaxy, &all, &placed);
         let wrote = self
             .tables
             .write_everything(&self.dir)
@@ -978,6 +1006,64 @@ mod tests {
             politics(&dir, 10477373803),
             Some(stood),
             "a passing route took the politics off a populated system",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
+    /// A jump into a system keeps the star a route named for it
+    ///
+    /// A jump writes no class, and the database keeps the one a route wrote
+    /// into `systems.primary_star_class`. A run that did not read the route
+    /// itself has no kind for the system, so it takes the one the directory
+    /// holds: otherwise the payload would forget the neutron star and the
+    /// supercharge table would drop its row, where a rebuild from the
+    /// database keeps both.
+    #[test]
+    fn a_jump_keeps_the_star_a_route_named() {
+        let (dir, checkpoint) = scratch("kept_kind");
+        let address = 10477373803;
+        let mut sink = opened(&dir, &checkpoint).expect("it opens");
+        let route = format!(
+            r#"{{"timestamp":"2026-08-08T12:05:00Z","event":"NavRoute",
+                "Route":[{{"StarSystem":"Sol","SystemAddress":{address},
+                "StarPos":[0,0,0],"StarClass":"N"}}]}}"#,
+        );
+        pollster::block_on(sink.entry(
+            Arc::new(serde_json::from_str(&route).expect("the route parses")),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.entry(
+            jump("Sol", address, [0.0; 3]),
+            Reporter::Commander("cmdr"),
+        ));
+        sink.publish_whole(None).expect("the first run writes");
+        drop(sink);
+
+        // A second run, which reads only the jump.
+        let mut sink = opened(&dir, &checkpoint).expect("resumed");
+        pollster::block_on(sink.entry(
+            jump("Sol", address, [0.0; 3]),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.flush()).expect("the publish lands");
+        drop(sink);
+
+        let sky = galos_index::Sky::open(&dir).expect("the published galaxy");
+        let node = sky.node_at(address).expect("Sol is drawn");
+        assert_eq!(
+            sky.payload(node.cell).expect("its cell").kind_at(node.at as usize),
+            galos_index::StarKind::Neutron,
+            "the jump took the kind off the payload",
+        );
+        let boosts = pollster::block_on(galos_index::read::source::table::<
+            galos_route::BoostTable,
+        >(&FsSource::new(&dir)))
+        .expect("the table reads")
+        .expect("the table is published");
+        assert!(
+            boosts.iter().any(|row| row.address == address),
+            "the jump took the supercharge row out",
         );
 
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));

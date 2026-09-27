@@ -57,7 +57,7 @@ pub struct Rewrote {
     pub kept: u64,
     /// Rows the contributed tables' own upgrades rewrote
     ///
-    /// [`crate::records::Table::upgrade`] is a step of an open rather than
+    /// [`crate::store::tables::Table::upgrade`] is a step of an open rather than
     /// of a build, and an open over a stale directory does nothing at all —
     /// [`crate::ops::migrate::migrate`] sets `upgrade` and returns, having
     /// touched nothing. So a directory brought forward by this command alone
@@ -436,14 +436,14 @@ mod tests {
     fn a_rewrite_upgrades_the_contributed_tables() {
         /// A table whose every upgrade rewrites three rows.
         struct Stale;
-        impl crate::records::Table for Stale {
+        impl crate::store::tables::Table for Stale {
             const NAME: &'static str = "stale";
             const ABOUT: &'static str = "A table always behind.";
             type Row = i64;
             fn address(row: &i64) -> i64 {
                 *row
             }
-            fn derive(_: &crate::records::Arrival) -> Option<i64> {
+            fn derive(_: &crate::system::System) -> Option<i64> {
                 None
             }
             fn upgrade(_: &Path) -> io::Result<Option<usize>> {

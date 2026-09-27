@@ -16,7 +16,7 @@
 //! sides agree on.
 
 use crate::core::star::StarKind;
-use crate::records::{Arrival, SystemBodies};
+use crate::records::SystemBodies;
 use chrono::NaiveDateTime;
 use galos_photometry::{ClassLight, Flux, Magnitude};
 
@@ -182,23 +182,6 @@ impl NearestStar {
 /// file's class on the journal side.
 pub fn arrival_kind(scanned: Option<&str>, routed: Option<&str>) -> StarKind {
     scanned.or(routed).map_or(StarKind::Unknown, StarKind::of)
-}
-
-/// What a contributed table is handed about a system: its arrival star by
-/// [`arrival_kind`], and where it sits.
-///
-/// [`None`] where nothing has said what the arrival star is — a system only
-/// ever jumped through. That is not the same as a star with nothing to say
-/// for itself: a table asked about it would take out a row a richer source
-/// had published, and an absence is not a statement.
-pub fn arrival(
-    address: i64,
-    inside: Option<&SystemBodies>,
-    routed: Option<&str>,
-    position: [f32; 3],
-) -> Option<Arrival> {
-    let kind = arrival_kind(inside.and_then(arrival_class), routed);
-    (kind != StarKind::Unknown).then_some(Arrival { address, kind, position })
 }
 
 #[cfg(test)]

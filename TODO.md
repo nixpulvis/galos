@@ -57,7 +57,7 @@ and `--only` names them and each contributed table one to one. What is left:
 - A map test that loads a directory built with no contributed tables.
 - Factions are not core. `factions.bin` and the faction ids on each
   `PopulatedSystem` row want to be a contributed part, but `Table` only
-  derives a row per system from its `Arrival`: an id-to-name table fed from
+  derives a row per system from its `System` record: an id-to-name table fed from
   the database's `factions`, and a column on another table, need a second
   kind of contribution. Until then `CorePart::Factions` stands in the list.
 

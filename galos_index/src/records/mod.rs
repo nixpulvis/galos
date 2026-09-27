@@ -6,15 +6,12 @@
 //! a system, read when a click opens it. [`derive`](mod@derive) is the rules
 //! both derivations of the index answer alike from those records.
 //!
-//! A dependent's own table is neither: its row is its own type, and what
-//! the index hands it to derive one from is an [`Arrival`]
-//! ([`contributed`]).
+//! A dependent's own table is neither: its row is its own type, derived from
+//! a system's [`crate::System`] ([`crate::store::tables::Table`]).
 
 mod bodies;
-pub mod contributed;
 pub mod derive;
 mod tables;
 
 pub use bodies::{Barycenter, Body, Parent, Star, Surface, SystemBodies};
-pub use contributed::{Arrival, Table};
 pub use tables::{Economies, Faction, NameEntry, PopulatedSystem, SystemReach};

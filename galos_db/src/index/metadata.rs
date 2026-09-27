@@ -27,9 +27,9 @@ use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
 use galos_index::records;
-use galos_index::records::derive;
 use galos_index::store::sidecars::{self, Sidecars};
-use galos_index::{Arrival, TableSet};
+use galos_index::store::tables::Held;
+use galos_index::TableSet;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -165,6 +165,7 @@ impl Metadata {
         db: &Database,
         dir: &Path,
         touched: &[i64],
+        records: &[galos_index::System],
     ) -> Result<usize> {
         let entries = names_for(db, touched).await?;
         let mut placed = HashSet::with_capacity(entries.len());
@@ -196,15 +197,13 @@ impl Metadata {
             self.held.reach(address, reach);
         }
 
-        // The star each system reported arrives at, and where it is, for
-        // the contributed tables. Read off the same rows the reach was
-        // measured over, so the two cannot disagree about which star a ship
-        // drops at.
-        let arriving = arrivals_of(db, touched, &grouped).await?;
-        let mut arrived = HashSet::with_capacity(arriving.len());
-        for arrival in arriving {
-            arrived.insert(arrival.address);
-            self.held.arrive(&arrival);
+        // What the contributed tables derive their rows from: the records
+        // this pass writes into the tree, so a row and the payload beside it
+        // say the same thing, and what a rebuild from the same rows would.
+        let mut recorded = HashSet::with_capacity(records.len());
+        for system in records {
+            recorded.insert(system.id64 as i64);
+            self.held.contribute(system);
         }
 
         for address in touched {
@@ -217,8 +216,8 @@ impl Metadata {
             if !scanned.contains(address) {
                 self.held.unreach(*address);
             }
-            if !arrived.contains(address) {
-                self.held.unarrive(*address);
+            if !recorded.contains(address) {
+                self.held.uncontribute(*address);
             }
         }
 
@@ -282,8 +281,10 @@ impl Metadata {
 ///
 /// What a build asking for one part goes through, where a watch goes through
 /// [`Metadata::publish`]. This holds no tables, so each part asked for is
-/// read fresh. The reaches, the body files and the contributed tables share
-/// one read of every scanned thing.
+/// read fresh. The reaches and the body files share one read of every
+/// scanned thing. The contributed tables come in filled: their rows are
+/// derived from the systems' records, which the caller reads (see
+/// `crate::index::each_system`).
 ///
 /// The names table is not among them: it comes out of the same read of
 /// `systems` the cell tree does, streamed row by row into
@@ -293,7 +294,7 @@ pub(super) async fn write_parts(
     db: &Database,
     dir: &Path,
     parts: Parts,
-    tables: &TableSet,
+    mut contributed: Vec<Box<dyn Held>>,
     told: &Told<'_>,
 ) -> Result<MetaReport> {
     let mut report = MetaReport::default();
@@ -315,16 +316,11 @@ pub(super) async fn write_parts(
         report.populated = Some(populated.write(dir)?);
     }
 
-    if parts.wants_bodies() {
+    if parts.reaches || parts.bodies {
         // One pass over everything scanned, in address order, holding one
-        // system's rows at a time. The two tables written whole are gathered
-        // as it goes; the body files go out as each system's rows arrive.
+        // system's rows at a time. The reaches are gathered as it goes; the
+        // body files go out as each system's rows arrive.
         let mut reaches = sidecars::reaches();
-        let mut contributed: Vec<_> = tables
-            .iter()
-            .filter(|it| parts.tables.contains(&it.name()))
-            .map(|it| it.held())
-            .collect();
         let mut body_files = 0;
         each_scanned(db, told, |scanned| {
             if parts.reaches {
@@ -335,12 +331,7 @@ pub(super) async fn write_parts(
                     });
                 }
             }
-            if let Some(arrival) = scanned.arrival() {
-                for table in &mut contributed {
-                    table.arrive(&arrival);
-                }
-            }
-            if parts.bodies && scanned.anything() {
+            if parts.bodies {
                 galos_index::store::bodies::write_each(
                     dir,
                     [(scanned.address, &scanned.inside)],
@@ -356,13 +347,13 @@ pub(super) async fn write_parts(
         if parts.bodies {
             report.body_files = Some(body_files);
         }
-        if !parts.tables.is_empty() {
-            let mut wrote = Vec::with_capacity(contributed.len());
-            for table in &mut contributed {
-                wrote.push((table.name(), table.write(dir)?));
-            }
-            report.tables = Some(wrote);
+    }
+    if !parts.tables.is_empty() {
+        let mut wrote = Vec::with_capacity(contributed.len());
+        for table in &mut contributed {
+            wrote.push((table.name(), table.write(dir)?));
         }
+        report.tables = Some(wrote);
     }
 
     if parts.factions {
@@ -508,54 +499,6 @@ async fn factions_above(
         .collect()
 }
 
-/// What each of the positioned systems arrives at, over the rows already
-/// grouped for the body files, for the contributed tables.
-///
-/// The arrival star's class, which is the one a ship drops in at. Two
-/// places say what that is and the scanned one wins:
-/// `systems.primary_star_class` is only ever written by a plotted route,
-/// naming the class of a system nobody has necessarily been to.
-///
-/// Which star that is, is [`derive::arrival`] and not a query, over the
-/// rows the caller has already read for the body files and the reaches. SQL
-/// says only which systems are eligible: positioned. A system nothing says
-/// the star of has no arrival, and the caller takes it out of the tables it
-/// stands in.
-///
-/// The place comes off the same row: what a contributed table carries of a
-/// system is where it is, and reading that out of the names table instead
-/// meant joining against it.
-async fn arrivals_of(
-    db: &Database,
-    addresses: &[i64],
-    grouped: &HashMap<i64, records::SystemBodies>,
-) -> Result<Vec<Arrival>> {
-    // The systems with nothing to say are dropped below rather than by the
-    // query.
-    let rows = sqlx::query(
-        "SELECT address, primary_star_class, \
-         ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z \
-         FROM systems \
-         WHERE address = ANY($1) AND position IS NOT NULL",
-    )
-    .bind(addresses)
-    .fetch_all(&db.pool)
-    .await?;
-    let mut arrivals = Vec::new();
-    for row in rows {
-        let address: i64 = row.try_get("address")?;
-        let routed: Option<String> = row.try_get("primary_star_class")?;
-        let position = place_from_row(&row)?;
-        arrivals.extend(derive::arrival(
-            address,
-            grouped.get(&address),
-            routed.as_deref(),
-            position,
-        ));
-    }
-    Ok(arrivals)
-}
-
 /// Group `bodies/<address>.bin`'s worth of rows for `addresses`: one
 /// [`records::SystemBodies`] per system of them with anything on record.
 ///
@@ -620,43 +563,14 @@ fn write_bodies(
     Ok(grouped.len())
 }
 
-/// Everything one system has on record, as the three things read off it
-/// want it: the file to write, the reach to measure, the arrival star to
-/// classify.
+/// Everything one system has on record, as the two things read off it want
+/// it: the file to write and the reach to measure.
 struct Scanned {
     address: i64,
     inside: records::SystemBodies,
-    /// Where anything has placed this system, if anything has. A contributed
-    /// table is asked only about a system with a place; see
-    /// [`arrivals_of`].
-    position: Option<[f32; 3]>,
-    /// What a plotted route said the system's primary is: the fallback where
-    /// nothing has been scanned.
-    routed: Option<String>,
 }
 
-impl Scanned {
-    /// Whether there is anything to write a body file out of. A system that
-    /// is only here because a route named its class has no file.
-    fn anything(&self) -> bool {
-        !self.inside.stars.is_empty()
-            || !self.inside.bodies.is_empty()
-            || !self.inside.barycenters.is_empty()
-    }
-
-    /// What the contributed tables are handed about this system, by
-    /// [`derive::arrival`], and nothing for a system nothing has placed.
-    fn arrival(&self) -> Option<Arrival> {
-        derive::arrival(
-            self.address,
-            Some(&self.inside),
-            self.routed.as_deref(),
-            self.position?,
-        )
-    }
-}
-
-/// The columns each of the four ordered reads is made of, shared with the
+/// The columns each of the three ordered reads is made of, shared with the
 /// paged reads above so a build and a pass read a row the same way.
 const STARS_SELECT: &str = "SELECT * FROM stars";
 const BARYCENTERS_SELECT: &str = "SELECT * FROM barycenters";
@@ -668,18 +582,6 @@ const BODIES_SELECT: &str = "SELECT b.*, \
      FROM bodies b \
      LEFT JOIN body_materials m \
          ON m.system_address = b.system_address AND m.body_id = b.id";
-/// Every positioned system with either source of an arrival class, with the
-/// place a contributed table is handed. The semi-join keeps a full build
-/// from carrying back the systems with neither.
-const ARRIVING_SELECT: &str = "SELECT address AS system_address, \
-     primary_star_class, ST_X(s.position) AS x, ST_Y(s.position) AS y, \
-     ST_Z(s.position) AS z \
-     FROM systems s \
-     WHERE s.position IS NOT NULL \
-       AND (s.primary_star_class IS NOT NULL \
-            OR EXISTS (SELECT 1 FROM stars st \
-                       WHERE st.system_address = s.address))";
-
 /// One ordered cursor over a table keyed by system, with the row read past
 /// the system it belongs to held back.
 ///
@@ -738,8 +640,8 @@ impl<'a, T> ByAddress<'a, T> {
 /// Every system with anything scanned in it, or any class to read off it,
 /// handed over one at a time in address order.
 ///
-/// Four ordered cursors merged: the stars, the bodies with their materials,
-/// the barycenters, and the systems a supercharge could be published for.
+/// Three ordered cursors merged: the stars, the bodies with their materials,
+/// and the barycenters.
 /// Each is a `fetch` ordered by the system column, so what is held at any
 /// moment is one system's rows and one row of each cursor beyond it.
 ///
@@ -767,9 +669,6 @@ where
         "{BODIES_SELECT} GROUP BY b.system_address, b.id \
          ORDER BY b.system_address, b.id"
     );
-    // One row per system, `systems.address` being its key, so the system is
-    // the whole of the order there is.
-    let placed_sql = format!("{ARRIVING_SELECT} ORDER BY system_address");
 
     let mut stars = ByAddress::open(db, &stars_sql, |row| {
         star_from_row(row).map(Into::into)
@@ -783,18 +682,7 @@ where
         barycenter_from_row(row).map(Into::into)
     })
     .await?;
-    // The class a route named and the place the system sits at: what an
-    // arrival is made of beside the scanned stars, both off the one row.
-    let mut placed = ByAddress::open(db, &placed_sql, |row| {
-        Ok((
-            row.try_get::<Option<String>, _>("primary_star_class")?,
-            place_from_row(row)?,
-        ))
-    })
-    .await?;
-
-    let mut arriving = Vec::new();
-    // No total: what this merge yields is the union of four cursors, and
+    // No total: what this merge yields is the union of three cursors, and
     // the only query that counts it is this read. So it says how many
     // systems it has been through and how fast, and the bar it draws is a
     // spinner rather than a percentage.
@@ -806,7 +694,6 @@ where
             stars.at(),
             bodies.at(),
             barycenters.at(),
-            placed.at(),
         ])
         .flatten()
         .min();
@@ -819,18 +706,7 @@ where
         stars.take(address, &mut inside.stars).await?;
         bodies.take(address, &mut inside.bodies).await?;
         barycenters.take(address, &mut inside.barycenters).await?;
-        arriving.clear();
-        placed.take(address, &mut arriving).await?;
-
-        // One row per system at most, so the first of them is the whole of
-        // what `systems` has to say about this one.
-        let eligible = arriving.first();
-        each(Scanned {
-            address,
-            inside,
-            position: eligible.map(|&(_, position)| position),
-            routed: eligible.and_then(|(routed, _)| routed.clone()),
-        })?;
+        each(Scanned { address, inside })?;
         seen += 1;
         if seen % TOLD_EVERY == 0 {
             told(Progress { step: step::SCANNED, done: seen, of: None });
@@ -1352,128 +1228,6 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A scanned arrival star is what a system arrives at, whatever a route
-    /// said
-    ///
-    /// The only thing that writes `systems.primary_star_class` is a plotted
-    /// route, so a scanned neutron star has `N` in `stars` and a null column.
-    /// Reading the column alone published no supercharge for it.
-    ///
-    /// The place is asserted beside the kind: a contributed table carries
-    /// where the system is so a router needs nothing else, and a position
-    /// read off the wrong column is a route to somewhere the star is not.
-    ///
-    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
-    /// down without one.
-    #[async_std::test]
-    async fn a_scanned_arrival_star_is_what_supercharges() {
-        let Some(db) = Scratch::new().await else { return };
-
-        let scanned = 0x0B00_5700_0000_0001_u64 as i64;
-        let routed = 0x0B00_5700_0000_0002_u64 as i64;
-
-        // One system nobody plotted a route to, holding a scanned neutron
-        // star at the drop point and a white dwarf further out.
-        sqlx::query(
-            "INSERT INTO systems (address, name, position, updated_at, \
-                                  updated_by, primary_star_class) \
-             VALUES ($1, 'BOOST SCANNED', \
-                     ST_MakePoint(1, 2, 3)::geometry, now(), 'test', NULL)",
-        )
-        .bind(scanned)
-        .execute(&db.pool)
-        .await
-        .expect("the scanned system should write");
-        for (id, class, distance) in
-            [(1i16, "D", 900.0f32), (0i16, "N", 0.0f32)]
-        {
-            sqlx::query(
-                "INSERT INTO stars (system_address, id, name, updated_at, \
-                     updated_by, absolute_magnitude, age_my, \
-                     distance_from_arrival_ls, luminosity, star_class, \
-                     stellar_mass, subclass, axial_tilt, radius, \
-                     rotation_period, temperature, was_mapped) \
-                 VALUES ($1, $2, $3, now(), 'test', 4.8, 100, $4, 'V', $5, \
-                         1.0, 2, 0, 1.0, 0, 5000, false)",
-            )
-            .bind(scanned)
-            .bind(id)
-            .bind(format!("BOOST SCANNED {id}"))
-            .bind(distance)
-            .bind(class)
-            .execute(&db.pool)
-            .await
-            .expect("the star should write");
-        }
-
-        // And one nobody has scanned, known only from a plotted route.
-        sqlx::query(
-            "INSERT INTO systems (address, name, position, updated_at, \
-                                  updated_by, primary_star_class) \
-             VALUES ($1, 'BOOST ROUTED', \
-                     ST_MakePoint(4, 5, 6)::geometry, now(), 'test', 'D')",
-        )
-        .bind(routed)
-        .execute(&db.pool)
-        .await
-        .expect("the routed system should write");
-
-        // Over the rows a full build has in hand, which is every scanned
-        // thing there is, handed over a system at a time. The place comes
-        // back beside the class, both being published.
-        let mut whole: HashMap<i64, Arrival> = HashMap::new();
-        each_scanned(&db, crate::index::untold(), |system| {
-            if let Some(arrival) = system.arrival() {
-                whole.insert(arrival.address, arrival);
-            }
-            Ok(())
-        })
-        .await
-        .expect("a full read");
-        assert_eq!(
-            whole.get(&scanned),
-            Some(&Arrival {
-                address: scanned,
-                kind: galos_index::StarKind::Neutron,
-                position: [1.0, 2.0, 3.0],
-            }),
-            "a scanned neutron star was not what the system arrives at, or \
-             not at the place it sits at",
-        );
-        assert_eq!(
-            whole.get(&routed),
-            Some(&Arrival {
-                address: routed,
-                kind: galos_index::StarKind::WhiteDwarf,
-                position: [4.0, 5.0, 6.0],
-            }),
-            "a routed class is still what an unscanned system has",
-        );
-
-        // A watch pass reads the same systems through the other query and
-        // must answer the same, or a directory says different things about
-        // one galaxy depending on how it was built.
-        let some = bodies_of(&db, &[scanned, routed])
-            .await
-            .expect("the scanned things of two systems");
-        let touched: HashMap<i64, Arrival> =
-            arrivals_of(&db, &[scanned, routed], &some)
-                .await
-                .expect("a read of what changed")
-                .into_iter()
-                .map(|arrival| (arrival.address, arrival))
-                .collect();
-        for address in [scanned, routed] {
-            assert_eq!(
-                touched.get(&address),
-                whole.get(&address),
-                "the two reads disagree about {address}",
-            );
-        }
-
-        db.done().await;
     }
 
     /// A system's members come back in the order the game numbers them

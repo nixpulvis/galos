@@ -17,6 +17,7 @@ use galos_index::build::cold::{
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::parts::CorePart;
 use galos_index::records::derive::{self, NearestStar};
+use galos_index::store::tables::Held;
 use galos_index::{BuildParams, Index, System, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
@@ -91,14 +92,6 @@ impl Parts {
     /// Whether anything at all was asked for
     pub fn any(&self) -> bool {
         *self != Parts::NONE
-    }
-
-    /// Whether a read of every scanned thing is wanted
-    ///
-    /// One read serves all three: the body files are written from those rows,
-    /// the reaches measured over them, the arrival star picked out of them.
-    fn wants_bodies(&self) -> bool {
-        self.reaches || self.bodies || !self.tables.is_empty()
     }
 }
 
@@ -283,6 +276,11 @@ async fn changed_addresses(
 /// not replace it with the prefix it reached — and a read taken up again
 /// is a re-read of the cursors, which is minutes over a database where it
 /// is hours over a 610 GB dump.
+///
+/// `contributed` is handed each record as the build takes it, so a cold
+/// build derives its contributed tables from the very records it publishes,
+/// in the one read.
+#[allow(clippy::too_many_arguments)]
 async fn build_cells(
     db: &Database,
     dir: &Path,
@@ -290,16 +288,43 @@ async fn build_cells(
     params: BuildParams,
     budget: u64,
     now: chrono::NaiveDateTime,
+    contributed: &mut [Box<dyn Held>],
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Built> {
+    let asked = || stop();
+    let mut build =
+        Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
+    each_system(db, now, told, |row, system| {
+        for table in contributed.iter_mut() {
+            table.contribute(&system);
+        }
+        Ok(build.push(system, metadata::name_from_row(row)?)?)
+    })
+    .await?;
+    Ok(build.finish(Provenance::Database, Some(now), OnStop::Abandon)?)
+}
+
+/// Every positioned system's record, in address order, as a cold build
+/// takes it: each `systems` row with its scanned stars merged in, through
+/// [`input_from_row`].
+///
+/// Two ordered cursors merged, so what is held at any moment is one row of
+/// each. `each` is handed the row beside the record, for what else is read
+/// off it, and stops the read by answering [`ControlFlow::Break`].
+async fn each_system<F>(
+    db: &Database,
+    now: chrono::NaiveDateTime,
+    told: &Told<'_>,
+    mut each: F,
+) -> Result<()>
+where
+    F: FnMut(&sqlx::postgres::PgRow, System) -> Result<ControlFlow<()>>,
+{
     // Before the read rather than during it: what a bar is drawn against
     // has to be there when the first row arrives, and this is one index
     // scan of `pg_class`.
     let of = estimated(db, "systems").await;
-    let asked = || stop();
-    let mut build =
-        Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
 
     let read_stars =
         format!("SELECT {STAR_COLUMNS} FROM stars ORDER BY system_address");
@@ -339,16 +364,13 @@ async fn build_cells(
             }
             ahead = stars.next().await.transpose()?;
         }
-        if build.push(
-            input_from_row(&row, &scanned, now)?,
-            metadata::name_from_row(&row)?,
-        )? == ControlFlow::Break(())
-        {
+        let system = input_from_row(&row, &scanned, now)?;
+        if each(&row, system)? == ControlFlow::Break(()) {
             break;
         }
     }
     told(Progress { step: step::SYSTEMS, done: read, of: Some(read) });
-    Ok(build.finish(Provenance::Database, Some(now), OnStop::Abandon)?)
+    Ok(())
 }
 
 /// Say what [`galos_index::ops::migrate::migrate`] moved in `dir`, on this
@@ -470,12 +492,39 @@ pub async fn build_to_dir(
 
     // The cells and the names come out of one read of every positioned
     // system, so asking for either reads it; asking for neither skips it.
+    // The contributed tables asked for, derived from each system's record:
+    // out of the cold build's own read where there is one, and out of the
+    // same read on its own where only the tables are asked for.
+    let mut contributed: Vec<Box<dyn Held>> = tables
+        .iter()
+        .filter(|it| parts.tables.contains(&it.name()))
+        .map(|it| it.held())
+        .collect();
     let cells = match parts.cells {
-        false => None,
+        false => {
+            if !contributed.is_empty() {
+                each_system(db, since, told, |_, system| {
+                    for table in &mut contributed {
+                        table.contribute(&system);
+                    }
+                    Ok(ControlFlow::Continue(()))
+                })
+                .await?;
+            }
+            None
+        }
         true => {
             let budget = galos_index::build::cold::region_budget();
             let built = build_cells(
-                db, dir, checkpoint, params, budget, since, stop, told,
+                db,
+                dir,
+                checkpoint,
+                params,
+                budget,
+                since,
+                &mut contributed,
+                stop,
+                told,
             )
             .await?;
             let report = match built {
@@ -500,7 +549,7 @@ pub async fn build_to_dir(
         write_names(db, dir, told).await?;
     }
 
-    let meta = metadata::write_parts(db, dir, parts, tables, told).await?;
+    let meta = metadata::write_parts(db, dir, parts, contributed, told).await?;
     Ok(Reached::End(BuildReport { cells, meta }))
 }
 
@@ -1027,7 +1076,7 @@ async fn pass(
     for chunk in touched.chunks(CHANGED_CHUNK) {
         let inputs = inputs_for(db, chunk).await?;
         level.tree.apply(&inputs);
-        body_files += level.meta.patch(db, dir, chunk).await?;
+        body_files += level.meta.patch(db, dir, chunk, &inputs).await?;
         applied.extend(inputs);
         asked += chunk.len() as u64;
         told(Progress { step: step::CHANGED, done: asked, of });
@@ -2031,6 +2080,7 @@ mod tests {
             BuildParams::default(),
             galos_index::build::cold::region_budget(),
             now,
+            &mut [],
             never(),
             untold(),
         )

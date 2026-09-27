@@ -4,7 +4,7 @@
 //! their shards ([`crate::store::bodies::pack`]), moving loose payloads into
 //! theirs ([`reshard_cells`]), folding the names table's legacy MessagePack
 //! chunks into a mapped base, and bringing forward whatever a contributed
-//! table's own shape has moved on from ([`crate::records::Table::upgrade`]).
+//! table's own shape has moved on from ([`crate::store::tables::Table::upgrade`]).
 //! All of them are idempotent, and all of them are what [`migrate`] runs in
 //! order.
 //!

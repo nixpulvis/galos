@@ -18,7 +18,7 @@
 
 use crate::format::msgpack::{read_meta, write_meta};
 use crate::format::rows::{self, Sheet, Sorted};
-use crate::records::{Arrival, Table};
+use crate::system::System;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -28,6 +28,66 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// A table a dependent publishes beside the index: one row a system at most,
+/// a function of the system's [`System`] record.
+///
+/// The index keeps what a system *is*; what a dependent makes of that is its
+/// own business. The router's supercharge table is a jet cone per system that
+/// has one, which is a fact about ships rather than the sky, and so it is
+/// `galos_route`'s type and not this crate's. A dependent says what its table
+/// is — a name, a row, and how a system comes to one — and the index holds it
+/// open across a run, writes it beside its own, carries it through a merge of
+/// two directories and hands it back to a reader, without knowing what a row
+/// says.
+///
+/// Written as one MessagePack array of rows in address order, at
+/// `<NAME>.bin`, like the index's own tables. A directory without the file
+/// is one that cannot say, told apart from one holding an empty table.
+pub trait Table: Send + Sync + 'static {
+    /// What the table is called: its file is `<NAME>.bin`, and a log line, a
+    /// verify and `--only` name it this. Unique among a directory's tables.
+    const NAME: &'static str;
+
+    /// What the table is for, in a line: said where it is named, as the
+    /// help for `--only` beside the index's own parts.
+    const ABOUT: &'static str;
+
+    /// One system's row.
+    type Row: Serialize
+        + DeserializeOwned
+        + Clone
+        + PartialEq
+        + fmt::Debug
+        + Send
+        + Sync
+        + 'static;
+
+    /// The system a row is about.
+    fn address(row: &Self::Row) -> i64;
+
+    /// The row for `system` as its record now stands, or [`None`] where the
+    /// table has nothing to say about it — which takes out a row that stood
+    /// for it.
+    ///
+    /// **A function of the record and of nothing else.** Every writer asks
+    /// it of every placed system it touches, whatever the record says —
+    /// [`StarKind::Unknown`](crate::StarKind::Unknown) included — so a
+    /// directory kept current by a feed or a database pass holds exactly
+    /// what one rebuilt from the same records would.
+    fn derive(system: &System) -> Option<Self::Row>;
+
+    /// Bring forward a table an older build of the dependent wrote in
+    /// another shape, answering how many rows it rewrote, or [`None`] where
+    /// the table is current or absent.
+    ///
+    /// Run on every open of a directory ([`crate::ops::migrate`]) and by
+    /// `galos index upgrade`, so it has to be cheap on a current table.
+    fn upgrade(dir: &Path) -> io::Result<Option<usize>> {
+        let _ = dir;
+        Ok(None)
+    }
+}
 
 /// Where the table called `name` is written within a directory.
 pub fn path(dir: &Path, name: &str) -> PathBuf {
@@ -310,16 +370,18 @@ pub trait Contribution: Send + Sync {
 }
 
 /// One contributed table held open: a [`Keyed`] table whose rows are
-/// derived from an [`Arrival`].
+/// derived from a [`System`].
 #[allow(clippy::len_without_is_empty)]
 pub trait Held: Send + Sync + fmt::Debug {
     /// What the table is called.
     fn name(&self) -> &'static str;
 
-    /// Take what the table derives from `arrival`, answering whether that
+    /// Take what the table derives from `system`, answering whether that
     /// changed it: a row put, or a row that stood taken out where the table
-    /// has nothing to say about the system any more.
-    fn arrive(&mut self, arrival: &Arrival) -> bool;
+    /// has nothing to say about the system as it now is. The row is a
+    /// function of the record and nothing else, so a directory kept current
+    /// holds what one rebuilt from the same records would.
+    fn contribute(&mut self, system: &System) -> bool;
 
     /// Take a system's row out, answering whether there was one.
     fn remove(&mut self, address: i64) -> bool;
@@ -359,8 +421,8 @@ pub trait Spill: Send {
     /// What the table is called.
     fn name(&self) -> &'static str;
 
-    /// Push what the table derives from `arrival`, if anything.
-    fn arrive(&mut self, arrival: &Arrival) -> io::Result<()>;
+    /// Push what the table derives from `system`, if anything.
+    fn contribute(&mut self, system: &System) -> io::Result<()>;
 
     /// Push the rows `served` already publishes, ahead of any derived.
     fn seed(&mut self, served: &Path) -> io::Result<()>;
@@ -425,10 +487,10 @@ impl<T: Table> Held for Derived<T> {
         T::NAME
     }
 
-    fn arrive(&mut self, arrival: &Arrival) -> bool {
-        match T::derive(arrival) {
+    fn contribute(&mut self, system: &System) -> bool {
+        match T::derive(system) {
             Some(row) => self.0.put(row),
-            None => self.0.remove(arrival.address),
+            None => self.0.remove(system.id64 as i64),
         }
     }
 
@@ -484,8 +546,8 @@ impl<T: Table> Spill for Spilled<T> {
         T::NAME
     }
 
-    fn arrive(&mut self, arrival: &Arrival) -> io::Result<()> {
-        match T::derive(arrival) {
+    fn contribute(&mut self, system: &System) -> io::Result<()> {
+        match T::derive(system) {
             Some(row) => self.sheet.push(&row),
             None => Ok(()),
         }
@@ -759,8 +821,9 @@ where
 /// that arrives at a neutron star, and nothing for any other.
 #[cfg(test)]
 pub(crate) mod testing {
+    use super::Table;
     use crate::core::star::StarKind;
-    use crate::records::{Arrival, Table};
+    use crate::system::System;
     use serde::{Deserialize, Serialize};
 
     pub(crate) struct Cones;
@@ -780,10 +843,10 @@ pub(crate) mod testing {
             row.address
         }
 
-        fn derive(arrival: &Arrival) -> Option<Cone> {
-            (arrival.kind == StarKind::Neutron).then_some(Cone {
-                address: arrival.address,
-                position: arrival.position,
+        fn derive(system: &System) -> Option<Cone> {
+            (system.kind == StarKind::Neutron).then_some(Cone {
+                address: system.id64 as i64,
+                position: system.position.map(|it| it as f32),
             })
         }
     }
@@ -794,7 +857,15 @@ pub(crate) mod testing {
     }
 
     /// A system arriving at a star of `kind`, at the origin.
-    pub(crate) fn arriving(address: i64, kind: StarKind) -> Arrival {
-        Arrival { address, kind, position: [0.0; 3] }
+    pub(crate) fn arriving(address: i64, kind: StarKind) -> System {
+        System {
+            id64: address as u64,
+            position: [0.0; 3],
+            absolute_magnitude: 4.83,
+            temperature: 5772.0,
+            age_bucket: 0,
+            updated_at: 0,
+            kind,
+        }
     }
 }

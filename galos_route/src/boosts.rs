@@ -5,11 +5,11 @@
 //! neutron star multiplies a jump by four is a fact about ships, so it is
 //! here: [`Boost`] and [`Fsd`] are the router's, and so is the table of
 //! boost stars — published beside the index's own as a contributed table
-//! ([`BoostTable`]), derived from each system's [`Arrival`], and read back
+//! ([`BoostTable`]), derived from each system's [`System`] record, and read back
 //! as [`Boosts`].
 
 use galos_index::read::source::{Source, table};
-use galos_index::{Arrival, StarKind, Table};
+use galos_index::{StarKind, System, Table};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -139,11 +139,11 @@ impl Table for BoostTable {
         row.address
     }
 
-    fn derive(arrival: &Arrival) -> Option<SystemBoost> {
+    fn derive(system: &System) -> Option<SystemBoost> {
         Some(SystemBoost {
-            address: arrival.address,
-            boost: Boost::of(arrival.kind)?,
-            position: arrival.position,
+            address: system.id64 as i64,
+            boost: Boost::of(system.kind)?,
+            position: system.position.map(|it| it as f32),
         })
     }
 

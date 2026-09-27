@@ -29,7 +29,7 @@
 
 use galos_index::accumulate::merge;
 use galos_index::store::sidecars::{Counts, Sidecars};
-use galos_index::Galaxy;
+use galos_index::{Galaxy, System};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -137,26 +137,29 @@ impl Tables {
     /// them.
     ///
     /// A system the galaxy has nothing to say about is left exactly as the
-    /// directory has it; see the module header.
-    pub fn patch(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
+    /// directory has it; see the module header. The contributed tables are
+    /// derived from `records`, the records this publish writes into the
+    /// tree, so a table and a payload never say two things about a system.
+    pub fn patch(
+        &mut self,
+        galaxy: &Galaxy,
+        touched: &HashSet<i64>,
+        records: &[System],
+    ) {
         for &address in touched {
             if let Some(entry) = galaxy.name_of(address) {
                 self.held.name(entry);
             }
         }
         self.patch_tables(galaxy, touched);
+        for system in records {
+            self.held.contribute(system);
+        }
     }
 
-    /// Take what `galaxy` says about `touched` into the tables written
-    /// whole, leaving the names table alone.
-    ///
-    /// What a cold build patches through. That build writes its own names
-    /// table straight to disk as it reads — sorted and swapped in at the
-    /// end, `galos_index::store::names::Writer` — so a second copy held here
-    /// would be a kilobyte a system over the galaxy, the one thing that
-    /// route exists not to hold, and would then be published over the
-    /// base the build had just put in place.
-    pub fn patch_tables(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
+    /// Take what `galaxy` says about `touched` into the populated and reach
+    /// tables.
+    fn patch_tables(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
         for &address in touched {
             if let Some(said) = galaxy.populated_of(address) {
                 // What an event says about a system, over what the directory
@@ -186,12 +189,6 @@ impl Tables {
 
             if let Some(reach) = galaxy.reach_of(address) {
                 self.held.reach(address, reach);
-            }
-
-            // A system nothing says the arrival star of is left as the
-            // directory has it, for the reason at the top of this module.
-            if let Some(arrival) = galaxy.arrival_of(address) {
-                self.held.arrive(&arrival);
             }
         }
     }

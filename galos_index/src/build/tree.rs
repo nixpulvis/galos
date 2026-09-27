@@ -83,6 +83,10 @@ impl Records {
         self.0.contains(&id)
     }
 
+    fn get(&self, id: u64) -> Option<&System> {
+        self.0.get(&id).map(|held| &held.0)
+    }
+
     fn len(&self) -> usize {
         self.0.len()
     }
@@ -299,6 +303,12 @@ impl Tree {
     /// which of them brought a system in.
     pub fn holds(&self, address: i64) -> bool {
         self.records.contains(address as u64)
+    }
+
+    /// The record the tree holds for a system, if it holds one: what the
+    /// directory publishes of it, at full precision.
+    pub fn held(&self, address: i64) -> Option<&System> {
+        self.records.get(address as u64)
     }
 
     /// How many systems the tree holds. No `is_empty`: a size is asked for a

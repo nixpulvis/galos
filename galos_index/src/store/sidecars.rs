@@ -28,13 +28,12 @@
 //! writes what that moved, however many chunks the pass ran in.
 
 use crate::format::rows::{RUN_BYTES, Sheet};
-use crate::records::{
-    Arrival, Faction, NameEntry, PopulatedSystem, SystemReach,
-};
+use crate::records::{Faction, NameEntry, PopulatedSystem, SystemReach};
 use crate::store::names::Names;
 use crate::store::tables::{
     Held, Keyed, Spill, TableSet, each_row, sort_table,
 };
+use crate::system::System;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -286,19 +285,21 @@ impl Sidecars {
         self.reaches.remove(address)
     }
 
-    /// Take what each contributed table derives from a system's arrival,
-    /// answering whether any of them changed.
-    pub fn arrive(&mut self, arrival: &Arrival) -> bool {
+    /// Take what each contributed table derives from a system's record,
+    /// answering whether any of them changed; see [`Table::derive`].
+    ///
+    /// [`Table::derive`]: crate::store::tables::Table::derive
+    pub fn contribute(&mut self, system: &System) -> bool {
         let mut changed = false;
         for table in &mut self.contributed {
-            changed |= table.arrive(arrival);
+            changed |= table.contribute(system);
         }
         changed
     }
 
     /// Take a system out of every contributed table, answering whether any
     /// held it.
-    pub fn unarrive(&mut self, address: i64) -> bool {
+    pub fn uncontribute(&mut self, address: i64) -> bool {
         let mut changed = false;
         for table in &mut self.contributed {
             changed |= table.remove(address);
@@ -429,10 +430,10 @@ impl TableWriter {
         self.reaches.push(&SystemReach { address, reach })
     }
 
-    /// What each contributed table derives from one system's arrival.
-    pub fn arrive(&mut self, arrival: &Arrival) -> io::Result<()> {
+    /// What each contributed table derives from one system's record.
+    pub fn contribute(&mut self, system: &System) -> io::Result<()> {
         for table in &mut self.contributed {
-            table.arrive(arrival)?;
+            table.contribute(system)?;
         }
         Ok(())
     }
@@ -533,7 +534,7 @@ mod tests {
     ///
     /// The common case by far: a feed reports the same systems over and
     /// over, and the bytes already published must not be rewritten. The
-    /// contributed tables are held to the same rule, and an arrival their
+    /// contributed tables are held to the same rule, and a record their
     /// table has nothing to say about takes out the row that stood.
     #[test]
     fn a_row_that_has_not_changed_moves_nothing() {
@@ -545,20 +546,41 @@ mod tests {
         assert!(!held.reach(1, 4.0), "the same reach read as a change");
 
         let cone = arriving(1, StarKind::Neutron);
-        assert!(held.arrive(&cone));
-        assert!(!held.arrive(&cone), "the same arrival moved it");
+        assert!(held.contribute(&cone));
+        assert!(!held.contribute(&cone), "the same record moved it");
         assert!(
-            held.arrive(&Arrival { position: [1., 2., 4.], ..cone }),
+            held.contribute(&System { position: [1., 2., 4.], ..cone }),
             "a corrected place was not a change"
         );
         assert!(
-            held.arrive(&arriving(1, StarKind::G)),
+            held.contribute(&arriving(1, StarKind::G)),
             "a system that stopped qualifying kept its row"
         );
-        assert!(!held.unarrive(1), "the row was still there to take");
+        assert!(!held.uncontribute(1), "the row was still there to take");
 
         assert!(held.depopulate(1), "the row was not there to withdraw");
         assert!(!held.depopulate(1), "withdrawing nothing was a change");
+    }
+
+    /// A contributed row is a function of the record and nothing else
+    ///
+    /// A record that no longer says what star a ship arrives at takes out
+    /// the row its earlier kind gave, because a directory rebuilt from that
+    /// record would have none. Kept current and rebuilt, the two directories
+    /// hold the same rows.
+    #[test]
+    fn a_record_that_forgets_its_star_takes_its_row_out() {
+        let mut kept = Sidecars::empty(&tables());
+        assert!(kept.contribute(&arriving(1, StarKind::Neutron)));
+        assert!(
+            kept.contribute(&arriving(1, StarKind::Unknown)),
+            "an unknown star left the row its earlier kind gave"
+        );
+
+        let mut rebuilt = Sidecars::empty(&tables());
+        rebuilt.contribute(&arriving(1, StarKind::Unknown));
+        assert!(!kept.uncontribute(1), "the kept table still held a row");
+        assert!(!rebuilt.uncontribute(1), "the rebuilt table held a row");
     }
 
     /// An absent table is written only once a caller claims it
@@ -673,7 +695,7 @@ mod tests {
         let mut rows = TableWriter::writing(&spill, &tables()).expect("rows");
         rows.populate(&populated(1)).expect("a row");
         rows.reach(1, 4.0).expect("a reach");
-        rows.arrive(&arriving(1, StarKind::Neutron)).expect("a cone");
+        rows.contribute(&arriving(1, StarKind::Neutron)).expect("a cone");
         rows.populate(&populated(2)).expect("a row");
         let first = rows.finish(&dir).expect("the tables write");
         assert_eq!(first.populated, 2);
@@ -682,8 +704,8 @@ mod tests {
             .expect("the tables back");
         rows.populate(&populated(3)).expect("a row");
         rows.reach(3, 16.0).expect("a reach");
-        rows.arrive(&arriving(3, StarKind::Neutron)).expect("a cone");
-        rows.arrive(&arriving(4, StarKind::G)).expect("no cone");
+        rows.contribute(&arriving(3, StarKind::Neutron)).expect("a cone");
+        rows.contribute(&arriving(4, StarKind::G)).expect("no cone");
         // The same system again, as a resumed read re-deriving the line it
         // stopped on would: the newer row wins and there is still one of it.
         rows.reach(1, 5.0).expect("a reach");

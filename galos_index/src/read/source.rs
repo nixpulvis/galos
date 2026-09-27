@@ -20,12 +20,10 @@ use crate::format::layout::{
     reaches_path,
 };
 use crate::format::msgpack::read_meta;
-use crate::records::{
-    Faction, PopulatedSystem, SystemBodies, SystemReach, Table,
-};
+use crate::records::{Faction, PopulatedSystem, SystemBodies, SystemReach};
 use crate::store::bodies::read_bodies;
 use crate::store::names;
-use crate::store::tables;
+use crate::store::tables::{self, Table};
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use async_trait::async_trait;

@@ -30,7 +30,7 @@
 //! **Except what is a function of the system's whole contents.** Record over
 //! record is the wrong rule for a fact nobody reported — the kind of star a
 //! ship arrives at, the light of the system, how far it reaches, and the
-//! rows contributed tables derive from its arrival. Each of those is worked
+//! rows contributed tables derive from its record. Each of those is worked
 //! out from one side's bodies, and the merged directory holds both sides', so
 //! each is worked out again over the merged contents by the calls
 //! [`crate::accumulate::galaxy`] makes — see `Relit` for why. It is why the
@@ -125,7 +125,7 @@ use crate::core::star::StarKind;
 use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::{layout, msgpack};
 use crate::records::{
-    Arrival, Faction, PopulatedSystem, SystemBodies, SystemReach, derive,
+    Faction, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
 use crate::store::names::Names;
 use crate::store::sidecars::Sidecars;
@@ -754,10 +754,10 @@ struct Union {
 /// says body 0 is a G star at 4.83. One directory saying two contradicting
 /// things, which is exactly what `galos index verify` exists to catch.
 ///
-/// So these four are derived again, and a contributed row from the arrival
-/// they give, over the merged contents, by the same calls
-/// [`crate::accumulate::galaxy`] makes and not by arithmetic of this module's
-/// own — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::arrival_of`. What
+/// So these four are derived again over the merged contents, by the same
+/// calls [`crate::accumulate::galaxy`] makes and not by arithmetic of this
+/// module's own — `Galaxy::system` and `Galaxy::reach_of` — and a
+/// contributed row from the record they give. What
 /// stays the winner's is `age_bucket` and `updated_at`: those are about when
 /// the system was reported, not about what is in it.
 #[derive(Copy, Clone, Debug)]
@@ -768,13 +768,12 @@ struct Relit {
     temperature: f64,
     /// How far the merged contents reach, [`SystemBodies::extent`].
     reach: Option<f32>,
-    /// Where the winning record puts the system, filled in by the union.
+    /// The record the union writes, with the above laid over the winner's.
     ///
-    /// A contributed row is derived from an arrival, which carries a place,
-    /// and the place is the system's own, which only the records know.
-    /// [`None`] until the union has written the record, and for an address
-    /// neither resume point holds at all.
-    position: Option<[f32; 3]>,
+    /// What a contributed row is derived from, the place being the winner's
+    /// own, which only the records know. [`None`] until the union has
+    /// written the record, and for an address neither resume point holds.
+    record: Option<System>,
 }
 
 /// What one system's merged insides say about it, or [`None`] where nothing
@@ -806,15 +805,15 @@ fn relit_over(inside: &SystemBodies, address: i64) -> Option<Relit> {
         absolute_magnitude,
         temperature,
         reach: inside.extent(address),
-        position: None,
+        record: None,
     })
 }
 
 /// One record as the merged directory holds it: the winner's own columns,
 /// with whatever [`Relit`] has to say about its contents laid over them.
 ///
-/// Also takes down where the winner puts the system, which is the place a
-/// contributed row is derived at.
+/// Also takes down the record written, which is what a contributed row is
+/// derived from.
 fn relight(record: &System, relit: &mut HashMap<i64, Relit>) -> System {
     let mut record = *record;
     let Some(afresh) = relit.get_mut(&(record.id64 as i64)) else {
@@ -823,11 +822,7 @@ fn relight(record: &System, relit: &mut HashMap<i64, Relit>) -> System {
     record.kind = afresh.kind;
     record.absolute_magnitude = afresh.absolute_magnitude;
     record.temperature = afresh.temperature;
-    afresh.position = Some([
-        record.position[0] as f32,
-        record.position[1] as f32,
-        record.position[2] as f32,
-    ]);
+    afresh.record = Some(record);
     record
 }
 
@@ -1122,10 +1117,10 @@ struct Carried {
 /// contents merged.** Both are a function of what is inside the system, so
 /// for every address [`Relit`] speaks for they are taken from the
 /// re-derivation over the merged contents rather than from either side's
-/// published table — see [`Relit`] for why. Where the merged arrival star
-/// gives a contributed table nothing to say the row is *removed*, which is
-/// not a withdrawal by silence: the merged contents state what the arrival
-/// star is, and a statement is not an absence.
+/// published table — see [`Relit`] for why. A contributed row is derived from
+/// the relit record like any other, and where the table has nothing to say
+/// about it the row is *removed*: the directory holds what a rebuild from
+/// the merged records would.
 ///
 /// The factions are the union of the two, the two having already been held
 /// against each other by [`agreed`].
@@ -1185,13 +1180,9 @@ fn carry_sidecars(
         {
             carried.reaches += 1;
         }
-        let arrival = afresh
-            .position
-            .filter(|_| afresh.kind != StarKind::Unknown)
-            .map(|position| Arrival { address, kind: afresh.kind, position });
-        let changed = match arrival {
-            Some(arrival) => ours.arrive(&arrival),
-            None => ours.unarrive(address),
+        let changed = match &afresh.record {
+            Some(record) => ours.contribute(record),
+            None => ours.uncontribute(address),
         };
         if changed {
             carried.contributed += 1;
@@ -1377,8 +1368,9 @@ fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::records::{Body, NameEntry, Star, Table};
+    use crate::records::{Body, NameEntry, Star};
     use crate::store::sidecars::reaches;
+    use crate::store::tables::Table;
     use crate::store::tables::testing::{Cone, Cones, tables};
     use crate::store::tables::{self, Keyed};
     use crate::tree::index::Index;

@@ -78,7 +78,7 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
 use crate::records::{
-    Arrival, NameEntry, PopulatedSystem, SystemBodies, SystemReach, derive,
+    NameEntry, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
 use crate::store::sidecars::TableWriter;
 use crate::system::System;
@@ -399,20 +399,6 @@ impl Galaxy {
         self.inside.read(address).extent(address)
     }
 
-    /// What a contributed table is handed about one system, by
-    /// [`derive::arrival`]: nothing for a system nothing has placed, or
-    /// whose arrival star nothing has said.
-    pub fn arrival_of(&self, address: i64) -> Option<Arrival> {
-        let report = self.systems.get(&address)?;
-        let at = report.placed()?;
-        derive::arrival(
-            address,
-            Some(&self.inside.read(address)),
-            report.star_class.as_deref(),
-            [at[0] as f32, at[1] as f32, at[2] as f32],
-        )
-    }
-
     /// One system's political columns, where anybody lives in it.
     ///
     /// [`SystemReport::populated`], which is the projection both
@@ -536,8 +522,8 @@ impl TableWriter {
         if let Some(reach) = galaxy.reach_of(address) {
             self.reach(address, reach)?;
         }
-        if let Some(arrival) = galaxy.arrival_of(address) {
-            self.arrive(&arrival)?;
+        if let Some(system) = galaxy.system_of(address) {
+            self.contribute(&system)?;
         }
         Ok(())
     }
@@ -898,26 +884,26 @@ mod tests {
         assert_eq!(galaxy.populated().len(), 1, "the population was dropped");
     }
 
-    /// A table is asked about a system once something says what star a ship
-    /// drops in at, and not before
+    /// A system's kind is the star a ship drops in at, and unknown until
+    /// something says what that is
     ///
-    /// A jump says nothing about the star, and asked then, a contributed
-    /// table would take out a row a richer source had published.
+    /// A jump says nothing about the star, so the record says nothing
+    /// either, and a contributed table derived from it has no row.
     #[test]
-    fn an_arrival_is_the_star_a_ship_drops_in_at() {
+    fn a_kind_is_the_star_a_ship_drops_in_at() {
         let mut galaxy = galaxy();
         galaxy.read(&entry(JUMP));
-        assert_eq!(galaxy.arrival_of(10477373803), None, "a jump said a star");
+        let kind = |galaxy: &Galaxy| {
+            galaxy.system_of(10477373803).map(|system| system.kind)
+        };
+        assert_eq!(
+            kind(&galaxy),
+            Some(StarKind::Unknown),
+            "a jump said a star"
+        );
 
         galaxy.read(&entry(&star_scan("N", 12.0, 100_000.0)));
-        assert_eq!(
-            galaxy.arrival_of(10477373803),
-            Some(Arrival {
-                address: 10477373803,
-                kind: StarKind::Neutron,
-                position: [0.0; 3],
-            }),
-        );
+        assert_eq!(kind(&galaxy), Some(StarKind::Neutron));
     }
 
     /// The class survives a trip through the byte a payload carries
@@ -1063,7 +1049,7 @@ mod tests {
         assert_eq!(systems.len(), 1, "the route named nothing");
         assert_eq!(systems[0].position, [-101.0, 130.0, -21.0]);
         assert_eq!(
-            galaxy.arrival_of(1044034375449).map(|it| it.kind),
+            galaxy.system_of(1044034375449).map(|it| it.kind),
             Some(StarKind::Neutron),
             "the route's own class was not read",
         );
