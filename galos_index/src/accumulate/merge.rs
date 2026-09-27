@@ -6,11 +6,11 @@
 //! goes round.
 //!
 //! `galos_db` states the same rule column by column in the `ON CONFLICT DO
-//! UPDATE` clauses of its `stars` and `system_bodies` upserts, and it has to:
-//! the row it is merging against is a row Postgres holds, and reading it back
-//! to merge it here would be a round trip and a lost update per scan. This is
-//! the statement of the rule, that is a copy of it, and a conformance test in
-//! `galos_db` is what keeps the two the same thing.
+//! UPDATE` clauses of its `stars`, `bodies` and `barycenters` upserts, and it
+//! has to: the row it is merging against is a row Postgres holds, and
+//! reading it back to merge it here would be a round trip and a lost update
+//! per scan. This is the statement of the rule, that is a copy of it, and a
+//! conformance test in `galos_db` is what keeps the two the same thing.
 //!
 //! ## The rule
 //!
@@ -267,9 +267,8 @@ pub fn body(
 /// than readings.
 ///
 /// The one field that differs from the journal's shape: the index's
-/// composition is optional, a body stored before the fractions were kept
-/// having a surface and no reading of what it is made of. A scan always
-/// carries one.
+/// composition is optional, a body stored without the fractions having a
+/// surface and no reading of what it is made of. A scan always carries one.
 pub fn surface(said: &JournalSurface, held: Option<&Surface>) -> Surface {
     Surface {
         atmosphere_type: said.atmosphere_type.clone(),
@@ -408,8 +407,8 @@ pub fn bodies_over(held: SystemBodies, said: SystemBodies) -> SystemBodies {
 /// Two tables of one system's things, joined by id.
 ///
 /// A walk rather than a hash, as [`put`] is and for the same reason:
-/// a system is tens of things, and a map of them costs more than the walk it
-/// replaces. The held order is kept and what only the arriving side has goes
+/// a system is tens of things, and a map of them costs more than walking
+/// them. The held order is kept and what only the arriving side has goes
 /// on the end, so a record written twice is written the same way twice.
 fn join<T>(
     held: Vec<T>,

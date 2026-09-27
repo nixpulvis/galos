@@ -5,7 +5,7 @@
 //! anybody has ever reported; [`crate::accumulate::galaxy`] accumulates one
 //! from events, which reach it off the wire or out of a single pilot's own
 //! journal files with no database anywhere. They write the same format, for the
-//! same client, and one directory is held from both at once — `galos ingest
+//! same readers, and one directory is held from both at once — `galos ingest
 //! --from database --index DIR` raising it and `galos ingest --from eddn
 //! --index DIR` carrying it on. Where they read the same fact they must read it
 //! the same way: a system binned into Recency bucket three out of the database
@@ -25,7 +25,7 @@ use galos_photometry::{ClassLight, Flux, Magnitude};
 /// bucket 7.
 ///
 /// The count of buckets is part of the published format — a cell aggregate
-/// is a count per bucket, and the client's Recency control indexes straight
+/// is a count per bucket, and the map's Recency control indexes straight
 /// into them — so the edges are not a builder's choice to make.
 pub const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 
@@ -33,11 +33,11 @@ pub const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 ///
 /// The half-open reading of [`AGE_EDGES`]: a day old is already bucket 1, and
 /// an age past the last edge saturates at 7 rather than running off the end.
-/// A negative age — a report stamped in the future, which a client can write
+/// A negative age — a report stamped in the future, which a sender can write
 /// — falls in bucket 0 with everything else fresh.
 ///
 /// A `u32` and not the `usize` an array index wants, because where it is kept
-/// is an [`System`](crate::System), and that record is written to disk as its
+/// is a [`System`](crate::System), and that record is written to disk as its
 /// own bytes; see its doc.
 pub fn age_bucket(days: i64) -> u32 {
     AGE_EDGES.iter().filter(|&&edge| days >= edge).count() as u32
@@ -52,7 +52,7 @@ pub fn age_bucket(days: i64) -> u32 {
 /// minute, which is what the second beside them answers.
 ///
 /// `u32`: Unix seconds to 2106, four bytes rather than eight. Clamped rather
-/// than wrapped — `at` comes off a journal entry, which a client writes, so
+/// than wrapped — `at` comes off a journal entry, which whoever sent it writes, so
 /// a year outside the range reads as the far end of the axis instead of
 /// folding into the middle of it.
 pub fn updated(at: NaiveDateTime, now: NaiveDateTime) -> (u32, u32) {
@@ -239,7 +239,7 @@ mod tests {
     /// past the last edge saturates rather than running off the end.
     ///
     /// The eight buckets are the published format: a cell aggregate is a
-    /// count per bucket and the client indexes straight into them.
+    /// count per bucket and the map indexes straight into them.
     #[test]
     fn the_edges_bin_where_the_format_says() {
         assert_eq!(age_bucket(-7), 0, "a report stamped in the future");
@@ -266,7 +266,7 @@ mod tests {
     /// The second the payload carries saturates at either end of the `u32`
     /// rather than wrapping into the middle of the axis.
     ///
-    /// `updated_at` comes off a journal entry, which a client writes, so a
+    /// `updated_at` comes off a journal entry, which whoever sent it writes, so a
     /// date in 1969 or in 2200 does reach the builder. Wrapped, either would
     /// land beside genuinely fresh systems.
     #[test]
@@ -322,7 +322,7 @@ mod tests {
         );
 
         // Two equal stars are three quarters of a magnitude brighter than
-        // either alone, and the first of them keeps the tint, as `min_by` did.
+        // either alone, and the first of them keeps the tint.
         let (magnitude, temperature) =
             lit([(5.0, 4000.0), (5.0, 7000.0)].into_iter(), "G");
         assert!((magnitude - (5.0 - 0.7526)).abs() < 1e-3, "{magnitude}");

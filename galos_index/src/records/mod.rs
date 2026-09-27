@@ -1,4 +1,4 @@
-//! The serving records: what the client reads beside the cells, by the row.
+//! The serving records: what a reader reads beside the cells, by the row.
 //!
 //! Two families. The tables ([`PopulatedSystem`], [`SystemReach`],
 //! [`NameEntry`], [`Faction`]) are one row a system, read resident or

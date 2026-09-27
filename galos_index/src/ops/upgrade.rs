@@ -3,28 +3,27 @@
 //! One place for the migrations an operator runs on purpose, rather than one
 //! command per format change: `galos index migrate` is what
 //! [`crate::tree::index::Index::read`]'s refusal names, and what it does is
-//! whatever the directory turns out to need. Today that is the payloads,
-//! which became columns; the next thing lands here beside it rather than as
-//! another subcommand named after a layout.
+//! whatever the directory turns out to need. At present that is rewriting
+//! legacy payloads as columns; anything further lands here beside it rather
+//! than as another subcommand named after a layout.
 //!
 //! Not run at open, unlike [`crate::ops::migrate::migrate`]'s resharding. That
 //! is a rename a file and this is a re-encode of every cell plus a sweep of the
-//! scan record — hours over a galaxy, which a client that wants to draw cannot
+//! scan record — hours over a galaxy, which a reader that wants to draw cannot
 //! spend without saying so.
 //!
-//! **A rebuild that is not a reimport.** The payloads written before the
-//! columns hold everything the new ones do but one field: the star kind,
-//! which was never in them. That field is derivable from the directory
-//! itself — `bodies/` is the scan record the class comes from — so a
-//! directory can be brought forward without going back to the dump it was
-//! imported from, which is hours of a different order.
+//! **A rebuild that is not a reimport.** A legacy payload holds everything
+//! a columnar one does but one field: the star kind. That field is derivable
+//! from the directory itself — `bodies/` is the scan record the class comes
+//! from — so a directory can be brought forward without going back to the
+//! dump it was imported from, which is hours of a different order.
 //!
-//! What it does, per cell: read the old block, join the kind on, write the
-//! new block. Then rewrite `index.bin` so its version says what the
-//! payloads now are. The cells' own records are untouched — only
-//! [`crate::tree::cell::CellSystem`]'s width changed, and `Cell::LEN` did
-//! not — so the tree, the aggregates and every other table stay exactly as
-//! they were.
+//! What it does, per cell: read the legacy block, join the kind on, write
+//! the columnar block. Then bring the contributed tables forward, as an open
+//! would, and rewrite `index.bin` so its version says what the payloads are.
+//! The cells' own records are untouched — the payload is what differs
+//! between the versions, and `Cell::LEN` does not — so the tree, the
+//! aggregates and the index's own tables stay exactly as they are.
 
 use crate::core::codec::Decode as _;
 use crate::core::star::StarKind;
@@ -48,7 +47,7 @@ pub struct Rewrote {
     /// Systems the sweep of the scan record has read, which is the phase
     /// before any cell is touched.
     pub swept: u64,
-    /// How many cells were written in the new layout.
+    /// How many cells were written in the columnar layout.
     pub cells: u64,
     /// How many systems those cells held.
     pub systems: u64,
@@ -62,9 +61,9 @@ pub struct Rewrote {
     /// of a build, and an open over a stale directory does nothing at all —
     /// [`crate::ops::migrate::migrate`] sets `upgrade` and returns, having
     /// touched nothing. So a directory brought forward by this command alone
-    /// would still hold a table in its old shape, and anything reading it
-    /// without opening the galaxy first — the map's own perf guard did —
-    /// fails to decode a row.
+    /// would still hold a table in a shape its owner has moved on from, and
+    /// anything reading it without opening the galaxy first — the map's perf
+    /// guard, for one — fails to decode a row.
     pub upgraded: u64,
 }
 
@@ -129,11 +128,11 @@ impl Kinds {
 /// The one migration there is at present; see the module header for why it
 /// is asked for rather than done at open.
 ///
-/// Idempotent: a cell already in the new layout is counted and left alone,
-/// so a run interrupted part way is finished by running it again. The index
-/// file is rewritten last, for that reason — a directory whose `index.bin`
-/// still says the old version is one the rewrite has not finished, and
-/// nothing reads the new payloads until it does.
+/// Idempotent: a cell already columnar is counted and left alone, so a run
+/// interrupted part way is finished by running it again. The index file is
+/// rewritten last, for that reason — a directory whose `index.bin` still
+/// names a stale version is one the rewrite has not finished, and nothing
+/// reads the columnar payloads until it does.
 pub fn rewrite(
     dir: &Path,
     tables: &TableSet,
@@ -218,8 +217,8 @@ pub fn rewrite(
 /// [`Index::read`] refuses a version it was not built against, which is the
 /// rule that makes a stale directory fail loudly rather than decode as
 /// nonsense — and exactly what a migration has to get past. Sound here
-/// because the record it reads is unchanged: `Cell::LEN` is what it was,
-/// and only the payload beside it moved.
+/// because the index record is the same at every version this accepts:
+/// `Cell::LEN` does not vary with it, only the payload beside it does.
 fn read_any_version(dir: &Path) -> io::Result<Index> {
     let path = dir.join(crate::format::layout::INDEX_FILE);
     let bytes = std::fs::read(&path)?;
@@ -284,7 +283,7 @@ mod tests {
         }
     }
 
-    /// A payload in the layout written before the columns.
+    /// A payload in the legacy record layout.
     fn legacy_bytes(systems: &[System]) -> Vec<u8> {
         let mut out = Vec::new();
         for held in systems {
@@ -299,9 +298,9 @@ mod tests {
 
     /// A rewrite carries every position through and fills in the kinds
     ///
-    /// Which is the whole of what it is for: the old payloads hold
+    /// Which is the whole of what it is for: a legacy payload holds
     /// everything but the star kind, and the kind is derivable from the
-    /// scan record beside them — so a directory comes forward without
+    /// scan record beside it — so a directory comes forward without
     /// going back to the dump it was imported from.
     #[test]
     fn a_rewrite_keeps_the_positions_and_finds_the_kinds() {
@@ -313,8 +312,8 @@ mod tests {
         ];
 
         // A tree, written the way a build writes one, then its payloads
-        // put back in the old layout — which is the directory a migration
-        // meets.
+        // put back in the legacy layout — which is the directory a
+        // migration meets.
         let mut tree = Tree::build(&placed, &BuildParams::default());
         tree.write(&dir).expect("a written tree");
         let built = tree.to_snapshot();
@@ -407,8 +406,8 @@ mod tests {
 
     /// Running it twice is running it once
     ///
-    /// A galaxy is minutes of this and a run may be stopped in the middle,
-    /// so a cell already in the new layout is counted and left alone.
+    /// A galaxy is hours of this and a run may be stopped in the middle,
+    /// so a cell already columnar is counted and left alone.
     #[test]
     fn a_second_rewrite_leaves_the_columns_alone() {
         let dir = scratch("twice");
@@ -430,11 +429,9 @@ mod tests {
     /// does *nothing* — [`crate::ops::migrate::migrate`] asks
     /// [`crate::store::cells::stale`] first and returns having named this
     /// command — so a table in a shape its owner has moved on from would
-    /// still be in it after the payloads came forward, and a reader that asks
-    /// for it without opening the galaxy first gets a decode error. Which is
-    /// how it was found: the map's perf guard failed to decode the router's
-    /// supercharge table over a directory `galos index migrate` had just said
-    /// it had finished with.
+    /// still be in it after the payloads come forward, and a reader that asks
+    /// for it without opening the galaxy first, such as the map's perf guard
+    /// reading the router's supercharge table, gets a decode error.
     #[test]
     fn a_rewrite_upgrades_the_contributed_tables() {
         /// A table whose every upgrade rewrites three rows.

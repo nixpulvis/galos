@@ -159,10 +159,10 @@ impl SystemBodies {
     /// wildly different distances, where the widest orbit is what says the
     /// centre cannot be at the middle of the system after all.
     ///
-    /// The mean over the riders was the first answer here and is worse: a
-    /// centre with three planets round it came out at the mean of *their*
-    /// distances, which is a figure about the planets rather than about the
-    /// point, and put every one of them half a system too far out.
+    /// The mean over the riders would be worse: a centre with three planets
+    /// round it would come out at the mean of *their* distances, which is a
+    /// figure about the planets rather than about the point, and put every
+    /// one of them half a system too far out.
     ///
     /// Nothing where no rider says a distance, which leaves the centre with
     /// nothing to be placed by.
@@ -298,7 +298,7 @@ impl SystemBodies {
             // moons and rings alike, so it is said as the journal's own
             // wider word rather than as the narrower one it writes.
             Some("Planet") => "body",
-            // A kind the journal has since grown. Said as what is true of all
+            // A kind the journal adds. Said as what is true of all
             // of them rather than in a word the map cannot vouch for.
             Some(_) => "place",
         })
@@ -503,7 +503,7 @@ impl SystemBodies {
 /// How long before `at` something read at `recorded` was read, in seconds
 ///
 /// Nothing where no moment was named, which is what the builder asks and what
-/// leaves every path answering from its own scan as it always has.
+/// leaves every path answering from its own scan.
 ///
 /// Whole seconds. What this feeds is a body run on by years, and the fastest
 /// bodies the journal records come round in hours, so a second of one is some
@@ -581,7 +581,7 @@ fn recorded_star(star: &Star) -> Orbit {
 /// land saying it reaches less would collapse out of the mark it had been drawn
 /// as on the frame they arrive. A star with nothing on record around it is the
 /// far end of that: its own radius is a twenty-five thousandth of this, and the
-/// shell became a skin on the star rather than a mark around the system.
+/// shell would be a skin on the star rather than a mark around the system.
 pub const STAND_IN: f32 = 1.5e12;
 
 /// How far an orbit gets from what it goes round, in metres
@@ -808,8 +808,8 @@ mod tests {
     /// Which is the first thing holding it buys: the walk runs on to the star
     /// rather than ending at the missing row, so the pair is drawn beside the
     /// thing it belongs to instead of out in the empty space between the
-    /// system's stars. Ross 248 is what showed it, four of its bodies
-    /// gathered at the middle with their whole outer orbit dropped.
+    /// system's stars. Without it Ross 248 has four of its bodies gathered at
+    /// the middle with their whole outer orbit dropped.
     #[test]
     fn a_missing_barycenter_falls_back_on_its_parent() {
         let out = place(&binary(false), 11, 0.).length();
@@ -860,8 +860,8 @@ mod tests {
     /// same way and guessed at the same way, and what a panel says has to say
     /// which: 55,072 chains on record name a star like that and 23,393 a
     /// body, against 32,909 naming a centre. `Screakoo GH-V f2-0 AB 8 a` is
-    /// one of them — a moon of a star nobody scanned, which the map drew
-    /// 3,800 light seconds out of place until its star was stood up.
+    /// one of them — a moon of a star nobody scanned, which lands 3,800 light
+    /// seconds out of place unless its star is stood up.
     #[test]
     fn an_unscanned_star_is_named_as_the_guess() {
         let mut moon = body(1e9);
@@ -1015,7 +1015,7 @@ mod tests {
     /// distances, which is a figure about the planets rather than about the
     /// point: here the mean is twice the answer, and everything under it
     /// would be drawn half a system too far out. Taken from a real one —
-    /// `Screakoo GH-V f2-0 AB`, whose pair's centre the mean put 580 light
+    /// `Screakoo GH-V f2-0 AB`, whose pair's centre the mean puts 580 light
     /// seconds out of place.
     #[test]
     fn a_missing_centre_is_bracketed_by_what_rides_it() {
@@ -1091,7 +1091,7 @@ mod tests {
     /// pair goes round. That point stands the arrival star's own orbit away
     /// from the middle, so the two add. Read as orbits alone the extent stops
     /// at the wider of them and the shell cuts through the far half of the
-    /// system, which is where the bodies out there were coming from.
+    /// system, leaving the bodies out there outside it.
     #[test]
     fn the_extent_is_measured_from_the_middle() {
         let reaches =

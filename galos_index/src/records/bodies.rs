@@ -2,11 +2,11 @@
 //!
 //! The record a click into a system pulls, one per system and read one at a
 //! time — see [`SystemBodies`]. The scan fields mirror the `galos_db` structs
-//! field for field and reuse the `elite_journal` enums, so the client
-//! renders them through the same code it rendered database rows through,
-//! changing only the type it names. Serde records rather than hand-rolled
-//! `FixedCodec`, since they are variable, nested and read one system at a
-//! time rather than a million points a frame.
+//! field for field and reuse the `elite_journal` enums, so code that renders
+//! a database row renders these too, changing only the type it names. Serde
+//! records rather than hand-rolled `FixedCodec`, since they are variable,
+//! nested and read one system at a time rather than a million points a
+//! frame.
 
 use chrono::{DateTime, Utc};
 use elite_journal::body::{
@@ -37,8 +37,8 @@ impl Parent {
     ///
     /// A scan writes each ancestor as a one-entry map of kind to id, and the
     /// walk back to the star is what places the thing, so the order and the
-    /// whole chain are kept. `galos_db::bodies::Parent::chain`'s rule, in
-    /// the index's own vocabulary.
+    /// whole chain are kept. The one rule for it: `galos_db::bodies`
+    /// re-exports this type rather than keeping its own.
     pub fn chain(named: &[BTreeMap<String, i16>]) -> Vec<Parent> {
         named
             .iter()
@@ -86,8 +86,7 @@ pub struct Star {
     pub radius: f32,
     pub temperature: f32,
     /// Whether anybody had mapped the star when it was scanned, which is a
-    /// fact about the star rather than about the scan the way the discovery
-    /// flag that used to sit beside this was.
+    /// fact about the star rather than about the scan.
     pub mapped: bool,
     /// When the star was found, where a scan on record says so.
     ///
@@ -122,8 +121,7 @@ pub struct Body {
     pub orbit: Orbit,
     pub spin: Spin,
     /// Whether anybody had mapped the body when it was scanned, which is a
-    /// fact about the body rather than about the scan the way the discovery
-    /// flag that used to sit beside this was.
+    /// fact about the body rather than about the scan.
     pub mapped: bool,
     /// When the body was found, where a scan on record says so.
     ///
@@ -145,9 +143,10 @@ pub struct Barycenter {
 
 /// Everything a click into a system pulls: its stars, bodies and barycenters.
 ///
-/// One file per system, keyed by address, so the map fetches exactly the
-/// system a click opened and nothing else. Empty where a system has no scan on
-/// record, which reads the same as a system whose file was never written.
+/// One record per system, keyed by address and packed a shard to a file
+/// ([`crate::store::bodies`]), so the map fetches exactly the system a click
+/// opened and nothing else. Empty where a system has no scan on record, which
+/// reads the same as a system whose record was never written.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SystemBodies {
     pub stars: Vec<Star>,

@@ -29,32 +29,25 @@ pub(super) const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 /// The layout `head.bin` describes. A reader that does not know a version
 /// refuses the table rather than reading it as this one.
 ///
-/// **2 is a name a row may leave unwritten.** A procedural name is a function
+/// **4 is the layout this build writes.** A procedural name is a function
 /// of the system's address ([`crate::core::procedural`]), so a row whose name
-/// the arithmetic spells stores no text at all — 97.4 % of a galaxy's rows, and
-/// 3.94 GB of `text.bin` down to 128 MB. Version 2 marked such a row by giving
-/// it a span of no length, which still cost the row its five bytes of
-/// `span.bin`.
-///
-/// **3 stops paying for the rows that say nothing.** `span.bin` holds one
-/// offset per *stored* name rather than per row, and `exception.bin` says
-/// which rows those are — so a row absent from that list is the derived
-/// marker, and the 1.00 GB of spans becomes 47 MB. See [`Text::name_at`].
-///
-/// **4 stops storing where a system is.** `pos.bin` was `[f32; 3]` a row,
-/// 2.40 GB at a galaxy, and it duplicated the cell payload that owns the
-/// system: the payloads are the router's own source and the only place a
-/// place is exact. An address locates its system to within a boxel
+/// the arithmetic spells stores no text at all — 97.4 % of a galaxy's rows.
+/// `span.bin` holds one offset per *stored* name rather than per row, and
+/// `exception.bin` says which rows those are, so a row absent from that list
+/// is the derived marker. See [`Text::name_at`]. No section holds where a
+/// system is: the cell payloads are the router's own source and the only
+/// place a place is exact. An address locates its system to within a boxel
 /// ([`elite_journal::Boxel::place`], measured against every name of a
 /// 200 M dump), so whoever wants an exact place asks the tree —
 /// [`crate::Sky::placed`], 0.8–5 ms — and whoever wants a rough one does
 /// arithmetic on the address for nothing.
 ///
-/// Every version is read by this build: a v1 or v2 generation has a dense
-/// `span.bin` and no `exception.bin`, which [`Text`] answers off the other
-/// branch, and one before v4 has a `pos.bin` this simply does not map. So a
-/// directory migrates whenever something rewrites its base (`galos index
-/// migrate`) rather than on a deadline.
+/// Every older version is read by this build too: a v1 generation stores
+/// every name, a v2 one marks a derived row with a span of no length, and
+/// both have a dense `span.bin` and no `exception.bin`, which [`Text`]
+/// answers off the other branch; one before v4 has a `pos.bin` this simply
+/// does not map. So a directory migrates whenever something rewrites its
+/// base (`galos index migrate`) rather than on a deadline.
 pub(super) const VERSION: u16 = 4;
 
 /// The versions this build reads.
@@ -62,7 +55,7 @@ pub(super) const VERSION: u16 = 4;
 /// Writing the newest and reading the lot is what makes each change free:
 /// an older build refuses a newer table, which is right — it would read a
 /// derived row as nameless, or a sparse span array as a dense one — and
-/// this one reads every table it ever wrote.
+/// this one reads every version listed here.
 pub(super) const READS: [u16; 4] = [1, 2, 3, VERSION];
 
 /// `head.bin`'s width. Everything past the fields is reserved and zero, so
@@ -92,9 +85,10 @@ pub(super) const SWEEP: usize = 4 * 1024 * 1024;
 
 /// One offset into `text.bin`, as `span.bin` holds it.
 ///
-/// Five bytes, not eight: a galaxy's names are ~5.0 GB, which a `u32`
-/// cannot address and a `u64` wastes three bytes a row on — 600 MB at
-/// 200 M. Forty bits reach a terabyte of names.
+/// Five bytes, not eight: a galaxy's names are ~5.0 GB where every one is
+/// stored, as a version 1 table stores them, which a `u32` cannot address
+/// and a `u64` wastes three bytes a row on — 600 MB at 200 M. Forty bits
+/// reach a terabyte of names.
 pub(super) const SPAN: usize = 5;
 
 /// How many rows one bucket of the by-name sort holds in memory.
@@ -103,14 +97,15 @@ pub(super) const SPAN: usize = 5;
 /// comparison reads a name, and 200 M random reads into 5 GB of mapped
 /// text is hours of page faults. So the sort is a radix over the name
 /// bytes — buckets by first byte, then by second, until a bucket fits this
-/// — and every pass is sequential. See [`emit_by_name`].
+/// — and every pass is sequential. See
+/// [`emit_by_name`](super::write::emit_by_name).
 pub(super) const BUCKET_BYTES: usize = 256 * 1024 * 1024;
 
 /// The mappings of one generation, and what `head.bin` said about them.
 ///
-/// Apart from [`Table`] because the empty table has none: a directory that
-/// has published no names maps nothing, and a zero-length mapping is not a
-/// thing the platform offers.
+/// Apart from [`Table`](super::Table) because the empty table has none: a
+/// directory that has published no names maps nothing, and a zero-length
+/// mapping is not a thing the platform offers.
 #[derive(Debug)]
 pub(super) struct Mapped {
     pub(super) byname: Mmap,
@@ -122,7 +117,7 @@ pub(super) struct Mapped {
 ///
 /// Its own type because the by-name sort needs exactly this and nothing
 /// else — it runs over a generation whose `byname.bin` does not exist yet —
-/// and because the addresses are no longer beside the names but *part of
+/// and because the addresses are not only beside the names but *part of
 /// how a name is read*: a row nothing wrote text for is one whose name
 /// [`crate::core::procedural`] spells from `addr.bin`.
 #[derive(Debug)]
@@ -132,8 +127,8 @@ pub(super) struct Text {
     ///
     /// [`None`] for a version 1 or 2 generation, whose `span.bin` carries
     /// an offset for every row and marks a derived one by giving it no
-    /// length. Reading both is what lets a directory come forward when
-    /// something rewrites its base rather than when this build lands.
+    /// length. Reading both lets a directory come forward whenever
+    /// something rewrites its base.
     pub(super) exception: Option<Mmap>,
     /// One offset a stored name, and a terminator — or one a *row* where
     /// `exception` is [`None`].
@@ -178,7 +173,8 @@ impl Text {
     /// every name a span of the file rather than of whatever is next to
     /// it. What is *not* checked here is that the exception list ascends
     /// and stays inside the table — that is proportional to it, so it
-    /// belongs to [`Table::audit`] and to whatever wrote the file.
+    /// belongs to [`Table::audit`](super::Table::audit) and to whatever
+    /// wrote the file.
     pub(super) fn open(
         at: &Path,
         count: usize,
@@ -260,13 +256,13 @@ impl Text {
     ///
     /// The span rather than the row, and they are not the same number: a
     /// span is one of the names actually stored and a row is one of the
-    /// table's, which since version 3 is mostly rows storing nothing. A
-    /// caller that wants to know where a name begins ([`Self::start`]) is
-    /// asking about the span; one that wants to answer with the system is
-    /// asking about the row. Reading the span array at a row's number was
-    /// this table's one crash: over a galaxy's 5.2 M stored names in 200 M
-    /// rows, a sweep that found a hit in the tail of the text indexed the
-    /// span array 26,473,335 spans in and it is 5,257,783 long.
+    /// table's, which on a sparse generation is mostly rows storing
+    /// nothing. A caller that wants to know where a name begins
+    /// ([`Self::start`]) is asking about the span; one that wants to answer
+    /// with the system is asking about the row. Reading the span array at a
+    /// row's number overruns it: a galaxy holds 5.26 M stored names in
+    /// 200 M rows, so a hit in the tail of the text is at a row number far
+    /// past the span array's end.
     pub(super) fn span_at(&self, off: usize) -> usize {
         let mut lo = 0usize;
         let mut hi = self.stored;
@@ -301,12 +297,12 @@ impl Text {
     ///
     /// **A row absent from the exception list is the derived marker.** It
     /// costs nothing to say so — the list is needed anyway to find a
-    /// stored name's offset — where version 2 spent five bytes of
+    /// stored name's offset — where a dense span array spends five bytes of
     /// `span.bin` on every derived row to say the same thing, which over a
-    /// galaxy was 974 MB of "nothing here".
+    /// galaxy is 974 MB of "nothing here".
     ///
     /// A derived row whose sector the dictionary does not know reads as
-    /// empty rather than panicking a client, which is the same thing this
+    /// empty rather than panicking a reader, which is the same thing this
     /// does with text that is not UTF-8. Nothing writes such a row: a name
     /// is dropped only where the arithmetic has just spelled it.
     pub(super) fn name_at(&self, at: usize) -> Cow<'_, str> {
@@ -320,7 +316,7 @@ impl Text {
         let (from, to) = (self.start(span), self.start(span + 1));
         // Written from `str`s and checked by `audit`, so the bytes between
         // two starts are one. A table that says otherwise reads as empty
-        // rather than panicking a client.
+        // rather than panicking a reader.
         Cow::Borrowed(
             std::str::from_utf8(&self.bytes[from..to]).unwrap_or_default(),
         )
@@ -350,9 +346,9 @@ pub(super) fn map(path: &Path, want: usize) -> io::Result<Mmap> {
 /// The middle of the boxel `address` names, as a published row carries a
 /// place.
 ///
-/// **This table stopped holding positions at version 4** — `pos.bin` was
-/// 2.40 GB of a place a row, duplicating the cell payload that owns the
-/// system — so what a row answers with is what the *address* implies: the
+/// **This table holds no positions** — a `pos.bin` of a place a row would
+/// be 2.40 GB duplicating the cell payload that owns the system — so what a
+/// row answers with is what the *address* implies: the
 /// middle of its boxel, within half a boxel of the truth, which is ten
 /// light years across at the class most systems are. That is what a search
 /// result ranked by distance from the camera wants, and it is free, being
@@ -362,8 +358,7 @@ pub(super) fn map(path: &Path, want: usize) -> io::Result<Mmap> {
 /// the point rather than a detail: the log carries the place a report
 /// arrived with, so answering it there and a boxel here would make one
 /// field mean two things depending on which half of the table replied. The
-/// oracle caught exactly that (`tests/derivations_agree.rs`) within an hour
-/// of it existing.
+/// oracle (`tests/derivations_agree.rs`) checks exactly that.
 ///
 /// Whoever needs the exact place asks the galaxy, where it is exact:
 /// [`crate::Sky::placed`], which the address locates to within this same

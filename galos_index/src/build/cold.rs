@@ -7,9 +7,10 @@
 //! systems landed in, so the galaxy is read once.
 //!
 //! Nothing the galaxy's size scales is held. Each system goes straight to
-//! its bucket's spill file and each name into a names chunk; each region is
-//! then built off the mapping of its spill and its payloads written, so what
-//! is held at the end is every cell in the galaxy, which is the index file.
+//! its bucket's spill file and each name into the names table's row file;
+//! each region is then built off the mapping of its spill and its payloads
+//! written, so what is held at the end is every cell in the galaxy, which
+//! is the index file.
 //!
 //! No live [`Tree`](crate::Tree) is raised: a watch gets one by resuming
 //! from the resume point this leaves.
@@ -128,8 +129,8 @@ pub enum Start {
     /// nothing else.
     Fresh,
     /// From a directory a stopped read published: its systems back out of
-    /// the resume point, its names back off the chunks, and the read
-    /// carrying on from the mark.
+    /// the resume point, its names back off the table it published, and the
+    /// read carrying on from the mark.
     Resuming(ResumeMark),
 }
 
@@ -160,8 +161,8 @@ pub fn resume_mark(checkpoint: &Path) -> Option<ResumeMark> {
 /// A cold build a caller pushes into: the galaxy read once, as it arrives.
 ///
 /// Each system goes straight into the spill of the fixed coarse
-/// `bucket` its position falls in and each name into a
-/// chunk; [`finish`](Self::finish) forms the regions from the buckets and
+/// `bucket` its position falls in and each name into the names table's
+/// rows; [`finish`](Self::finish) forms the regions from the buckets and
 /// raises the tree off them.
 ///
 /// The records are the caller's: a database's rows, a dump's lines. Neither
@@ -181,9 +182,8 @@ pub fn resume_mark(checkpoint: &Path) -> Option<ResumeMark> {
 /// does — the offers and the raise, each a read of every spill — do not
 /// ask `stop` again: a caller that has decided not to wait has the second
 /// Ctrl-C, which leaves the directory where it stands rather than half
-/// written. [`OnStop::Abandon`] is the older answer and still the right
-/// one for a derivation whose directory already holds more than the read
-/// reached.
+/// written. [`OnStop::Abandon`] is the right answer for a derivation whose
+/// directory already holds more than the read reached.
 ///
 /// A stop is an answer and not a failure — see [`Built`].
 pub struct Build<'a> {
@@ -264,10 +264,10 @@ impl<'a> Build<'a> {
     /// [`Start::Fresh`] clears whatever a previous build left.
     /// [`Start::Resuming`] takes a directory a stopped read published and
     /// carries on with it: every system back out of the resume point and
-    /// into the buckets, and the names table back off its own chunks. That
-    /// is a read and a write of 56 bytes a system — eleven gigabytes over
-    /// the galaxy — against re-reading the dump those systems came out of,
-    /// which is six hundred.
+    /// into the buckets, and the names table seeded with what the directory
+    /// publishes. That is a read and a write of 64 bytes a system — nearly
+    /// thirteen gigabytes over the galaxy — against re-reading the dump
+    /// those systems came out of, which is six hundred.
     ///
     /// `stop` is asked as the build goes; see the type's own docs for
     /// where.
@@ -444,7 +444,7 @@ impl<'a> Build<'a> {
             std::fs::remove_file(&formed.spills[&region])?;
         }
         let _ = std::fs::remove_dir_all(&scratch);
-        // Each of the last four steps writes a whole part of the
+        // Each step from here on writes a whole part of the
         // directory, and an `io::Error` off one of them carries no path —
         // a bare "No such file or directory" out of a build over a galaxy
         // is three hours of not knowing which file. Named, so it says.
@@ -454,9 +454,10 @@ impl<'a> Build<'a> {
         let published = step("the names table", names.finish())?;
         step("the index file", index.write(&dir))?;
         // The cells of whatever tree stood here before this one, which this
-        // build neither wrote nor named: see `store::sweep_payloads`. After
-        // the index file and never before it, so an interrupted sweep
-        // leaves a directory that is merely larger.
+        // build neither wrote nor named: see
+        // `store::cells::sweep_payloads`. After the index file and never
+        // before it, so an interrupted sweep leaves a directory that is
+        // merely larger.
         let swept = step(
             "the sweep of the old cells",
             crate::store::cells::sweep_payloads(
@@ -531,8 +532,9 @@ fn stopped(
 
 /// What each region offers the crown, read off its own spill.
 ///
-/// One region's systems in memory at a time: an offer is the counts a cell
-/// above the region would take from it, not the systems themselves.
+/// One region's systems in memory at a time: an offer is the few systems a
+/// cell above the region could take from it and the region's total, not
+/// every system in it.
 fn offers(formed: &Formed, params: &BuildParams) -> io::Result<Vec<Offer>> {
     let mut offered = Vec::with_capacity(formed.cut.regions().len());
     for &region in formed.cut.regions() {
@@ -788,7 +790,7 @@ mod tests {
         fn wide(rng: &mut Rng) -> f64 {
             (rng.next() % 120_001) as f64 - 60_000.0
         }
-        /// Within 60 ly, which is a thousandth of a bucket's edge.
+        /// Within 60 ly, which is under a hundredth of a bucket's edge.
         fn tight(rng: &mut Rng) -> f64 {
             (rng.next() % 1_001) as f64 / 1_000.0 * 120.0 - 60.0
         }
@@ -1025,9 +1027,10 @@ mod tests {
     /// building over exactly as it found it, and takes its scratch with it.
     ///
     /// The read is where a build asked to stop nearly always is, the galaxy
-    /// being what takes the hour. More than one names chunk is pushed
-    /// before the stop, so the table it staged is one that would otherwise
-    /// have been written over the published one a chunk at a time.
+    /// being what takes the hour. Most of the galaxy's names are pushed
+    /// before the stop, so the table staged in the names directory's
+    /// `.building` is one that would otherwise have been swapped in over
+    /// the published one.
     #[test]
     fn a_stopped_build_leaves_the_directory_alone() {
         let params = BuildParams::default();
@@ -1035,7 +1038,7 @@ mod tests {
         let (dir, checkpoint) =
             (at.join("served"), at.join("served.checkpoint"));
 
-        // A directory a client is being served from.
+        // A directory a reader is being served from.
         built(&at, "served", params, 6_000, &galaxy(5_000))
             .expect("a published index");
         let before = contents(&dir);
@@ -1043,7 +1046,6 @@ mod tests {
         assert!(before.contains_key(Path::new(INDEX_FILE)));
 
         // Another galaxy pushed over it, stopped part way through the read.
-        // 66,000 is more than the 64Ki entries a names chunk holds.
         let systems = lumpy(70_000);
         let pushed = Cell::new(0u64);
         let stop = || pushed.get() >= 66_000;
@@ -1100,7 +1102,7 @@ mod tests {
     /// point — lose one and it is a name the map can find and never draw,
     /// take one twice and it is a system in two cells, which is not a tree.
     ///
-    /// The payloads and the names chunks are compared byte for byte; the
+    /// The payloads and the names sections are compared byte for byte; the
     /// index file by its cells' integers, `rank_lo`, `rank_hi`,
     /// `child_mask` and the count, since the floats beside them are summed
     /// in the order a cell map iterates and move in the last bit between
@@ -1109,8 +1111,6 @@ mod tests {
     fn a_resumed_build_is_the_build_that_was_never_stopped() {
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let at = Scratch::new("resumed");
-        // More than the 64Ki entries a names chunk holds, so the chunk the
-        // stop published part-filled is one the resume fills the rest of.
         let systems = lumpy(70_000);
 
         built(&at, "whole", params, 6_000, &systems).expect("a cold build");
@@ -1302,8 +1302,7 @@ mod tests {
     /// that already holds the galaxy appends a fresh record for every
     /// system and leaves the one behind it dead, and nothing on the write
     /// path reaches those: a shard is folded when its tail passes a bound
-    /// an import leaves it well under. Measured on a re-imported galaxy
-    /// before this ran here: 161.1 GB.
+    /// an import leaves it well under.
     #[test]
     fn a_publish_reclaims_the_body_shards() {
         let at = Scratch::new("reclaimed");

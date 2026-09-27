@@ -98,13 +98,13 @@ pub fn weigh(dir: &Path, stop: &dyn Fn() -> bool) -> io::Result<Weighed> {
 ///
 /// **What a whole-galaxy re-import leaves behind.** A dump names each system
 /// once and [`crate::accumulate::bodies::OnDisk::raising`] writes each record
-/// without reading what stood there, so a second import over a published
+/// without reading what is there, so a second import over a published
 /// directory appends a fresh record for every system and the one behind it is
 /// dead the moment the entry naming the new one lands. Nothing on the write
 /// path reclaims those: `append` folds when a shard's
 /// tail passes `tail_bound`, and an import leaves every
-/// tail well under it. Measured on a re-imported galaxy: `bodies/` at 323 GB,
-/// 49.8 % of it live, and 161 GB of dead record no append was going to reach.
+/// tail well under it. On a re-imported galaxy that is 161 GB of the 323 GB
+/// in `bodies/`.
 ///
 /// So the reclaim is asked for rather than waited on: by
 /// [`Build::finish`](crate::build::cold::Build::finish) once its index file
@@ -243,16 +243,14 @@ mod tests {
 
     /// A re-imported galaxy gives its dead records back
     ///
-    /// **The bug this is here for.** A dump names each system once and the
-    /// store raising a directory writes without reading, so an import over a
-    /// directory already holding the galaxy appends a fresh record for every
-    /// system and leaves the one behind it dead. Nothing reclaimed them: the
-    /// write path folds when a shard's tail passes
+    /// A dump names each system once and the store raising a directory
+    /// writes without reading, so an import over a directory already holding
+    /// the galaxy appends a fresh record for every system and leaves the one
+    /// behind it dead. The write path folds when a shard's tail passes
     /// [`tail_bound`](crate::store::bodies::tail_bound) and an import leaves
-    /// every tail well under it, and the compaction it would have reached was
-    /// `dead * 2 > written` — which a rewrite of every record with one the same
-    /// size lands exactly on and so failed. Reported off a real directory:
-    /// `bodies/` at 323 GB, 49.8 % of it live, 161 GB unreachable.
+    /// every tail well under it, and a rewrite of every record with one the
+    /// same size lands *exactly* on half dead, so a strict `>` at the
+    /// compaction's bar would never reclaim it.
     #[test]
     fn a_reimport_gives_its_dead_records_back() {
         let dir = scratch("reimport");
@@ -300,12 +298,13 @@ mod tests {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(swept.punched > 0, "the punch was not taken: {swept:?}");
         match swept.punched {
-            // Punched: the same generation, the same length, the same
-            // offsets — and the blocks under the first import gone.
+            // Copied: the next generation, and the one before it gone.
             0 => {
                 assert!(!body_data_path(&dir, shard, 0).exists());
                 assert!(body_data_path(&dir, shard, 1).exists());
             }
+            // Punched: the same generation, the same length, the same
+            // offsets — and the blocks under the first import gone.
             punched => {
                 assert_eq!(punched, swept.bytes);
                 assert!(body_data_path(&dir, shard, 0).exists());
@@ -332,11 +331,11 @@ mod tests {
 
     /// A shard whose tail has been folded away is still reclaimed
     ///
-    /// The other half of the same bug. [`fold`] returned on an empty tail
-    /// before it weighed the data file at all, so a shard whose last fold
-    /// declined the rewrite — the dead third below, which the write path's
-    /// bar is right to leave — could never be reclaimed again however much
-    /// of it was dead: there was no tail left to carry it back in.
+    /// The other half of the same case. A shard whose last fold declined
+    /// the rewrite — the dead third below, which the write path's bar is
+    /// right to leave — has no tail left, so a fold that returned on an
+    /// empty tail before weighing the data file would never reclaim it
+    /// however much of it is dead.
     #[test]
     fn a_folded_shard_is_still_reclaimed() {
         let dir = scratch("folded");
@@ -350,7 +349,8 @@ mod tests {
                 .map(|&it| (it, padded(1)))
                 .collect::<HashMap<_, _>>(),
         );
-        // A third of them again, which is under the write path's half.
+        // Half of them again, which leaves a third of the file dead: under
+        // the write path's half.
         let rewritten = &addresses[..100];
         write(
             &dir,
@@ -373,7 +373,7 @@ mod tests {
         );
 
         // And the sweep, which asks what the space is worth rather than
-        // what the next append is. This is the step that did nothing.
+        // what the next append is. This is the step that has to act.
         let weighed = weigh(&dir, &|| false).expect("a weighing");
         let swept = sweep_bodies(&dir, &|| false, &quietly).expect("a sweep");
         assert!(

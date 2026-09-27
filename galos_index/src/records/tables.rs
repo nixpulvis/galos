@@ -1,4 +1,4 @@
-//! The serving tables: the metadata the client reads beside the cells.
+//! The serving tables: the metadata a reader reads beside the cells.
 //!
 //! The cells carry what the map *draws* — a system's exact position and its
 //! fixed-width photometry. These carry what a *click* and a *route* want: a
@@ -8,11 +8,11 @@
 //! [`super::bodies`].
 //!
 //! They mirror the `galos_db` structs field for field and reuse the
-//! `elite_journal` enums, so the client renders them through the same code it
-//! rendered database rows through, changing only the type it names. They are
-//! serde records rather than hand-rolled `FixedCodec`, since they are variable,
-//! nested and read one system at a time rather than a million points a frame,
-//! so the tedium a fixed layout would trade for is not worth its speed here.
+//! `elite_journal` enums, so code that renders a database row renders these
+//! too, changing only the type it names. They are serde records rather than
+//! hand-rolled `FixedCodec`, since they are variable, nested and read one
+//! system at a time rather than a million points a frame, so the tedium a
+//! fixed layout would trade for is not worth its speed here.
 
 use crate::core::name::SystemName;
 use elite_journal::prelude::{Allegiance, Economy, Government, Security};
@@ -22,7 +22,7 @@ use std::fmt;
 /// A system that changes: its political columns, its name and where it sits.
 ///
 /// The dynamic set the map colors and navigates by, about 96,000 systems
-/// against 129 million. Held resident, since a filter reads it over every drawn
+/// against 200 million. Held resident, since a filter reads it over every drawn
 /// system every frame and a color cannot wait on a fetch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PopulatedSystem {
@@ -50,7 +50,8 @@ pub struct PopulatedSystem {
 /// than a column on [`NameEntry`], because a reach is the one thing here that
 /// really changes with the feed: a scan arrives and the system it is about
 /// grows. Names and positions change about never, which is what lets that
-/// table be published in chunks.
+/// table be published whole, with what the feed says since kept in a delta
+/// beside it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SystemReach {
     pub address: i64,
@@ -58,12 +59,12 @@ pub struct SystemReach {
     pub reach: f32,
 }
 
-/// A name and where it is: the search index and the routing graph in one.
+/// A name and roughly where it is: a row of the search index.
 ///
 /// Every system, not just the populated ones, since a search reaches any name
-/// and a route steps between any two positions. The positions here are the
-/// graph the client runs A* over, so the router needs nothing loaded past this
-/// one table.
+/// and a route finds its ends by name. A row read back from the table stands
+/// at the middle of the boxel its address names ([`NameEntry::place`]); where
+/// a system truly sits is its cell's payload.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NameEntry {
     pub address: i64,
@@ -74,12 +75,12 @@ pub struct NameEntry {
 impl NameEntry {
     /// Roughly where the system sits, in light years
     ///
-    /// **The middle of the boxel its address names**, which is what a
-    /// published row answers with since a name became a function of an
-    /// address: within five light years of the truth at the class most
-    /// systems are, and half a sector at the largest. Good enough to order a
-    /// list by and to read a distance off across a galaxy tens of thousands
-    /// of light years wide, and free, being arithmetic. Anything that *acts*
+    /// **The middle of the boxel its address names**, which is what a row
+    /// read back from the published table answers with: within five light
+    /// years of the truth at the class most systems are, and half a sector
+    /// at the largest. Good enough to order a list by and to read a distance
+    /// off across a galaxy tens of thousands of light years wide, and free,
+    /// being arithmetic. Anything that *acts*
     /// on a system — a camera sent there, a star drawn there, a route
     /// plotted from there — wants the galaxy's own answer instead.
     pub fn place(&self) -> [f64; 3] {

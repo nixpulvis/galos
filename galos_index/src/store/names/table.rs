@@ -1,4 +1,4 @@
-//! One generation of the table, mapped: the base every client reads.
+//! One generation of the table, mapped: the base every reader reads.
 //!
 //! Opening it is five `mmap` calls and six length checks, and nothing is
 //! decoded: a row is read out of the sections when it is asked for.
@@ -60,9 +60,9 @@ impl Table {
         let bytes =
             u64::from_le_bytes(head[32..40].try_into().unwrap()) as usize;
         // How many rows stored a name, which is what sizes `span.bin` and
-        // `exception.bin`. Version 1 and 2 wrote a span a row and the field
-        // is reserved zero in their heads, so the count stands in for it
-        // and the sections read dense.
+        // `exception.bin`. A version 1 or 2 generation has a span a row and
+        // the field is reserved zero in its head, so the count stands in
+        // for it and the sections read dense.
         let stored = match version >= 3 {
             true => {
                 u64::from_le_bytes(head[40..48].try_into().unwrap()) as usize
@@ -120,7 +120,7 @@ impl Table {
     /// [`SystemName`](crate::SystemName)s and
     /// [`crate::core::procedural`] spells upper case by construction — and
     /// borrowed wherever there is something to borrow, which is every row
-    /// of a version 1 table and every stored exception of a version 2 one.
+    /// of a version 1 table and every stored exception of a later one.
     pub fn name_at(&self, at: usize) -> Cow<'_, str> {
         self.held.as_ref().map_or(Cow::Borrowed(""), |held| held.name_at(at))
     }
@@ -139,10 +139,10 @@ impl Table {
     pub fn holds(&self, entry: &NameEntry) -> bool {
         match self.index_of(entry.address) {
             // The name alone: the base holds no position to compare
-            // against since version 4, and a report that agrees about the
-            // name is one the log has nothing to add about. A system that
-            // really moved is a system the galaxy renamed or re-placed,
-            // and the payload is what says so.
+            // against, and a report that agrees about the name is one the
+            // log has nothing to add about. A system that really moved is a
+            // system the galaxy renamed or re-placed, and the payload is
+            // what says so.
             Some(at) => entry.name == *self.name_at(at),
             None => false,
         }
@@ -150,16 +150,15 @@ impl Table {
 
     /// Read the text the search sweeps, so the first search does not.
     ///
-    /// **Reported: the first search of a session took about four seconds.**
-    /// A search that underfills its limit sweeps `text.bin`
+    /// **Cold, the first search of a session costs seconds.** A search
+    /// that underfills its limit sweeps `text.bin`
     /// ([`rows_holding`](Self::rows_holding)), and on a cold page cache
     /// that is not a 128 MB read — it is 128 MB *faulted in a page at a
     /// time*, thousands of round trips to the disk with no read-ahead,
     /// because a mapping the kernel has not been told about is read
     /// wherever the code happens to touch it. Warm, the same sweep is
-    /// milliseconds; every measurement of it was taken over a file that
-    /// had just been written and was therefore already resident, which is
-    /// exactly the measurement that hides this.
+    /// milliseconds, and a file that has just been written is warm, which
+    /// is exactly what hides this from a measurement.
     ///
     /// So the pages are asked for **once, in order, off the load** — an
     /// advice the kernel may read ahead on, and then a byte a page, which
@@ -206,7 +205,7 @@ impl Table {
     /// rows in name order, and that every name is UTF-8 within its span.
     ///
     /// A galaxy-sized scan, for whatever wrote the table and for a test.
-    /// No client open runs it.
+    /// No reader opening it runs it.
     pub fn audit(&self) -> Result<(), String> {
         let Some(held) = self.held.as_ref() else {
             return Ok(());
@@ -300,12 +299,11 @@ mod tests {
 
     /// A name its address spells is not written down, and reads back anyway
     ///
-    /// The whole of what version 2 is: `text.bin` holds the exceptions and
-    /// nothing else, and a row whose span has no length is answered by
-    /// [`crate::core::procedural`]. Measured over a real galaxy, that is 97.4 %
-    /// of rows and 3.94 GB of text against 133 MB — so the assertion here
-    /// is the *bytes*, since a table that stored them all would read back
-    /// identically and save nothing.
+    /// `text.bin` holds the exceptions and nothing else, and a row that
+    /// stored no name is answered by [`crate::core::procedural`]. Over a
+    /// real galaxy that is 97.4 % of rows and 133 MB of text against 3.94
+    /// GB — so the assertion here is the *bytes*, since a table that stored
+    /// them all would read back identically and save nothing.
     #[test]
     fn a_name_its_address_spells_is_not_stored() {
         let dir = Scratch::new("derived");
@@ -326,11 +324,10 @@ mod tests {
         assert_eq!(text, "SOL".len() as u64, "the derived names were stored");
         assert_eq!(version(&dir.0).unwrap(), Some(VERSION));
 
-        // **And a derived row costs no span either**, which is version 3:
-        // one offset a *stored* name plus a terminator, and one row number
-        // beside it, against the five bytes a row version 2 spent saying
-        // "derived". Three rows, one stored name: ten bytes of span and
-        // four of exception, where a dense array would be twenty.
+        // **And a derived row costs no span either**: one offset a *stored*
+        // name plus a terminator, and one row number beside it. Three rows,
+        // one stored name: ten bytes of span and four of exception, where
+        // a dense array would be twenty.
         let span = std::fs::metadata(at.join(SPAN_FILE)).unwrap().len();
         let exception =
             std::fs::metadata(at.join(EXCEPTION_FILE)).unwrap().len();
@@ -338,7 +335,7 @@ mod tests {
         assert_eq!(exception, ROW as u64, "the exception list is one row");
 
         // And the table answers with all three, in address order, through
-        // the same reads a client makes.
+        // the same reads a reader makes.
         let table = Table::open(&dir.0).expect("the table opens");
         table.audit().expect("a table a build just wrote");
         assert_eq!(table.name_at(0), "SOL");
@@ -402,14 +399,15 @@ mod tests {
 
     /// A version 2 generation still reads, dense spans and all
     ///
-    /// The rule this format keeps: no change may need a 610 GB import to
-    /// be run again, so every version this build ever wrote it also reads
-    /// and a directory comes forward when something rewrites its base.
-    /// Version 2 wrote a span for every row and marked a derived one by
-    /// giving it no length; version 3 writes a span a *stored* name and
-    /// names the rows in `exception.bin`. Both are the same table.
+    /// The rule this format keeps: no layout change may need a 610 GB
+    /// import to be run again, so this build reads every version in
+    /// `READS` and a directory comes forward when something rewrites its
+    /// base. A version 2 generation has a span for every row and marks a
+    /// derived one by giving it no length; the current layout has a span a
+    /// *stored* name and names the rows in `exception.bin`. Both are the
+    /// same table.
     ///
-    /// Built by hand, because nothing writes version 2 any more.
+    /// Built by hand, because nothing writes version 2.
     #[test]
     fn a_version_two_generation_still_reads() {
         let dir = Scratch::new("version-two");

@@ -18,7 +18,7 @@ pub enum CorePart {
     Reaches,
     /// The faction id-to-name table.
     Factions,
-    /// One file per system of what was scanned in it.
+    /// What was scanned in each system, packed into shard files.
     Bodies,
 }
 

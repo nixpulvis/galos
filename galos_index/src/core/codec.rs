@@ -5,9 +5,9 @@
 //! and whose byte length is known up front, so its records compose - a width
 //! is the sum of its parts' and a decode is a run of reads in the same order
 //! a write took, which is why no width is a magic number and no decode counts
-//! offsets. The index file and a cell's payload block are variable-length
-//! encodings of the fixed records below them; their layouts are
-//! [`crate::format::payload`] and [`crate::tree::index`].
+//! offsets. The index file is a header and a run of fixed [`Cell`] records,
+//! and a cell's payload block is a header and columns of its systems' fields;
+//! both layouts are [`crate::format::payload`]'s.
 //!
 //! The layout is explicit rather than a derived serialization because these
 //! bytes are a contract both sides hold across versions. The primitives get
@@ -16,6 +16,8 @@
 //! `m_min` as a NaN-sentinel `f32`), which is the part a derive could not
 //! express. Each record states its own layout with `record!` beside the
 //! type, so the width and the type cannot be read apart.
+//!
+//! [`Cell`]: crate::tree::cell::Cell
 
 /// Append this value's on-disk bytes to a buffer; [`to_bytes`](Self::to_bytes)
 /// is the standalone form, for writing a whole value to a file.

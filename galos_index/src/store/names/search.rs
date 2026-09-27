@@ -94,8 +94,10 @@ impl Names {
     /// answered with nothing — see that constant for why an answer to one
     /// character would be worse than none.
     ///
-    /// Three roads, in the order a reader wants them, and the first that
-    /// fills the limit ends it:
+    /// Three roads, in the order a reader wants them. The delta answers
+    /// first, as the later word; the other two take a share each of what
+    /// is left, so that neither can starve the other, and whatever one
+    /// leaves is the other's:
     ///
     /// 1. **The delta**, which is small and is the later word.
     /// 2. **The base by name** — the prefix, and then the stored names
@@ -111,7 +113,13 @@ impl Names {
     ///    which sectors hold that word and walking each one's run of the
     ///    by-name order. 11,662 sectors and 192 KB, compiled in, so finding the
     ///    sector costs microseconds and the rows come back through the same
-    ///    prefix search as ever.
+    ///    prefix search. A word that is a boxel code is not matched
+    ///    at all: the addresses it names in those sectors are worked out,
+    ///    and the table is asked whether it holds them.
+    ///
+    /// Behind them come the near misses: the stored names nearly spelled
+    /// ([`Table::rows_near`]), only where nothing was spelled right, and
+    /// then the sectors nearly spelled.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<NameEntry> {
         self.matching_near(needle, None, limit)
     }
@@ -137,13 +145,13 @@ impl Names {
         // reader holds a name in pieces — the sector of one they have been
         // to and the boxel code off a screenshot, or the two words of a
         // sector the wrong way round — and a search that only matched a run
-        // of bytes answered `EUQ PRAEA` with nothing while holding two
+        // of bytes would answer `EUQ PRAEA` with nothing while holding two
         // hundred million names beginning `PRAEA EUQ`.
         //
-        // One word is the old question exactly: the roads below take the
-        // longest of them, which is the most selective, and every candidate
-        // is then checked against the *whole* query. So the roads are
-        // unchanged and what is new is a sieve behind them.
+        // The roads below take the longest of the words, which is the most
+        // selective, and every candidate is then checked against the
+        // *whole* query by a sieve behind them; a one-word query is the
+        // roads alone.
         let words = words_of(needle);
         let probe = words
             .iter()
@@ -183,19 +191,18 @@ impl Names {
             }
         };
         // **A share each, because a road that answers cannot be allowed to
-        // starve one that answers differently.** The by-name road ran
-        // first and filled the whole limit, so `EUQ` came back as three
-        // systems of `EUQAIPPY` — the sector `PRAEA EUQ` holds a hundred
-        // thousand and not one of them was offered, the road that knows
-        // about them never having been reached. Precedence was the bug:
-        // the two roads answer *different questions* about the same query,
-        // "named this" and "in a sector called this", and which of them a
-        // reader meant is not something the order of a match can say.
+        // starve one that answers differently.** The two roads answer
+        // *different questions* about the same query, "named this" and "in
+        // a sector called this", and which of them a reader meant is not
+        // something the order of a match can say. Were the by-name road to
+        // fill the whole limit, `EUQ` would come back as three systems of
+        // `EUQAIPPY` and not one of the hundred thousand the sector
+        // `PRAEA EUQ` holds.
         //
         // So each takes half, and whatever half one leaves is the other's.
         // The by-name road goes first with its share and again at the end
-        // with the remainder, which keeps a query nothing procedural
-        // matches reading exactly as it did.
+        // with the remainder, so a query nothing procedural matches reads
+        // as the by-name road alone answers it.
         let share = (limit - found.len()).div_ceil(2);
         let mut by_name = self.base.matching(probe, reach).into_iter();
         for at in by_name.by_ref().take(share) {
@@ -207,13 +214,13 @@ impl Names {
         // The sectors the query's words name, most words matched first: a
         // derived name is a sector and then coordinates, so this is the
         // only road that reaches the 97.4 % of names nothing stored.
-        // **A word that is coordinates is constructed, not matched.** `EUQ
-        // YE-Q` used to answer nothing: the sector road walks a sector's
-        // rows in name order and the `YE-Q` boxels sit a hundred thousand
-        // rows down them, past any window worth reading. But `YE-Q` is not
-        // a name at all — it is the boxel's ordinal in base 26 — so the
-        // address it names in a given sector is arithmetic, and all the
-        // table is asked is whether it holds it. See
+        // **A word that is coordinates is constructed, not matched.**
+        // Matched, `EUQ YE-Q` would answer nothing: the sector road walks a
+        // sector's rows in name order and the `YE-Q` boxels sit a hundred
+        // thousand rows down them, past any window worth reading. But
+        // `YE-Q` is not a name at all — it is the boxel's ordinal in base
+        // 26 — so the address it names in a given sector is arithmetic, and
+        // all the table is asked is whether it holds it. See
         // [`crate::core::procedural::addresses_in`].
         if let Some(coded) = crate::core::procedural::coded(&words) {
             // The words that are not coordinates name the sector; where
@@ -271,14 +278,14 @@ impl Names {
         // stored name holding the word exactly, so the sector road is two:
         // the sectors spelled right run here and the ones only nearly
         // spelled run behind the text sweep below. Without that, `COLONA`
-        // answered with five systems of `COJOA`, two edits out, and never
-        // reached `COLONIA`.
+        // would answer with five systems of `COJOA`, two edits out, and
+        // never reach `COLONIA`.
         //
         // A few rows from each sector, for the same reason the roads take
         // a share: a sector holds a hundred thousand systems whose names
         // differ in the coordinates, so its first dozen rows are the least
-        // useful dozen answers there are. `EUQ` offered six of `BLAEA EUQ
-        // AA-A` and nothing of the other sectors named `EUQ`.
+        // useful dozen answers there are. Without it `EUQ` would offer six
+        // of `BLAEA EUQ AA-A` and nothing of the other sectors named `EUQ`.
         let sectors =
             crate::core::procedural::sectors_holding_all(&words, near, limit);
         let mut nearly: Vec<&str> = Vec::new();
@@ -310,7 +317,7 @@ impl Names {
         // Only where nothing was spelled right. A query that found real
         // names is a query a reader spelled, and near misses beside them
         // are noise; and this is the one road that reads all 128 MB of the
-        // text, which measured 20–90 ms against the 1–6 ms the roads above
+        // text, which measures 20–90 ms against the 1–6 ms the roads above
         // cost. `SOL` pays none of it.
         if found.is_empty() {
             for at in self.base.rows_near(probe, limit) {
@@ -400,12 +407,11 @@ impl Table {
     /// `limit` of them.
     ///
     /// **This is a scan, and it is affordable because the names are
-    /// derived.** It used to read every name in the table — 3.94 GB at
-    /// 200 M, measured at 564 ms warm and 5.7 s cold, and worse than the
-    /// wait it faulted the whole blob in and evicted the cell payloads the
-    /// map draws from. What it reads now is `text.bin`, which holds only
-    /// the names no address spells: **128 MB of a 200 M galaxy**, thirty
-    /// times less, and none of it is a page the drawing wants.
+    /// derived.** It reads `text.bin`, which holds only the names no
+    /// address spells: **128 MB of a 200 M galaxy** against 3.94 GB for
+    /// every name, and none of it is a page the drawing wants. A scan of
+    /// every name would fault the whole blob in and evict the cell payloads
+    /// the map draws from.
     ///
     /// **Swept in parallel**, because a query with one answer still reads
     /// all of it: 128 MB single-threaded measured 40–66 ms, which is ten
@@ -572,8 +578,8 @@ impl Table {
             }
             // **The nearest first, not the first swept.** A loose query
             // matches thousands of names and there is room for a
-            // screenful: `COLONA` reached `R CORONAE AUSTRINI` before
-            // `COLONIA` — two edits against one — and filled the answer
+            // screenful: `COLONA` would reach `R CORONAE AUSTRINI` before
+            // `COLONIA` — two edits against one — and fill the answer
             // with it. Ties by row, so the answer is the same on every
             // machine.
             hits.sort_unstable();
@@ -589,7 +595,7 @@ impl Table {
         found
     }
 
-    /// Which systems' names the client's search should answer with: the
+    /// Which systems' names the map's search should answer with: the
     /// prefix first, then the names holding the query at a word start.
     pub fn matching(&self, needle: &str, limit: usize) -> Vec<usize> {
         let mut found = self.rows_starting(needle, limit);
@@ -669,16 +675,8 @@ mod tests {
 
     /// A search is the prefix, then a word start, and reads no further
     ///
-    /// It used to fall through to a substring scan of *every* name, which
-    /// at 200 M was 3.94 GB read on the main thread for most queries — and
-    /// the pages it faulted in evicted the cell payloads the map draws
-    /// from, so searching stalled the galaxy's reads too. Then it was a
-    /// prefix and nothing else, and `SOL` stopped answering `NEW SOL`.
-    ///
-    /// It is both now, and what changed is the *corpus*: `text.bin` holds
-    /// only the names no address spells, 128 MB of a 200 M galaxy against
-    /// 3.94 GB, so the scan is thirty times smaller and touches nothing
-    /// the drawing wants. What stays refused is a match mid-*word*, which
+    /// The scan behind the prefix reads only `text.bin`, the names no
+    /// address spells. What stays refused is a match mid-*word*, which
     /// would answer `OL` with every `SOL`, and a run of bytes straddling
     /// two names, which is what a scan over concatenated text invites.
     #[test]
@@ -706,7 +704,7 @@ mod tests {
             ["SOL", "SOLATI", "NEW SOL"],
         );
         assert_eq!(named(table.matching("BOL", 25)), ["BOLA"]);
-        // The one this was for: a word nobody's name begins with.
+        // A word nobody's name begins with.
         assert_eq!(named(table.matching("A*", 25)), ["SAGITTARIUS A*"]);
 
         // Mid-word is not a match, and neither is a run of bytes that
@@ -763,13 +761,12 @@ mod tests {
 
     /// A road that answers cannot starve the one that answers differently
     ///
-    /// **What `EUQ` did.** Names beginning with the query came out of the
-    /// by-name order, filled the limit, and the road that knows which
-    /// *sectors* hold that word was never reached — so a query naming a
-    /// sector of a hundred thousand systems answered with three systems of
-    /// a system named `EUQAIPPY`. Each road takes a share of the limit
-    /// now, and the sector road spreads its share over the sectors rather
-    /// than spending it all on the first one's first rows.
+    /// Names beginning with the query come out of the by-name order, and
+    /// were they to fill the limit, a query naming a sector of a hundred
+    /// thousand systems would answer with three systems of a system named
+    /// `EUQAIPPY`. Each road takes a share of the limit, and the sector
+    /// road spreads its share over the sectors rather than spending it all
+    /// on the first one's first rows.
     #[test]
     fn a_by_name_match_does_not_crowd_out_a_sector() {
         let dir = Scratch::new("shares");
@@ -793,7 +790,7 @@ mod tests {
 
         // `PRUE` begins three of these names and is a sector word of all
         // four. At a limit of two the by-name road takes one and the
-        // sector road the other, where it used to take both.
+        // sector road the other.
         let two = named("PRUE", 2);
         assert_eq!(two.len(), 2, "{two:?}");
         assert!(
@@ -811,7 +808,7 @@ mod tests {
     /// **Which is how a reader holds a name.** A sector they have been to
     /// and a boxel code off a screenshot, or the two words of a sector the
     /// wrong way round, or a letter of it mistyped — and a search matching
-    /// a run of bytes answered every one of those with nothing while
+    /// a run of bytes would answer every one of those with nothing while
     /// holding two hundred million names spelled that way.
     ///
     /// The slack is a word's own, [`crate::core::procedural::slack`]: three
@@ -858,12 +855,11 @@ mod tests {
     /// misspelled
     ///
     /// The two roads a derived galaxy needs and a stored one does not.
-    /// `EUQ YE-Q` answered nothing before: the sector road walks a
-    /// sector's rows in name order and the `YE-Q` boxels are a hundred
-    /// thousand rows down them, so the code has to be read as the
-    /// coordinates it is. And a misspelled *given* name has no vocabulary
-    /// to be offered from — the dictionary holds sectors — so the only
-    /// answer is the text, a word at a time.
+    /// The sector road walks a sector's rows in name order and the `YE-Q`
+    /// boxels of `EUQ YE-Q` are a hundred thousand rows down them, so the
+    /// code has to be read as the coordinates it is. And a misspelled
+    /// *given* name has no vocabulary to be offered from — the dictionary
+    /// holds sectors — so the only answer is the text, a word at a time.
     #[test]
     fn a_code_is_built_and_a_stored_name_may_be_misspelled() {
         let dir = Scratch::new("coded");

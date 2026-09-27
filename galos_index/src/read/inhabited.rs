@@ -7,7 +7,7 @@
 //! governed systems among some hundred thousand neighbours, so a political
 //! field laid at the count-weighted centroid with the count-weighted spread
 //! draws the colonized filaments as a blob over the whole cell and loses the
-//! shape that was the picture.
+//! shape that is the picture.
 //!
 //! So this is a third weighting, kept beside the other two rather than folded
 //! into them: **one unit of weight for every system somebody lives in, and
@@ -32,7 +32,7 @@
 //! residual taken under one gain is wrong under another.
 //!
 //! Derived rather than published today. [`Inhabitance::of`] rolls the resident
-//! `populated.bin` up a tree the client already holds, which is the whole
+//! `populated.bin` up a tree a reader already holds, which is the whole
 //! column for the price of one pass over a table that is resident anyway. The
 //! record carries its own codec so the builder can publish it as
 //! `agg/inhabited.bin` once cells have a stable order, and nothing reading it
@@ -595,8 +595,9 @@ mod tests {
         assert!(cur.is_empty());
     }
 
-    /// A tree of one root cell and its eight children, so a descent has
-    /// somewhere to go.
+    /// A tree of the chain of cells from the root down to level 3 over `at`,
+    /// each holding the next as its one child, so a descent has somewhere to
+    /// go.
     fn tree(at: [f64; 3]) -> Index {
         let leaf = CellId::of_point(at, 3);
         let mut cells = vec![Cell {

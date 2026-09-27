@@ -9,7 +9,6 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
-/// Every system the pack holds bodies for, in address order.
 /// What every packed system's arrival star is, shard by shard
 ///
 /// **Sequential on purpose.** [`find`](super::find) maps a shard's index,

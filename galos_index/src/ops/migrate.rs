@@ -2,7 +2,7 @@
 //!
 //! The migrations an open runs on its own: packing the loose body files into
 //! their shards ([`crate::store::bodies::pack`]), moving loose payloads into
-//! theirs ([`reshard_cells`]), folding the names table's old MessagePack
+//! theirs ([`reshard_cells`]), folding the names table's legacy MessagePack
 //! chunks into a mapped base, and bringing forward whatever a contributed
 //! table's own shape has moved on from ([`crate::records::Table::upgrade`]).
 //! All of them are idempotent, and all of them are what [`migrate`] runs in
@@ -48,7 +48,7 @@ pub struct Migrated {
     pub cells: Option<Resharded>,
     /// Systems in the names table folded out of MessagePack chunks into a
     /// mapped base, or [`None`] where the directory had no chunks — which
-    /// is every directory built since.
+    /// is every directory a current build writes.
     pub names: Option<usize>,
     /// Each contributed table an upgrade rewrote, and how many rows it
     /// wrote; empty where every table was current.
@@ -64,9 +64,12 @@ pub struct Migrated {
 
 /// Bring an existing directory's *layout* up to date, before anything reads or
 /// writes it: [`crate::store::bodies::pack`],
-/// [`crate::ops::migrate::reshard_cells`], and then the names chunks.
+/// [`crate::ops::migrate::reshard_cells`], the names chunks, and then the
+/// contributed tables' own upgrades.
 ///
-/// Nothing is versioned: a layout this cannot recognise is built again.
+/// None of these is versioned. The one version asked is the index file's: a
+/// directory this build cannot read is answered in [`Migrated::upgrade`]
+/// with nothing done, for `galos index migrate` to bring forward.
 ///
 /// Interruptible, and the one thing at an open that has to be: a galaxy's
 /// worth of loose body files is hours of them, which a run asked to stop

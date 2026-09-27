@@ -121,13 +121,13 @@ pub struct Aggregate {
     /// and extent.
     mass: Moments,
     /// Counts per age bucket, a column of the record so a Recency span can be
-    /// answered by prefix sum off the aggregates alone. Every build writes it
-    /// and nothing reads it back yet: the Recency filter asks per system, off
-    /// the `updated_at` the payload carries, which is the same clock binned
-    /// finer.
+    /// answered by prefix sum off the aggregates alone. Every build writes it,
+    /// and a span asked of a merged mark or of the field is answered from it,
+    /// through [`Self::aged`]; a mark drawn as itself is asked off the
+    /// `updated_at` the payload carries, which is the same clock binned finer.
     ///
     /// `u32`, and exact: a bucket counts systems and the buckets of a cell
-    /// sum to its `count`, so four billion is ample over the galaxy's 129
+    /// sum to its `count`, so four billion is ample over the galaxy's 200
     /// million, where a `u16` share of `count` would round the smallest
     /// bucket — the recently-changed one the axis exists to show — away.
     aged: [u32; AGE_BUCKETS],
@@ -240,8 +240,6 @@ impl Aggregate {
     /// systems a span admits are a prefix of them and the count is a prefix sum
     /// — the same question the filter asks of a payload point, answered to the
     /// day instead of to the second, and answered for a whole subtree at once.
-    /// The column has been written by every build since the format existed and
-    /// had no reader.
     pub fn aged(&self) -> &[u32; AGE_BUCKETS] {
         &self.aged
     }

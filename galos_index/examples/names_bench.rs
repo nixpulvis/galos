@@ -7,9 +7,7 @@
 //! ```
 //!
 //! Run under `/usr/bin/time -l` (macOS) or `-v` (GNU) for the peak resident
-//! set, which is the number this format exists to hold down: the table it
-//! replaced measured 7.9 GB resident and 33 s to read at 200,071,629
-//! systems, and 47 GB before it was packed.
+//! set, which is the number this format exists to hold down.
 //!
 //! The lookups are sampled across the whole table on purpose. A warm run
 //! measures the arithmetic; the first run after a build measures the page

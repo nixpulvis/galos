@@ -1,4 +1,4 @@
-//! The transport seam: the one place the client asks where cells and metadata
+//! The transport seam: the one place a reader asks where cells and metadata
 //! come from.
 //!
 //! Cells and metadata share a transport at all times. Today that is the
@@ -7,11 +7,12 @@
 //! filesystem index is never paired with an HTTP metadata service.
 //!
 //! Async because the HTTP impl to come is; the FS reads are blocking and
-//! their futures resolve at once. Boxed through `async_trait`, so a client
+//! their futures resolve at once. Boxed through `async_trait`, so a reader
 //! holds `Arc<dyn Source>` and picks its transport at runtime.
 //!
 //! The path helpers are the file-layout contract the builder writes to and
-//! this reads from, named once here so the two cannot drift.
+//! this reads from, named once in [`crate::format::layout`] so the two cannot
+//! drift.
 
 use crate::core::geometry::CellId;
 use crate::format::layout::{
@@ -33,7 +34,7 @@ use std::path::PathBuf;
 
 /// What a served part was when it was read, for asking whether it has changed
 ///
-/// Opaque: a client keeps the one it was handed and hands it back to ask
+/// Opaque: a reader keeps the one it was handed and hands it back to ask
 /// whether the part still reads the same. The filesystem answers with a
 /// modification time and an HTTP transport with a hashed `ETag`; nothing
 /// outside a [`Source`] may read more into the number than "the same means
@@ -42,7 +43,7 @@ pub type Stamp = u64;
 
 /// One part of a served index, for [`Source::stamp`] to be asked about
 ///
-/// The parts a client holds and would have to re-read, which is every file in
+/// The parts a reader holds and would have to re-read, which is every file in
 /// the layout but the body files: those are fetched when a click opens a
 /// system and never held, so a stale one cannot be on screen.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,18 +64,18 @@ pub enum Part {
     ///
     /// Stamped by its head rather than by its sections: the head is written
     /// last and is what makes a generation live, so a moved stamp is a
-    /// table that has been recompacted whole and a client re-opens it. That
+    /// table that has been recompacted whole and a reader re-opens it. That
     /// is rare — a cold build, or a fold of a log that has grown long.
     Names,
     /// The names table's delta log, `names/delta.bin`
     ///
-    /// What moves when the feed names a system. A client holds the byte
+    /// What moves when the feed names a system. A reader holds the byte
     /// offset it has read to and takes only what is past it, so a publish
     /// of fifty arrivals costs fifty rows on both sides.
     NamesDelta,
 }
 
-/// Where the client reads cells and metadata from. One transport for both.
+/// Where a reader reads cells and metadata from. One transport for both.
 #[async_trait]
 pub trait Source: Send + Sync {
     /// The resident tree of cell aggregates the walks plan on.
@@ -117,7 +118,7 @@ pub trait Source: Send + Sync {
     /// The delta log's rows past `from`, and how far the log now reads.
     ///
     /// What a refresh reads when [`Part::NamesDelta`]'s stamp has moved: a
-    /// client hands back the offset it holds and is given the tail.
+    /// reader hands back the offset it holds and is given the tail.
     async fn names_delta(&self, from: u64) -> io::Result<names::Delta>;
 
     /// The faction id-to-name table, read whole and cached by the caller.
@@ -142,23 +143,23 @@ pub trait Source: Send + Sync {
 
     /// What `part` is now, or [`None`] where the transport cannot say
     ///
-    /// How a client finds out that the index it holds has been republished.
+    /// How a reader finds out that the index it holds has been republished.
     /// Everything resident is read once and then held — the aggregates, the
     /// payloads of the cells in view, the tables a color and a name are read
-    /// from — while a feed rewrites all of it underneath. A client keeps the
+    /// from — while a feed rewrites all of it underneath. A reader keeps the
     /// stamp it was handed with each part and asks this before re-reading
     /// anything.
     ///
     /// Cheap by contract: a stat on the filesystem, a conditional request's
-    /// worth of work over HTTP. A client asks about every part it holds on
+    /// worth of work over HTTP. A reader asks about every part it holds on
     /// every poll.
     ///
-    /// [`None`] is "not there": a cell with no payload file, a chunk past the
-    /// end of the table, a sidecar an older build never wrote. Two [`None`]s
+    /// [`None`] is "not there": a cell with no payload file, a names table
+    /// never written, a sidecar an older build never wrote. Two [`None`]s
     /// compare equal and read as unchanged.
     ///
     /// A transport that cannot answer cheaply says so with an error, and the
-    /// client leaves that part for the next pass rather than reading it.
+    /// reader leaves that part for the next pass rather than reading it.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>>;
 }
 
@@ -176,7 +177,7 @@ pub async fn table<T: Table>(
 /// A [`Source`] over a build directory on the local filesystem.
 ///
 /// The directory holds `index.bin`, a `cells/` subdirectory of payloads, and
-/// the metadata files this reads beside them. The reads are blocking; a client
+/// the metadata files this reads beside them. The reads are blocking; a reader
 /// drives them off its own task pool.
 pub struct FsSource {
     dir: PathBuf,
@@ -241,15 +242,15 @@ impl Source for FsSource {
 
     /// The file's modification time, in nanoseconds since the epoch.
     ///
-    /// One `stat`, cheap enough to ask about every part the client holds on
-    /// every poll. A missing file — a cell that owns nothing, a chunk past
-    /// the end of the table — is [`None`] rather than an error.
+    /// One `stat`, cheap enough to ask about every part the reader holds on
+    /// every poll. A missing file — a cell that owns nothing, a names table
+    /// never written — is [`None`] rather than an error.
     ///
-    /// The builder writes the index whole and each changed payload whole,
-    /// both in place, so a moved mtime is a republished part. A torn read
-    /// costs at most a refresh that reads nothing: the payload codec drops a
-    /// partial trailing record and the index's length check refuses a
-    /// half-written file.
+    /// The builder writes the index whole and in place, and each changed
+    /// payload whole beside its file and renamed over it, so a moved mtime is
+    /// a republished part. A torn read costs at most a refresh that reads
+    /// nothing: a payload is never seen half-written, and the index's length
+    /// check refuses a half-written file.
     ///
     /// A time before the epoch — archives and mirrors do carry them — stamps
     /// as zero rather than as [`None`], [`None`] being reserved for a part
@@ -309,9 +310,9 @@ mod tests {
     /// A stamp moves when a part is republished, and says nothing about a
     /// part that is not there
     ///
-    /// How a client finds out its index is stale: equal stamps read nothing
-    /// and draw the sky as it was. A cell with no payload file and a chunk
-    /// past the end of the table are both nothing to hold, hence
+    /// How a reader finds out its index is stale: equal stamps read nothing
+    /// and draw the sky as it was. A cell with no payload file and the parts
+    /// of a names table never written are all nothing to hold, hence
     /// [`None`].
     #[test]
     fn a_stamp_moves_when_a_part_is_republished() {
@@ -418,12 +419,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A body file written where the layout says it goes is read back by a
-    /// [`FsSource`], and a pre-sharding flat file still is
+    /// A loose body file is read back by a [`FsSource`], at the sharded path
+    /// or at the flat one before it
     ///
-    /// The two halves of the transport agree on where a body file lives, and
-    /// the reader goes on answering for a directory published before the
-    /// sharding landed.
+    /// Neither is written any more — the builder packs bodies into shard
+    /// files — but a directory published before the pack still holds them,
+    /// and the reader goes on answering for it until the pack has walked
+    /// them in.
     #[test]
     fn a_body_file_reads_back_sharded_or_flat() {
         pollster::block_on(a_body_file_reads_back());

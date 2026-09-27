@@ -40,7 +40,7 @@ pub fn payload_path(dir: &Path, id: CellId) -> PathBuf {
         .join(format!("{:02}-{morton:016x}.bin", id.level))
 }
 
-/// Where a cell's payload was written before the sharding: `cells/` flat.
+/// Where a cell's legacy unsharded payload sits: `cells/` flat.
 /// Read where the sharded path is absent, never written.
 pub fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
     dir.join(PAYLOAD_DIR).join(format!(
@@ -110,7 +110,7 @@ pub fn names_dir(dir: &Path) -> PathBuf {
 /// The names table's head, which names the live generation.
 ///
 /// The one file a reader opens first and the one a writer renames last:
-/// it is what makes a generation of sections live, so a client that has
+/// it is what makes a generation of sections live, so a reader that has
 /// read it has a whole table or none.
 pub fn names_head_path(dir: &Path) -> PathBuf {
     names_dir(dir).join(HEAD_FILE)
@@ -170,10 +170,11 @@ pub fn body_data_path(dir: &Path, shard: u64, generation: u16) -> PathBuf {
 
 /// A system's body file within a build directory, keyed by address.
 ///
-/// The layout before [`crate::store::bodies`]: one file a system, sharded over
-/// 4,096 subdirectories, `bodies/{shard:03x}/{address}.bin`. Read and never
-/// written — [`crate::store::bodies::pack`] walks these into the shard files on
-/// the first open, and until it has,
+/// The legacy loose layout, beside [`crate::store::bodies`]'s shard files:
+/// one file a system, sharded over 4,096 subdirectories,
+/// `bodies/{shard:03x}/{address}.bin`. Read and never written —
+/// [`crate::store::bodies::pack`] walks these into the shard files on the
+/// first open, and until it has,
 /// [`read_bodies`](crate::store::bodies::read_bodies) falls back to this path.
 pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
     let shard = body_shard(address);
@@ -182,11 +183,10 @@ pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
         .join(format!("{address}.bin"))
 }
 
-/// Where a body file sat before the sharding, `bodies/{address}.bin`.
+/// Where a legacy unsharded body file sits, `bodies/{address}.bin`.
 ///
-/// What a directory published by an older builder holds. Read and never
-/// written: [`pack`](crate::store::bodies::pack) moves these into the shard
-/// files on the first open, and until it has,
+/// Read and never written: [`pack`](crate::store::bodies::pack) moves these
+/// into the shard files on the first open, and until it has,
 /// [`read_bodies`](crate::store::bodies::read_bodies) falls back to this
 /// path.
 pub fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
@@ -208,7 +208,7 @@ pub fn lock_path(dir: &Path) -> PathBuf {
 /// What a resume point is named beside the directory it resumes.
 ///
 /// Beside the directory rather than inside it: the file holds every
-/// system at full precision, which no client should be served. One
+/// system at full precision, which no reader should be served. One
 /// spelling, here, because four things need it: [`pending_path`],
 /// [`mark_path`] and [`spill_dir`] hang their own suffixes off it,
 /// [`crate::ops::copy`] has to carry the whole family across, and
@@ -250,7 +250,7 @@ pub fn mark_path(checkpoint: &Path) -> PathBuf {
 /// Where the systems of each region go while they are being read.
 ///
 /// Beside the resume point rather than in the served directory: scratch,
-/// the size of the galaxy, and no client may see them.
+/// the size of the galaxy, and no reader may see them.
 ///
 /// Public for the same reason [`mark_path`] is: a copy of a directory
 /// has to know this is scratch so that it skips it rather than carrying

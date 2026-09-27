@@ -75,9 +75,9 @@ pub(crate) fn write_changes<'a>(
 ///
 /// Beside the file and renamed over it, as
 /// [`crate::format::msgpack::write_meta`] and the names table's generations
-/// are. Not for the torn-write reason those have — a payload carries no header
-/// and a short read drops its last record, which a reader already tolerates —
-/// but because a payload is **mapped**. `fs::write` truncates and rewrites in
+/// are. Not for the torn-write reason those have — a payload's header states
+/// its count, and one shorter than that is refused as empty — but because a
+/// payload is **mapped**. `fs::write` truncates and rewrites in
 /// place, so a feed republishing a cell under a reader's mapping would give it
 /// torn bytes, and the truncation itself is a `SIGBUS` on the pages a reader
 /// still holds. A rename leaves the old inode alone for as long as anything has
@@ -111,9 +111,7 @@ pub struct Swept {
 ///
 /// A whole-directory build writes its own cells and knows nothing of the tree
 /// that stood before it, so every cell the old tree had and the new one does
-/// not is left behind: 200,248 files and 4.9 GB of them, measured on a
-/// directory rebuilt from the database over one built from a dump. The live
-/// path has no such debt — a publish deletes what
+/// not is left behind. The live path has no such debt — a publish deletes what
 /// [`Snapshot::write_diff`](crate::Snapshot::write_diff) is told went — and the
 /// names table already retires its stale generations. This is the same sweep
 /// for the cells.
@@ -232,7 +230,7 @@ mod tests {
     ///
     /// What a whole-directory rebuild leaves behind: the tree that stood
     /// there before wrote payloads for cells the new one has no record of,
-    /// and nothing ever removed them — 200,248 files and 4.9 GB of them on
+    /// and nothing else removes them — 200,248 files and 4.9 GB of them on
     /// a directory rebuilt from the database over one built from a dump.
     ///
     /// Both layouts are checked, because a directory that has not been
@@ -247,7 +245,7 @@ mod tests {
         let live: Vec<CellId> = index.cells().map(|cell| cell.id).collect();
 
         // Two cells no tree here holds: one filed as a build files them,
-        // one where a build before the sharding would have put it.
+        // one at the flat, unsharded path.
         let sharded = CellId { level: 11, x: 3, y: 4, z: 5 };
         let loose = CellId { level: 12, x: 6, y: 7, z: 8 };
         assert!(index.get(sharded).is_none() && index.get(loose).is_none());

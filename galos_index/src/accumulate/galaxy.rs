@@ -14,8 +14,8 @@
 //!
 //! The fan-out is not merely the same one `galos_db::record`
 //! does - it *is* that one. Both sides call [`SystemReport::of`], because a
-//! scan is a scan whether it arrives off a socket or off a disk, and the two
-//! derivations had already disagreed once about which events name a system.
+//! scan is a scan whether it arrives off a socket or off a disk, and two
+//! fan-outs would be two answers to which events name a system.
 //! What differs is where it lands: `galos_db::record` writes fourteen tables and a
 //! build reads them back, while this keeps the two shapes the index wants -
 //! [`crate::System`] and the metadata records - and skips the round trip.
@@ -72,7 +72,7 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // The Recency edges and the bucketing over them are kept once, in
 // [`crate::records::derive`], rather than named again here. How many buckets
 // there are is part of the published format — a cell aggregate is a count
-// per bucket and the client's Recency control indexes straight into them —
+// per bucket and the map's Recency control indexes straight into them —
 // so this derivation and the database's must read the same edges or one
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
@@ -103,11 +103,9 @@ pub const UNKNOWN: &str = "unknown";
 /// The systems table is held whole in memory. A commander's journal is
 /// thousands of systems where the galaxy is a hundred and twenty-nine
 /// million, so it is megabytes rather than gigabytes and every derivation
-/// over it is a pass that costs nothing worth measuring — which is why a
-/// source over this rebuilds rather than editing, and why there is no
-/// checkpoint, no cursor and no incremental publish anywhere in this
-/// derivation. The bodies, which is the part a feed makes unbounded, are
-/// behind [`Bodies`] rather than here.
+/// over it is a pass that costs nothing worth measuring. The bodies, which
+/// is the part a feed makes unbounded, are behind [`Bodies`] rather than
+/// here.
 #[derive(Debug)]
 pub struct Galaxy {
     /// What dates the Recency reading. Set once by the caller per pass, so
@@ -161,8 +159,8 @@ impl Galaxy {
         }
     }
 
-    /// Make durable whatever the store is holding, answering how many body
-    /// files were written since this was last called.
+    /// Make durable whatever the store is holding, answering how many
+    /// systems' bodies were written since this was last called.
     ///
     /// Nothing where the store is memory. Called on the beat whoever owns
     /// the galaxy publishes on. A store that forced a flush of its own in
@@ -744,9 +742,9 @@ mod tests {
     ///
     /// The game writes an `AutoScan` every time a ship re-enters a system it
     /// has already looked at closely: ordered, later, and poorer. Replacing
-    /// the record with it took away the surface, what can be picked up off
-    /// it, the tidal lock and the temperature — everything the closer look
-    /// was for.
+    /// the record with it would take away the surface, what can be picked up
+    /// off it, the tidal lock and the temperature — everything the closer
+    /// look is for.
     #[test]
     fn a_basic_scan_after_a_detailed_one_keeps_what_it_does_not_say() {
         let mut galaxy = galaxy();
@@ -1148,12 +1146,12 @@ mod tests {
 
     /// A codex sighting puts a system on the map nobody has been to
     ///
-    /// The divergence this closes. `galos_db::record` writes a positioned
-    /// `systems` row for one of these and the accumulator used to fall
-    /// through it, so a run filling both sinks off one feed disagreed with
-    /// itself about which systems exist — and an `--index` with no `--db`
-    /// under it was simply short of them, the honk that finds a codex entry
-    /// being often the first thing anybody sends about a place.
+    /// `galos_db::record` writes a positioned `systems` row for one of
+    /// these, so the accumulator has to as well: otherwise a run filling
+    /// both sinks off one feed disagrees with itself about which systems
+    /// exist, and an `--index` with no `--db` under it is short of them, the
+    /// honk that finds a codex entry being often the first thing anybody
+    /// sends about a place.
     ///
     /// Names the system `System` and no other event does, which is the
     /// other half of what would go wrong quietly.
@@ -1221,8 +1219,8 @@ mod tests {
     /// the system it stands in. Taken for the system's they would colour
     /// the sky by where the commander happened to land — a carrier or a
     /// rescue ship reads as a government of its own. The write path does
-    /// not take them either: `ensure_system` is handed a name and a
-    /// position and nothing else.
+    /// not take them either: it is handed the same report, which carries a
+    /// name and a position and nothing else.
     #[test]
     fn a_settlement_does_not_govern_its_system() {
         let mut galaxy = galaxy();
@@ -1265,8 +1263,8 @@ mod tests {
 
     /// A signal batch naming only an address publishes nothing
     ///
-    /// One rule for every report now, and it is the one a nav beacon
-    /// already needed: what a report says is recorded, and publishing a
+    /// The rule is the same for every report, and it is the one a nav
+    /// beacon needs: what a report says is recorded, and publishing a
     /// system takes both a name and a place. So the position this carried is
     /// kept for whatever names the system later, and until then the system
     /// is in no table the map reads.

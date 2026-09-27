@@ -15,11 +15,12 @@ use std::path::Path;
 impl Index {
     /// Read an index from a build directory.
     ///
-    /// A directory at another format version is refused here and nowhere
-    /// else: its payloads carry no header, so reading it would decode every
-    /// field of every system out of the wrong bytes. The error names the
-    /// version met, and a rebuild is the fix — `bring_level` falls back to a
-    /// full build when a resume cannot read what is there.
+    /// A directory at another format version is refused here, by name. The
+    /// payloads of an earlier layout carry no header of their own, and a
+    /// reader of this layout refuses each one only as a cell with nothing
+    /// in it, so this is the one place that can say what is wrong. The error
+    /// names the version met and `galos index migrate` as the fix, which is
+    /// [`crate::ops::upgrade`].
     pub fn read(dir: &Path) -> io::Result<Index> {
         let bytes = fs::read(dir.join(INDEX_FILE))?;
         Index::from_bytes(&bytes).ok_or_else(|| {
@@ -39,7 +40,7 @@ impl Index {
     /// nothing and so has no file. Positions are in light years.
     ///
     /// The sharded path first and the flat one after it, so a directory
-    /// published before the sharding, or one being resharded as this reads,
+    /// whose payloads are flat, or one being resharded as this reads,
     /// answers with what it has.
     pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<CellSystem>> {
         let bytes = match fs::read(payload_path(dir, id)) {
@@ -69,9 +70,10 @@ impl Index {
     /// points and 5.8 GB to do it.
     ///
     /// Mapped rather than read, so the pages behind the rows nobody asked
-    /// for are never touched. A directory written before the columnar
-    /// layout has no head to map and falls back to the whole file, which is
-    /// what it could always do.
+    /// for are never touched. A file that is not a payload of this layout
+    /// has no head to map and falls back to
+    /// [`Index::read_payload`](crate::Index::read_payload), which refuses it
+    /// the same way and reads it as empty.
     pub fn read_payload_prefix(
         dir: &Path,
         id: CellId,
@@ -124,7 +126,7 @@ pub struct Payload {
 impl Payload {
     /// Map a cell's payload, or [`None`] where the cell owns nothing and so
     /// has no file — or where what stands there is not a payload of this
-    /// layout, which is what a directory built before the columns is.
+    /// layout, as in a directory at an earlier format version.
     ///
     /// The sharded path first and the flat one after it, as
     /// [`Index::read_payload`](crate::Index::read_payload) does, so a directory
@@ -235,7 +237,7 @@ impl Payload {
 
     /// The `at`th system as a drawable point, columns joined.
     ///
-    /// One row out of five columns, which is the shape a draw wants and the
+    /// One row out of four columns, which is the shape a draw wants and the
     /// shape the layout is deliberately not in: the router reads one column
     /// of millions of rows, and the map reads every column of a handful.
     pub fn point_at(&self, at: usize) -> CellSystem {
@@ -343,7 +345,7 @@ mod tests {
     /// A directory written by an older codec is refused by name, not read.
     ///
     /// Its payloads are laid out another way and the alternative to
-    /// refusing them is a galaxy of plausible nonsense — so the message has
+    /// refusing them is a galaxy of empty cells — so the message has
     /// to carry both the version met and **the command that fixes it**,
     /// which is the whole reason that command is named for the job rather
     /// than for this version's layout.

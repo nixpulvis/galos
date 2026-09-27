@@ -10,9 +10,8 @@
 //! That is the whole reason this exists. `galos_db`'s write path and
 //! [`crate::accumulate::galaxy`]'s accumulator each need those fields off the
 //! event, and plucking them out separately is two fifteen-arm matches that have
-//! to agree about which events name a system and what each one says. They did
-//! not: four events wrote a positioned row on one side and nothing at all on
-//! the other. One match answers both.
+//! to agree about which events name a system and what each one says. One match
+//! answers both.
 //!
 //! ## What a second report does
 //!
@@ -347,9 +346,8 @@ impl SystemReport {
     /// The name as the galaxy spells it, where the report named one.
     ///
     /// Upper case because [`SystemName`] cannot be anything else, so this
-    /// is a borrow rather than the `to_uppercase` per read it used to be —
-    /// and the two derivations cannot publish two spellings of one galaxy,
-    /// which is what the fold was for.
+    /// is a borrow rather than a `to_uppercase` per read — and the two
+    /// derivations cannot publish two spellings of one galaxy.
     pub fn named(&self) -> Option<&SystemName> {
         self.name.as_ref()
     }

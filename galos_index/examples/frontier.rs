@@ -5,30 +5,31 @@
 //! ./target/release/examples/frontier .index/full /tmp/frontier
 //! ```
 //!
-//! **The picture is the check, and a profile is not.** The attempt this
-//! replaced passed a full battery of per-axis profile measurements and still
-//! drew hard-edged cubes, because a profile averages a bright box and a dark
-//! box into a reasonable number. So this renders the mark layer itself — the
+//! **The picture is the check, and a profile is not.** A full battery of
+//! per-axis profile measurements can pass over a frame of hard-edged cubes,
+//! because a profile averages a bright box and a dark box into a
+//! reasonable number. So this renders the mark layer itself — the
 //! merged marks and the systems read out of the cells above them, and
 //! nothing else, since a hole in the marks is what is being looked for — at
 //! every zoom, plus a close-up straddling a cell face at each.
 //!
-//! The field is deliberately absent. It is the half of the map that was
-//! never patchy, and leaving it out is what makes a gap in the marks
-//! visible. Everything is inside the spyglass reach the client would set
+//! The field is deliberately absent. It is the half of the map that is not
+//! patchy, and leaving it out is what makes a gap in the marks
+//! visible. Everything is inside the spyglass reach the map would set
 //! from that distance, so the counts are the ones a frame would draw.
 //!
-//! Two images a lens: `<zoom>.png`, the marks as the client draws them,
+//! Two images a lens: `<zoom>.png`, the marks as the map draws them,
 //! and `<zoom>-tinted.png`, the same with the merged marks in cyan and the
 //! systems read out of the cells above them in white, which is where the
-//! frontier sits.
+//! frontier sits. The close-up writes `<zoom>-face.png` and
+//! `<zoom>-face-tinted.png`.
 //!
 //! **What the picture has to show is density.** Every cell draws the same
 //! share of what it *holds*, so the arms, the core and the voids come out
-//! at the densities they have. The two rules this replaced both flattened
-//! it: a share of a cell's screen footprint draws the same count over the
-//! same patch whatever is in it, and a floor under that figure drew nothing
-//! at all in the finest cells — which is where the sky is densest.
+//! at the densities they have. The two other rules flatten it: a share of
+//! a cell's screen footprint draws the same count over the same patch
+//! whatever is in it, and a floor under that figure draws nothing at all in
+//! the finest cells — which is where the sky is densest.
 
 use galos_index::read::screen::{
     Empty, frame_marks, share as share_of, wanted,
@@ -38,7 +39,7 @@ use galos_index::{CellId, Index, Mode, View};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// The frame every figure is quoted in: the client's own 1280x720 logical
+/// The frame every figure is quoted in: the map's own 1280x720 logical
 /// viewport at 45 degrees, which is 869 pixels to the radian.
 const WIDE: usize = 1280;
 const HIGH: usize = 720;
@@ -278,9 +279,9 @@ struct Tally {
 ///
 /// `reach` is the spyglass: the map clears away what its bubble does not
 /// hold, so a cell whose box is further than that from the camera's target
-/// is neither fetched nor drawn. The client sets it off the camera — see
+/// is neither fetched nor drawn. The map sets it off the camera — see
 /// `galos_map`'s `reach_with_camera` — and every figure here is inside it,
-/// as the client's are.
+/// as the map's are.
 fn frame(
     index: &Index,
     dir: &Path,
@@ -312,7 +313,7 @@ fn frame(
     let share = share_of(population, frame_marks(view));
 
     // The patches of sky the frame leaves dark, settled over the whole
-    // plan before anything is drawn: the client's own [`Empty`], and its
+    // plan before anything is drawn: the map's own [`Empty`], and its
     // own two-pass shape, not a second copy of either.
     let lit: Vec<u32> = {
         let mut lighting = Empty::over(view);
@@ -524,11 +525,11 @@ fn main() {
     }
 }
 
-/// How far the client's spyglass reaches from `back` light years out: what
+/// How far the map's spyglass reaches from `back` light years out: what
 /// the camera takes in, less the margin it holds off by.
 ///
 /// `galos_map`'s `reach_with_camera` and `camera::framed`, read off here so
-/// every figure is the one the client would draw. Ten per cent short of the
+/// every figure is the one the map would draw. Ten per cent short of the
 /// frame, and the galaxy's own edge past that.
 fn reach_of(view: &View, back: f64) -> f64 {
     let seen = back * (f64::from(view.fov_y) / 2.0).tan();

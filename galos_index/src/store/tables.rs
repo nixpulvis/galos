@@ -1,10 +1,11 @@
 //! The tables written whole beside the cells, and the ones dependents
 //! contribute.
 //!
-//! Every such table is one MessagePack array of rows in address order at
-//! `<name>.bin`, a row a system at most. [`Keyed`] is one held open across a
-//! run: rows by address, and whether anything has moved since it was last
-//! written. The index's own — the populated systems and the reaches — are
+//! Every such table is one MessagePack array of rows in key order at
+//! `<name>.bin`: by address, a row a system at most, save the factions,
+//! which are by id. [`Keyed`] is one held open across a run: rows by key,
+//! and whether anything has moved since it was last written. The index's
+//! own — the populated systems, the reaches and the factions — are
 //! [`Keyed`] tables [`crate::store::sidecars::Sidecars`] names; a dependent's
 //! is a [`Table`] it hands over in a [`TableSet`], which the index holds,
 //! writes, spills, carries through a merge and compares without knowing what
@@ -165,7 +166,7 @@ impl<R: Serialize + DeserializeOwned + PartialEq> Keyed<R> {
     /// it — empty, if that is what it comes to.
     ///
     /// A table nothing in a run happened to move is a table never written,
-    /// and to a client that absence says "this index cannot tell", which is
+    /// and to a reader that absence says "this index cannot tell", which is
     /// a different answer from "there are none".
     pub fn claim(&mut self) {
         self.moved |= self.absent;
@@ -615,10 +616,9 @@ pub(crate) fn optional<T: DeserializeOwned>(
 /// being in memory.
 ///
 /// An external sort: runs of `budget` bytes are read back, sorted and
-/// written out, and the runs are then merged. What it stands in for is a
-/// map of every row the read derived — 22.4 MiB over a seven-day slice and
-/// some 6 GiB over the galaxy, which was the last thing on this road that
-/// the whole sky had to fit in.
+/// written out, and the runs are then merged. The alternative is a map of
+/// every row the read derived — 22.4 MiB over a seven-day slice and some
+/// 6 GiB over the galaxy — which would put the whole sky in memory.
 ///
 /// The last row an address has still wins, and that survives the split
 /// into runs: a run is a stretch of the row file, so every row in one is

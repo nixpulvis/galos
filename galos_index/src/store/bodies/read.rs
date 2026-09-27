@@ -1,5 +1,5 @@
-//! Reading a system's bodies: the pack first, then the loose files it
-//! replaced.
+//! Reading a system's bodies: the pack first, then the loose files of the
+//! older layouts.
 //!
 //! See [`super`] for the layout. A reader maps the index, searches it, and
 //! reads one record; nothing is resident.
@@ -121,10 +121,10 @@ fn record(path: &Path, entry: &Entry) -> io::Result<Vec<u8>> {
 /// What the bodies of `address` are, empty where nothing has scanned it.
 ///
 /// Three layouts, newest first: the packed shard files, then the loose file
-/// a system in its shard directory, then the flat one from before the
-/// sharding. A directory part way through a packing answers out of whichever
-/// holds the system, and a system the pack says was *withdrawn* is empty
-/// rather than whatever a loose file it replaced still says.
+/// a system in its shard directory, then the flat, unsharded one. A
+/// directory part way through a packing answers out of whichever holds the
+/// system, and a system the pack says was *withdrawn* is empty rather than
+/// whatever a loose file for it still says.
 ///
 /// A system nothing has scanned is [`SystemBodies::default`] rather than an
 /// error.

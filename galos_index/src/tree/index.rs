@@ -28,9 +28,9 @@ use std::collections::HashMap;
 /// times a route — and `nodes` is what a walk descends: the
 /// cells breadth-first with a cell's children next to each other, carrying
 /// the figures a walk reads worked out once. Measured over `.index/full`, a
-/// 204,466-cell tree at 200,071,629 systems: the walk was **23 ms** a frame
-/// off the map and is **1.1–1.4 ms** off the nodes, for 18 MB beside the
-/// map's 44. See `tests/zooming.rs`, which is where the guard lives.
+/// 204,466-cell tree at 200,071,629 systems: the walk is **1.1–1.4 ms** a
+/// frame off the nodes, for 18 MB beside the map's 44. See
+/// `tests/zooming.rs`, which is where the guard lives.
 ///
 /// The nodes are derived, so they are built where the map is and nowhere
 /// else: an index is only ever made from a whole set of cells
@@ -45,10 +45,10 @@ pub struct Index {
 /// One node of the walk's own tree: where a cell's contents sit and how far
 /// they spread, and where its children are.
 ///
-/// Everything here but the addresses is a figure the walks used to work out
-/// per cell per frame — and all of it is a pure function of the cell, none of
-/// it of the view, so it is worked out once when the index is built. What
-/// that took out of a frame is not the arithmetic (two cube roots and a
+/// Everything here but the addresses is a figure a walk reads per cell per
+/// frame — and all of it is a pure function of the cell, none of it of the
+/// view, so it is worked out once when the index is built. What that keeps
+/// out of a frame is not the arithmetic (two cube roots and a
 /// square root a cell) but the cache: `contents_center` and `count_extent`
 /// read the second moments, which is most of a 216-byte [`Cell`], for every
 /// cell in the tree.

@@ -6,13 +6,13 @@ edition = "2024"
 rust-version.workspace = true
 
 # The galaxy's derived spatial index: the on-disk cell tree the builder writes
-# beside the database and the reader the client draws from without one. Pure and
+# beside the database and the reader the map draws from without one. Pure and
 # DB-free, so `galos_map` links it without pulling in Postgres. Physics comes from `galos_photometry`; nothing heavier belongs here.
 [dependencies]
 galos_photometry = { path = "../galos_photometry" }
 # The shared domain vocabulary: the enums a body, star and faction are
 # described by. Default features only, so no sqlx and no database follow it
-# into the client.
+# into a reader.
 elite_journal = { path = "../elite_journal" }
 # The metadata sidecars are serde records in a compact binary form. The cells
 # stay hand-rolled `FixedCodec`, being fixed-width and read in the millions;
@@ -37,7 +37,7 @@ memmap2 = "0.9"
 # new in the tree: `memmap2` above already links it.
 libc = "0.2"
 # The transport seam is async so the one HTTP impl to come is a drop-in; boxed
-# so a client holds it behind `Arc<dyn Source>` and swaps FS for HTTP whole.
+# so a reader holds it behind `Arc<dyn Source>` and swaps FS for HTTP whole.
 async-trait = "0.1"
 
 [dev-dependencies]

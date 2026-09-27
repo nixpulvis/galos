@@ -50,9 +50,8 @@ impl Dead {
         match self {
             // `>=`, and not `>`: a re-import replaces every record with
             // one of very nearly the same length, which leaves a shard
-            // *at* half rather than past it. The strict test made a
-            // re-imported galaxy the one case the rule was written for
-            // and the one case it refused.
+            // *at* half rather than past it. A strict test would refuse a
+            // re-imported galaxy, the one case the rule is for.
             Dead::Half => cost.dead >= cost.live,
             // A tenth of what the file holds is `dead * 10 >= dead +
             // live`, which is this.
@@ -106,12 +105,10 @@ fn folded(dir: &Path, shard: u64, bar: Dead) -> io::Result<Reclaimed> {
 
     // Nothing to merge and nothing to reclaim.
     //
-    // **The tail being empty was once the whole of this test**, which put
-    // a compaction out of reach of the shard that most needs one: a folded
-    // shard whose data file is half dead is exactly what a re-import
-    // leaves, and no later write folds it because the tail it left is
-    // under [`tail_bound`]. Measured on a re-imported galaxy — 4,096
-    // shards, 49.8 % of their bytes live, and not one of them foldable.
+    // **An empty tail is not reason enough to stop here**: a folded shard
+    // whose data file is half dead is exactly what a re-import leaves, and
+    // no later write folds it because the tail it left is under
+    // [`tail_bound`].
     if table.tail.is_empty() && !reclaiming {
         return Ok(Reclaimed { finished: true, ..Reclaimed::default() });
     }
@@ -212,10 +209,10 @@ fn punched(data: &Path, cost: &Cost) -> io::Result<()> {
 
 /// How a shard gives its dead bytes back.
 ///
-/// **The copy is the expensive one, and was the only one.** It reads every
-/// live record and writes it into the next generation — 160 GB moved to
-/// free 161 GB, measured over a re-imported galaxy — because a reader
-/// holding an offset into the old bytes must not be handed new ones.
+/// **The copy is the expensive one.** It reads every live record and
+/// writes it into the next generation — 160 GB moved to free 161 GB,
+/// measured over a re-imported galaxy — because a reader holding an offset
+/// into the old bytes must not be handed new ones.
 ///
 /// A hole moves nothing and hands nobody anything: the live records stay
 /// at the offsets the index already names, and the blocks under the dead
@@ -369,8 +366,8 @@ fn gaps(live: &BTreeMap<i64, Entry>, length: u64) -> Vec<(u64, u64)> {
 /// sweep punched are holes, and a hole is not dead weight, it is nothing
 /// at all.
 ///
-/// A filesystem that does not answer these is taken at its length, which
-/// is what every filesystem looked like before holes.
+/// A filesystem that does not answer these is taken at its length, as
+/// though it had no holes.
 fn extents(file: &File, length: u64) -> Vec<(u64, u64)> {
     #[cfg(any(
         target_os = "macos",
@@ -422,8 +419,8 @@ fn backed(extents: &[(u64, u64)], from: u64, to: u64) -> u64 {
 /// Give the blocks under `[at, at + len)` back to the filesystem.
 ///
 /// The file keeps its length and the range reads as zeroes. Offset and
-/// length must both be block-aligned; [`holes`] is the only caller and is
-/// where they are aligned.
+/// length must both be block-aligned; [`punched`] is the only caller, and
+/// the holes it is handed were aligned by [`cost`].
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn punch(file: &File, at: u64, len: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -590,15 +587,15 @@ mod tests {
 
     /// A shard weighs by what is in it, not by how large the file is
     ///
-    /// Two readings that used to be taken off the file's size, and are
-    /// wrong from either end of it. Exactly half dead is the case rather
-    /// than a corner of it — a re-import replaces every record with one
-    /// of very nearly the same length, so a galaxy imported twice sits
-    /// *at* half, which `dead * 2 > written` refused. And a file is not
-    /// its length or its blocks: a punched shard keeps a length it no
-    /// longer costs, and an appended one is over-allocated past its end
-    /// (84.6 MB of blocks behind a 79.1 MB shard, measured), either of
-    /// which makes a swept shard look worth sweeping again for ever.
+    /// Two readings that would be wrong taken off the file's size, from
+    /// either end of it. Exactly half dead is the case rather than a corner
+    /// of it — a re-import replaces every record with one of very nearly
+    /// the same length, so a galaxy imported twice sits *at* half, which a
+    /// strict `>` would refuse. And a file is not its length or its blocks:
+    /// a punched shard keeps a length it no longer costs, and an appended
+    /// one is over-allocated past its end (84.6 MB of blocks behind a
+    /// 79.1 MB shard, measured), either of which would make a swept shard
+    /// look worth sweeping again for ever.
     #[test]
     fn a_shard_weighs_by_what_is_in_it() {
         let at = |live: u64, dead: u64| Cost {

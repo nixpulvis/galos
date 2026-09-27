@@ -7,8 +7,8 @@
 //!
 //! The byte formats are [`crate::format::payload`] and the tree they hold is
 //! [`crate::Index`]; this is where they meet the filesystem. `read` opens
-//! them — the index whole, a payload decoded or mapped — and [`write`] puts
-//! them down and sweeps away what the tree no longer names. A client fetching
+//! them — the index whole, a payload decoded or mapped — and `write` puts
+//! them down and sweeps away what the tree no longer names. A reader fetching
 //! cells over HTTP reads the same bytes through its own transport.
 
 use crate::format::layout::INDEX_FILE;
@@ -71,7 +71,7 @@ pub(super) mod fixtures {
     }
 
     /// A cube lattice of systems well inside the root cube, each a touch
-    /// brighter than the last so the magnitude ordering is unambiguous.
+    /// fainter than the last so the magnitude ordering is unambiguous.
     pub(super) fn systems(n: usize) -> Vec<System> {
         let side = (n as f64).cbrt().ceil() as usize;
         let step = 80.0;

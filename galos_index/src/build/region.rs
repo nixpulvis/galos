@@ -7,8 +7,8 @@
 //! A region is a cell and the systems inside it, not a level: one cell at
 //! level 2 can hold half the galaxy. A cut is any set of cells, at any
 //! levels, where no cell is inside another and every system is inside one.
-//! The caller picks them by counting, which [`crate::build::cold`] does from a
-//! cheap pass over positions.
+//! The caller picks them by counting, which [`crate::build::cold`] does off
+//! the buckets its systems were spilled into as the galaxy was read.
 //!
 //! ## Why a region can be built alone
 //!

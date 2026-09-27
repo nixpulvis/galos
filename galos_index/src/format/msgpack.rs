@@ -1,7 +1,7 @@
 //! A metadata table as a file: one MessagePack value, written beside its
 //! path and renamed over it.
 //!
-//! Every sidecar the client reads beside the cells — the populated systems,
+//! Every sidecar a reader reads beside the cells — the populated systems,
 //! the reaches, the factions, the contributed tables — and every small record a
 //! builder keeps beside its resume point is one of these. The writer half is
 //! [`write_meta`]; the reader half is [`read_meta`].
@@ -29,7 +29,7 @@ pub fn write_meta<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// One metadata value's bytes, for either writer.
+/// One metadata value's bytes, for [`write_meta`].
 fn encoded<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
     rmp_serde::to_vec(value)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))

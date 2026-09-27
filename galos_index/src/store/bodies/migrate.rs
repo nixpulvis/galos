@@ -16,7 +16,7 @@ use std::sync::atomic::Ordering::Relaxed;
 /// How far a packing got: what it moved, and whether anything is left.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Packed {
-    /// Loose files that are no longer loose.
+    /// Loose files packed into the shards.
     pub moved: usize,
     /// Whether nothing loose was left behind. A stop part way answers
     /// `false`; a directory with nothing loose answers `true`.
@@ -32,10 +32,9 @@ const BATCH: usize = 512;
 
 /// Walk a directory's loose body files into the shards.
 ///
-/// Both older layouts at once: `bodies/{address}.bin` from before the
-/// sharding and `bodies/{shard:03x}/{address}.bin` from before this. A
-/// file's bytes are already the record the pack stores, so nothing is
-/// decoded on the way through.
+/// Both older layouts at once: the unsharded `bodies/{address}.bin` and
+/// `bodies/{shard:03x}/{address}.bin`. A file's bytes are already the record
+/// the pack stores, so nothing is decoded on the way through.
 ///
 /// Interruptible, because a galaxy of loose files is hours of them and a run
 /// asked to stop must not wait. What it abandons the next open takes up: a
@@ -144,17 +143,16 @@ fn one_shard(
         // **The directory goes in one call, not a file at a time.** Fifty
         // million `unlink`s is what a galaxy of loose files costs, and on a
         // directory of thirteen thousand entries each one walks its
-        // metadata: measured at 670 files a second, and 1,350 once the
-        // membership question stopped being a `find` apiece. A shard's
-        // files are all one shard's, so they are appended in batches and
-        // the directory taken away whole once its records are durable.
+        // metadata. A shard's files are all one shard's, so they are
+        // appended in batches and the directory taken away whole once its
+        // records are durable.
         //
-        // Sound where a file at a time was sound, and for the same reason:
-        // the records go in before anything is removed, and a run cut
-        // short leaves files the next run recognises as already held and
-        // drops. Only where *everything* in it was taken — a directory
-        // holding something this does not understand keeps that thing, and
-        // the files are then removed one by one as before.
+        // Sound for the same reason a file at a time is: the records go in
+        // before anything is removed, and a run cut short leaves files the
+        // next run recognises as already held and drops. Only where
+        // *everything* in it was taken — a directory holding something
+        // this does not understand keeps that thing, and the files are then
+        // removed one by one.
         match take(dir, listed, moved, stop, Removal::Deferred)? {
             Took::Stopped => return Ok(false),
             Took::Every(count) => {
@@ -173,13 +171,13 @@ fn one_shard(
 
 /// What the pack already holds, one shard's worth at a time
 ///
-/// **Why a pack of fifty million files took twenty hours.** The question asked
-/// of every loose file is whether the pack already holds that system — the pack
-/// being the newer of the two wherever both exist — and it used to be asked
-/// with [`find`](super::find), which maps the shard's index, scans its tail
-/// backwards, binary searches its base and reads the data file. Fifty million
-/// times over, that is the whole of the cost: measured at 670 files a second,
-/// where the reads and unlinks alone are thousands.
+/// **One shard's live set, not a lookup apiece.** The question asked of
+/// every loose file is whether the pack already holds that system — the pack
+/// being the newer of the two wherever both exist — and asking it with
+/// [`find`](super::find), which maps the shard's index, scans its tail
+/// backwards, binary searches its base and reads the data file, fifty million
+/// times over would be the whole of the cost, where the reads and unlinks
+/// alone are thousands of files a second.
 ///
 /// One entry, not a map of every shard: the walk takes a shard's directory
 /// at a time, so the answer wanted is nearly always the one already
@@ -208,7 +206,7 @@ impl Holds {
 
     /// And what this run has just put there, so a second loose file of the same
     /// address is dropped rather than appended twice — which is what asking
-    /// [`find`](super::find) afresh would have concluded.
+    /// [`find`](super::find) afresh would conclude.
     fn took(&mut self, address: i64) {
         if self.shard == Some(body_shard(address)) {
             self.live.insert(address);
@@ -329,8 +327,8 @@ fn settle(
 ) -> io::Result<()> {
     for (shard, rows) in batch.drain() {
         // The paths kept aside and the bytes handed over: a batch of five
-        // hundred records is a megabyte, and copying it to hand it on was
-        // a hundred and twenty gigabytes of `memcpy` over a galaxy.
+        // hundred records is a megabyte, and copying it to hand it on would
+        // be a hundred and twenty gigabytes of `memcpy` over a galaxy.
         let mut paths = Vec::with_capacity(rows.len());
         let mut records = Vec::with_capacity(rows.len());
         for (address, path, bytes) in rows {
@@ -366,7 +364,7 @@ mod tests {
     /// what a galaxy of loose files costs — but only where everything in
     /// the directory was a loose body file this understood. A directory
     /// holding anything else keeps that thing, and its body files go one at
-    /// a time as they always did.
+    /// a time.
     #[test]
     fn a_shard_directory_keeps_what_the_pack_does_not_understand() {
         let dir = scratch("stray");
@@ -404,8 +402,8 @@ mod tests {
 
     /// Loose files become packed ones, once, and a stop leaves the rest
     ///
-    /// The migration is the only thing that touches a directory an older
-    /// build wrote, and the way it goes wrong is a file removed before its
+    /// The migration is the only thing that touches a directory in an older
+    /// layout, and the way it goes wrong is a file removed before its
     /// record is durable. A stop is the test for that: what it has moved
     /// reads out of the pack, and what it has not still reads off the disk.
     #[test]
@@ -429,7 +427,7 @@ mod tests {
         }
 
         // Atomic rather than a `Cell`: the pack deals shards out to
-        // threads now, so what it asks about stopping is shared.
+        // threads, so what it asks about stopping is shared.
         let some = std::sync::atomic::AtomicUsize::new(0);
         let stop = || some.fetch_add(1, Relaxed) > 4;
         let part = pack(&dir, &stop).expect("the migration runs");

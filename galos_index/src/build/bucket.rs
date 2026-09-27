@@ -50,7 +50,7 @@ pub const BUCKET_LEVEL: u8 = 4;
 ///
 /// A bucket's file is opened, appended to and closed on each flush, so one
 /// handle is open at a time however many buckets there are. What is held
-/// instead is 7 KiB a bucket that has filled once — 28 MiB if all 4,096
+/// instead is 8 KiB a bucket that has filled once — 32 MiB if all 4,096
 /// ever do, and a tenth of that over the disc.
 const BUFFERED: usize = 128;
 
@@ -177,7 +177,7 @@ pub fn form(
 /// One file holding every system of `region`.
 ///
 /// A region that is a whole bucket already has one and keeps it. Anything
-/// coarser is the concatenation of its buckets, which is 56 bytes a system
+/// coarser is the concatenation of its buckets, which is 64 bytes a system
 /// copied once — scratch to scratch, against a source read that is not.
 fn gather(
     dir: &Path,
@@ -338,7 +338,7 @@ mod tests {
         }
     }
 
-    /// `n` systems scattered through a `span`-wide ball around `at`.
+    /// `n` systems scattered through a `span`-wide cube around `at`.
     fn clump(at: [f64; 3], span: f64, n: u64, rng: &mut Rng) -> Vec<System> {
         (0..n)
             .map(|i| {

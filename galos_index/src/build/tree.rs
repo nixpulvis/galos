@@ -39,8 +39,7 @@ use std::hash::{Hash, Hasher};
 /// One system as the live tree holds it, hashed and compared by its id alone
 ///
 /// So a set of them is looked up by id without a second copy of the id as a
-/// map key: the same sixty-four bytes a system the tree held under its id
-/// took before, with no second type for what the tree holds.
+/// map key, and with no second type for what the tree holds.
 #[derive(Copy, Clone, Debug)]
 struct Held(System);
 
@@ -773,10 +772,8 @@ impl Tree {
     ///
     /// Nothing here reads a system the edits did not touch: the index comes
     /// off the settled totals, one pass over the cells, and a payload is
-    /// built only for a cell about to be written. See
-    /// `settle`: a hundred edits over eight million systems
-    /// publish in 52 ms, against 2.6 s when every payload in the galaxy was
-    /// built to write a dozen files.
+    /// built only for a cell about to be written. See `settle`: a hundred
+    /// edits over eight million systems publish in 52 ms.
     pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
         self.settle();
         let mut dirtied = CellDiff::default();
@@ -840,9 +837,9 @@ mod tests {
             absolute_magnitude: rng.magnitude(),
             temperature: 3000.0 + (rng.below(20000) as f64),
             age_bucket: rng.below(8) as u32,
-            // Off the id rather than the rng, so the draws below keep the
-            // sequence they had, and distinct per system, so a payload that
-            // mixed the stamps up fails the equivalence check.
+            // Off the id rather than the rng, so it takes no draw from the
+            // sequence, and distinct per system, so a payload that mixed the
+            // stamps up fails the equivalence check.
             updated_at: 1_700_000_000 + id as u32,
             kind: crate::core::star::StarKind::G,
         }

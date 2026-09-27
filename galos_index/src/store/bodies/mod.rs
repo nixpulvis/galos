@@ -2,12 +2,11 @@
 //! a system.
 //!
 //! A system's insides are 2.4 KB of MessagePack, written whole and read
-//! whole, and they used to be a file each: `bodies/{shard:03x}/{address}.bin`.
-//! At a hundred and eighty-eight million of them that is 188 M inodes and
-//! **~830 GB** of a 4.4 KB allocation apiece, and — measured with `sample`
-//! against a live import — **91 %** of the wall clock, in `open`, `rename`
-//! and the directory insert behind them. Nothing about the write path fixes
-//! that; the file count is the cost.
+//! whole. A file each, at a hundred and eighty-eight million of them, is
+//! 188 M inodes and **~830 GB** of a 4.4 KB allocation apiece, and —
+//! measured with `sample` against a live import — **91 %** of the wall
+//! clock, in `open`, `rename` and the directory insert behind them. Nothing
+//! about the write path fixes that; the file count is the cost.
 //!
 //! So a shard is two files:
 //!
@@ -39,7 +38,7 @@
 //!   directory's [`Lock`](crate::Lock)) and any number of readers.
 //! - **A sweep** is a compaction of every shard, asked for rather than
 //!   waited on: what a whole-galaxy re-import leaves behind, which no
-//!   append was ever going to reach. See [`sweep_bodies`].
+//!   append reaches. See [`sweep_bodies`].
 //!
 //! At 200 M systems that is 4,096 index files and a handful of data files
 //! rather than 188 M of them, **~450 GB rather than ~830 GB** — the
@@ -48,11 +47,11 @@
 //!
 //! ## What is still loose
 //!
-//! Two older layouts exist and are read, never written: `bodies/{address}.bin`
-//! from before the sharding, and `bodies/{shard:03x}/{address}.bin` from before
-//! this. [`pack`] walks both into the shards, one batch at a time and
-//! interruptibly, and [`crate::store::bodies::read_bodies`] falls back to them
-//! until it has, so a directory part way through answers for every system a
+//! Two older layouts, a file a system, are read and never written:
+//! `bodies/{address}.bin` and `bodies/{shard:03x}/{address}.bin`. [`pack`]
+//! walks both into the shards, one batch at a time and interruptibly, and
+//! [`crate::store::bodies::read_bodies`] falls back to them for whatever is
+//! left, so a directory part way through answers for every system a
 //! finished one does.
 
 mod iter;
@@ -92,7 +91,7 @@ const ENTRY: usize = 20;
 ///
 /// Three answers rather than two: a pack that has been told a system's
 /// bodies were withdrawn must say so, or a reader would fall back to a loose
-/// file this layout replaced and read the withdrawn scan as published.
+/// file of an older layout and read the withdrawn scan as published.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Found {
     /// The pack holds these bodies.
@@ -237,13 +236,11 @@ fn header_of(bytes: &[u8], path: &Path) -> io::Result<Header> {
 
 /// What the first sixteen bytes say, and nothing about what follows them
 ///
-/// **Split out because [`append`](write::append) holds only those sixteen.** It reads the
-/// header off the front of the file to learn the generation and the base,
-/// and handing that buffer to [`header_of`] asked it whether a base of
-/// 8,218 entries fitted in sixteen bytes — which it does not, so every
-/// append to a shard that had ever been folded failed with "a base of 8218
-/// entries in a file holding 0". Reported from a real directory, where it
-/// stopped the packing of every loose body file the moment it reached one.
+/// **Split out because [`append`](write::append) holds only those
+/// sixteen.** It reads the header off the front of the file to learn the
+/// generation and the base, and [`header_of`] would check a base of
+/// thousands of entries against those sixteen bytes and refuse every
+/// append to a shard that has ever been folded.
 fn header_fields(bytes: &[u8], path: &Path) -> io::Result<Header> {
     let refused = |said: String| {
         io::Error::new(

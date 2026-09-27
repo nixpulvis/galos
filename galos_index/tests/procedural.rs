@@ -18,7 +18,7 @@
 //! GALOS_PERF_DIR=.index/full cargo test -p galos_index --test procedural -- --nocapture
 //! ```
 //!
-//! ## Measured 2026-09-17 over `.index/full`
+//! ## Over `.index/full`
 //!
 //! 200,071,629 names, the dictionary `galos index sectors` learned from the
 //! same directory:
@@ -28,7 +28,7 @@
 //! | derived exactly | 194,667,563 | **97.2989 %** |
 //! | names people gave | 151,463 | stored |
 //! | hand-authored regions | 5,252,594 | stored |
-//! | **the tail wrong where the sector was right** | **0** | the bug this is for |
+//! | **the tail wrong where the sector was right** | **0** | asserted |
 //!
 //! The last row is the assertion. The first is a floor, because a
 //! dictionary regenerated against a larger galaxy can only cover more.

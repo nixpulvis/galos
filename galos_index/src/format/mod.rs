@@ -5,8 +5,8 @@
 //! layout and the version the index file is held to. [`msgpack`] is how a
 //! metadata table is written and read back. [`checkpoint`] is the resume
 //! point a writer keeps beside a directory, and [`lock`] is how one writer
-//! at a time is kept to. [`parts`] names the index's own parts. The rest is scratch a build writes and nothing
-//! serves.
+//! at a time is kept to. [`parts`] names the index's own parts. The rest is
+//! scratch a build writes and nothing serves.
 
 pub mod checkpoint;
 pub mod layout;

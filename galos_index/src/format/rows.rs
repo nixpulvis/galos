@@ -5,8 +5,8 @@
 //! derivation of one produces its rows in the order the galaxy happened to
 //! be read rather than in address order. The gap between those two is a
 //! sort, and at 200 M systems it is a sort of gigabytes: the names alone are
-//! ~5.8 GB of rows, which was the last structure on this road that the whole
-//! sky had to fit in.
+//! ~5.8 GB of rows, and nothing else on this road needs the whole sky in
+//! memory.
 //!
 //! So the rows go to a file as they are derived ([`Sheet`]), and the sort is
 //! external: runs of [`RUN_BYTES`] are read back, sorted and written out,
@@ -73,7 +73,7 @@ impl Sheet {
 /// A row file read a row at a time.
 ///
 /// Nothing reads a row file twice, so the rows go past rather than in: the
-/// whole point of writing them to a file was not to hold them.
+/// whole point of writing them to a file is not to hold them.
 pub(crate) struct Framed {
     inner: BufReader<File>,
     buf: Vec<u8>,

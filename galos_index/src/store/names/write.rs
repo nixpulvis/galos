@@ -72,13 +72,12 @@ impl Writer {
     /// carried at all. Read off the mapping a row at a time, so carrying on
     /// costs a row and not a table.
     ///
-    /// A directory published before this format has its table in
-    /// MessagePack chunks and no base at all, and seeding from the base
-    /// would carry *nothing* — a build that then published would take every
-    /// name the directory served away. So the chunks are the seed where
-    /// there is no base, which makes a resumed build onto an unmigrated
-    /// directory carry its names whether or not anything called
-    /// [`crate::ops::migrate::migrate`] first.
+    /// A directory whose names are still MessagePack chunks has no base at
+    /// all, and seeding from the base would carry *nothing* — a build that
+    /// then published would take every name the directory served away. So
+    /// the chunks are the seed where there is no base, which makes a resumed
+    /// build onto an unmigrated directory carry its names whether or not
+    /// anything called [`crate::ops::migrate::migrate`] first.
     pub fn onto(dir: &Path) -> io::Result<Writer> {
         let mut writer = Writer::writing(dir)?;
         let held = Names::open(dir)?;
@@ -93,8 +92,8 @@ impl Writer {
         Ok(writer)
     }
 
-    /// Take every row of the MessagePack chunks a directory published
-    /// before this format, answering how many there were.
+    /// Take every row of the MessagePack chunks a directory holds in place
+    /// of a base, answering how many there were.
     ///
     /// Read a chunk at a time and pushed straight to the row file, so a
     /// galaxy's worth costs one chunk rather than one table.
@@ -111,7 +110,8 @@ impl Writer {
         Ok(taken)
     }
 
-    /// Take one system's name and place.
+    /// Take one system's name. Its place goes no further than the sort:
+    /// the base holds none.
     pub fn push(&mut self, entry: NameEntry) -> io::Result<()> {
         self.rows.push(&entry)?;
         self.named += 1;
@@ -220,11 +220,11 @@ pub(super) fn write_base(
     write_head(dir, next, count, bytes, stored)?;
     let _ = std::fs::remove_file(names_delta_path(dir));
     sweep_generations(dir, next)?;
-    // A published base retires the chunks of the format before it, and
-    // that is an invariant rather than a step of the migration: leaving
-    // them would let a later fold read them *over* a base that already
-    // holds their rows and everything published since, which would take
-    // the newer rows away.
+    // A published base retires any MessagePack chunks, and that is an
+    // invariant rather than a step of the migration: leaving them would let
+    // a later fold read them *over* a base that already holds their rows
+    // and everything published since, which would take the newer rows
+    // away.
     for chunk in legacy_chunks(dir)? {
         let _ = std::fs::remove_file(chunk);
     }
@@ -261,10 +261,9 @@ pub(super) fn write_sections(
             // **The name is written only where the address does not spell
             // it**, and only such a row costs a span and a place in the
             // exception list. Over a real galaxy that is 2.6 % of them:
-            // 3.94 GB of text against 128 MB, and 1.00 GB of spans against
-            // 47 MB. The exceptions are the names people gave and
-            // Frontier's hand-authored regions, both of which the
-            // arithmetic deliberately does not claim.
+            // 128 MB of text and 47 MB of spans. The exceptions are the
+            // names people gave and Frontier's hand-authored regions, both
+            // of which the arithmetic deliberately does not claim.
             if !crate::core::procedural::spells(entry.address, &entry.name) {
                 text.write_all(entry.name.as_bytes())?;
                 bytes += entry.name.len();
@@ -450,8 +449,8 @@ pub(super) fn write_head(
     head[24..32].copy_from_slice(&(count as u64).to_le_bytes());
     head[32..40].copy_from_slice(&(bytes as u64).to_le_bytes());
     // How many rows stored a name, which is what sizes `span.bin` and
-    // `exception.bin`. Reserved zero before version 3, where the spans
-    // were one a row and the count stood in for this.
+    // `exception.bin`. A version 1 or 2 head has it reserved zero, its
+    // spans being one a row and the count standing in for this.
     head[40..48].copy_from_slice(&(stored as u64).to_le_bytes());
 
     std::fs::create_dir_all(names_dir(dir))?;
@@ -502,14 +501,13 @@ pub(super) fn sweep_generations(dir: &Path, live: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// The chunk files a directory published before this format, folded into a
-/// base — or [`None`] where there are none.
+/// The MessagePack chunk files a directory holds in place of a base, folded
+/// into one — or [`None`] where there are none.
 ///
-/// The one migration this format has. A galaxy's worth of MessagePack
-/// chunks took an afternoon to derive and nothing is going to derive it
-/// again to change how it is stored, so the chunks are read once, a row at
-/// a time, sorted, and written as a generation. They are removed after the
-/// swap.
+/// The one migration this format has. A galaxy's worth of chunks takes an
+/// afternoon to derive and nothing should derive it again to change how it
+/// is stored, so the chunks are read once, a row at a time, sorted, and
+/// written as a generation. They are removed after the swap.
 pub fn fold_chunks(dir: &Path) -> io::Result<Option<usize>> {
     let chunks = legacy_chunks(dir)?;
     if chunks.is_empty() {
@@ -529,11 +527,10 @@ pub fn fold_chunks(dir: &Path) -> io::Result<Option<usize>> {
     Ok(Some(count))
 }
 
-/// The `names/NNNNN.bin` files of the format before this one, in order.
+/// The `names/NNNNN.bin` MessagePack chunk files, in order.
 ///
 /// Numbered from zero with no gaps, so the first number missing is the end
-/// of the table — which is what let a reader find them all without a
-/// manifest, and what lets this find them all to be rid of them.
+/// of the table — which is what lets this find them all without a manifest.
 pub(super) fn legacy_chunks(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut chunks = Vec::new();
     for chunk in 0.. {
@@ -554,7 +551,7 @@ mod tests {
     use crate::store::names::table::Table;
     use std::collections::HashMap;
 
-    /// The table a build wrote is the table a client opens: every row, in
+    /// The table a build wrote is the table a reader opens: every row, in
     /// address order, whatever order it was pushed in.
     #[test]
     fn a_build_writes_the_table_a_client_reads() {

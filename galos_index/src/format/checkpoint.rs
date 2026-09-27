@@ -19,7 +19,7 @@
 //!
 //! ## Why the base is fixed-width and this machine's
 //!
-//! A 64-byte header and then nothing but [`System`] records, 56 bytes each
+//! A 64-byte header and then nothing but [`System`] records, 64 bytes each
 //! as this machine holds one. [`Checkpoint::read`] maps the file and hands
 //! [`Tree::build`](crate::Tree::build) a `&[System]` pointing into the
 //! mapping: mapped, not decoded, so the inputs cost no heap. Decoding *is*
@@ -129,9 +129,9 @@ pub struct Checkpoint {
     pub cursor: Option<NaiveDateTime>,
     /// Which derivation wrote this, which is what makes the cursor readable.
     pub by: Provenance,
-    /// The base file, mapped. A resume point in the old encoding is
-    /// rewritten in this one as it is read, so the base is a file of
-    /// records by the time anything holds a `Checkpoint`.
+    /// The base file, mapped. A resume point in the legacy MessagePack
+    /// encoding is rewritten in this one as it is read, so the base is a
+    /// file of records by the time anything holds a `Checkpoint`.
     map: Mmap,
     /// The header's count, checked against the file's length when it was
     /// read.
@@ -160,10 +160,9 @@ impl Checkpoint {
     /// frame in the log that holds one, or the base's where the log holds
     /// none — since a frame is appended after the publish it describes.
     ///
-    /// A file written before this format is MessagePack and is decoded
-    /// whole, as is the log beside it in the framing of its own day; the
-    /// read upgrades both in place, and the first compaction writes them
-    /// out in this format.
+    /// A legacy file is MessagePack and is decoded whole, as is the log
+    /// beside it in its legacy framing; the read upgrades both in place,
+    /// writing them out in this format.
     pub fn read(path: &Path) -> io::Result<Checkpoint> {
         let file = File::open(path)?;
         // SAFETY: the base is only ever replaced by a rename, so the inode
@@ -227,7 +226,7 @@ impl Checkpoint {
         // length, and the alignment of the mapping past the header.
         // `System` is `repr(C)` with no padding and every bit pattern of
         // its `u64`, `f64` and `u32` fields is a valid value of that field,
-        // so any 56 aligned bytes are one.
+        // so any 64 aligned bytes are one.
         unsafe {
             std::slice::from_raw_parts(
                 self.map.as_ptr().add(HEADER).cast::<System>(),
@@ -260,21 +259,21 @@ impl Checkpoint {
         writing.finish(cursor, by)
     }
 
-    /// A resume point from before the fixed-width base: upgraded in place,
-    /// then read as one of the current ones.
+    /// A resume point in the legacy MessagePack encoding: upgraded in place,
+    /// then read as a current one.
     ///
-    /// Two shapes are decoded, newest first: the three-field one, and the
-    /// two-field one from before the provenance existed. The older reads as
-    /// [`Provenance::Database`], a database pass having been the only thing
-    /// that ever wrote a cursor anything read.
+    /// Two shapes are decoded, fuller first: the three-field one, and the
+    /// two-field one with no provenance. That one reads as
+    /// [`Provenance::Database`], the only derivation whose cursor it can
+    /// carry.
     ///
-    /// Then it *writes*: the old form is replaced with the new one and the
-    /// log beside it re-framed. It has to. A publish appends a current
+    /// Then it *writes*: the legacy form is replaced with the current one and
+    /// the log beside it re-framed. It has to. A publish appends a current
     /// frame, and a log half in one framing and half in the other reads as
-    /// the older one and stops at the join, silently dropping every system
+    /// the legacy one and stops at the join, silently dropping every system
     /// published since — the one failure this log exists to prevent. The
-    /// reader is where the old form is already in hand, and the file is the
-    /// builder's private business, so nothing else opens one.
+    /// reader is where the legacy form is already in hand, and the file is
+    /// the builder's private business, so nothing else opens one.
     fn legacy(path: &Path, bytes: &[u8]) -> io::Result<Checkpoint> {
         #[derive(Deserialize)]
         struct Whole {
@@ -310,9 +309,9 @@ impl Checkpoint {
 
 /// A base being written, one record at a time.
 ///
-/// What a cold build spills into. The systems come off a database cursor a
-/// row at a time and go straight here, and the tree is then built from the
-/// mapping of what this wrote, so the galaxy is never a `Vec` at all.
+/// What a cold build writes the resume point into. Each region's systems
+/// come off its spill once the region is built and go straight here, so the
+/// galaxy is never a `Vec` at all.
 ///
 /// Written to a sibling temp file and renamed over the base at
 /// [`finish`](Self::finish), so an interrupted build leaves the resume point
@@ -504,7 +503,7 @@ fn read_frames(checkpoint: &Path) -> (Vec<System>, Option<NaiveDateTime>) {
             break;
         }
         for record in bytes[at + FRAME..end].chunks_exact(RECORD) {
-            // SAFETY: 56 initialised bytes read unaligned as the `repr(C)`
+            // SAFETY: 64 initialised bytes read unaligned as the `repr(C)`
             // record they were written from, every bit pattern of whose
             // fields is a valid value of that field.
             replayed.push(unsafe {
@@ -517,9 +516,9 @@ fn read_frames(checkpoint: &Path) -> (Vec<System>, Option<NaiveDateTime>) {
     (replayed, cursor)
 }
 
-/// The log as it was framed before the fixed-width format: a `u32` length
-/// ahead of a MessagePack batch, and no cursor anywhere in it. Read once,
-/// by the upgrade, and written back in the current framing.
+/// The log in its legacy framing: a `u32` length ahead of a MessagePack
+/// batch, and no cursor anywhere in it. Read by the upgrade alone, and
+/// written back in the current framing.
 fn read_legacy_frames(checkpoint: &Path) -> Vec<System> {
     let Ok(bytes) = std::fs::read(pending_path(checkpoint)) else {
         return Vec::new();
@@ -788,8 +787,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A resume point from before the fixed-width format still reads, and
-    /// so does the log beside it in the framing of its own day.
+    /// A resume point in the legacy MessagePack encoding reads, and so does
+    /// the log beside it in its legacy framing.
     #[test]
     fn a_checkpoint_from_before_the_format_still_reads() {
         #[derive(Serialize)]
@@ -823,7 +822,7 @@ mod tests {
         assert_eq!(read.deltas(), batch.as_slice());
 
         // And the read upgraded both files, which is why it writes: a log
-        // half in each framing reads as the older one and stops at the
+        // half in each framing reads as the legacy one and stops at the
         // join.
         let upgraded = std::fs::read(&path).unwrap();
         assert_eq!(
@@ -843,9 +842,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A resume point from before the provenance existed reads as the
-    /// database derivation, keeping the cursor it carried: a database pass
-    /// was the only thing that ever wrote a cursor anything read.
+    /// A legacy resume point with no provenance reads as the database
+    /// derivation, keeping the cursor it carries: a database pass is the
+    /// only derivation whose cursor that shape can hold.
     #[test]
     fn an_old_checkpoint_reads_as_the_database() {
         #[derive(Serialize)]

@@ -30,12 +30,12 @@
 //! **Except what is a function of the system's whole contents.** Record over
 //! record is the wrong rule for a fact nobody reported — the kind of star a
 //! ship arrives at, the light of the system, how far it reaches, and the
-//! rows contributed tables derive from its arrival. Each of those was worked out from one side's bodies, and the
-//! merged directory holds both sides', so each is worked out again over the
-//! merged contents by the calls [`crate::accumulate::galaxy`] makes. See
-//! `Relit`, which names the directory that said two contradicting things
-//! before this existed. It is why the bodies are folded *first*: the contents
-//! have to be settled before the record over them can be written.
+//! rows contributed tables derive from its arrival. Each of those is worked
+//! out from one side's bodies, and the merged directory holds both sides', so
+//! each is worked out again over the merged contents by the calls
+//! [`crate::accumulate::galaxy`] makes — see `Relit` for why. It is why the
+//! bodies are folded *first*: the contents have to be settled before the
+//! record over them can be written.
 //!
 //! **Nothing is ever withdrawn.** An absence on the incoming side says "I
 //! have not heard", never "it is gone", which is `src/sink/tables.rs`'s rule
@@ -241,9 +241,11 @@ impl fmt::Display for Absorbed {
 ///
 /// Four of these are refusals in `one_hand`'s sense — the merge will not be
 /// attempted, nothing has been written and both directories stand exactly as
-/// they were found. [`Refused::Stopped`] and [`Refused::Failed`] are the
-/// other kind: they can land after the union has been committed, and each
-/// says what the directory is left holding.
+/// they were found. [`Refused::TooMany`] is found only once the bodies pass
+/// has run, so like a stop in that pass it may leave body records carried
+/// over early. [`Refused::Stopped`] and [`Refused::Failed`] are the other
+/// kind: they can land after the union has been committed, and each says
+/// what the directory is left holding.
 #[derive(Debug)]
 pub enum Refused {
     /// A directory this build does not read.
@@ -577,7 +579,7 @@ fn point(dir: &Path, checkpoint: &Path) -> Result<Checkpoint, Refused> {
 
 /// A published table, or no rows where the directory has no such file.
 ///
-/// A sidecar an older build never wrote is an absence rather than a failure,
+/// A sidecar a directory does not hold is an absence rather than a failure,
 /// which is [`Sidecars::resume`]'s rule; a table that is there and will not
 /// decode is an error, for that rule's other half.
 fn table<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>, Refused> {
@@ -602,7 +604,7 @@ fn factions(dir: &Path) -> Result<Vec<Faction>, Refused> {
 /// agree on every id, which is the operator's actual case. Two fed by different
 /// ones do not, and a union of those tables would put one database's name on
 /// the other's id and colour the map by the wrong faction — silently, a faction
-/// id being a number the client looks up and never checks.
+/// id being a number a reader looks up and never checks.
 fn agreed(
     ours: &[Faction],
     theirs: &[Faction],
@@ -745,15 +747,15 @@ struct Union {
 /// insides, because the winning record was derived over one side's bodies
 /// and the merged directory holds both sides'.
 ///
-/// Measured on two journal feeds of one system scanned with a different
-/// body id on each side: the merged directory held both stars — body 0 a G
-/// star, body 1 a neutron star — and carried the winner's derived columns
-/// whole, so its payload and its supercharge row described a neutron
-/// arrival star while its own body file said body 0 was a G star at 4.83.
-/// One directory saying two contradicting things, which is exactly what
-/// `galos index verify` exists to catch.
+/// Take a system scanned with a different body id on each side: the merged
+/// directory holds both stars — body 0 a G star, body 1 a neutron star — and
+/// carrying the winner's derived columns whole would have its payload and its
+/// supercharge row describe a neutron arrival star while its own body file
+/// says body 0 is a G star at 4.83. One directory saying two contradicting
+/// things, which is exactly what `galos index verify` exists to catch.
 ///
-/// So these five are derived again, over the merged contents, by the same calls
+/// So these four are derived again, and a contributed row from the arrival
+/// they give, over the merged contents, by the same calls
 /// [`crate::accumulate::galaxy`] makes and not by arithmetic of this module's
 /// own — `Galaxy::system`, `Galaxy::reach_of` and `Galaxy::arrival_of`. What
 /// stays the winner's is `age_bucket` and `updated_at`: those are about when
@@ -769,8 +771,9 @@ struct Relit {
     /// Where the winning record puts the system, filled in by the union.
     ///
     /// A contributed row is derived from an arrival, which carries a place,
-    /// and the place is the system's own, which only the records know. [`None`] until the union has written the record, and
-    /// for an address neither resume point holds at all.
+    /// and the place is the system's own, which only the records know.
+    /// [`None`] until the union has written the record, and for an address
+    /// neither resume point holds at all.
     position: Option<[f32; 3]>,
 }
 
@@ -1119,8 +1122,7 @@ struct Carried {
 /// contents merged.** Both are a function of what is inside the system, so
 /// for every address [`Relit`] speaks for they are taken from the
 /// re-derivation over the merged contents rather than from either side's
-/// published table — see [`Relit`] for the directory that said two
-/// contradicting things before this did. Where the merged arrival star
+/// published table — see [`Relit`] for why. Where the merged arrival star
 /// gives a contributed table nothing to say the row is *removed*, which is
 /// not a withdrawal by silence: the merged contents state what the arrival
 /// star is, and a statement is not an absence.
@@ -1201,7 +1203,7 @@ fn carry_sidecars(
     if !dry_run && ours.moved() {
         // A table this directory has no file for at all is written with the
         // ones that moved, for [`Sidecars::resume`]'s reason: a missing
-        // table says "this index cannot say" to a client.
+        // table says "this index cannot say" to a reader.
         ours.claim_absent();
         ours.write(into).map_err(failed("the sidecar tables"))?;
     }
@@ -1217,9 +1219,9 @@ fn carry_sidecars(
 ///
 /// What is walked is the incoming directory's *pack*
 /// ([`bodies::each_address`]), one shard index at a time. A directory still
-/// holding loose `bodies/<address>.bin` files from before the shards has
-/// those moved in by `galos index pack`, which is one rename each and is
-/// idempotent; until it has, those systems are not offered here. Reading is
+/// holding legacy loose `bodies/<address>.bin` files has those moved in by
+/// `galos index pack`, which is one rename each and is idempotent; until it
+/// has, those systems are not offered here. Reading is
 /// through [`bodies::read_bodies`], which answers out of whichever of the
 /// three layouts holds the system, so `INTO` half way through a packing is
 /// read correctly whatever `FROM` is.
@@ -1654,10 +1656,10 @@ mod tests {
     /// The case is a system scanned on both sides with a *different body
     /// id* on each: `into` scanned body 0, a G star at the drop point, and
     /// `from` scanned body 1, a neutron star further out, and reported the
-    /// system later so its record wins. Carrying that record whole left the
-    /// merged directory saying its arrival star was a neutron star, with a
-    /// supercharge row to match, while its own body file said body 0 was a
-    /// G star — one directory saying two contradicting things, which is
+    /// system later so its record wins. Carrying that record whole would
+    /// leave the merged directory saying its arrival star is a neutron star,
+    /// with a supercharge row to match, while its own body file says body 0
+    /// is a G star — one directory saying two contradicting things, which is
     /// what `galos index verify` exists to catch.
     #[test]
     fn what_is_a_function_of_the_contents_is_worked_out_again() {

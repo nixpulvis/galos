@@ -41,8 +41,8 @@ pub(crate) const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
 /// one, so it and everything coarser take a `u32` — 3,741 cells of the
 /// galaxy's 204,466, and the ones holding fewest systems each.
 ///
-/// Which is the difference between 6 bytes a position and the 24 an `f64`
-/// triple took. The router's expansion loop measures every system in every
+/// Which is the difference between 6 bytes a position and the 24 of an `f64`
+/// triple. The router's expansion loop measures every system in every
 /// cell a sphere touches — 45.4 billion of them to relax 3.9 million — and
 /// it reads a position and a star kind and nothing else, so the bytes it
 /// streams are the whole cost. Seven against forty-one.
@@ -131,9 +131,9 @@ pub(crate) struct PayloadHead {
 ///
 /// The one place the layout is parsed, so the mapped reader and the
 /// decoding reader cannot disagree about where a column starts. A block
-/// carries its own magic and version, which the record blocks this replaced
-/// did not: a stale one is refused rather than read as a plausible number
-/// of systems with every field out of the wrong bytes.
+/// carries its own magic and version, so a stale one is refused rather than
+/// read as a plausible number of systems with every field out of the wrong
+/// bytes.
 pub(crate) fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
     let mut cur = bytes;
     if <[u8; 4]>::decode(&mut cur)? != PAYLOAD_MAGIC {
@@ -154,9 +154,8 @@ pub(crate) fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
 /// And back, or [`None`] for bytes that are not a payload of this layout
 ///
 /// A block written by another version is refused rather than guessed at: it
-/// carries its own magic and version, so unlike the record blocks this
-/// replaced, a stale one cannot decode as a plausible number of systems
-/// with every field read out of the wrong bytes.
+/// carries its own magic and version, so a stale one cannot decode as a
+/// plausible number of systems with every field read out of the wrong bytes.
 pub(crate) fn payload_points(
     cell: CellId,
     bytes: &[u8],
@@ -197,17 +196,17 @@ pub(crate) fn payload_points(
     Some(points)
 }
 
-/// How wide a record was in the payloads written before the columns
+/// How wide a record is in a legacy payload, the headerless record layout
 ///
-/// Read by the migration that rewrites them and by nothing else: the old
-/// block was `id64`, three `f64` axes, a magnitude, a temperature bucket
-/// and a moment, laid end to end with no header to say so.
+/// Read by the migration that rewrites them and by nothing else: a legacy
+/// block is `id64`, three `f64` axes, a magnitude, a temperature bucket and
+/// a moment, laid end to end with no header to say so.
 pub(crate) const LEGACY_POINT_LEN: usize = 8 + 24 + 4 + 1 + 4;
 
-/// The systems a payload written before the columns held
+/// The systems a legacy payload holds
 ///
 /// Whole records only, so a trailing partial row is dropped rather than
-/// failed. The star kind was not among them, so every system comes back as
+/// failed. A legacy record has no star kind, so every system comes back as
 /// [`StarKind::Unknown`] and the migration fills it from the scan record.
 pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<CellSystem> {
     let mut points = Vec::with_capacity(bytes.len() / LEGACY_POINT_LEN);
@@ -233,34 +232,29 @@ pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<CellSystem> {
 
 /// The magic and version at the head of an index file.
 pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// Two, and moved by the payload record's width
+/// Three, and moved by the payload's layout
 ///
-/// It stood at zero while the format settled, and a record changed width under
-/// it more than once — the age buckets went from `u64` to `u32` — on the
-/// argument that the length check in [`Index`]'s own `decode`
-/// catches a stale file by its size, so a rebuild is the fix and rebuilding is
-/// cheap against inputs already to hand.
+/// A legacy payload is a block of records with no magic, no version and no
+/// count, so nothing about it can be held to a width: its decode takes whole
+/// records until fewer than one remains, and a file written at another width
+/// decodes as a plausible number of systems with every field read out of the
+/// wrong bytes. The index beside it cannot tell either, `Cell::LEN` being the
+/// same. So a change to that width is caught in the index file's header, and
+/// this is it: a stale directory is refused at `index.bin`, named by
+/// [`index_version`], and brought forward by [`crate::ops::upgrade::rewrite`],
+/// which reads the record blocks and writes them as columns.
 ///
-/// That argument holds for the index file and not for the payload. A block
-/// of points carries no magic, no version and no count, so nothing about it
-/// can be held to a width: [`Vec<CellSystem>`]'s decode takes whole records until
-/// fewer than one remains, and a file written at another width decodes as a
-/// plausible number of systems with every field read out of the wrong bytes.
-/// The index beside it cannot tell either, `Cell::LEN` being unchanged. So a
-/// change to [`CellSystem`]'s width has to be caught in the one header there is,
-/// and this is it: a stale directory is refused at `index.bin`, named by
-/// [`index_version`], and rebuilt.
-///
-/// Which means a bump costs a full rebuild of the cells, and is worth it
-/// only for a width change the payload cannot catch itself. A change to the
-/// index record alone still rides on the length check.
+/// The columnar payload carries its own magic, version and count, and refuses
+/// a stale one itself. So a move costs a full rewrite of the cells, and is
+/// worth it only for a change the payload cannot catch itself. A change to the
+/// index record alone rides on the length check in [`Index`]'s own `decode`.
 pub const INDEX_VERSION: u16 = 3;
 
 /// The version an index file's header claims, or [`None`] for bytes that are
 /// not an index file at all.
 ///
-/// A payload block carries no header, so the width of its records is known only
-/// from the version beside them. A reader that [`Index`]'s decode
+/// A legacy payload carries no header, so the width of its records is known
+/// only from the version beside them. A reader that [`Index`]'s decode
 /// refused asks this to say which format it met.
 pub fn index_version(bytes: &[u8]) -> Option<u16> {
     let mut cur = bytes;
@@ -301,10 +295,10 @@ impl Decode for Index {
     /// back a plausible-looking tree of nonsense. Refused here, it is a
     /// rebuild instead of a wrong sky.
     ///
-    /// The payload has no such check — it carries no count to be held against,
-    /// and drops a short tail rather than failing — so a change to *its* width
-    /// is caught here instead, by the version this refuses on. See
-    /// [`INDEX_VERSION`].
+    /// The payload makes its own check — it carries a magic, a version and a
+    /// count — but a legacy block of records does not, and drops a short
+    /// tail rather than failing, so a directory of those is caught here
+    /// instead, by the version this refuses on. See [`INDEX_VERSION`].
     fn decode(cur: &mut &[u8]) -> Option<Index> {
         if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
             return None;
@@ -341,10 +335,10 @@ mod tests {
 
     /// Two magnitudes closer together than a hundredth come back apart.
     ///
-    /// The wire carried a fixed-point hundredth once, which rounded both of
-    /// these to the same number and cost 0.92 % of a system's flux. The
-    /// payload's own ordering is by the full value, so the encoding is the
-    /// only place the distinction could be lost.
+    /// A fixed-point hundredth would round both of these to the same number
+    /// and cost 0.92 % of a system's flux. The payload's own ordering is by
+    /// the full value, so the encoding is the only place the distinction
+    /// could be lost.
     #[test]
     fn magnitudes_finer_than_a_centimag_stay_apart() {
         let dim = point(1, 4.831);
@@ -362,9 +356,8 @@ mod tests {
     ///
     /// Positions are cell-relative counts of a thirty-second of a light
     /// year ([`POSITION_STEP`]), which is the grid Elite's coordinates
-    /// actually sit on — so a position on that grid comes back bit for bit
-    /// where an `f64` triple came back bit for bit, in six bytes instead of
-    /// twenty-four.
+    /// actually sit on — so a position on that grid comes back bit for bit,
+    /// in six bytes rather than the twenty-four of an `f64` triple.
     #[test]
     fn a_payload_block_round_trips() {
         let cell = CellId { level: 11, x: 400, y: 300, z: 500 };
@@ -386,7 +379,7 @@ mod tests {
         let bytes = payload_bytes(cell, &points);
         assert_eq!(bytes.len(), payload_len(points.len(), 2));
         // Seven bytes a system for the two fields a route reads, against
-        // the forty-one a record cost.
+        // the forty-one of a legacy record.
         assert_eq!((bytes.len() - PAYLOAD_HEADER) / points.len(), 24);
 
         let back = payload_points(cell, &bytes).unwrap();
@@ -403,10 +396,10 @@ mod tests {
 
     /// A coarse cell takes the wider axis, and holds a position exactly too
     ///
-    /// A `u16` of thirty-seconds covers 2048 light years, which is every
-    /// cell but the 852 coarser ones in a galaxy of 204,466. Those take a
-    /// `u32`, and the reader is told which by the block's own header rather
-    /// than working it out.
+    /// A `u16` of thirty-seconds covers 1024 light years, which is every
+    /// cell but the 3,741 of 2048 and coarser in a galaxy of 204,466. Those
+    /// take a `u32`, and the reader is told which by the block's own header
+    /// rather than working it out.
     #[test]
     fn a_coarse_cell_widens_its_positions() {
         assert_eq!(position_width(11), 2, "a 64 ly cell");
@@ -429,11 +422,9 @@ mod tests {
 
     /// An empty block is empty, and bytes that are not a payload are refused
     ///
-    /// The block carries its own magic, version and count, which the record
-    /// blocks it replaced did not: one written at another width used to
-    /// decode as a plausible number of systems with every field read out of
-    /// the wrong bytes, and the only guard against it was the index file's
-    /// version beside it.
+    /// The block carries its own magic, version and count, so one written
+    /// at another width is refused rather than decoded as a plausible number
+    /// of systems with every field read out of the wrong bytes.
     #[test]
     fn bytes_that_are_not_a_payload_are_refused() {
         let cell = CellId { level: 11, x: 0, y: 0, z: 0 };
@@ -457,7 +448,7 @@ mod tests {
         assert!(payload_points(cell, &wrong).is_none(), "a stale version read");
     }
 
-    /// The payloads written before the columns still read, for the migration
+    /// A legacy payload of records reads, for the migration
     #[test]
     fn a_payload_from_before_the_columns_still_reads() {
         let mut row = Vec::new();
@@ -513,7 +504,7 @@ mod tests {
         );
     }
 
-    /// An index written when a *cell* record was a different width is refused
+    /// An index whose *cell* record is a different width is refused
     ///
     /// [`INDEX_VERSION`] does not move for a change to the index record, so
     /// a stale file carries the same magic and the same version and the
@@ -544,11 +535,10 @@ mod tests {
 
     /// An index at another format version is refused, and says which.
     ///
-    /// The payload's record width rides on this version and on nothing
-    /// else, a block of points carrying no header of its own. A directory
-    /// from before the magnitude went to `f32` is well-formed at every
-    /// other check, so this is the only thing standing between it and a
-    /// galaxy decoded out of the wrong bytes.
+    /// The width of a legacy payload rides on this version and on nothing
+    /// else, a block of records carrying no header of its own. A legacy
+    /// directory is well-formed at every other check, so this is the only
+    /// thing standing between it and a galaxy decoded out of the wrong bytes.
     #[test]
     fn an_index_at_another_version_is_refused() {
         let cell = Cell {

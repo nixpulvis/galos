@@ -13,9 +13,11 @@
 //! Its [`morton`](CellId::morton) key interleaves the three coordinates so that
 //! cells near in space are near in the key, which is the order the builder
 //! sorts and the files are laid out in. A system's position is carried in the
-//! payload as three `f64` light-year coordinates, its own galactic position
-//! unchanged: the cube and its cells order and bound the systems, but a system
-//! is drawn exactly where it sits, however coarse the cell that owns it.
+//! payload as a whole count of
+//! [`POSITION_STEP`](crate::format::payload::POSITION_STEP) off its cell's low
+//! corner, the grid the game's own coordinates sit on: the cube and its cells
+//! order and bound the systems, but a system is drawn where it sits, however
+//! coarse the cell that owns it.
 
 use crate::core::codec::{Decode, Encode, FixedCodec};
 

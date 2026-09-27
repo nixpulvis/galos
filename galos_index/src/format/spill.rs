@@ -1,11 +1,12 @@
 //! A file of [`System`] records, appended once and then mapped.
 //!
 //! What a build that cannot hold the galaxy writes it into: a region's
-//! systems are streamed out of the database into one of these and the
-//! region is built from the mapping, so they are on disk and never on the
-//! heap. [`crate::build::region`] does the building; this is only the bytes.
+//! systems are streamed out of a database or a dump into one of these and
+//! the region is built from the mapping, so they are on disk and never on
+//! the heap. [`crate::build::region`] does the building; this is only the
+//! bytes.
 //!
-//! The same records the resume point's base is made of: `56` bytes of
+//! The same records the resume point's base is made of: `64` bytes of
 //! `repr(C)` [`System`] as the machine holds one, no header, no framing. A
 //! spill is scratch — written, read once, deleted — so unlike the base it
 //! carries no magic and no version.

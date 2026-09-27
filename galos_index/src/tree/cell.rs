@@ -90,8 +90,8 @@ impl Cell {
     /// The floor is the field's: a lone system must still splat as something.
     /// Here the honest answer for one system is zero width, and what keeps it
     /// drawn as itself rather than merged into a blob is
-    /// `crate::read::walk::split_to_marks`'s rule that a cell holding no more
-    /// than its footprint can show is never merged.
+    /// `crate::read::walk::splitting`'s rule that a cell holding one system is
+    /// never merged.
     ///
     /// This is the seed [`crate::tree::index`]'s `widen` rolls up. Where a
     /// cell has children their centroids say far more about its shape than
@@ -116,8 +116,8 @@ record! {
 
 /// One system as the index is built *into*: packed for a cell's payload, with
 /// its id, its exact position, the two photometric fields at the precision a
-/// reader needs, and when it was last updated. What the map draws and the
-/// router measures; made only by [`CellSystem::of`].
+/// reader needs, when it was last updated, and its arrival star's kind. What
+/// the map draws and the router measures; made only by [`CellSystem::of`].
 ///
 /// **The served half of two records of a system.** [`System`] is the whole
 /// record the build works in — see its table for what this one drops and
@@ -129,7 +129,7 @@ record! {
 /// it sits however coarse the cell that owns it. The magnitude is the
 /// system's combined absolute magnitude narrowed to `f32`, which its flux is
 /// drawn from, and the temperature bucket is the blackbody tint, already
-/// binned so the client needs no per-star join. Neither is fit to build an
+/// binned so a reader needs no per-star join. Neither is fit to build an
 /// aggregate or an order from; that is [`System`]'s.
 ///
 /// `updated_at` is Unix seconds, and the one field here that is not about
@@ -137,12 +137,10 @@ record! {
 /// asks: which systems have been heard from lately. A cell's aggregate
 /// answers that at a distance, counting systems per age bucket, but a bucket
 /// is a day at its finest and the filter's shortest span is a minute, so the
-/// per-system answer has to come from here. Four bytes on a record of
-/// thirty-seven,
-/// and the only table on the client's side of the wire that already rewrites
-/// per system rather than per chunk: the cell a report moves is a file of tens
-/// of kilobytes, where the names table's chunk is three megabytes and would go
-/// dirty for every system reported.
+/// per-system answer has to come from here. Four bytes a system in the
+/// payload, which is the one table a reader is served that
+/// rewrites per system: the cell a report moves is a file of tens of
+/// kilobytes.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct CellSystem {
     pub id64: u64,

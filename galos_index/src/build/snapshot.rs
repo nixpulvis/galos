@@ -51,7 +51,7 @@ impl Default for BuildParams {
 ///
 /// The index is the aggregates and rank ranges, a few megabytes over a galaxy
 /// and always resident. The payloads are the systems themselves, keyed by the
-/// cell that owns them, and are what a client fetches a cell at a time. Every
+/// cell that owns them, and are what a reader fetches a cell at a time. Every
 /// system sits in exactly one cell's payload.
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -384,9 +384,8 @@ impl Snapshot {
     /// and a cell the previous tree had and this one does not is left
     /// standing — this writes what it holds and reads nothing.
     ///
-    /// That "a full write goes to a fresh directory" was the assumption, and
-    /// directories are not fresh: a rebuild over a published one left 200,248
-    /// payloads and 4.9 GB of a tree nothing refers to. Sweeping them is
+    /// A directory that held an earlier tree keeps payloads nothing refers
+    /// to. Sweeping them is
     /// [`sweep_payloads`](crate::store::cells::sweep_payloads), which a build
     /// calls once its index file stands; [`write_diff`](Self::write_diff) is
     /// the incremental publish, which removes what it is told went.
@@ -427,7 +426,7 @@ mod tests {
     use std::collections::HashSet;
 
     /// A grid of systems spaced `step` ly apart, `n` on a side, each a touch
-    /// brighter than the last so the ordering is unambiguous. Positions are
+    /// fainter than the last so the ordering is unambiguous. Positions are
     /// pulled toward the cube centre so they sit well inside it whatever `n`
     /// and `step` are.
     fn grid(n: usize, step: f64) -> Vec<System> {
@@ -501,7 +500,7 @@ mod tests {
         }
     }
 
-    /// Within a cell the payload is brightest first, which the client leans
+    /// Within a cell the payload is brightest first, which the map leans
     /// on to draw a prefix without re-sorting.
     #[test]
     fn a_payload_is_ordered_brightest_first() {

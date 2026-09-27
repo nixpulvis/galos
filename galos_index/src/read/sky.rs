@@ -7,19 +7,34 @@
 //! position at full precision — so the answer is to read them, not to build
 //! something else out of them.
 //!
-//! What the map used to do instead was copy every position onto the heap and
-//! bucket it into a grid of its own: at 200,071,629 systems, 32 s of build
-//! and about 13.7 GB, paid on the click that asked for a route, before a
-//! single jump was considered. The grid was a second spatial index over a
-//! galaxy that already had one.
-//!
-//! So this holds the index (a few tens of megabytes, resident, as it always
-//! was) and maps payloads as a query reaches them. Nothing is derived,
+//! So this holds the index (a few tens of megabytes, resident) and maps
+//! payloads as a query reaches them. Nothing is derived,
 //! nothing is built, and nothing is resident that a query has not touched —
 //! which is also what makes it safe under the feed: there is no structure to
 //! go stale when a cell is republished, and [`crate::store::cells`] renames a
 //! payload into place rather than rewriting it, so a mapping a route is
 //! holding keeps reading the galaxy the route started on.
+//!
+//! # Sky or Index
+//!
+//! An [`Index`] is the cell tree alone: every cell's aggregate, and no
+//! systems. It answers what a cell stands for — counts, flux, centroids,
+//! which cells lie near a point — without touching a payload, which is what
+//! a walk planning a frame wants. It cannot say where any one system is.
+//!
+//! A [`Sky`] is an [`Index`] with its directory behind it, so the same tree
+//! can be answered down to the system: which systems are within `radius`
+//! of a place ([`Sky::each_near`]), where a system sits by address
+//! ([`Sky::placed`]), and the address and place behind a [`Node`]. Reach for
+//! one when a question names a system or a distance between systems — a
+//! router's graph, a route's endpoints, a search result placed exactly —
+//! and for the [`Index`] ([`Sky::index`]) when it is about cells.
+//!
+//! Neither is how a reader loads what it draws. That is a
+//! [`crate::Source`], which fetches payloads whole and asynchronously for a
+//! [`crate::read::resident::Resident`] to hold decoded; a [`Sky`] maps them
+//! synchronously, reads a column at a time, and lets them go as a query
+//! moves on.
 
 use crate::core::geometry::CellId;
 use crate::store::cells::Payload;
@@ -56,7 +71,8 @@ pub struct Node {
 const MAPPED_CELLS: usize = 8 * 1024;
 
 /// The galaxy as a router reads it: the resident cell tree, and the payloads
-/// mapped as queries reach them.
+/// mapped as queries reach them. See the module docs for when to use this
+/// rather than the [`Index`] alone.
 pub struct Sky {
     dir: PathBuf,
     index: Index,
@@ -82,7 +98,7 @@ impl Sky {
         Ok(Sky::of(dir, Index::read(dir)?))
     }
 
-    /// The same over an index already read, which every client has.
+    /// The same over an index already read, which every reader has.
     pub fn of(dir: &Path, index: Index) -> Sky {
         Sky { dir: dir.to_owned(), index, held: Mutex::new(Held::default()) }
     }
@@ -172,16 +188,15 @@ impl Sky {
 
     /// Which node holds `address`, given somewhere near where it sits.
     ///
-    /// The one query that cannot start from a position, because it starts
-    /// from a system a commander named — so the place comes from the names
-    /// table and this finds the record. A handful per route, at its ends,
-    /// which is why searching a small neighbourhood is affordable where
-    /// an address-to-cell index over the galaxy would not be worth its
-    /// bytes.
+    /// For a caller that already holds a place for the system — a router's
+    /// endpoints, a jet cone's published row — and wants the record. A
+    /// handful per route, which is why searching a small neighbourhood is
+    /// affordable where an address-to-cell index over the galaxy would not
+    /// be worth its bytes.
     ///
     /// The radius widens until something is found or the galaxy is
-    /// exhausted: a position carried at `f32` in the names table and at
-    /// `f64` in the payload agree to within a light year or so, but a cell
+    /// exhausted: a place carried at `f32`, or the middle of the boxel the
+    /// address names, is near the payload's `f64` but not on it, and a cell
     /// boundary can fall between them.
     pub fn node_of(&self, address: i64, near: [f64; 3]) -> Option<Node> {
         let wanted = address as u64;
@@ -213,9 +228,9 @@ impl Sky {
     /// Measured over `.index/full`, 300 real addresses and all 300 found:
     /// 0.83 ms at class `A` (5 systems visited), 1.4 ms at `C` (76), 2.2 ms
     /// at `D` (448), 5.0 ms at class `H`. That is dearer than a binary
-    /// search of a sorted address column — 87 µs — and it is what let that
-    /// column's 1.6 GB and the 2.4 GB of positions beside it stop being
-    /// stored: a route asks this twice, at its ends.
+    /// search of a sorted address column — 87 µs — and it spares storing
+    /// that column's 1.6 GB and the 2.4 GB of positions beside it: a route
+    /// asks this twice, at its ends.
     ///
     /// [`None`] where nothing of that address is on record there, which is
     /// a system this index has never held.
@@ -338,8 +353,8 @@ mod tests {
         }
     }
 
-    /// A system is found by address from the place the names table carries,
-    /// which is `f32` where the payload's is `f64`.
+    /// A system is found by address from a place near it, carried at `f32`
+    /// where the payload's is `f64`.
     #[test]
     fn a_named_system_is_found_from_its_place() {
         let dir = scratch("named");
@@ -348,7 +363,7 @@ mod tests {
         let sky = Sky::open(&dir.0).expect("the sky opens");
 
         for system in [&systems[0], &systems[systems.len() / 3]] {
-            // The place as the names table would hand it over: narrowed to
+            // The place as a published row would hand it over: narrowed to
             // `f32` and widened back.
             let near = [
                 system.position[0] as f32 as f64,

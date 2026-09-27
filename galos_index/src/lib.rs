@@ -2,27 +2,28 @@
 //!
 //! One sparse adaptive octree stands over every system, and three walks read
 //! it: the level of detail, the sky's discrete stars, and the glow behind
-//! both. The builder writes it beside the database; the client draws the
+//! both. The builder writes it beside the database; the map and the router read the
 //! galaxy from it with no database at all. This crate is the format both agree
 //! on and the machinery that reads it back.
 //!
 //! It rests on one thing above all: the aggregates a cell carries must compose
 //! exactly, so that a region drawn coarse and the same region drawn fine
 //! integrate to the same totals and a cross-fade between them cannot pump
-//! brightness or lose a star. That is [`core::moments`], and it is built and
-//! tested first because everything else leans on it.
+//! brightness or lose a star. That is [`core::moments`], and everything else
+//! leans on it.
 //!
 //! The modules are layers, each reading only the ones above it in this list:
 //!
-//! - [`core`]: the cube, the sums a cell carries, the codecs, a star's kind.
-//! - [`records`]: the serde rows the client reads beside the cells.
+//! - [`core`]: the cube, the sums a cell carries, the codecs, a star's kind,
+//!   a system's name.
+//! - [`records`]: the serde rows a reader reads beside the cells.
 //! - [`system`]: one system — [`System`], where it is in the galaxy, and
 //!   [`system::bodies`], what is inside it.
 //! - [`tree`]: the cell tree as it is served — [`Cell`], [`Index`], and the
 //!   [`CellSystem`] a cell's payload packs each system as.
 //! - [`format`](mod@format): file names, byte layouts and the resume point.
 //! - [`store`]: the stores a directory is made of, read and written.
-//! - [`read`]: the client's walks over the resident index.
+//! - [`read`]: a reader's walks over the resident index.
 //! - [`build`]: raising the tree, whole or a region or an edit at a time.
 //! - [`accumulate`]: events and reports folded into records.
 //! - [`ops`]: what an operator does to a whole directory.

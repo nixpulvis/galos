@@ -228,18 +228,13 @@ mod tests {
 
     /// A shard that has been folded still takes an append
     ///
-    /// **The bug this is here for.** [`append`] reads the sixteen header
-    /// bytes to learn the generation and the base, and handed that buffer to
-    /// the header check it asked whether a base of *n* entries fitted in
-    /// sixteen bytes. It does not, so every append to a shard that had ever
-    /// been folded failed — `a base of 8218 entries in a file holding 0` —
-    /// and with it every pack of a loose body file into that shard.
-    ///
-    /// Reported off a real directory, where the packing stopped at the
-    /// first folded shard and the upgrade that called it stopped with it.
-    /// Nothing in the suite caught it because nothing appended to a folded
-    /// shard: a fold happens when a tail grows past thousands of entries,
-    /// which no test had reached. This one folds by hand instead.
+    /// [`append`] reads the sixteen header bytes to learn the generation
+    /// and the base, and those sixteen bytes cannot hold a base of *n*
+    /// entries, so checking them as the whole file would refuse every
+    /// append to a folded shard — and with it every pack of a loose body
+    /// file into that shard. A fold happens when a tail grows past
+    /// thousands of entries, which no other test reaches, so this one folds
+    /// by hand.
     #[test]
     fn a_folded_shard_still_takes_an_append() {
         let dir = scratch("foldappend");
@@ -254,9 +249,9 @@ mod tests {
         assert_eq!(folded.base.len(), 1, "the fold left nothing in the base");
         assert!(folded.tail.is_empty());
 
-        // And now another system into the same shard, which is the step
-        // that used to fail. The shard is a hash of the address, so the
-        // next one is looked for rather than guessed at.
+        // And now another system into the same shard. The shard is a hash
+        // of the address, so the next one is looked for rather than
+        // guessed at.
         let next = (1..10_000)
             .map(|n| address + n)
             .find(|&it| body_shard(it) == shard)
@@ -297,8 +292,8 @@ mod tests {
     /// A withdrawn scan loses its flat file as well as its sharded one
     ///
     /// The removal is what makes a system whose last scan was taken back read
-    /// as unscanned. Clearing only the sharded file would leave the
-    /// pre-sharding one for the read to fall back onto.
+    /// as unscanned. Clearing only the sharded file would leave the flat,
+    /// unsharded one for the read to fall back onto.
     #[test]
     fn removing_a_body_clears_both_layouts() {
         use crate::format::msgpack::write_meta;

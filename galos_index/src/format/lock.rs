@@ -1,18 +1,18 @@
 //! One writer to a directory, and how to get the directory back.
 //!
 //! An index directory is published whole: every pass rewrites files under it
-//! and the client reads them with no coordination beyond the writes landing
+//! and a reader reads them with no coordination beyond the writes landing
 //! atomically. Two builders over one directory therefore interleave two
 //! galaxies into it — each writing a cell tree the other's metadata does not
 //! describe — and neither notices, since neither reads what the other wrote.
-//! Nothing stopped that, and it is an easy mistake to make two ways:
+//! It is an easy mistake to make two ways:
 //! `galos ingest --index DIR` run twice in two terminals, or an ingest
 //! into the directory a `galos index sweep`, `pack` or `migrate` is
 //! already rewriting.
 //!
 //! So a builder takes `<dir>.lock` for as long as it holds the directory. The
 //! file sits *beside* the directory rather than inside it: the directory is
-//! served to clients whole, and a runtime file in it is a file a client asks
+//! served to readers whole, and a runtime file in it is a file a reader asks
 //! for, a mirror copies and a checksum covers. It is created with `O_EXCL`,
 //! which is one atomic step against a file system rather than a check and a
 //! create with a race between them, and it carries the pid and start time of
@@ -27,8 +27,9 @@
 //! gone. That is the right default: a lock that cleared itself on a guess
 //! would clear itself exactly when a long build was still running and slow to
 //! answer. Check the pid the refusal names, and if nothing is running under
-//! it, run again with `--force-lock` — global to `galos`, so it goes
-//! with whichever verb was refused — which is [`Lock::force`].
+//! it, run again with `--force-lock` — global to `galos index` and a flag
+//! of `galos ingest`, so it goes with whichever verb was refused — which is
+//! [`Lock::force`].
 
 use crate::format::layout::lock_path;
 use std::fs::OpenOptions;

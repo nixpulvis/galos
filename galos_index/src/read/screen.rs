@@ -3,7 +3,7 @@
 //!
 //! The walk ([`crate::read::walk`]) says *which* cells the view needs; this
 //! says *how many marks* each of them is worth. One copy, because there are two
-//! readers that must agree to the mark: the client's own draw and the offline
+//! readers that must agree to the mark: the map's own draw and the offline
 //! renderer (`examples/frontier.rs`) that is the check on it. A picture drawn
 //! with a second copy of this arithmetic checks the second copy.
 //!
@@ -36,8 +36,8 @@ pub fn frame_marks(view: &View) -> f64 {
 /// the most that can be drawn without marks landing on one another,
 /// and a view down the length of a populated bubble wants every one of
 /// them: measured over `.index/full` at a reach of five hundred light
-/// years, the populated sky asked for more marks than the frame has
-/// patches and filled solid — the picture reported as too dense.
+/// years, the populated sky asks for more marks than the frame has
+/// patches and fills solid, which is too dense to read.
 ///
 /// So the densest views are given a share of the frame rather than the
 /// whole of it, and what fills that share is the busiest first, which
@@ -53,7 +53,7 @@ pub fn frame_marks(view: &View) -> f64 {
 ///
 /// A third: it costs the sparse view nothing at all — a hundred light
 /// years wants 8,016 marks and is drawn whole — and halves the crowded
-/// one. A quarter starts clipping views that were never the problem,
+/// one. A quarter starts clipping views that are not the problem,
 /// which is the line this must not cross: thinning is for the sky that
 /// is too full to read, and a sky that reads well is left alone.
 pub fn crowded_marks(view: &View) -> f64 {
@@ -80,19 +80,19 @@ fn frame(view: &View) -> [f64; 2] {
 /// The drawn set is a uniform sample of the galaxy, biased within each cell
 /// toward the brightest.
 ///
-/// **Two other rules were tried and both are wrong.** A share of a cell's
+/// **Two other rules are wrong.** A share of a cell's
 /// *footprint area* — one mark to every patch of screen the cell covers —
 /// answers the same number wherever it is pointed, so the galaxy comes out
 /// at one uniform density and the arms, the core and the voids all read
-/// alike; a floor under that same figure drew nothing at all in the finest
+/// alike; a floor under that same figure draws nothing at all in the finest
 /// cells, and since the tree is finest where the sky is densest, that is a
 /// hole exactly where the most systems are. Population is the only one of
 /// the three that is monotone in density.
 ///
 /// No clamp anywhere in it. A cell draws `share` of its own payload and can
-/// never be asked for more than it holds, which is what the attempt that
-/// drew hard-edged cubes got wrong: it clamped a coarse cell's ask up to
-/// its whole payload while its neighbour served a few per cent.
+/// never be asked for more than it holds. Clamping a coarse cell's ask up to
+/// its whole payload while its neighbour serves a few per cent draws
+/// hard-edged cubes.
 pub fn share(population: u64, capacity: f64) -> f64 {
     if population == 0 {
         return 1.;
@@ -146,8 +146,9 @@ pub(crate) fn dither(id: CellId) -> f64 {
 /// tile is some six thousand times fainter than the sky it sits beside and
 /// cannot be mistaken for it.
 ///
-/// It also bounds the cost. One mark a tile over a 1280x720 frame is 900
-/// marks, an sixtieth of [`frame_marks`], whatever the tree holds.
+/// It also bounds the cost. One mark a tile over a 1280x720 frame is 920
+/// marks at most, forty tiles by twenty-three, about a sixtieth of
+/// [`frame_marks`], whatever the tree holds.
 pub const TILE_PX: f64 = 32.0;
 
 impl View {
@@ -210,7 +211,7 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 /// So the same rule is applied where the frontier cannot reach it: a
 /// mark claims a tile [`MERGE_PX`] across, and the next one that would
 /// land in it is not drawn. What stands alone is drawn whole — which is
-/// the half of this the merge frontier was always for — and what would
+/// the half of this the merge frontier is for — and what would
 /// pile up is one mark instead of forty.
 ///
 /// **Whoever claims first keeps it**, so the order the caller offers in
@@ -235,9 +236,8 @@ impl Crowded {
     /// swings a full radius through the galaxy, so every distance and
     /// every line of sight from it changes as the hand drags. A lattice
     /// reckoned from there reshuffles the whole time, and the marks it
-    /// drops keep changing — which is what was reported, and what no
-    /// amount of world-anchoring the *axes* could fix, the anchor
-    /// itself having been the moving thing.
+    /// drops keep changing, which no amount of world-anchoring the *axes*
+    /// can fix, the anchor itself being the moving thing.
     ///
     /// So a system's place in the lattice is settled by where it stands
     /// relative to the centre of the view and by how far back the eye
@@ -351,12 +351,12 @@ struct Tile {
 /// **Either kind of cell.** A merged mark is drawn off its aggregate and
 /// costs nothing but the mark; a cell above the frontier draws the head of
 /// its own payload, which is the brightest thing it holds, and that
-/// payload is in hand — every marked cell in reach is read to the client's
-/// `READ_LEAST` whatever its share. Merged marks alone were tried and it
-/// is not enough: the one inhabited system more than two thousand light
-/// years off the galactic plane in `.index/full`, `HIP 58832`, sits in a
-/// level 5 cell holding two systems that the walk answers as a *mark* and
-/// not a blob, so blobs-only left it — the only thing up there — undrawn.
+/// payload is in hand — every marked cell in reach is read to the map's
+/// `READ_LEAST` whatever its share. Merged marks alone are not enough:
+/// the one inhabited system more than two thousand light years off the
+/// galactic plane in `.index/full`, `HIP 58832`, sits in a level 5 cell
+/// holding two systems that the walk answers as a *mark* and not a blob,
+/// so blobs-only would leave it — the only thing up there — undrawn.
 pub struct Empty {
     tiles: Vec<Tile>,
     across: usize,
@@ -556,8 +556,8 @@ mod tests {
     /// apart they stand, so a volume reads as a mosaic on a sphere. And
     /// an orbit is not a turn — the eye swings a full radius through
     /// the galaxy — so a lattice reckoned from the eye reshuffles for
-    /// as long as the hand is dragging, which is the flicker this was
-    /// reported for. It is reckoned about the centre instead.
+    /// as long as the hand is dragging, and the marks flicker. It is
+    /// reckoned about the centre instead.
     #[test]
     fn marks_merge_where_they_stand() {
         // A sky of a thousand at a thousand light years, and a deep
@@ -611,8 +611,8 @@ mod tests {
         );
         // And orbited: the eye carried a quarter turn round what it is
         // looking at, and then right round to the far side of it,
-        // which is what dragging does and what the flicker was. The
-        // same distance back, so the same lattice.
+        // which is what dragging does. The same distance back, so the
+        // same lattice.
         for (eye, forward) in [
             ([1_000., 0., 1_000.], [-1., 0., 0.]),
             ([0., 0., 2_000.], [0., 0., -1.]),
@@ -663,11 +663,10 @@ mod tests {
             "a pile inside one patch drew more than one mark",
         );
 
-        // Travelling changes nothing either, which is more than was
-        // asked for and worth holding: the lattice is ruled on the
-        // world's own axes and sized by how far back the eye is, so
-        // nudging the view along leaves every boundary where it was
-        // and the same marks survive.
+        // Travelling changes nothing either, which is worth holding: the
+        // lattice is ruled on the world's own axes and sized by how far
+        // back the eye is, so nudging the view along leaves every boundary
+        // where it was and the same marks survive.
         let mut nudged = Crowded::about(&view, [30., 0., 1_010.]);
         let alongside: Vec<bool> =
             sky.iter().map(|&at| nudged.claim(at)).collect();
@@ -754,7 +753,7 @@ mod tests {
     }
 }
 
-/// What the rule comes to over a whole sky, which is the thing the client
+/// What the rule comes to over a whole sky, which is the thing the map
 /// and the offline renderer each assemble out of the pieces above.
 #[cfg(test)]
 mod drawing {
@@ -805,7 +804,7 @@ mod drawing {
     /// What one frame draws: marks off the read cells, merged marks, and
     /// the merged marks lighting tiles the rest of the frame left dark.
     ///
-    /// The client's own assembly, in the order it runs it.
+    /// The map's own assembly, in the order it runs it.
     fn drawn(index: &Index, view: &View) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
         let needed = index.needed(view, Mode::Shell, None);
         let population: u64 = needed
@@ -863,13 +862,13 @@ mod drawing {
     /// One system on its own draws a mark, whichever kind of cell the walk
     /// answers it as
     ///
-    /// **This is the case merged marks alone did not cover.** A cell stays
-    /// above the frontier by being wider than a mark, so the reasoning
-    /// went that what stands in an empty patch of sky is always a blob. It
-    /// is not: measured over `.index/full`, the one inhabited system more
-    /// than two thousand light years off the galactic plane sits in a cell
-    /// the walk answers as a mark, and lighting blobs alone left the only
-    /// thing up there undrawn.
+    /// **Merged marks alone do not cover this.** A cell stays above the
+    /// frontier by being wider than a mark, so it can seem that what stands
+    /// in an empty patch of sky is always a blob. It is not: measured over
+    /// `.index/full`, the one inhabited system more than two thousand light
+    /// years off the galactic plane sits in a cell the walk answers as a
+    /// mark, and lighting blobs alone would leave the only thing up there
+    /// undrawn.
     #[test]
     fn one_system_alone_out_there_is_drawn() {
         let mut at = plane_and_clump(1200.0);

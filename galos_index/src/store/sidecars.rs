@@ -116,7 +116,7 @@ impl Sidecars {
     ///
     /// An absent table is remembered, and written by a [`Self::write`] only
     /// once [`Self::claim_absent`] has asked for it: no table means "this
-    /// index cannot say" to a client, and a caller decides whether it can
+    /// index cannot say" to a reader, and a caller decides whether it can
     /// say better.
     pub fn resume(dir: &Path, tables: &TableSet) -> io::Result<Sidecars> {
         Ok(Sidecars {
@@ -216,8 +216,7 @@ impl Sidecars {
     /// Put a system's name and place in the table.
     ///
     /// Nothing is written where the table already says exactly this, so a
-    /// system reported again costs one binary search into a mapping — which
-    /// is what the resident table used to be for.
+    /// system reported again costs one binary search into a mapping.
     pub fn name(&mut self, entry: NameEntry) {
         self.names.name(entry);
     }
@@ -628,7 +627,7 @@ mod tests {
     /// A build from records writes an empty table where it can and leaves
     /// out the one it cannot fill
     ///
-    /// The two say different things to a client: no contributed table is
+    /// The two say different things to a reader: no contributed table is
     /// "this index cannot say", where an empty one is "there are none". A
     /// derivation from records can say the second of every table it
     /// derives, and only the first of the factions, whose ids are minted on
@@ -712,10 +711,10 @@ mod tests {
 
     /// The sort is the sort, however many runs it takes
     ///
-    /// The tables are written through an external sort now — runs of rows
+    /// The tables are written through an external sort — runs of rows
     /// sorted in memory, then merged — and the rule it has to keep is the
-    /// one a map of every row kept for free: address order, and the last
-    /// row an address has winning. The place to lose it is a duplicate
+    /// one a map of every row would keep for free: address order, and the
+    /// last row an address has winning. The place to lose it is a duplicate
     /// that falls either side of a run boundary, so this pushes rows in
     /// no order, repeats three of them, and sets the run size to one byte:
     /// every row is its own run and every duplicate straddles a boundary.

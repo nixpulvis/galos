@@ -1,13 +1,15 @@
-//! What the client holds loaded, and the set arithmetic the three consumers do.
+//! What a reader holds loaded, and the fetch set the loader asks of it.
 //!
 //! The walk says what the view needs; the cache says what is here. Between
 //! them fall the three consumers: drawing takes what is needed and resident,
 //! loading fetches what is needed and absent, and eviction drops what is
-//! resident and no longer needed. Each is one set operation
-//! against a [`Needed`], and they are the whole of the client's fetch loop.
+//! resident and no longer needed. Only the fetch is a set operation here,
+//! [`Resident::missing`] against a [`Needed`]; the draw reads
+//! [`Resident::iter`], and when a payload stops being needed is the reader's
+//! policy and not this cache's.
 //!
 //! The residual a cell splats over its drawn slice, and the field it resolves
-//! into, are the next step's work; this holds the payload and the bookkeeping
+//! into, are the reader's work; this holds the payload and the bookkeeping
 //! the loop turns on.
 
 use crate::core::geometry::CellId;
@@ -29,13 +31,14 @@ pub struct ResidentCell {
 /// and three grid coordinates, thirteen bytes of integer that are already
 /// well spread, and the draw asks this map once per marked cell per pass:
 /// measured over `.index/full` at a wide zoom, 77,773 of them a frame.
-/// Measured in `tests/zooming.rs` over the same addresses, SipHash is
-/// 15 ns against 3 for a multiply-shift, which at that count is four
-/// milliseconds a frame against under one.
+/// Over the same addresses SipHash is 15 ns against 3 for a
+/// multiply-shift, which at that count is four milliseconds a frame against
+/// under one.
 ///
 /// Fine to be weak. Nothing adversarial reaches this — the keys are the
-/// map's own tree addresses — and the mix below is the same one the
-/// aggregates' own moments are dithered with.
+/// map's own tree addresses — and the finish below is SplitMix64's
+/// finaliser, the same one `screen::dither` rounds a cell's share of marks
+/// with.
 #[derive(Default)]
 pub(crate) struct Quick(u64);
 
@@ -67,7 +70,7 @@ impl Hasher for Quick {
     }
 }
 
-/// The payloads the client holds, keyed by cell.
+/// The payloads a reader holds, keyed by cell.
 ///
 /// The index of aggregates is always resident and lives beside this; what this
 /// holds is the per-system payloads, which come and go as the view moves.
@@ -96,7 +99,7 @@ impl Resident {
     /// One cell's payload, where it is held
     ///
     /// For a reader that has noted *which point of which cell* it wants and
-    /// comes back for it: the client queues a point that way rather than
+    /// comes back for it: the map queues a point that way rather than
     /// building a system out of it, most of what it queues never being
     /// drawn.
     pub fn cell(&self, id: CellId) -> Option<&ResidentCell> {
@@ -175,7 +178,7 @@ mod tests {
 
     /// What is fetched is needed and absent, and what is needed and resident
     /// is what the draw reads off `iter`. Which of the resident cells are
-    /// dropped again is the client's policy and not this cache's: see
+    /// dropped again is the reader's policy and not this cache's: see
     /// `galos_map`'s `map::galaxy::walk::evict_payloads`.
     #[test]
     fn the_fetch_set_is_what_is_needed_and_absent() {

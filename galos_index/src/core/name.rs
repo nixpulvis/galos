@@ -1,21 +1,16 @@
 //! A system's name, in the one spelling the whole of galos uses.
 //!
 //! Elite's sources disagree about case. A journal writes `Sol`, Spansh's
-//! dump writes `Sol`, EDDN carries whatever the commander's client sent, and
-//! `galos_db` has always written `UPPER($2)` — so the database's spelling is
-//! upper case and every reader that compares against it had to say so. Four
-//! places did: `SystemReport::named` uppercased on every read,
-//! `Names::find` lowercased *both sides of every comparison* over a hundred
-//! and thirty-one million entries, `names_exactly` and `address` folded case
-//! per entry, and the SQL did it again in the server.
+//! dump writes `Sol`, EDDN carries whatever the commander's uploader sent, and
+//! `galos_db` writes `UPPER($2)` — so the database's spelling is upper case.
 //!
-//! [`SystemName`] is the invariant instead of the convention: a value of it
-//! is upper case because there is no way to make one that is not. The fold
-//! happens once, where a name enters the program — a parse, a row, a decode
-//! — and never again. Two names are then compared as bytes, sorted as
-//! bytes, and hashed as bytes, which is what makes a sorted names index and
-//! an `O(log N)` lookup possible at all: a case-insensitive comparison has
-//! no order to binary-search.
+//! [`SystemName`] makes that an invariant rather than a convention: a value
+//! of it is upper case because there is no way to make one that is not. The
+//! fold happens once, where a name enters the program — a parse, a row, a
+//! decode — and never again. Two names are then compared as bytes, sorted
+//! as bytes, and hashed as bytes, which is what makes a sorted names index
+//! and an `O(log N)` lookup possible at all: a case-insensitive comparison
+//! has no order to binary-search.
 //!
 //! ## Why it is free where it matters
 //!
@@ -35,9 +30,9 @@ use std::ops::Deref;
 
 /// A system's name, upper case by construction.
 ///
-/// Serializes as the string it is, so a directory or a row written before
-/// this type is read by it unchanged — and read *upper*, the fold being on
-/// the way in.
+/// Serializes as the string it is, so a directory or a row holding a plain
+/// string is read by it unchanged — and read *upper*, the fold being on the
+/// way in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemName(String);
 
@@ -143,8 +138,8 @@ impl Serialize for SystemName {
 }
 
 impl<'de> Deserialize<'de> for SystemName {
-    /// Folded on the way in, so a table written before this type reads as
-    /// one spelling rather than two.
+    /// Folded on the way in, so a table holding a name in mixed case reads
+    /// as one spelling rather than two.
     fn deserialize<D: Deserializer<'de>>(
         de: D,
     ) -> Result<SystemName, D::Error> {
@@ -159,8 +154,8 @@ mod tests {
     /// There is no way to hold a name that is not upper case
     ///
     /// The whole of the type. Stated as a test because every reader that
-    /// stopped folding case is now relying on it: a mixed-case name in the
-    /// table would make `Names::address` miss a system the map can draw.
+    /// compares names as bytes relies on it: a mixed-case name in the table
+    /// would make `Names::address_of` miss a system the map can draw.
     #[test]
     fn a_name_is_upper_however_it_arrived() {
         for spelled in ["Sol", "sol", "SOL", "sOl"] {
@@ -170,8 +165,8 @@ mod tests {
             SystemName::new("Col 285 Sector wu-e c12-3").as_str(),
             "COL 285 SECTOR WU-E C12-3",
         );
-        // Read back out of a table an older build wrote, which is the case
-        // the deserializer has to cover.
+        // Read back out of a table holding a mixed-case name, which is the
+        // case the deserializer has to cover.
         let read: SystemName = rmp_serde::from_slice(
             &rmp_serde::to_vec("Shinrarta Dezhra").unwrap(),
         )
@@ -181,10 +176,11 @@ mod tests {
 
     /// A name serializes as the string it is
     ///
-    /// The names table, the body files and the `populated` table are all
-    /// MessagePack with no version of their own, so the encoding cannot
-    /// change with the type: a directory written by this build has to read
-    /// in one written before it, and the other way round.
+    /// The names table's delta and the legacy chunks a directory may still
+    /// hold, the body files and the `populated` table are all MessagePack
+    /// with no version of their own, so the encoding cannot change with the
+    /// type: a directory this build writes has to read in an earlier one, and
+    /// the other way round.
     #[test]
     fn a_name_is_a_string_on_disk() {
         let name = SystemName::new("SOL");

@@ -1,6 +1,6 @@
 //! The delta log: what the feed has said since the base was written.
 //!
-//! Append-only, so a publish costs the arrivals' bytes and a client reading
+//! Append-only, so a publish costs the arrivals' bytes and a reader reading
 //! the tail costs the same. A withdrawal is a row in it like a naming,
 //! which is what lets a replay reach the table the writer has.
 
@@ -25,7 +25,7 @@ pub enum DeltaAnswer<'a> {
 /// One row of the delta log.
 ///
 /// An enum rather than a nullable row so that withdrawal is a *statement*
-/// the log carries in order beside the namings, which is what lets a client
+/// the log carries in order beside the namings, which is what lets a reader
 /// replay the tail and reach the same table the writer has.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DeltaRow {
@@ -38,18 +38,18 @@ pub enum DeltaRow {
 /// How many addresses the log may mention before folding it into the base
 /// is worth the rewrite.
 ///
-/// The trade is a publish against an open. Every client reads the whole log
+/// The trade is a publish against an open. Every reader reads the whole log
 /// at startup and holds it, so the log is the one part of the table that is
-/// still resident — at this many addresses about 60 MB held and 16 MB on
-/// disk, against 5.8 GB of base that is neither. A fold's cost is the base
+/// resident — at this many addresses about 60 MB held and 16 MB on
+/// disk, against 2.58 GB of base that is neither. A fold's cost is the base
 /// rewrite and so barely depends on the log's length, which argues for a
 /// long log; what argues back is that 60 MB.
 ///
 /// The live feed names ~60 k systems a week that the table did not already
 /// name, so this is reached about monthly. An unchanged report appends
-/// nothing at all — [`Names::name`] compares against the base row first —
-/// which is why the log tracks the systems that are new, not the messages
-/// that arrive.
+/// nothing at all — [`Names::name`](super::Names::name) compares against the
+/// base row first — which is why the log tracks the systems that are new,
+/// not the messages that arrive.
 pub(super) const FOLD_ROWS: usize = 256 * 1024;
 
 /// How many bytes the log may reach before the same thing is true.
@@ -65,7 +65,7 @@ pub(super) const FOLD_BYTES: u64 = 64 * 1024 * 1024;
 /// What the feed has said since the base was written.
 ///
 /// Small, resident, and read whole at startup. Held as a map for the
-/// answering and as a byte offset for the reading: a client that has
+/// answering and as a byte offset for the reading: a reader that has
 /// consumed the first `read` bytes of the log asks only for what is past
 /// them, so a refresh costs the arrivals and not the log.
 #[derive(Clone, Debug, Default)]
@@ -103,7 +103,7 @@ impl Delta {
         Ok(delta)
     }
 
-    /// The log's rows past `from`, which is what a client that already
+    /// The log's rows past `from`, which is what a reader that already
     /// holds the head of it asks for.
     pub fn since(dir: &Path, from: u64) -> io::Result<Delta> {
         let mut delta = Delta::default();
@@ -127,7 +127,7 @@ impl Delta {
 
     /// Fold `tail`'s words in over what this already says.
     ///
-    /// How a client applies what it read past its offset. A word is kept
+    /// How a reader applies what it read past its offset. A word is kept
     /// per address, so the tail's word on an address is the later one
     /// whatever order they are folded in, and the offset moves to the
     /// tail's.
@@ -176,7 +176,7 @@ impl Delta {
     }
 
     /// Whether the log has grown enough that folding it into the base is
-    /// worth the rewrite: either threshold, since one bounds what a client
+    /// worth the rewrite: either threshold, since one bounds what a reader
     /// holds (`FOLD_ROWS`) and the other bounds the file itself
     /// (`FOLD_BYTES`).
     pub fn worth_folding(&self) -> bool {
@@ -189,8 +189,8 @@ impl Delta {
     /// row the log names that the base also holds is one system, not two,
     /// and a tombstone over a base row takes one away that the base's own
     /// count still holds. Signed rather than clamped here, because a log
-    /// that withdraws more than it adds has to be able to say so — clamping
-    /// it at zero made a base of one row under one tombstone count as one.
+    /// that withdraws more than it adds has to be able to say so — clamped
+    /// at zero, a base of one row under one tombstone would count as one.
     pub(super) fn net(&self, base: &Table) -> isize {
         let mut net = 0isize;
         for said in self.said.values() {
@@ -266,7 +266,7 @@ impl Delta {
     /// Opened for append and written in one go, so a reader holding an
     /// offset into the log never sees a row twice and never sees one
     /// half. The offset this now stands at is the file's length, which is
-    /// what the next client to read the tail is told.
+    /// what the next reader to read the tail is told.
     pub(super) fn append(&mut self, dir: &Path) -> io::Result<usize> {
         if self.pending.is_empty() {
             return Ok(0);
@@ -333,7 +333,7 @@ impl Delta {
             self.apply(said);
             at += len as u64 + 4;
         }
-        // Read rather than taken: a client replaying the log has nothing to
+        // Read rather than taken: a reader replaying the log has nothing to
         // append, and a writer resuming onto a directory has already
         // written every row it just read.
         self.pending.clear();
@@ -385,7 +385,7 @@ mod tests {
         assert_eq!(read.len(), 2);
     }
 
-    /// A client that holds the head of the log reads only the tail.
+    /// A reader that holds the head of the log reads only the tail.
     #[test]
     fn a_client_reads_only_the_tail_of_the_log() {
         let dir = Scratch::new("tail");
@@ -414,8 +414,8 @@ mod tests {
     ///
     /// The count is the base's plus what the log adds less what it takes,
     /// and the middle term can be negative. Clamping it before the
-    /// addition made a base of one row under one tombstone count as one,
-    /// which the map showed in its diagnostics.
+    /// addition would make a base of one row under one tombstone count as
+    /// one.
     #[test]
     fn a_log_can_withdraw_the_whole_base() {
         let dir = Scratch::new("emptied");

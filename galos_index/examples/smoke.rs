@@ -1,4 +1,4 @@
-//! Read a built index directory back through `FsSource`, the way the client
+//! Read a built index directory back through `FsSource`, the way the map
 //! does, and report what came off disk. Proves the reader round-trips real
 //! builder output, bodies with untagged enums included.
 //!

@@ -44,8 +44,9 @@ use serde::{Deserialize, Serialize};
 /// and `age_bucket`, which is binned against the clock the report was read
 /// at and cannot be worked out again from `updated_at` later.
 ///
-/// The record is written to disk as its own bytes, so it is `repr(C)`,
-/// sixty-four bytes, and padding-free; see [`crate::format::checkpoint`].
+/// The record is written to disk as its own bytes, so it is `repr(C)` and
+/// sixty-four bytes: fifty-seven of fields and seven of padding after the
+/// star kind; see [`crate::format::checkpoint`].
 ///
 /// [`CellSystem`]: crate::tree::cell::CellSystem
 /// [`CellSystem::of`]: crate::tree::cell::CellSystem::of
@@ -71,10 +72,7 @@ pub struct System {
 /// added here without the format being told would read a checkpoint of one
 /// galaxy back as another, so it fails the build instead.
 ///
-/// Sixty-four with the star kind on it, where it was fifty-six: the byte
-/// did not fit the `u32` pair's tail and took a word of its own. A resume
-/// point written at the old width would be read as another galaxy, so
-/// [`crate::format::checkpoint`]'s `VERSION` moved with it and a stale one is
-/// refused rather than misread.
+/// The width and [`crate::format::checkpoint`]'s `VERSION` move together, so
+/// a resume point written at another width is refused rather than misread.
 const _: () = assert!(std::mem::size_of::<System>() == 64);
 const _: () = assert!(std::mem::align_of::<System>() == 8);

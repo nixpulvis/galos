@@ -54,12 +54,12 @@ use std::sync::LazyLock;
 /// same for every galaxy, and a derivation that needed a file could not be
 /// done by a database writer with no index directory to read.
 ///
-/// Sorted by key, which is what makes the parse below a sorted vector
-/// without a sort. A plain `key,name` a line and no quoting: every sector
-/// name Frontier generates is `[A-Z0-9 ]` — measured over all 11,662, no
-/// commas and no quotes — and `the_dictionary_is_read` asserts that, so a
-/// name that ever arrived with a comma in it would fail the test rather
-/// than split a row in half.
+/// Sorted by key as it is generated, though the parse below sorts it again
+/// rather than rely on that. A plain `key,name` a line and no quoting:
+/// every sector name Frontier generates is `[A-Z0-9 ]` — measured over all
+/// 11,662, no commas and no quotes — and `the_dictionary_is_read` asserts
+/// that, so a name that ever arrived with a comma in it would fail the test
+/// rather than split a row in half.
 const SECTORS: &str = include_str!("../../data/sectors.csv");
 
 /// How many bits of the key each sector axis takes: x and z reach 127, y
@@ -194,11 +194,11 @@ pub fn spells(address: i64, name: &str) -> bool {
 
 /// How many letters of a *word* may be wrong before it says nothing
 ///
-/// `EXACTLY_UNDER` is about a whole sector name; a word of one is three
-/// to six letters, and the bound has to be read against that length or it
-/// answers with the vocabulary. One edit on three letters reaches a quarter
-/// of the alphabet — `EQU` is one from `EQ-G`, `ECU`, `EQZ` — so three
-/// letters are matched exactly and the slack opens with the word:
+/// A word of a sector name is three to six letters, and the bound has to be
+/// read against that length or it answers with the vocabulary. One edit on
+/// three letters reaches a quarter of the alphabet — `EQU` is one from
+/// `EQ-G`, `ECU`, `EQZ` — so three letters are matched exactly and the
+/// slack opens with the word:
 ///
 /// | letters | edits |
 /// |---|---|
@@ -233,7 +233,7 @@ pub(crate) fn edits_to(word: &str, held: &str) -> Option<usize> {
     }
     // **Coordinates are never fuzzed.** A wrong letter in `YE-Q` is a
     // different boxel rather than a near miss, and the boxels are all
-    // real: fuzzing it answered `YE-Q D5-0` with `TE-Q D5-0`, a place
+    // real: fuzzing it would answer `YE-Q D5-0` with `TE-Q D5-0`, a place
     // the reader did not ask about and cannot tell from the one they did.
     if is_coordinate(word) {
         return None;
@@ -310,7 +310,7 @@ pub(crate) fn sectors_holding_all(
     // sixty-odd sectors and offering them alphabetically answers with
     // whichever the vocabulary happens to begin with, which is nowhere the
     // reader is. With no place to measure from every sector is nought away
-    // and the order is the name's, as it was.
+    // and the order is the name's.
     found.sort_unstable_by_key(|(held, away, sector)| {
         (usize::MAX - held, *away, *sector)
     });
@@ -332,9 +332,8 @@ pub(crate) fn sectors_holding_all(
 /// be matched but a position to be read: the three letters are the boxel's
 /// coordinates inside its sector in base 26, the letter after them is the
 /// mass class, and the numbers are the run and the system's index. A search
-/// that matched those as text was searching for a number, which is why
-/// `EUQ YE-Q` used to answer nothing while every sector named `EUQ` held a
-/// `YE-Q`.
+/// that matched those as text would be searching for a number, and `EUQ
+/// YE-Q` would answer nothing while every sector named `EUQ` holds a `YE-Q`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Coded {
     /// The boxel's ordinal within its run, from the three letters.
@@ -436,9 +435,8 @@ pub(crate) const TRIED: usize = 128;
 /// A word like `EUQ` names sixty-odd sectors and every one of them holds a
 /// boxel called `YE-Q`, so what bounds this road is how many sectors are
 /// worth asking about rather than how many match. Eight nearest the reader,
-/// because a coordinate query is about a place: measured over the v4 table,
-/// `EUQ YE-Q` answered in 891 ms over twenty-five sectors and 128 ms over
-/// eight, and the answers are the eight the reader is nearest.
+/// because a coordinate query is about a place: the answers are the eight
+/// the reader is nearest, and `EUQ YE-Q` answers in 128 ms over them.
 pub(crate) const TRIED_SECTORS: usize = 8;
 
 /// Every address `coded` could name in the sector `key` stands for, most
@@ -522,9 +520,9 @@ pub(crate) fn sectors_near(at: [f64; 3], limit: usize) -> Vec<u32> {
 /// procedural names are near neighbours of each other by construction —
 /// `EOL PRUA` is a real sector one edit from `EOL PROU`, and both hold
 /// systems — so a wide bound answers with plausible places the user did not
-/// mean. What keeps that honest is the ranking: the edit distance first,
-/// and then how many systems a sector holds, which the caller can weigh
-/// against where the camera is looking.
+/// mean. What keeps that honest is the ranking: a sector holding the words
+/// spelled right before one holding them nearly spelled, and then the
+/// nearest to where the camera is looking.
 pub const NEAREST: usize = 2;
 
 /// Whether `a` and `b` are within `most` edits, and how many if so.

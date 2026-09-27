@@ -1,42 +1,34 @@
 //! The names table: mapped, sorted by address, and never resident.
 //!
-//! Every positioned system's name and place is one table, and every client
-//! reaches all of it: a search matches any name, a route steps between any
-//! two places, a label names whatever is on screen. At 200,071,629 systems
-//! that is 5.6 GB of sections. It cannot be a `Vec`.
+//! Every positioned system's name is one table, and every reader reaches
+//! all of it: a search matches any name, a route finds its ends by name, a
+//! label names whatever is on screen. At 200,071,629 systems that is
+//! 2.58 GB of sections. It cannot be a `Vec`.
 //!
-//! It was one. The table was published as MessagePack chunks and read whole
-//! into `Vec<NameEntry>` plus a `HashMap<i64, usize>` beside it, which
-//! measured **47 GB** at 200 M — 48 bytes of struct, a heap block per name,
-//! and twenty-four more bytes a system for the address index — on a machine
-//! with 24 GiB. Packing it into arrays got that to 7.9 GB and 33 s, which is
-//! the same shape of answer: still every byte in memory, still a decode of
-//! the galaxy before anything draws.
-//!
-//! So the table is a **file the client maps and never decodes**. Opening it
+//! So the table is a **file a reader maps and never decodes**. Opening it
 //! is five `mmap` calls and six length checks; what a session touches is
 //! what the kernel pages in, and what it does not touch costs nothing.
 //!
 //! ```text
 //! names/
-//!   head.bin      64 B      magic, version, generation, count, name bytes
+//!   head.bin         64 B       magic, version, generation, count, name
+//!                               bytes, stored names
 //!   <gen>/
-//!     addr.bin    N x 8     i64 addresses, strictly ascending
-//!     byname.bin  N x 4     u32 rows, sorted by name bytes
-//!     span.bin   (N+1) x 5  u40 offsets into text.bin; equal = derived
-//!     text.bin    B         the name bytes nothing can derive
-//!   delta.bin               what the feed has said since (append-only)
+//!     addr.bin       N x 8      i64 addresses, strictly ascending
+//!     byname.bin     N x 4      u32 rows, sorted by name bytes
+//!     exception.bin  S x 4      u32 rows that store a name, ascending
+//!     span.bin      (S+1) x 5   u40 offsets into text.bin, one a stored name
+//!     text.bin       B          the name bytes nothing can derive
+//!   delta.bin                   what the feed has said since (append-only)
 //! ```
 //!
 //! **`text.bin` holds the names nothing can work out.** A procedural name is a
 //! function of the system's address ([`crate::core::procedural`]), so a row
-//! whose name the arithmetic spells stores no bytes at all and is marked by a
-//! span of no length — a stored name is never empty, so the marker costs
-//! nothing either. Measured over the 200 M table, migrating it in place:
-//! **`text.bin` 3.94 GB → 128 MB**, the whole directory 9.1 GB → 5.6 GB, and
-//! reads got *faster* rather than slower, a name being arithmetic where it was
-//! a page fault into four gigabytes: an address lookup 489 µs → 87 µs,
-//! resolving a name 2.4 ms → 109 µs, both warm.
+//! whose name the arithmetic spells stores no bytes at all, and is marked by
+//! being absent from `exception.bin`, the list of rows that did store one.
+//! At 200 M that leaves `text.bin` at 128 MB, and a derived name costs
+//! arithmetic rather than a page fault into the text: an address lookup
+//! measures 87 µs and resolving a name 109 µs, both warm.
 //!
 //! What is left in it is what the arithmetic will not claim: the 151,463
 //! names people gave, and the 5.1 M systems under Frontier's hand-authored
@@ -46,20 +38,18 @@
 //!
 //! 1. **Structure of arrays, not records.** A lookup by address walks
 //!    `addr.bin` alone: 8 bytes a step, ~28 steps, and it never faults a
-//!    position or a name it is not going to answer with. The router wants
-//!    every position and nothing else, and gets `&[[f32; 3]]` straight off
-//!    the mapping. An array-of-records layout would fault all 29 bytes a
-//!    row to read any one field of it.
+//!    name it is not going to answer with. An array-of-records layout would
+//!    fault the whole of a row to read any one field of it.
 //! 2. **Sorted by address**, so the address index is the addresses
 //!    themselves and a lookup is [`binary_search`](slice::binary_search).
-//!    That is the `HashMap<i64, usize>`, 4.8 GB at 200 M, deleted rather
-//!    than shrunk.
+//!    No separate index is held; a `HashMap<i64, usize>` beside the rows
+//!    would be 4.8 GB at 200 M.
 //! 3. **Sorted by name too**, in `byname.bin`. A name is
 //!    [`SystemName`](crate::SystemName), upper case by construction, so
 //!    names compare and sort as bytes with no fold — which is the whole
-//!    reason that type exists. Resolving a route endpoint was a scan of the
-//!    galaxy, 11.3 s measured, four to six times per plot; it is now a
-//!    binary search over a 4-byte-a-row permutation.
+//!    reason that type exists. Resolving a route endpoint, four to six
+//!    times per plot, is a binary search over a 4-byte-a-row permutation
+//!    rather than a scan of the galaxy.
 //! 4. **A generation, swapped by one rename.** A build reads the galaxy for
 //!    as long as that takes and the table beneath it is served the whole
 //!    time. Sections are written into `names/<gen+1>/` and become live when
@@ -69,7 +59,7 @@
 //!    the swap sees the old table or the new one and never half of either.
 //! 5. **An append-only delta for the feed.** The feed names a few dozen
 //!    systems a second and the base cannot be rewritten for that. Changed
-//!    rows are appended to `delta.bin`; a client remembers the byte offset
+//!    rows are appended to `delta.bin`; a reader remembers the byte offset
 //!    it has read and takes only the tail. A publish costs the arrivals'
 //!    bytes and a refresh costs the same bytes, which is why neither side
 //!    cares how long the log is — until [`Delta::worth_folding`], where a
@@ -99,7 +89,7 @@ use std::sync::Arc;
 /// The names table, base and delta, as a reader or a writer holds it.
 ///
 /// Both halves are behind an [`Arc`] because both are shared and neither is
-/// copied: a client hands the base to every task that draws and swaps only
+/// copied: a reader hands the base to every task that draws and swaps only
 /// the delta when the feed moves ([`absorb`](Self::absorb)), and a
 /// writer holds the one reference there is and mutates the delta in place
 /// for free.
@@ -132,7 +122,7 @@ impl Names {
     /// Read the text a search sweeps, so the first search does not.
     ///
     /// [`Table::warm`] says why, and what it deliberately leaves cold. A
-    /// client calls this once, on whatever thread opened the table: it is
+    /// reader calls this once, on whatever thread opened the table: it is
     /// a streaming read of the one section a query reads end to end, and
     /// paying it at the open is the difference between a first search of
     /// seconds and one of milliseconds.
@@ -140,7 +130,7 @@ impl Names {
         self.base.warm()
     }
 
-    /// Fold a tail of the log in, which is what a client does when the feed
+    /// Fold a tail of the log in, which is what a reader does when the feed
     /// has appended to it.
     ///
     /// The base is untouched and the log is copied on write, so a task
@@ -149,8 +139,8 @@ impl Names {
         Arc::make_mut(&mut self.delta).absorb(tail);
     }
 
-    /// The mapped base, for a caller that wants it without the delta: the
-    /// router's positions, a bulk walk, a count.
+    /// The mapped base, for a caller that wants it without the delta: a
+    /// bulk walk, a count.
     pub fn base(&self) -> &Table {
         &self.base
     }
@@ -212,9 +202,8 @@ impl Names {
     /// Which system is named exactly `name`, if one is.
     ///
     /// `name` is expected upper case, as every name in the table is. A
-    /// binary search of `byname.bin` and a scan of the delta, which is the
-    /// four-to-six full scans of the galaxy a route plot used to pay
-    /// replaced by `O(log N)` and a few dozen bytes.
+    /// binary search of `byname.bin` and a scan of the delta: `O(log N)`
+    /// and a few dozen bytes rather than a scan of the galaxy.
     pub fn address_of(&self, name: &str) -> Option<i64> {
         if let Some(entry) = self.delta.named_exactly(name) {
             return Some(entry.address);
@@ -255,8 +244,7 @@ impl Names {
     /// The compare that makes a publish cheap: an address never moves, a
     /// position is corrected about never and a name changes about never, so
     /// a system reported again matches what the table already says and
-    /// nothing is appended. The comparison is against one row of a mapping
-    /// — which is what the 47 GB slot map used to be for.
+    /// nothing is appended. The comparison is against one row of a mapping.
     pub fn name(&mut self, entry: NameEntry) -> bool {
         if self.delta.said(entry.address).is_none() && self.base.holds(&entry) {
             return false;

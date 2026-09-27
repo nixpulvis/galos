@@ -52,9 +52,9 @@
 //!   that has never heard of it, and the next writer there is refused by a
 //!   ghost until somebody runs `--force-lock`.
 //! - **Not the scratch.**
-//!   [`names::scratch_dir`](crate::format::layout::scratch_dir) —
+//!   [`layout::scratch_dir`](crate::format::layout::scratch_dir) —
 //!   `names/.building/` — is a fold in progress, and
-//!   [`cold::spill_dir`](crate::format::layout::spill_dir) —
+//!   [`layout::spill_dir`](crate::format::layout::spill_dir) —
 //!   `<dir>.checkpoint.regions/` — is a cold build's per-region spill; both run
 //!   to gigabytes and neither means anything away from the run that made them.
 //!   The first is inside the directory and is skipped by name. The second, like
@@ -74,8 +74,9 @@
 //! `bodies/<shard>.<gen>.dat` and leaves the file's length alone, which is
 //! why `BLOAT` exists at all — and a hand-rolled `read`/`write` loop reads
 //! zeroes out of the holes and writes them down, inflating the backup to
-//! the apparent length. That is the exact failure `pack`'s own note about
-//! `cp` and `rsync` warns of, and there is no reason to reimplement it.
+//! the apparent length. That is the exact failure the body store's own note
+//! on reclaiming a shard warns `cp` and `rsync` of, and there is no reason
+//! to reimplement it.
 //!
 //! What is measured and reported is therefore the **apparent** size, what
 //! `metadata().len()` says, because that is the only number that can be
@@ -298,9 +299,10 @@ pub fn discard(dir: &Path) -> io::Result<()> {
 ///
 /// The base is [`checkpoint_beside`], which is the workspace's one
 /// spelling of the suffix — `galos::sink::index` re-exports
-/// [`checkpoint::SUFFIX`] and publishes into the same name — and the two
-/// past it are named by the modules that write them, so a copy and a
-/// builder cannot come to disagree about which files the resume point is.
+/// [`CHECKPOINT_SUFFIX`](crate::format::layout::CHECKPOINT_SUFFIX) and
+/// publishes into the same name — and the two past it hang off it through
+/// [`pending_path`] and [`mark_path`], so a copy and a builder cannot come
+/// to disagree about which files the resume point is.
 fn siblings(dir: &Path) -> [PathBuf; 3] {
     let base = checkpoint_beside(dir);
     let log = pending_path(&base);

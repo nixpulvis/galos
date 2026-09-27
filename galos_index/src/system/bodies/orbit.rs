@@ -111,9 +111,9 @@ impl Orbit {
     /// the map's own plane — measured from the node line, an orbit at no
     /// anomaly and no periapsis lies in that plane whatever its inclination.
     ///
-    /// What stands a barycentre up where only its distance is on record. No
-    /// period, so it stands where it was put rather than turning: a circle
-    /// nobody measured has no year either.
+    /// What stands an unscanned place up where only its distance is on
+    /// record. No period, so it stands where it was put rather than turning:
+    /// a circle nobody measured has no year either.
     pub fn circle_to(place: DVec3) -> Orbit {
         let a = place.length();
         if a <= 0. {
@@ -274,8 +274,9 @@ impl Orbit {
             .min_by(|one, other| away(*one).total_cmp(&away(*other)))
             .unwrap_or(0.);
 
-        // Closed in on from either side of it, which halves what is left over
-        // each time round and is under a metre of the ring by the end.
+        // Closed in on from either side of it, which takes a third off what
+        // is left over each time round and is under a metre of the ring by
+        // the end.
         let (mut low, mut high) = (coarse - step, coarse + step);
         for _ in 0..64 {
             let third = (high - low) / 3.;
@@ -300,7 +301,7 @@ impl Orbit {
     ///
     /// Nothing at the moment the run was laid about the body, and at its
     /// widest halfway between two points, where it comes to the semi-major
-    /// axis times one minus the cosine of half a step -- some two hundredths
+    /// axis times one minus the cosine of half a step -- some two thousandths
     /// of a percent of the way out to a body at five hundred points round.
     /// Which is nothing beside the orbit and rather a lot beside the body:
     /// an Earth at an Earth's distance stands half its own radius off its
@@ -405,10 +406,10 @@ const CROSSING: usize = 8;
 /// holds whole is drawn in this many however small it is, and only past there
 /// does the view take over the count.
 ///
-/// A count around the ring rather than a length in the world, which is the other
-/// way round from a route's `DASH` in `galos_map`'s `map::route`. A route
-/// is a run of legs of wildly different lengths and a share of one cannot be
-/// read at more than one zoom, so its dashes are held at a distance instead.
+/// A count around the ring rather than a length in the world. A route's
+/// dashes are neither: `DASHES` in `galos_map`'s `map::route` holds them at a
+/// share of the view, as [`CROSSING`] does for a ring the view does not hold
+/// whole.
 const DASHES: usize = 32;
 
 impl Spacing {
@@ -607,11 +608,12 @@ struct Held {
 
 /// Whether an orbit is what a scan recorded or what the map made up
 ///
-/// Only ever [`Standing::Guessed`] for a barycentre the map stood up itself:
-/// a close pair whose own centre was never scanned is known to be out there
-/// somewhere, and how far out is on record, so it is placed at that distance
-/// in a direction nobody measured. The alternative was the walk ending at the
-/// missing row and the whole pair being drawn at the middle of its system.
+/// Only ever [`Standing::Guessed`] for a place a chain names that the map
+/// stood up itself, most often a close pair's centre that was never scanned:
+/// it is known to be out there somewhere, and how far out is on record, so it
+/// is placed at that distance in a direction nobody measured. The alternative
+/// is the walk ending at the missing row and the whole pair being drawn at the
+/// middle of its system.
 ///
 /// Carried so that what rests on a guess can say so: [`Orbits::guessed_under`]
 /// is what a panel asks, and nothing is drawn for a guessed path itself —
@@ -628,7 +630,7 @@ pub enum Standing {
 ///
 /// What a guessed place is pointed along. The distance a close pair stands
 /// off is on record and the bearing is not, so the bearing is taken from the
-/// system's own address and the barycentre's id: the same point every session
+/// system's own address and the place's id: the same point every session
 /// and every frame, which is what stops a guess from wandering, and spread
 /// evenly over the sphere, so the guesses do not pile into one plane and read
 /// as a claim about it.
@@ -733,8 +735,8 @@ impl Orbits {
     /// Everything held, with what each of them goes round
     ///
     /// What the lines are drawn from. Stars, bodies and barycenters all arrive
-    /// through [`Self::insert`], so a loop over this draws a line for each of
-    /// the three without having to be told there are three.
+    /// through [`Self::insert`] or [`Self::guess`], so a loop over this draws a
+    /// line for each of the three without having to be told there are three.
     pub fn circling(&self) -> impl Iterator<Item = (i16, Option<i16>)> + '_ {
         self.0.iter().map(|(id, held)| (*id, held.parent))
     }
@@ -798,19 +800,13 @@ impl Orbits {
     /// in alongside the stars and the bodies, and the chain runs whole. It puts
     /// in the ones no scan ever landed for as well — the type a chain names
     /// says what they are, and how far out they stand is read off the things
-    /// riding them — so the walk ending early is now the pathological case
-    /// rather than the common one.
+    /// riding them — so the walk ending early is the pathological case rather
+    /// than the common one.
     ///
     /// The barycentre at the root goes round nothing and is the middle of the
     /// system, so ending the walk there and measuring from the centre lands
     /// exactly where following it would have. It is held all the same, as the
     /// point a mark is drawn at.
-    ///
-    /// This was read the other way round for a while, with none of them held:
-    /// the root came out right by accident and every close pair was drawn at
-    /// the middle of its system with its whole outer orbit dropped. Ross 248
-    /// is what showed it, its stars ten billion kilometres out on either side
-    /// and four of its bodies gathered at the centre between them.
     pub fn place(&self, id: i16, since: f64) -> DVec3 {
         let mut place = DVec3::ZERO;
         let mut at = Some(id);
@@ -1421,7 +1417,7 @@ mod tests {
 
     /// And walks off it as the clock carries it along
     ///
-    /// The reported trouble: a body drawn beside its own orbit line rather
+    /// The trouble: a body drawn beside its own orbit line rather
     /// than on it. The ring is laid once and the body goes on moving, so by
     /// half a step it stands off the chord spanning it by that chord's whole
     /// sag — the semi-major axis times one minus the cosine of half a step,

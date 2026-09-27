@@ -4,40 +4,35 @@
 //! [`Galaxy`](crate::Galaxy) needs a system's *whole* insides every time one
 //! more body of it arrives. Two things ask for them and both are
 //! whole-from-whole: the reach is the far edge over every body, star and
-//! barycentre together, and the published body file is written whole. So the
+//! barycentre together, and the published body record is written whole. So the
 //! accumulator cannot look at a scan and forget it.
 //!
 //! What it can do is not be the one holding them, and that is the whole of
 //! this module. Two stores, and which is right depends on what is reading:
 //!
-//! - [`InMemory`] holds everything in memory. Right for a journal read straight
-//!   off the disk, which has no directory to keep them in: the map builds
-//!   one out of the `.log` files and nothing publishes an index unless
-//!   somebody asks for one. It is also what that arrangement wants — it
-//!   rebuilds its tables whole on every poll, and `Galaxy::reaches` walks
-//!   every system with anything scanned, so a store behind a disk would be
-//!   a file read per scanned system per second where a sink asks about the
-//!   handful a pass touched.
-//!
-//!   Not for the sake of a click: a click is answered by `Source::bodies`, and
-//!   the map already reads the published `bodies/<address>.bin` off the disk
-//!   for that.
-//! - [`OnDisk`] keeps them in the index directory's own body files, which
-//!   is where they were going anyway: `bodies/<address>.bin` is what the map
-//!   fetches when a click opens a system, and it is written whole. So the
-//!   durable copy already exists and holding a second one in memory bought
-//!   nothing.
+//! - [`InMemory`] holds everything in memory. It is what
+//!   [`Galaxy::new`](crate::Galaxy::new) keeps, for a galaxy with no
+//!   directory behind it; every caller that writes a directory keeps an
+//!   [`OnDisk`] instead.
+//! - [`OnDisk`] keeps them in the index directory's own body pack, which
+//!   is where they are going anyway: a system's record there is what the
+//!   map reads when a click opens the system, and it is written whole. So
+//!   the durable copy already exists and holding a second one in memory
+//!   buys nothing.
 //!
 //!   [`OnDisk::raising`] is the same store for a build raising a
-//!   directory from nothing, where a file not held has not been written and
-//!   nothing underneath needs keeping. That is two file opens and a rename a
+//!   directory from nothing, where a record not held has not been written.
+//!   That is a shard's index searched and both loose layouts looked for a
 //!   system less, which over a galaxy is most of what the read costs.
+//!
+//!   [`Shared`] is an [`OnDisk`] behind an `Arc`, for a read that builds an
+//!   accumulator a line and wants one store under all of them.
 //!
 //! The second is what a feed needs. `galos ingest --from eddn --index DIR`
 //! carries everyone's scans, and holding them all is a process that
-//! grows for as long as it runs — a `meta::Body` is 376 bytes before its
+//! grows for as long as it runs — a `records::Body` is 376 bytes before its
 //! four strings, its parents and its materials, so a million of them is
-//! about a gigabyte. Deriving a directory from the rows never had the
+//! about a gigabyte. Deriving a directory from the rows does not have the
 //! problem because Postgres is its body store; this gives the database-free
 //! path the same answer, with the directory standing in for the database.
 //!
@@ -66,9 +61,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Where a system's scanned insides live.
-///
-/// `Sync` as well as `Send`: the journal's [`Source`](crate::Source) is held
-/// behind an `Arc` by the map and read from its task pool.
 pub trait Bodies: fmt::Debug + Send + Sync {
     /// What is on record inside the system at `address`.
     ///
@@ -100,7 +92,7 @@ pub trait Bodies: fmt::Debug + Send + Sync {
         Ok(0)
     }
 
-    /// Files written since this was last asked.
+    /// Systems written since this was last asked.
     ///
     /// Not what a flush answers: a store may force one between a caller's
     /// flushes, and a caller reporting what its publish wrote wants both.
@@ -111,9 +103,8 @@ pub trait Bodies: fmt::Debug + Send + Sync {
 
 /// Everything, in memory.
 ///
-/// What a commander's own journal wants: it is megabytes, the map holds one
-/// and answers a click off it, and there is no directory in the arrangement
-/// at all.
+/// What [`Galaxy::new`](crate::Galaxy::new) keeps: a galaxy with no
+/// directory behind it, where there is nowhere else to put them.
 #[derive(Debug, Default)]
 pub struct InMemory(HashMap<i64, SystemBodies>);
 
@@ -143,23 +134,23 @@ impl Bodies for InMemory {
     }
 }
 
-/// The index directory's own body files.
+/// The index directory's own body pack.
 ///
-/// `bodies/<address>.bin` is written whole and read whole, one file per
-/// system, and is what the map fetches when a click opens one. This reads and
-/// writes exactly those, so the durable copy is the only copy.
+/// A system's record in [`crate::store::bodies`] is written whole and read
+/// whole, and is what the map reads when a click opens the system. This
+/// reads and writes exactly those, so the durable copy is the only copy.
 ///
 /// What is held in memory is what has been changed and not yet written. A
 /// full system scan is dozens of `Scan` events in a row about the one system,
-/// and writing the file on each of them would be dozens of writes to say what
-/// one says; so an edit is held and the file is written when the caller
-/// flushes, which for a sink is the beat it publishes on.
+/// and writing the record on each of them would be dozens of writes to say
+/// what one says; so an edit is held and the record is written when the
+/// caller flushes, which for a sink is the beat it publishes on.
 #[derive(Debug)]
 pub struct OnDisk {
     dir: PathBuf,
     /// Systems edited since the last flush.
     dirty: HashMap<i64, SystemBodies>,
-    /// Files written since the count was last taken.
+    /// Systems written since the count was last taken.
     ///
     /// A forced flush writes between one caller's flushes, so what the last
     /// flush wrote is not what has been written since the caller last asked.
@@ -192,29 +183,17 @@ impl OnDisk {
 
     /// A store onto a directory being raised from nothing.
     ///
-    /// Two things follow from there being no published file, and both of
-    /// them are the difference between a dump import that takes hours and
-    /// one that takes a day.
-    ///
-    /// **A file not held has not been written.** An ordinary store reads
+    /// **A record not held has not been written.** An ordinary store reads
     /// the disk to find what a system already had, which is right for a
     /// feed reporting a system it has reported before. A build from nothing
     /// can only ever be told back what it has already said, and a dump names
-    /// each system once, so every one of those reads is a directory lookup
-    /// for a name that is not there. Those are the reads that cannot be
-    /// cached — a hit can be remembered and a miss cannot — and they get
-    /// dearer as the shard fills, which is why the import slowed down as it
-    /// ran rather than running at one rate.
+    /// each system once, so every one of those reads is a search of a
+    /// shard's index and a lookup of both loose layouts for a system none of
+    /// them holds. Those are the reads that cannot be cached — a hit can be
+    /// remembered and a miss cannot.
     ///
-    /// **Nothing underneath needs keeping**, so the file goes straight to
-    /// its path rather than beside it and over.
-    ///
-    /// Measured over 50,000 systems of Spansh's dump, 27,000 of them with
-    /// something scanned: 7.13 s to 2.74 s, at three file opens and a rename
-    /// a system against one open.
-    ///
-    /// The cost of being wrong about it is a system's bodies read from a
-    /// file this store then overwrites, so it is for a build raising a
+    /// The cost of being wrong about it is a system's bodies not read from a
+    /// record this store then supersedes, so it is for a build raising a
     /// directory and nothing else.
     pub fn raising(dir: impl Into<PathBuf>) -> OnDisk {
         OnDisk { raising: true, ..OnDisk::new(dir) }
@@ -225,13 +204,13 @@ impl OnDisk {
         &self.dir
     }
 
-    /// What the file for `address` holds, empty where there is none.
+    /// What the directory holds for `address`, empty where it holds nothing.
     ///
-    /// [`bodies::read_bodies`] answers empty for a system with no file, in
-    /// either layout. A file that is there and will not decode is warned and
-    /// read as empty rather than taken as an error. It is one system's
+    /// [`bodies::read_bodies`] answers empty for a system with no record, in
+    /// any of its layouts. A record that is there and will not read is warned
+    /// and read as empty rather than taken as an error. It is one system's
     /// insides; refusing the whole run over it would lose the feed, and the
-    /// next scan of that system writes the file afresh.
+    /// next scan of that system writes the record afresh.
     fn on_disk(&self, address: i64) -> SystemBodies {
         if self.raising {
             // Nothing was published here, so there is nothing to read and
@@ -281,8 +260,8 @@ impl Bodies for OnDisk {
     /// unwritten.
     ///
     /// Three layouts and the held set: the packed shard indexes, the loose
-    /// file a system in its shard directory, the flat file from before the
-    /// sharding, and what this run has scanned and not yet written. Missing
+    /// file a system in its shard directory, the flat unsharded file, and
+    /// what this run has scanned and not yet written. Missing
     /// any of them would report a system nobody has scanned.
     fn scanned(&self) -> Vec<i64> {
         fn listed(dir: &Path, into: &mut Vec<i64>) -> Vec<PathBuf> {
@@ -529,7 +508,7 @@ mod tests {
     ///
     /// The contract of [`OnDisk::raising`] and the reason it is faster:
     /// a build from nothing can only be told back what it has already said,
-    /// so a file it is not holding is one it has not written. Stated as a
+    /// so a record it is not holding is one it has not written. Stated as a
     /// test because the cost of being wrong about it is a system's bodies
     /// silently replaced rather than merged — which is what a build raising
     /// a directory means to do, and what a feed must never do.
@@ -554,9 +533,8 @@ mod tests {
         assert_eq!(stars.len(), 1, "the file was merged rather than raised");
         assert_eq!(stars[0].id, 1, "the raised file is not what was written");
 
-        // Into the pack and nowhere else: the loose file a system is the
-        // layout this replaced, and a store writing one would be a galaxy
-        // of inodes again.
+        // Into the pack and nowhere else: a store writing a loose file a
+        // system would be a galaxy of inodes.
         assert!(
             !crate::format::layout::bodies_path(&dir, 11).exists(),
             "a loose body file was written",
@@ -575,7 +553,7 @@ mod tests {
     /// Nothing reaches the disk until the store is asked
     ///
     /// A full system scan is dozens of events about the one system, and the
-    /// file is written whole. Writing on each of them would be dozens of
+    /// record is written whole. Writing on each of them would be dozens of
     /// writes to say what one says.
     #[test]
     fn an_edit_is_held_until_it_is_flushed() {
@@ -628,9 +606,9 @@ mod tests {
     /// What a publish wrote counts the flushes it did not ask for
     ///
     /// A dump import touches far more than [`OnDisk::CARRIED`] systems
-    /// between publishes, so most files are written by the forced flush and
-    /// only the remainder by the publish's own. A count taken from the last
-    /// flush alone reported one file for a hundred thousand systems.
+    /// between publishes, so most systems are written by the forced flush
+    /// and only the remainder by the publish's own. A count taken from the
+    /// last flush alone would report one system for a hundred thousand.
     #[test]
     fn the_count_covers_a_forced_flush() {
         let dir = scratch("counted");
