@@ -5,7 +5,7 @@
 //! which is what lets a replay reach the table the writer has.
 
 use super::table::Table;
-use crate::format::layout::{names_delta_path, names_dir};
+use crate::codec::layout::{names_delta_path, names_dir};
 use crate::records::NameEntry;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -345,8 +345,8 @@ impl Delta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::names::Names;
-    use crate::store::names::fixtures::{Scratch, entry, published};
+    use crate::codec::names::Names;
+    use crate::codec::names::fixtures::{Scratch, entry, published};
 
     /// The delta answers over the base, a withdrawal hides a base row, and
     /// a report of what the base already says appends nothing.

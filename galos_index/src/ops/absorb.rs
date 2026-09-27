@@ -48,7 +48,7 @@
 //! refused rather than worked around. It has to be. What a directory *serves*
 //! is a lossy projection — a payload downcasts the magnitude to `f32`, buckets
 //! the temperature into six buckets and drops the age entirely
-//! ([`crate::format::checkpoint`], `src/sink/index.rs`) — so a merge that read
+//! ([`crate::codec::checkpoint`], `src/sink/index.rs`) — so a merge that read
 //! the two directories instead of their resume points would silently coarsen
 //! every system it carried, and the damage would be invisible until somebody
 //! filtered by age. The full-precision inputs live in the resume point and
@@ -121,16 +121,17 @@ use crate::build::cold::{
     resume_mark,
 };
 use crate::build::snapshot::BuildParams;
+use crate::codec::Directory;
+use crate::codec::checkpoint::{Checkpoint, Compaction, Provenance};
+use crate::codec::layout;
+use crate::codec::names::Names;
+use crate::codec::tables::TableSet;
+use crate::codec::tables::msgpack;
+use crate::codec::tables::sidecars::Sidecars;
 use crate::core::star::StarKind;
-use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
-use crate::format::{layout, msgpack};
 use crate::records::{
     Faction, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
-use crate::store::Directory;
-use crate::store::names::Names;
-use crate::store::sidecars::Sidecars;
-use crate::store::tables::TableSet;
 use crate::system::System;
 use chrono::NaiveDateTime;
 use galos_photometry::{Magnitude, Temperature};
@@ -310,7 +311,7 @@ impl fmt::Display for Refused {
                  serves {}: bring it forward with `galos index migrate -i \
                  {}` and merge again",
                 dir.display(),
-                crate::format::payload::INDEX_VERSION,
+                crate::codec::cells::format::INDEX_VERSION,
                 dir.display(),
             ),
             Refused::Adrift { dir, checkpoint, why } => write!(
@@ -1370,10 +1371,10 @@ fn rebuild(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::tables::Keyed;
+    use crate::codec::tables::Table;
+    use crate::codec::tables::testing::{Cone, Cones, tables};
     use crate::records::{Body, NameEntry, Star};
-    use crate::store::tables::Keyed;
-    use crate::store::tables::Table;
-    use crate::store::tables::testing::{Cone, Cones, tables};
     use crate::tree::index::Index;
     use chrono::{DateTime, Utc};
     use elite_journal::body::{Orbit, Spin};

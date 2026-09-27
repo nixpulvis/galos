@@ -9,8 +9,8 @@
 //! against the one before it, which touches only the cells whose systems
 //! moved.
 
+use crate::codec::Directory;
 use crate::core::aggregate::Aggregate;
-use crate::store::Directory;
 
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::system::System;
@@ -388,7 +388,7 @@ impl Snapshot {
     ///
     /// A directory that held an earlier tree keeps payloads nothing refers
     /// to. Sweeping them is
-    /// [`sweep_payloads`](crate::store::Directory::sweep_payloads), which a build
+    /// [`sweep_payloads`](crate::codec::Directory::sweep_payloads), which a build
     /// calls once its index file stands; [`write_diff`](Self::write_diff) is
     /// the incremental publish, which removes what it is told went.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
@@ -615,12 +615,13 @@ mod tests {
             systems.iter().map(|s| (s.id64, s.position)).collect();
 
         for cell in built.index.cells() {
-            let bytes = crate::format::payload::payload_bytes(
+            let bytes = crate::codec::cells::format::payload_bytes(
                 cell.id,
                 built.payload(cell.id),
             );
-            let back = crate::format::payload::payload_points(cell.id, &bytes)
-                .unwrap();
+            let back =
+                crate::codec::cells::format::payload_points(cell.id, &bytes)
+                    .unwrap();
             assert_eq!(back.len(), built.payload(cell.id).len());
             for p in &back {
                 assert_eq!(

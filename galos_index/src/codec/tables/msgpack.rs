@@ -15,7 +15,7 @@ use std::path::Path;
 /// writer half; the reader half is [`read_meta`].
 ///
 /// Written beside the file and renamed over it, as
-/// [`crate::format::checkpoint::Checkpoint`] is. A metadata table carries no
+/// [`crate::codec::checkpoint::Checkpoint`] is. A metadata table carries no
 /// length, count or magic, so a torn write is the one failure the format cannot
 /// detect. The rename is the only step that touches `path`, so a builder killed
 /// mid-write leaves the table it published last intact.
@@ -87,7 +87,7 @@ mod tests {
             .join(format!("galos_source_atomic_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
-        let path = crate::format::layout::reaches_path(&dir);
+        let path = crate::codec::layout::reaches_path(&dir);
 
         let first: Vec<i64> = (0..1_000).collect();
         write_meta(&path, &first).expect("the first write");

@@ -29,9 +29,9 @@
 
 use crate::build::region::Cut;
 use crate::build::snapshot::BuildParams;
+use crate::codec::layout::spill_path;
+use crate::codec::spill::{Spill, Spilled, as_bytes};
 use crate::core::geometry::{CellId, MAX_LEVEL};
-use crate::format::layout::spill_path;
-use crate::format::spill::{Spill, Spilled, as_bytes};
 use crate::system::System;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};

@@ -5,18 +5,20 @@
 //! level and Morton key, so it is found without the index and a rebuild
 //! rewrites only the cells that changed.
 //!
-//! The byte formats are [`crate::format::payload`] and the tree they hold is
-//! [`crate::tree::index::Index`]; this is where they meet the filesystem.
-//! `read` opens them — the index whole, a payload decoded or mapped — and
-//! `write` puts them down and sweeps away what the tree no longer names. A
-//! reader fetching cells over HTTP reads the same bytes through its own
-//! transport.
+//! [`format`](mod@format) is both files' bytes — the index file's header and fixed
+//! [`Cell`](crate::tree::cell::Cell) records, a payload's columns, and the
+//! version the index file is held to — and the tree they hold is
+//! [`crate::tree::index::Index`]. `read` opens them — the index whole, a
+//! payload decoded or mapped — and `write` puts them down and sweeps away
+//! what the tree no longer names. A reader fetching cells over HTTP reads the
+//! same bytes through its own transport.
 
-use crate::format::layout::INDEX_FILE;
-use crate::format::payload::{INDEX_VERSION, index_version};
-use crate::store::Directory;
+use crate::codec::Directory;
+use crate::codec::layout::INDEX_FILE;
+use format::{INDEX_VERSION, index_version};
 use std::fs;
 
+pub mod format;
 pub(crate) mod read;
 pub(crate) mod write;
 

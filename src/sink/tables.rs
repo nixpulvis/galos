@@ -28,8 +28,8 @@
 //! See `galos_index::accumulate::galaxy`.
 
 use galos_index::accumulate::merge;
+use galos_index::codec::tables::sidecars::{Counts, Sidecars};
 use galos_index::prelude::{Galaxy, System};
-use galos_index::store::sidecars::{Counts, Sidecars};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -49,7 +49,7 @@ pub struct Wrote {
     ///
     /// A fold rewrites every row the table names — minutes at 200 M systems —
     /// and happens about monthly on the live feed, so it is reported rather
-    /// than left silent. See `galos_index::store::Directory::compact_names`.
+    /// than left silent. See `galos_index::codec::Directory::compact_names`.
     pub folded: bool,
 }
 

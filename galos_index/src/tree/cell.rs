@@ -8,7 +8,6 @@
 //! [`crate::build::tree::Tree`], which publishes into these.
 
 use crate::core::aggregate::{Aggregate, TempBucket};
-use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use crate::core::geometry::CellId;
 use crate::core::star::StarKind;
 use crate::system::System;
@@ -104,16 +103,6 @@ impl Cell {
 /// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
 pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
 
-record! {
-    Cell {
-        id: CellId,
-        rank_lo: u64,
-        rank_hi: u64,
-        child_mask: u8,
-        aggregate: Aggregate,
-    }
-}
-
 /// One system as the index is built *into*: packed for a cell's payload, with
 /// its id, its exact position, the two photometric fields at the precision a
 /// reader needs, when it was last updated, and its arrival star's kind. What
@@ -177,17 +166,6 @@ impl CellSystem {
     }
 }
 
-record! {
-    CellSystem {
-        id64: u64,
-        position: [f64; 3],
-        magnitude: f32,
-        temp_bucket: TempBucket,
-        updated_at: u32,
-        kind: StarKind,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,55 +186,5 @@ mod tests {
         assert!(cell.has_child(2));
         assert!(!cell.is_leaf());
         assert!(Cell { child_mask: 0, ..cell }.is_leaf());
-    }
-
-    /// A cell's whole index record survives the round trip exactly, aggregate
-    /// and all; the moments are `f64` and lose nothing.
-    #[test]
-    fn a_cell_record_round_trips() {
-        let agg = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2)
-            .merge(Aggregate::of_system([5.0, 6.0, 7.0], -1.0, 12000.0, 5));
-        let cell = Cell {
-            id: CellId { level: 3, x: 5, y: 6, z: 7 },
-            rank_lo: 512,
-            rank_hi: 1024,
-            child_mask: 0b1010_0001,
-            aggregate: agg,
-        };
-        let mut buf = Vec::new();
-        cell.encode(&mut buf);
-        assert_eq!(buf.len(), Cell::LEN);
-        let mut cur = &buf[..];
-        assert_eq!(Cell::decode(&mut cur), Some(cell));
-    }
-
-    fn point(id: u64, mag: f32) -> CellSystem {
-        CellSystem {
-            id64: id,
-            position: [10.5, -40000.25, 65535.0],
-            magnitude: mag,
-            temp_bucket: TempBucket::new(3),
-            updated_at: 1_757_260_000,
-            kind: StarKind::G,
-        }
-    }
-
-    /// A system survives the round trip through its bytes exactly, every
-    /// field, the magnitude included.
-    #[test]
-    fn a_point_round_trips() {
-        for mag in [-6.0, -1.5, 0.0, 4.83, 4.831_234_5, 15.0] {
-            let p = point(42, mag);
-            let mut buf = Vec::new();
-            p.encode(&mut buf);
-            assert_eq!(buf.len(), CellSystem::LEN);
-            let mut cur = &buf[..];
-            let back = CellSystem::decode(&mut cur).unwrap();
-            assert_eq!(back.id64, p.id64);
-            assert_eq!(back.position, p.position);
-            assert_eq!(back.temp_bucket, p.temp_bucket);
-            assert_eq!(back.updated_at, p.updated_at);
-            assert_eq!(back.magnitude, p.magnitude);
-        }
     }
 }

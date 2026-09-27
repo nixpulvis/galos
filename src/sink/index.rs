@@ -48,8 +48,8 @@ use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
 use galos_index::accumulate::bodies::OnDisk;
 use galos_index::accumulate::galaxy::UNKNOWN;
-use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
-use galos_index::format::layout::pending_path;
+use galos_index::codec::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::codec::layout::pending_path;
 use galos_index::prelude::{
     BuildParams, Galaxy, Index as ServedIndex, StarKind, System, Tree,
 };
@@ -68,11 +68,11 @@ pub const INDEX_DIR: &str = ".galos_index";
 /// *that* directory; beside it rather than inside it, holding every system
 /// at full precision, which no client should be served.
 ///
-/// The string itself is [`galos_index::format::layout::CHECKPOINT_SUFFIX`] and
+/// The string itself is [`galos_index::codec::layout::CHECKPOINT_SUFFIX`] and
 /// is re-exported rather than spelled again: the log, the mark and the copy
 /// that carries all three hang off the same suffix, and two spellings of it is
 /// a backup that silently leaves one of them behind.
-pub use galos_index::format::layout::CHECKPOINT_SUFFIX;
+pub use galos_index::codec::layout::CHECKPOINT_SUFFIX;
 
 /// Whether there is anything to edit a published directory from.
 ///
@@ -882,8 +882,8 @@ mod tests {
     use super::*;
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
+    use galos_index::codec::Directory;
     use galos_index::prelude::{FsSource, Source as _, SystemName};
-    use galos_index::store::Directory;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -1094,8 +1094,8 @@ mod tests {
             .expect("the populated table reads");
         table[0].factions = vec![968, 1047];
         table[0].body_count = Some(9);
-        galos_index::format::msgpack::write_meta(
-            &galos_index::format::layout::populated_path(&dir),
+        galos_index::codec::tables::msgpack::write_meta(
+            &galos_index::codec::layout::populated_path(&dir),
             &table,
         )
         .expect("the richer table writes");
@@ -1828,7 +1828,7 @@ mod tests {
     /// When each cell payload a directory publishes was last written, by
     /// path.
     fn payloads(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
-        let cells = dir.join(galos_index::format::layout::PAYLOAD_DIR);
+        let cells = dir.join(galos_index::codec::layout::PAYLOAD_DIR);
         let mut found = BTreeMap::new();
         for shard in std::fs::read_dir(&cells).expect("a cells directory") {
             let shard = shard.expect("a shard").path();
@@ -1846,10 +1846,10 @@ mod tests {
     }
 
     /// The payload file of the cell holding `at` at `level`, named as
-    /// `galos_index::store::cells` names one.
+    /// `galos_index::codec::cells` names one.
     fn payload_of(dir: &Path, at: [f64; 3], level: u8) -> PathBuf {
         let morton = galos_index::prelude::CellId::of_point(at, level).morton();
-        dir.join(galos_index::format::layout::PAYLOAD_DIR)
+        dir.join(galos_index::codec::layout::PAYLOAD_DIR)
             .join(format!("{:03x}", morton & 0xfff))
             .join(format!("{:02}-{:016x}.bin", level, morton))
     }
@@ -1981,12 +1981,12 @@ mod tests {
         // log and not a base: a run of the feed appends the rows it named
         // and never writes a generation, which is what the fold is for.
         for path in [
-            galos_index::format::layout::populated_path(&dir),
-            galos_index::format::layout::reaches_path(&dir),
+            galos_index::codec::layout::populated_path(&dir),
+            galos_index::codec::layout::reaches_path(&dir),
             Directory::at(&dir).table_path("boosts"),
-            galos_index::format::layout::factions_path(&dir),
-            galos_index::format::layout::names_delta_path(&dir),
-            dir.join(galos_index::format::layout::INDEX_FILE),
+            galos_index::codec::layout::factions_path(&dir),
+            galos_index::codec::layout::names_delta_path(&dir),
+            dir.join(galos_index::codec::layout::INDEX_FILE),
             checkpoint.clone(),
         ] {
             assert!(

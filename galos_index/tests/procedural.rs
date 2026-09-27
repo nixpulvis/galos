@@ -34,8 +34,8 @@
 //! dictionary regenerated against a larger galaxy can only cover more.
 
 use elite_journal::Boxel;
+use galos_index::codec::names::Table;
 use galos_index::core::procedural;
-use galos_index::store::names::Table;
 use std::path::PathBuf;
 use std::time::Instant;
 

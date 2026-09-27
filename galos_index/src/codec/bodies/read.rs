@@ -5,12 +5,12 @@
 //! reads one record; nothing is resident.
 
 use super::{ENTRY, Entry, Found, HEADER, header_of};
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     bodies_path, body_data_path, body_index_path, body_shard,
     legacy_bodies_path,
 };
 use crate::records::SystemBodies;
-use crate::store::Directory;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -136,11 +136,11 @@ impl Directory<'_> {
     pub fn read_bodies(self, address: i64) -> io::Result<SystemBodies> {
         let dir = self.root;
         match self.find_bodies(address)? {
-            crate::store::bodies::Found::Bodies(inside) => return Ok(inside),
-            crate::store::bodies::Found::Withdrawn => {
+            crate::codec::bodies::Found::Bodies(inside) => return Ok(inside),
+            crate::codec::bodies::Found::Withdrawn => {
                 return Ok(SystemBodies::default());
             }
-            crate::store::bodies::Found::Absent => {}
+            crate::codec::bodies::Found::Absent => {}
         }
         let bytes = match std::fs::read(bodies_path(dir, address)) {
             Ok(bytes) => bytes,

@@ -11,7 +11,7 @@
 //! payloads as a query reaches them. Nothing is derived,
 //! nothing is built, and nothing is resident that a query has not touched —
 //! which is also what makes it safe under the feed: there is no structure to
-//! go stale when a cell is republished, and [`crate::store::cells`] renames a
+//! go stale when a cell is republished, and [`crate::codec::cells`] renames a
 //! payload into place rather than rewriting it, so a mapping a route is
 //! holding keeps reading the galaxy the route started on.
 //!
@@ -36,8 +36,8 @@
 //! [`Sky`] maps them synchronously, reads a column at a time, and lets them go
 //! as a query moves on.
 
+use crate::codec::cells::Payload;
 use crate::core::geometry::CellId;
-use crate::store::cells::Payload;
 use crate::tree::index::Index;
 use elite_journal::Boxel;
 use std::collections::HashMap;

@@ -1927,7 +1927,7 @@ impl Jumps {
 /// against a galaxy that grew underneath it has been searching two
 /// different skies. The payloads make that hold for free — a cell the feed
 /// republishes is renamed into place, so a mapping this holds keeps reading
-/// what it was given ([`galos_index::store::cells`]).
+/// what it was given ([`galos_index::codec::cells`]).
 #[derive(Clone)]
 pub struct JumpGraph {
     /// The galaxy's places, read where they lie.

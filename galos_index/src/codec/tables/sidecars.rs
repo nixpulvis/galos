@@ -3,7 +3,7 @@
 //!
 //! The names, the populated systems, the reaches and the factions, and
 //! whatever tables the program's dependents contribute
-//! ([`crate::store::tables::TableSet`]). Both derivations of the index keep
+//! ([`crate::codec::tables::TableSet`]). Both derivations of the index keep
 //! them all open across a run and patch them per pass, through this.
 //!
 //! What differs between the two is not here:
@@ -28,13 +28,13 @@
 //! ([`Keyed`]), so a pass patches what it patches and [`Sidecars::write`]
 //! writes what that moved, however many chunks the pass ran in.
 
-use crate::format::rows::{RUN_BYTES, Sheet};
-use crate::records::{Faction, NameEntry, PopulatedSystem, SystemReach};
-use crate::store::Directory;
-use crate::store::names::Names;
-use crate::store::tables::{
+use crate::codec::Directory;
+use crate::codec::names::Names;
+use crate::codec::rows::{RUN_BYTES, Sheet};
+use crate::codec::tables::{
     Keyed, OpenTable, Spill, TableSet, each_row, sort_table,
 };
+use crate::records::{Faction, NameEntry, PopulatedSystem, SystemReach};
 use crate::system::System;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -193,7 +193,7 @@ impl Sidecars {
     /// table is re-opened onto the generation the fold wrote, the one it
     /// held having just been unlinked.
     ///
-    /// Rare by design — see [`crate::store::names::Delta::worth_folding`]. The
+    /// Rare by design — see [`crate::codec::names::Delta::worth_folding`]. The
     /// rewrite is the whole base, which is minutes at 200 M systems, and
     /// the log reaches the threshold about monthly on the live feed.
     pub fn compact_names(&mut self, dir: &Path) -> io::Result<bool> {
@@ -296,7 +296,7 @@ impl Sidecars {
     /// Take what each contributed table derives from a system's record,
     /// answering whether any of them changed; see [`Table::derive`].
     ///
-    /// [`Table::derive`]: crate::store::tables::Table::derive
+    /// [`Table::derive`]: crate::codec::tables::Table::derive
     pub fn contribute(&mut self, system: &System) -> bool {
         let mut changed = false;
         for table in &mut self.contributed {
@@ -506,9 +506,9 @@ impl TableWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::tables::msgpack::read_meta;
+    use crate::codec::tables::testing::{Cone, arriving, tables};
     use crate::core::star::StarKind;
-    use crate::format::msgpack::read_meta;
-    use crate::store::tables::testing::{Cone, arriving, tables};
 
     /// A table stays moved until it is written, and is not written again
     /// until something moves it

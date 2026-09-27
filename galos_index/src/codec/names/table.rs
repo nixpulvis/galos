@@ -6,8 +6,8 @@
 use super::format::{
     HEAD, MAGIC, Mapped, PAGE, READS, ROW, Text, boxel_middle, map, refused,
 };
+use crate::codec::layout::{BYNAME_FILE, generation_dir, names_head_path};
 use crate::core::name::SystemName;
-use crate::format::layout::{BYNAME_FILE, generation_dir, names_head_path};
 use crate::records::NameEntry;
 use std::borrow::Cow;
 use std::io;
@@ -286,14 +286,14 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::layout::{
+    use crate::codec::Directory;
+    use crate::codec::layout::{
         ADDR_FILE, EXCEPTION_FILE, SPAN_FILE, TEXT_FILE,
     };
-    use crate::store::Directory;
-    use crate::store::names::Names;
-    use crate::store::names::fixtures::{Scratch, entry, published};
-    use crate::store::names::format::{ADDR, SPAN, VERSION};
-    use crate::store::names::write::{live_generation, span_bytes};
+    use crate::codec::names::Names;
+    use crate::codec::names::fixtures::{Scratch, entry, published};
+    use crate::codec::names::format::{ADDR, SPAN, VERSION};
+    use crate::codec::names::write::{live_generation, span_bytes};
     use std::fs::File;
 
     /// A name its address spells is not written down, and reads back anyway

@@ -1,10 +1,10 @@
 //! Bringing a directory's layout up to date, before anything reads it.
 //!
 //! The migrations an open runs on its own: packing the loose body files into
-//! their shards ([`crate::store::Directory::pack_bodies`]), moving loose payloads into
+//! their shards ([`crate::codec::Directory::pack_bodies`]), moving loose payloads into
 //! theirs ([`reshard_cells`]), folding the names table's legacy MessagePack
 //! chunks into a mapped base, and bringing forward whatever a contributed
-//! table's own shape has moved on from ([`crate::store::tables::Table::upgrade`]).
+//! table's own shape has moved on from ([`crate::codec::tables::Table::upgrade`]).
 //! All of them are idempotent, and all of them are what [`migrate`] runs in
 //! order.
 //!
@@ -12,9 +12,9 @@
 //! not something an open can fix: that is [`crate::ops::upgrade`], which
 //! [`migrate`] names rather than attempts.
 
-use crate::format::layout::PAYLOAD_DIR;
-use crate::store::Directory;
-use crate::store::tables::TableSet;
+use crate::codec::Directory;
+use crate::codec::layout::PAYLOAD_DIR;
+use crate::codec::tables::TableSet;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -43,7 +43,7 @@ pub struct Resharded {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Migrated {
     /// The body files, walked into the packed shard files.
-    pub bodies: crate::store::bodies::Packed,
+    pub bodies: crate::codec::bodies::Packed,
     /// The cell payloads, or [`None`] where the bodies were abandoned part
     /// way and the payloads were never reached.
     pub cells: Option<Resharded>,
@@ -64,7 +64,7 @@ pub struct Migrated {
 }
 
 /// Bring an existing directory's *layout* up to date, before anything reads or
-/// writes it: [`crate::store::Directory::pack_bodies`],
+/// writes it: [`crate::codec::Directory::pack_bodies`],
 /// [`crate::ops::migrate::reshard_cells`], the names chunks, and then the
 /// contributed tables' own upgrades.
 ///
@@ -102,7 +102,7 @@ pub fn migrate(
     // and a sweep of the scan record, which is `galos index migrate`.
     if let Some(found) = Directory::at(dir).stale_index() {
         return Ok(Migrated {
-            bodies: crate::store::bodies::Packed { moved: 0, finished: true },
+            bodies: crate::codec::bodies::Packed { moved: 0, finished: true },
             cells: None,
             names: None,
             tables: Vec::new(),
@@ -145,16 +145,16 @@ pub fn upgraded(
 
 /// Move every loose `cells/*.bin` into its shard, stopping where asked.
 ///
-/// [`crate::store::Directory::pack_bodies`]'s twin, and [`migrate`] runs the pair: a
+/// [`crate::codec::Directory::pack_bodies`]'s twin, and [`migrate`] runs the pair: a
 /// one-time migration, idempotent, a rename each. A directory already
 /// sharded costs one `readdir`.
 ///
 /// `stop` is asked before each move, and abandoning is safe wherever it lands:
-/// [`legacy_payload_path`](crate::format::layout::legacy_payload_path) is read
+/// [`legacy_payload_path`](crate::codec::layout::legacy_payload_path) is read
 /// where the sharded path is absent, so a half-migrated directory serves every
 /// cell a finished one does, and the next open takes the rest. A payload
 /// already standing in its shard wins over the loose one, for the reason
-/// [`crate::store::Directory::pack_bodies`] gives.
+/// [`crate::codec::Directory::pack_bodies`] gives.
 pub fn reshard_cells(
     dir: &Path,
     stop: &dyn Fn() -> bool,
@@ -202,7 +202,7 @@ pub fn reshard_cells(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::msgpack::write_meta;
+    use crate::codec::tables::msgpack::write_meta;
     use crate::records::{Barycenter, SystemBodies};
     use std::path::PathBuf;
 
@@ -240,7 +240,7 @@ mod tests {
     /// version it met and touch nothing.
     #[test]
     fn a_directory_of_another_layout_asks_for_an_upgrade() {
-        use crate::format::layout::legacy_bodies_path;
+        use crate::codec::layout::legacy_bodies_path;
 
         let dir = scratch("migratestale");
         let address = 2_412_116_659_890_i64;
@@ -251,17 +251,17 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"GIDX");
         bytes.extend_from_slice(
-            &(crate::format::payload::INDEX_VERSION - 1).to_le_bytes(),
+            &(crate::codec::cells::format::INDEX_VERSION - 1).to_le_bytes(),
         );
         bytes.extend_from_slice(&0u32.to_le_bytes());
-        std::fs::write(dir.join(crate::format::layout::INDEX_FILE), &bytes)
+        std::fs::write(dir.join(crate::codec::layout::INDEX_FILE), &bytes)
             .expect("an index file writes");
 
         let done = super::migrate(&dir, &TableSet::new(), &|| false)
             .expect("the migration runs");
         assert_eq!(
             done.upgrade,
-            Some(crate::format::payload::INDEX_VERSION - 1),
+            Some(crate::codec::cells::format::INDEX_VERSION - 1),
             "the layout met was not named",
         );
         // And nothing was moved: the loose file is still loose.
@@ -283,7 +283,7 @@ mod tests {
     /// [`Resharded`] that found nothing to do.
     #[test]
     fn a_migration_stopped_in_the_bodies_leaves_the_cells() {
-        use crate::format::layout::legacy_bodies_path;
+        use crate::codec::layout::legacy_bodies_path;
 
         let dir = scratch("migratestop");
         for n in 0..4 {
@@ -291,7 +291,7 @@ mod tests {
             write_meta(&legacy_bodies_path(&dir, address), &inside(address))
                 .expect("a loose file writes");
         }
-        let loose = dir.join(crate::format::layout::PAYLOAD_DIR);
+        let loose = dir.join(crate::codec::layout::PAYLOAD_DIR);
         std::fs::create_dir_all(&loose).expect("the payload directory");
         let payload = loose.join("01-0000000000000001.bin");
         std::fs::write(&payload, b"\x90").expect("a loose payload writes");

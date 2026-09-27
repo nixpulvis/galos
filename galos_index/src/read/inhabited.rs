@@ -31,14 +31,12 @@
 //! residual correct under any gain: bake a weight into the stored sum and a
 //! residual taken under one gain is wrong under another.
 //!
-//! Derived rather than published today. [`Inhabitance::of`] rolls the resident
+//! Derived rather than published. [`Inhabitance::of`] rolls the resident
 //! `populated.bin` up a tree a reader already holds, which is the whole
-//! column for the price of one pass over a table that is resident anyway. The
-//! record carries its own codec so the builder can publish it as
-//! `agg/inhabited.bin` once cells have a stable order, and nothing reading it
-//! has to change when they do.
+//! column for the price of one pass over a table that is resident anyway.
+//! Publishing it would give it a file, and a file's bytes are
+//! [`crate::codec`]'s.
 
-use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use crate::core::geometry::CellId;
 use crate::core::moments::Moments;
 use crate::records::PopulatedSystem;
@@ -333,16 +331,6 @@ impl Inhabited {
     }
 }
 
-record! {
-    Inhabited {
-        count: u64,
-        settled: Moments,
-        allegiance: [u32; ALLEGIANCE_BUCKETS],
-        government: [u32; GOVERNMENT_BUCKETS],
-        security: [u32; SECURITY_BUCKETS],
-    }
-}
-
 impl FromIterator<Inhabited> for Inhabited {
     fn from_iter<I: IntoIterator<Item = Inhabited>>(iter: I) -> Inhabited {
         iter.into_iter().fold(Inhabited::ZERO, Inhabited::merge)
@@ -581,18 +569,6 @@ mod tests {
     fn nobody_home_has_no_centroid() {
         assert_eq!(Inhabited::ZERO.centroid(), None);
         assert!(close(Inhabited::ZERO.spread(), 0.0));
-    }
-
-    #[test]
-    fn a_record_round_trips() {
-        let held = of([1.0, 2.0, 3.0], Some(Allegiance::Empire))
-            .merge(of([-4.0, 5.0, 6.0], None));
-        let mut buf = Vec::new();
-        held.encode(&mut buf);
-        assert_eq!(buf.len(), Inhabited::LEN);
-        let mut cur = buf.as_slice();
-        assert_eq!(Inhabited::decode(&mut cur), Some(held));
-        assert!(cur.is_empty());
     }
 
     /// A tree of the chain of cells from the root down to level 3 over `at`,

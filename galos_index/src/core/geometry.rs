@@ -14,12 +14,10 @@
 //! cells near in space are near in the key, which is the order the builder
 //! sorts and the files are laid out in. A system's position is carried in the
 //! payload as a whole count of
-//! [`POSITION_STEP`](crate::format::payload::POSITION_STEP) off its cell's low
+//! [`POSITION_STEP`](crate::codec::cells::format::POSITION_STEP) off its cell's low
 //! corner, the grid the game's own coordinates sit on: the cube and its cells
 //! order and bound the systems, but a system is drawn where it sits, however
 //! coarse the cell that owns it.
-
-use crate::core::codec::{Decode, Encode, FixedCodec};
 
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.
@@ -191,24 +189,6 @@ impl CellId {
         let (x, y, z) = morton_decode(key);
         CellId { level, x, y, z }
     }
-}
-
-impl Encode for CellId {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.level.encode(out);
-        self.morton().encode(out);
-    }
-}
-
-impl Decode for CellId {
-    fn decode(cur: &mut &[u8]) -> Option<CellId> {
-        let level = u8::decode(cur)?;
-        Some(CellId::from_morton(level, u64::decode(cur)?))
-    }
-}
-
-impl FixedCodec for CellId {
-    const LEN: usize = u8::LEN + u64::LEN;
 }
 
 /// Spread the low 21 bits of `v` out to every third bit, the one-axis half of a

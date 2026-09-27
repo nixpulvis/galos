@@ -7,8 +7,8 @@
 //! map an address is found in, and the same cells flattened breadth-first
 //! for the walks to descend ([`crate::read::walk`]).
 //!
-//! Pure: its bytes are [`crate::format::payload`]'s, and the file it is read
-//! from and written to is [`crate::store::cells`]'s.
+//! Pure: its bytes are [`crate::codec::cells::format`]'s, and the file it is read
+//! from and written to is [`crate::codec::cells`]'s.
 
 use crate::core::aggregate::AGE_BUCKETS;
 

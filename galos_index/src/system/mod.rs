@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The record is written to disk as its own bytes, so it is `repr(C)` and
 /// sixty-four bytes: fifty-seven of fields and seven of padding after the
-/// star kind; see [`crate::format::checkpoint`].
+/// star kind; see [`crate::codec::checkpoint`].
 ///
 /// [`CellSystem`]: crate::tree::cell::CellSystem
 /// [`CellSystem::of`]: crate::tree::cell::CellSystem::of
@@ -73,7 +73,7 @@ pub struct System {
 /// added here without the format being told would read a checkpoint of one
 /// galaxy back as another, so it fails the build instead.
 ///
-/// The width and [`crate::format::checkpoint`]'s `VERSION` move together, so
+/// The width and [`crate::codec::checkpoint`]'s `VERSION` move together, so
 /// a resume point written at another width is refused rather than misread.
 const _: () = assert!(std::mem::size_of::<System>() == 64);
 const _: () = assert!(std::mem::align_of::<System>() == 8);

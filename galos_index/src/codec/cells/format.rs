@@ -1,24 +1,144 @@
-//! The payload's byte layout, and the version the index file is held to.
+//! The cells' bytes: the index file's fixed records, a payload's columns,
+//! and the version the index file is held to.
+//!
+//! The index file is a header and a run of fixed-width [`Cell`] records, each
+//! spelled out with `record!` below down to the fields it is built of — a
+//! [`CellId`] as level plus Morton key, an [`Aggregate`] with its `m_min` as
+//! a NaN-sentinel `f32`, the [`Moments`] inside it.
 //!
 //! A cell's payload is columns rather than records — a 12-byte header, then
 //! runs of position, star kind, address and photometry — and a position is
 //! an integer count of [`POSITION_STEP`] off the cell's own low corner, so a
-//! block is read *with* its cell rather than standing on its own. The
-//! fixed-width records beside it spell their own layouts through
-//! [`crate::core::codec`]; the index file's is here too, beside the version it is held to.
+//! block is read *with* its cell rather than standing on its own.
 //!
 //! Nothing is frozen yet: the version moves when a record's width does and
 //! the check cannot catch it (see [`INDEX_VERSION`]), and the index record
 //! keeps growing, as the aggregate gains the field step's filter marginals
 //! and its quantization.
 
-use crate::core::aggregate::TempBucket;
-use crate::core::codec::{Decode, Encode, FixedCodec};
+use crate::codec::bytes::{Decode, Encode, FixedCodec, record};
+use crate::core::aggregate::{AGE_BUCKETS, Aggregate, TempBucket};
 use crate::core::geometry::CellId;
+use crate::core::moments::Moments;
 use crate::core::star::StarKind;
 use crate::tree::cell::Cell;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+
+/// A cell's address: its level, then its Morton key.
+impl Encode for CellId {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.level.encode(out);
+        self.morton().encode(out);
+    }
+}
+
+impl Decode for CellId {
+    fn decode(cur: &mut &[u8]) -> Option<CellId> {
+        let level = u8::decode(cur)?;
+        Some(CellId::from_morton(level, u64::decode(cur)?))
+    }
+}
+
+impl FixedCodec for CellId {
+    const LEN: usize = u8::LEN + u64::LEN;
+}
+
+/// A temperature bucket, as its index. Both ways in clamp, so a byte out of
+/// range reads as the hottest bucket.
+impl Encode for TempBucket {
+    fn encode(&self, out: &mut Vec<u8>) {
+        (self.index() as u8).encode(out);
+    }
+}
+
+impl Decode for TempBucket {
+    fn decode(cur: &mut &[u8]) -> Option<TempBucket> {
+        Some(TempBucket::new(u8::decode(cur)?))
+    }
+}
+
+impl FixedCodec for TempBucket {
+    const LEN: usize = 1;
+}
+
+/// A star kind, as [`StarKind::code`].
+impl Encode for StarKind {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.code().encode(out);
+    }
+}
+
+impl Decode for StarKind {
+    fn decode(cur: &mut &[u8]) -> Option<StarKind> {
+        Some(StarKind::from_code(u8::decode(cur)?))
+    }
+}
+
+impl FixedCodec for StarKind {
+    const LEN: usize = 1;
+}
+
+record! {
+    Moments {
+        weight: f64,
+        mean: [f64; 3],
+        m2: f64,
+    }
+}
+
+/// A brightest magnitude on the wire, with `NaN` standing for none: a real
+/// magnitude is never NaN, so the sentinel cannot collide with a value.
+struct BrightestMag(f32);
+
+impl Encode for BrightestMag {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
+impl Decode for BrightestMag {
+    fn decode(cur: &mut &[u8]) -> Option<BrightestMag> {
+        Some(BrightestMag(f32::decode(cur)?))
+    }
+}
+
+impl FixedCodec for BrightestMag {
+    const LEN: usize = f32::LEN;
+}
+
+impl From<Option<f32>> for BrightestMag {
+    fn from(m: Option<f32>) -> BrightestMag {
+        BrightestMag(m.unwrap_or(f32::NAN))
+    }
+}
+
+impl From<BrightestMag> for Option<f32> {
+    fn from(m: BrightestMag) -> Option<f32> {
+        (!m.0.is_nan()).then_some(m.0)
+    }
+}
+
+record! {
+    Aggregate {
+        m_min: Option<f32> as BrightestMag,
+        count: u64,
+        flux: [f64; TempBucket::COUNT],
+        light: Moments,
+        mass: Moments,
+        aged: [u32; AGE_BUCKETS],
+    }
+}
+
+record! {
+    Cell {
+        id: CellId,
+        rank_lo: u64,
+        rank_hi: u64,
+        child_mask: u8,
+        aggregate: Aggregate,
+    }
+}
 
 /// The magic at the head of a cell's payload.
 pub(crate) const PAYLOAD_MAGIC: [u8; 4] = *b"GPAY";
@@ -321,6 +441,26 @@ impl Decode for Index {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cell's whole index record survives the round trip exactly, aggregate
+    /// and all; the moments are `f64` and lose nothing.
+    #[test]
+    fn a_cell_record_round_trips() {
+        let agg = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2)
+            .merge(Aggregate::of_system([5.0, 6.0, 7.0], -1.0, 12000.0, 5));
+        let cell = Cell {
+            id: CellId { level: 3, x: 5, y: 6, z: 7 },
+            rank_lo: 512,
+            rank_hi: 1024,
+            child_mask: 0b1010_0001,
+            aggregate: agg,
+        };
+        let mut buf = Vec::new();
+        cell.encode(&mut buf);
+        assert_eq!(buf.len(), Cell::LEN);
+        let mut cur = &buf[..];
+        assert_eq!(Cell::decode(&mut cur), Some(cell));
+    }
 
     fn point(id: u64, mag: f32) -> CellSystem {
         CellSystem {

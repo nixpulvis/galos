@@ -20,7 +20,6 @@
 //! cull on the stored total, never on a residual, so [`Aggregate::remove`]
 //! leaves it be.
 
-use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use crate::core::moments::Moments;
 use galos_photometry::Magnitude;
 
@@ -84,22 +83,6 @@ impl TempBucket {
     }
 }
 
-impl Encode for TempBucket {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
-    }
-}
-
-impl Decode for TempBucket {
-    fn decode(cur: &mut &[u8]) -> Option<TempBucket> {
-        Some(TempBucket::new(u8::decode(cur)?))
-    }
-}
-
-impl FixedCodec for TempBucket {
-    const LEN: usize = 1;
-}
-
 /// The totals a cell carries over its whole subtree.
 ///
 /// Built from single systems with [`of_system`](Self::of_system), rolled up
@@ -110,16 +93,16 @@ impl FixedCodec for TempBucket {
 pub struct Aggregate {
     /// Brightest absolute magnitude in the subtree, the smallest number, or
     /// [`None`] for an empty aggregate.
-    m_min: Option<f32>,
+    pub(crate) m_min: Option<f32>,
     /// How many systems the subtree holds.
-    count: u64,
+    pub(crate) count: u64,
     /// Linear flux per temperature bucket, summed.
-    flux: [f64; TempBucket::COUNT],
+    pub(crate) flux: [f64; TempBucket::COUNT],
     /// Position moments weighted by flux, for the glow's centroid and spread.
-    light: Moments,
+    pub(crate) light: Moments,
     /// Position moments weighted by count, for the count-weighted centroid
     /// and extent.
-    mass: Moments,
+    pub(crate) mass: Moments,
     /// Counts per age bucket, a column of the record so a Recency span can be
     /// answered by prefix sum off the aggregates alone. Every build writes it,
     /// and a span asked of a merged mark or of the field is answered from it,
@@ -130,7 +113,7 @@ pub struct Aggregate {
     /// sum to its `count`, so four billion is ample over the galaxy's 200
     /// million, where a `u16` share of `count` would round the smallest
     /// bucket — the recently-changed one the axis exists to show — away.
-    aged: [u32; AGE_BUCKETS],
+    pub(crate) aged: [u32; AGE_BUCKETS],
 }
 
 impl Aggregate {
@@ -286,49 +269,6 @@ impl Aggregate {
     /// be done through a centroid and a radius because neither composes.
     pub fn mass(&self) -> Moments {
         self.mass
-    }
-}
-
-/// A brightest magnitude on the wire, with `NaN` standing for none: a real
-/// magnitude is never NaN, so the sentinel cannot collide with a value.
-struct BrightestMag(f32);
-
-impl Encode for BrightestMag {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
-    }
-}
-
-impl Decode for BrightestMag {
-    fn decode(cur: &mut &[u8]) -> Option<BrightestMag> {
-        Some(BrightestMag(f32::decode(cur)?))
-    }
-}
-
-impl FixedCodec for BrightestMag {
-    const LEN: usize = f32::LEN;
-}
-
-impl From<Option<f32>> for BrightestMag {
-    fn from(m: Option<f32>) -> BrightestMag {
-        BrightestMag(m.unwrap_or(f32::NAN))
-    }
-}
-
-impl From<BrightestMag> for Option<f32> {
-    fn from(m: BrightestMag) -> Option<f32> {
-        (!m.0.is_nan()).then_some(m.0)
-    }
-}
-
-record! {
-    Aggregate {
-        m_min: Option<f32> as BrightestMag,
-        count: u64,
-        flux: [f64; TempBucket::COUNT],
-        light: Moments,
-        mass: Moments,
-        aged: [u32; AGE_BUCKETS],
     }
 }
 

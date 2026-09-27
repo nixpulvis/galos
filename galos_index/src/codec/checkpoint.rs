@@ -31,7 +31,7 @@
 //! the magic is a native `u64`, and the record width and a format version
 //! are in the header. Refusal costs a rebuild and nothing else.
 
-use crate::format::layout::pending_path;
+use crate::codec::layout::pending_path;
 use crate::system::System;
 use chrono::NaiveDateTime;
 use memmap2::Mmap;

@@ -78,10 +78,10 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
+use crate::codec::tables::sidecars::TableWriter;
 use crate::records::{
     NameEntry, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
-use crate::store::sidecars::TableWriter;
 use crate::system::System;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::{Scan, ScanTarget};

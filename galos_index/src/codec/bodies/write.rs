@@ -7,12 +7,12 @@
 use super::{
     ENTRY, Entry, Found, HEADER, header_bytes, header_fields, tail_bound,
 };
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     BODIES_DIR, bodies_path, body_data_path, body_index_path, body_shard,
     legacy_bodies_path,
 };
 use crate::records::SystemBodies;
-use crate::store::Directory;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -308,7 +308,7 @@ mod tests {
     /// unsharded one for the read to fall back onto.
     #[test]
     fn removing_a_body_clears_both_layouts() {
-        use crate::format::msgpack::write_meta;
+        use crate::codec::tables::msgpack::write_meta;
 
         let dir = loose_scratch("remove");
         let address = 2_412_116_659_890_i64;

@@ -170,12 +170,12 @@ pub fn body_data_path(dir: &Path, shard: u64, generation: u16) -> PathBuf {
 
 /// A system's body file within a build directory, keyed by address.
 ///
-/// The legacy loose layout, beside [`crate::store::bodies`]'s shard files:
+/// The legacy loose layout, beside [`crate::codec::bodies`]'s shard files:
 /// one file a system, sharded over 4,096 subdirectories,
 /// `bodies/{shard:03x}/{address}.bin`. Read and never written —
-/// [`crate::store::Directory::pack_bodies`] walks these into the shard files on the
+/// [`crate::codec::Directory::pack_bodies`] walks these into the shard files on the
 /// first open, and until it has,
-/// [`read_bodies`](crate::store::Directory::read_bodies) falls back to this path.
+/// [`read_bodies`](crate::codec::Directory::read_bodies) falls back to this path.
 pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
     let shard = body_shard(address);
     dir.join(BODIES_DIR)
@@ -185,9 +185,9 @@ pub fn bodies_path(dir: &Path, address: i64) -> PathBuf {
 
 /// Where a legacy unsharded body file sits, `bodies/{address}.bin`.
 ///
-/// Read and never written: [`pack_bodies`](crate::store::Directory::pack_bodies) moves these
+/// Read and never written: [`pack_bodies`](crate::codec::Directory::pack_bodies) moves these
 /// into the shard files on the first open, and until it has,
-/// [`read_bodies`](crate::store::Directory::read_bodies) falls back to this
+/// [`read_bodies`](crate::codec::Directory::read_bodies) falls back to this
 /// path.
 pub fn legacy_bodies_path(dir: &Path, address: i64) -> PathBuf {
     dir.join(BODIES_DIR).join(format!("{address}.bin"))

@@ -8,7 +8,7 @@
 //! both derivations of the index answer alike from those records.
 //!
 //! A dependent's own table is neither: its row is its own type, derived from
-//! a system's [`crate::system::System`] ([`crate::store::tables::Table`]).
+//! a system's [`crate::system::System`] ([`crate::codec::tables::Table`]).
 
 mod bodies;
 pub mod derive;

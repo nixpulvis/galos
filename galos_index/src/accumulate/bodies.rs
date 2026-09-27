@@ -51,8 +51,8 @@
 //! disk that has stopped taking writes is a process that grows, and that
 //! warning is the only place it is said.
 
+use crate::codec::Directory;
 use crate::records::SystemBodies;
-use crate::store::Directory;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
@@ -136,7 +136,7 @@ impl Bodies for InMemory {
 
 /// The index directory's own body pack.
 ///
-/// A system's record in [`crate::store::bodies`] is written whole and read
+/// A system's record in [`crate::codec::bodies`] is written whole and read
 /// whole, and is what the map reads when a click opens the system. This
 /// reads and writes exactly those, so the durable copy is the only copy.
 ///
@@ -290,7 +290,7 @@ impl Bodies for OnDisk {
             Ok(packed) => addresses.extend(packed),
             Err(err) => eprintln!("the packed bodies could not be read: {err}"),
         }
-        let bodies = self.dir.join(crate::format::layout::BODIES_DIR);
+        let bodies = self.dir.join(crate::codec::layout::BODIES_DIR);
         for shard in listed(&bodies, &mut addresses) {
             listed(&shard, &mut addresses);
         }
@@ -303,7 +303,7 @@ impl Bodies for OnDisk {
     ///
     /// Into the pack, grouped by shard: a shard is two appends however many of
     /// the held systems fell in it, and neither append is a directory
-    /// operation. See [`crate::store::bodies`] for why that is the whole of
+    /// operation. See [`crate::codec::bodies`] for why that is the whole of
     /// this module's cost at galaxy scale.
     ///
     /// A system whose record will not write is kept rather than dropped, so
@@ -337,7 +337,7 @@ impl Bodies for OnDisk {
 /// [`OnDisk::CARRIED`] systems pile up and go out shard by shard.
 ///
 /// One writer still: the `Arc` is shared within a run, and a run holds the
-/// directory's [`Lock`](crate::format::lock::Lock).
+/// directory's [`Lock`](crate::codec::lock::Lock).
 #[derive(Clone, Debug)]
 pub struct Shared(Arc<Mutex<OnDisk>>);
 
@@ -537,13 +537,13 @@ mod tests {
         // Into the pack and nowhere else: a store writing a loose file a
         // system would be a galaxy of inodes.
         assert!(
-            !crate::format::layout::bodies_path(&dir, 11).exists(),
+            !crate::codec::layout::bodies_path(&dir, 11).exists(),
             "a loose body file was written",
         );
         assert!(
             matches!(
                 Directory::at(&dir).find_bodies(11).expect("the pack reads"),
-                crate::store::bodies::Found::Bodies(_)
+                crate::codec::bodies::Found::Bodies(_)
             ),
             "the pack does not hold what the store wrote",
         );
@@ -564,7 +564,7 @@ mod tests {
 
         assert_eq!(
             Directory::at(&dir).find_bodies(3).expect("the pack reads"),
-            crate::store::bodies::Found::Absent,
+            crate::codec::bodies::Found::Absent,
             "an edit reached the disk before it was asked to",
         );
         assert_eq!(store.read(3).stars.len(), 1, "the held edit was not read");
@@ -573,7 +573,7 @@ mod tests {
         assert!(
             matches!(
                 Directory::at(&dir).find_bodies(3).expect("the pack reads"),
-                crate::store::bodies::Found::Bodies(_)
+                crate::codec::bodies::Found::Bodies(_)
             ),
             "the flush wrote nothing",
         );

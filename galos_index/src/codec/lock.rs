@@ -31,7 +31,7 @@
 //! of `galos ingest`, so it goes with whichever verb was refused — which is
 //! [`Lock::force`].
 
-use crate::format::layout::lock_path;
+use crate::codec::layout::lock_path;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};

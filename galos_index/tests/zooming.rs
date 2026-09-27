@@ -27,10 +27,8 @@
 //! The ceilings are loose, this running on whatever machine is to hand, so
 //! what they catch is a change of *shape*.
 
-use galos_index::core::codec::FixedCodec as _;
-use galos_index::prelude::{
-    CellSystem, FsSource, Index, Mode, Source as _, View,
-};
+use galos_index::codec::layout::payload_path;
+use galos_index::prelude::{FsSource, Index, Mode, Source as _, View};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -87,7 +85,8 @@ fn zooming_out_stays_quick() {
             let payload = pollster::block_on(source.payload(mark.id))
                 .expect("a marked cell should read");
             points += payload.len();
-            bytes += payload.len() * CellSystem::LEN;
+            bytes += std::fs::metadata(payload_path(&dir, mark.id))
+                .map_or(0, |it| it.len());
         }
         let read = at.elapsed();
         println!(

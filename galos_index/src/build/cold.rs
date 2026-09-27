@@ -19,15 +19,15 @@ use crate::build::bucket::{Buckets, Formed};
 use crate::build::region::{Crown, Offer};
 use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::build::{bucket, region};
-use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
-use crate::format::layout::{INDEX_FILE, mark_path, spill_dir};
-use crate::format::msgpack::{read_meta, write_meta};
-use crate::format::spill::Spilled;
+use crate::codec::Directory;
+use crate::codec::bodies::Reclaimed;
+use crate::codec::cells::Swept;
+use crate::codec::checkpoint::{Checkpoint, Compaction, Provenance};
+use crate::codec::layout::{INDEX_FILE, mark_path, spill_dir};
+use crate::codec::names;
+use crate::codec::spill::Spilled;
+use crate::codec::tables::msgpack::{read_meta, write_meta};
 use crate::records::NameEntry;
-use crate::store::Directory;
-use crate::store::bodies::Reclaimed;
-use crate::store::cells::Swept;
-use crate::store::names;
 use crate::system::System;
 use crate::tree::index::Index;
 use chrono::NaiveDateTime;
@@ -466,7 +466,7 @@ impl<'a> Build<'a> {
         )?;
         // The dead records the body shards carry, which a re-import leaves one
         // of for every system it rewrote: see
-        // [`crate::store::Directory::sweep_bodies`]. After the index file, as the
+        // [`crate::codec::Directory::sweep_bodies`]. After the index file, as the
         // cell sweep is, though less turns on the order — every live record is
         // in hand throughout a compaction, so an interruption here leaves a
         // directory that is merely larger.
@@ -594,11 +594,11 @@ pub struct Summary {
     pub named_rows: usize,
     /// Payload files of cells the published tree does not name, removed
     /// after it was written: whatever the tree that stood here before held
-    /// and this one does not. See [`crate::store::Directory::sweep_payloads`].
+    /// and this one does not. See [`crate::codec::Directory::sweep_payloads`].
     pub swept: Swept,
     /// Dead records the body shards gave back, compacted once the index
     /// file stood: a re-import appends a fresh record for every system and
-    /// the one behind it is dead. See [`crate::store::Directory::sweep_bodies`].
+    /// the one behind it is dead. See [`crate::codec::Directory::sweep_bodies`].
     pub reclaimed: Reclaimed,
 }
 
@@ -686,8 +686,8 @@ impl fmt::Display for Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::layout::{HEAD_FILE, NAMES_DIR};
-    use crate::store::names::Names;
+    use crate::codec::layout::{HEAD_FILE, NAMES_DIR};
+    use crate::codec::names::Names;
     use std::cell::Cell;
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1308,9 +1308,9 @@ mod tests {
         let inside = padded();
         // One shard, so the dead records pile up in one data file rather
         // than a kilobyte each across four thousand of them.
-        let shard = crate::format::layout::body_shard(1);
+        let shard = crate::codec::layout::body_shard(1);
         let addresses: Vec<i64> = (1i64..)
-            .filter(|&it| crate::format::layout::body_shard(it) == shard)
+            .filter(|&it| crate::codec::layout::body_shard(it) == shard)
             .take(4)
             .collect();
 
@@ -1345,7 +1345,7 @@ mod tests {
                 Directory::at(&dir)
                     .find_bodies(address)
                     .expect("the pack reads"),
-                crate::store::bodies::Found::Bodies(inside.clone()),
+                crate::codec::bodies::Found::Bodies(inside.clone()),
                 "system {address} did not survive the publish",
             );
         }

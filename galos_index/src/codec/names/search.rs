@@ -632,7 +632,7 @@ impl Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::names::fixtures::{Scratch, entry, published};
+    use crate::codec::names::fixtures::{Scratch, entry, published};
 
     /// The by-name index answers an exact name without a scan, and the
     /// order it is written in is the order names sort in.

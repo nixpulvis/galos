@@ -54,12 +54,12 @@
 use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
 use galos_index::accumulate::bodies::{Bodies, OnDisk};
+use galos_index::codec::cells;
+use galos_index::codec::tables::Agreement;
+use galos_index::codec::Directory;
 use galos_index::core::geometry::MAX_LEVEL;
 use galos_index::prelude::{Cell, Index, Names};
 use galos_index::records::{NameEntry, PopulatedSystem, SystemReach};
-use galos_index::store::cells;
-use galos_index::store::tables::Agreement;
-use galos_index::store::Directory;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::io;
@@ -486,7 +486,7 @@ fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
     // Said before the wait and not after it: this is the minutes.
     println!("reclaiming {} ...", size(weighed.reclaimable));
     let from = std::time::Instant::now();
-    let said = |run: &galos_index::store::bodies::Reclaimed| {
+    let said = |run: &galos_index::codec::bodies::Reclaimed| {
         eprint!(
             "\r{} shards, {} reclaimed, {:.0?}",
             run.shards,
@@ -718,7 +718,7 @@ fn size(bytes: u64) -> String {
 
 /// Bring a directory up to the format this build reads.
 ///
-/// What [`galos_index::store::cells`]'s version refusal names, so an operator
+/// What [`galos_index::codec::cells`]'s version refusal names, so an operator
 /// met by "rebuild the directory" has one thing to run. Three rewrites, in the
 /// only order they can happen in:
 ///
@@ -1127,7 +1127,7 @@ fn fold_names(dir: &Path, lock: &galos_index::prelude::Lock) -> bool {
 /// Read-only on the directory, and takes no lock: it reads the published
 /// table and writes somewhere else entirely.
 fn sectors(dir: &Path, out: Option<&Path>, force: bool) {
-    let table = match galos_index::store::names::Table::open(dir) {
+    let table = match galos_index::codec::names::Table::open(dir) {
         Ok(table) => table,
         Err(e) => {
             eprintln!("cannot read the names table at {}: {e}", dir.display());
@@ -1329,11 +1329,11 @@ fn status(dir: &Path) {
 
     // On-disk footprint, straight off the filesystem.
     if let Ok(meta) =
-        std::fs::metadata(dir.join(galos_index::format::layout::INDEX_FILE))
+        std::fs::metadata(dir.join(galos_index::codec::layout::INDEX_FILE))
     {
         print!("  on disk       index.bin ({:.2} MB)", mib(meta.len()));
         let (count, bytes) = payload_footprint(
-            &dir.join(galos_index::format::layout::PAYLOAD_DIR),
+            &dir.join(galos_index::codec::layout::PAYLOAD_DIR),
         );
         print!(", {count} payload files ({:.2} MB)", mib(bytes));
         println!();
@@ -1800,7 +1800,7 @@ fn payloads(
 ///
 /// The sharded name first and the flat one after it, which is the order
 /// [`Index::read_payload`] reads them in:
-/// `galos_index::format::layout::payload_path` is the crate's own spelling of
+/// `galos_index::codec::layout::payload_path` is the crate's own spelling of
 /// the pair and is `pub(crate)`, so they are spelled again here.
 ///
 /// **A spelling that goes stale costs speed and not truth.** Where either
@@ -1810,7 +1810,7 @@ fn payloads(
 /// again and never makes it wrong.
 fn payload_file(dir: &Path, cell: &Cell) -> io::Result<Option<(PathBuf, u64)>> {
     let morton = cell.id.morton();
-    let cells = dir.join(galos_index::format::layout::PAYLOAD_DIR);
+    let cells = dir.join(galos_index::codec::layout::PAYLOAD_DIR);
     let name = format!("{:02}-{morton:016x}.bin", cell.id.level);
     let sharded = cells.join(format!("{:03x}", morton & 0xfff)).join(&name);
     for path in [sharded, cells.join(&name)] {
@@ -1958,11 +1958,11 @@ fn names(a: &Path, b: &Path, how: &Compare) -> Verdict {
 ///
 /// One generation directory a side, the same table version, and the four
 /// sections that carry the content equal byte for byte:
-/// [`ADDR_FILE`](galos_index::format::layout::ADDR_FILE) is which systems are
-/// named, [`EXCEPTION_FILE`](galos_index::format::layout::EXCEPTION_FILE) and
-/// [`SPAN_FILE`](galos_index::format::layout::SPAN_FILE) are which of them
+/// [`ADDR_FILE`](galos_index::codec::layout::ADDR_FILE) is which systems are
+/// named, [`EXCEPTION_FILE`](galos_index::codec::layout::EXCEPTION_FILE) and
+/// [`SPAN_FILE`](galos_index::codec::layout::SPAN_FILE) are which of them
 /// stored a name and where it lies, and
-/// [`TEXT_FILE`](galos_index::format::layout::TEXT_FILE) is the names
+/// [`TEXT_FILE`](galos_index::codec::layout::TEXT_FILE) is the names
 /// themselves. Everything else a row can be asked is arithmetic over the
 /// address.
 ///
@@ -1997,10 +1997,10 @@ fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
         return false;
     }
     let sections = [
-        galos_index::format::layout::ADDR_FILE,
-        galos_index::format::layout::SPAN_FILE,
-        galos_index::format::layout::EXCEPTION_FILE,
-        galos_index::format::layout::TEXT_FILE,
+        galos_index::codec::layout::ADDR_FILE,
+        galos_index::codec::layout::SPAN_FILE,
+        galos_index::codec::layout::EXCEPTION_FILE,
+        galos_index::codec::layout::TEXT_FILE,
     ];
     sections.iter().all(|file| {
         let (x, y) = (x.join(file), y.join(file));
@@ -2030,7 +2030,7 @@ fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
 fn generation(dir: &Path) -> Option<PathBuf> {
     let mut held: Option<PathBuf> = None;
     for entry in
-        std::fs::read_dir(galos_index::format::layout::names_dir(dir)).ok()?
+        std::fs::read_dir(galos_index::codec::layout::names_dir(dir)).ok()?
     {
         let entry = entry.ok()?;
         if !entry.file_type().ok()?.is_dir() {
@@ -2205,7 +2205,7 @@ fn agree(
 
 /// How many rows a table file says it holds, off its head.
 ///
-/// `galos_index::format::msgpack::write_meta` writes a `Vec` through
+/// `galos_index::codec::tables::msgpack::write_meta` writes a `Vec` through
 /// `rmp_serde`, and a MessagePack array says its length in its first one, three
 /// or five bytes: `0x90 | n` under sixteen rows, `0xdc` and a big-endian `u16`,
 /// `0xdd` and a `u32`. So a count for the report is five bytes read rather than
@@ -2231,7 +2231,7 @@ fn counted(path: &Path) -> io::Result<usize> {
 /// An absent table is not an empty one: it says this index cannot tell,
 /// where an empty one says the galaxy has none.
 fn table<T: DeserializeOwned>(dir: &Path, path: &Path) -> Option<Vec<T>> {
-    match galos_index::format::msgpack::read_meta(path) {
+    match galos_index::codec::tables::msgpack::read_meta(path) {
         Ok(rows) => Some(rows),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => fatal(dir, e),

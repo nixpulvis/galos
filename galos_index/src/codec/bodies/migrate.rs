@@ -7,8 +7,8 @@
 
 use super::Table;
 use super::write::append;
-use crate::format::layout::{BODIES_DIR, body_index_path, body_shard};
-use crate::store::Directory;
+use crate::codec::Directory;
+use crate::codec::layout::{BODIES_DIR, body_index_path, body_shard};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ impl Directory<'_> {
     /// Interruptible, because a galaxy of loose files is hours of them and a run
     /// asked to stop must not wait. What it abandons the next open takes up: a
     /// loose file is removed only once the pack has its record, and
-    /// [`crate::store::Directory::read_bodies`] falls back to the loose paths for
+    /// [`crate::codec::Directory::read_bodies`] falls back to the loose paths for
     /// whatever is left, so a directory part way through answers for every system a
     /// finished one does.
     ///
@@ -374,14 +374,14 @@ mod tests {
     fn a_shard_directory_keeps_what_the_pack_does_not_understand() {
         let dir = scratch("stray");
         let address = 7_700_017_i64;
-        crate::format::msgpack::write_meta(
-            &crate::format::layout::bodies_path(&dir, address),
+        crate::codec::tables::msgpack::write_meta(
+            &crate::codec::layout::bodies_path(&dir, address),
             &inside(1),
         )
         .expect("a sharded file writes");
 
         // Something the pack has no idea about, beside it.
-        let shard = crate::format::layout::bodies_path(&dir, address)
+        let shard = crate::codec::layout::bodies_path(&dir, address)
             .parent()
             .expect("a shard directory")
             .to_path_buf();
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(done.moved, 1, "the body file was not counted");
         assert!(matches!(found(&dir, address), Found::Bodies(_)));
         assert!(
-            !crate::format::layout::bodies_path(&dir, address).exists(),
+            !crate::codec::layout::bodies_path(&dir, address).exists(),
             "a packed file was left loose",
         );
         assert!(
@@ -418,15 +418,15 @@ mod tests {
         let flat: Vec<i64> = (1..=6).map(|n| n * 1_000_003).collect();
         let sharded: Vec<i64> = (1..=6).map(|n| n * 7_700_017).collect();
         for &address in &flat {
-            crate::format::msgpack::write_meta(
-                &crate::format::layout::legacy_bodies_path(&dir, address),
+            crate::codec::tables::msgpack::write_meta(
+                &crate::codec::layout::legacy_bodies_path(&dir, address),
                 &inside(1),
             )
             .expect("a flat file writes");
         }
         for &address in &sharded {
-            crate::format::msgpack::write_meta(
-                &crate::format::layout::bodies_path(&dir, address),
+            crate::codec::tables::msgpack::write_meta(
+                &crate::codec::layout::bodies_path(&dir, address),
                 &inside(2),
             )
             .expect("a sharded file writes");
@@ -453,7 +453,7 @@ mod tests {
         for &address in &flat {
             assert_eq!(found(&dir, address), Found::Bodies(inside(1)));
             assert!(
-                !crate::format::layout::legacy_bodies_path(&dir, address)
+                !crate::codec::layout::legacy_bodies_path(&dir, address)
                     .exists(),
                 "a packed file was left loose",
             );
@@ -461,7 +461,7 @@ mod tests {
         for &address in &sharded {
             assert_eq!(found(&dir, address), Found::Bodies(inside(2)));
             assert!(
-                !crate::format::layout::bodies_path(&dir, address).exists(),
+                !crate::codec::layout::bodies_path(&dir, address).exists(),
                 "a packed file was left loose",
             );
         }

@@ -2,23 +2,26 @@
 //! contribute.
 //!
 //! Every such table is one MessagePack array of rows in key order at
-//! `<name>.bin`: by address, a row a system at most, save the factions,
-//! which are by id. [`Keyed`] is one held open across a run: rows by key,
-//! and whether anything has moved since it was last written. The index's
-//! own — the populated systems, the reaches and the factions — are
-//! [`Keyed`] tables [`crate::store::sidecars::Sidecars`] names; a dependent's
-//! is a [`Table`] it hands over in a [`TableSet`], which the index holds,
-//! writes, spills, carries through a merge and compares without knowing what
-//! a row says.
+//! `<name>.bin` ([`msgpack`]): by address, a row a system at most, save the
+//! factions, which are by id. [`Keyed`] is one held open across a run: rows
+//! by key, and whether anything has moved since it was last written. The
+//! index's own — the populated systems, the reaches and the factions — are
+//! [`Keyed`] tables [`sidecars::Sidecars`] names; a dependent's is a
+//! [`Table`] it hands over in a [`TableSet`], which the index holds, writes,
+//! spills, carries through a merge and compares without knowing what a row
+//! says.
 //!
 //! **An absent table is not an empty one.** No file says "this directory
 //! cannot tell"; an empty array says "there are none". A reader keeps the
-//! two apart ([`crate::store::Directory::table`]), and a table resumed from nothing remembers it was
+//! two apart ([`crate::codec::Directory::table`]), and a table resumed from nothing remembers it was
 //! absent so a writer can choose to publish it ([`Keyed::claim`]).
 
-use crate::format::msgpack::{read_meta, write_meta};
-use crate::format::rows::{self, Sheet, Sorted};
-use crate::store::Directory;
+pub mod msgpack;
+pub mod sidecars;
+
+use crate::codec::Directory;
+use crate::codec::rows::{self, Sheet, Sorted};
+use crate::codec::tables::msgpack::{read_meta, write_meta};
 use crate::system::System;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -315,7 +318,7 @@ impl TableSet {
     /// for one of the index's own: two tables would be written to one file.
     pub fn with<T: Table>(mut self) -> TableSet {
         assert!(
-            crate::format::parts::CorePart::named(T::NAME).is_none()
+            crate::codec::parts::CorePart::named(T::NAME).is_none()
                 && !self.names().any(|it| it == T::NAME),
             "two tables called {:?}",
             T::NAME,
@@ -425,7 +428,7 @@ pub trait OpenTable: Send + Sync + fmt::Debug {
 }
 
 /// One contributed table's rows as a build derives them, pushed to a file
-/// rather than held; see [`crate::store::sidecars::TableWriter`].
+/// rather than held; see [`crate::codec::tables::sidecars::TableWriter`].
 pub trait Spill: Send {
     /// What the table is called.
     fn name(&self) -> &'static str;

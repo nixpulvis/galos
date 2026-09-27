@@ -5,7 +5,7 @@
 //! checked against before it is trusted, and the mapped sections a
 //! [`Table`](super::Table) answers out of.
 
-use crate::format::layout::{ADDR_FILE, EXCEPTION_FILE, SPAN_FILE, TEXT_FILE};
+use crate::codec::layout::{ADDR_FILE, EXCEPTION_FILE, SPAN_FILE, TEXT_FILE};
 use crate::records::NameEntry;
 use memmap2::Mmap;
 use std::borrow::Cow;
@@ -23,7 +23,7 @@ const _: () = assert!(
 );
 
 /// `head.bin`'s magic, in the crate's own spelling — see
-/// [`crate::format::checkpoint`], whose header this mirrors.
+/// [`crate::codec::checkpoint`], whose header this mirrors.
 pub(super) const MAGIC: u64 = u64::from_ne_bytes(*b"GALOSNAM");
 
 /// The layout `head.bin` describes. A reader that does not know a version

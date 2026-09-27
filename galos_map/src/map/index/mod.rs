@@ -10,12 +10,12 @@ pub(crate) mod refresh;
 
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use galos_index::codec::names::{Delta, Table};
 use galos_index::prelude::{Index, Source as IndexSource, SystemName};
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::records::{
     Faction as MetaFaction, NameEntry, PopulatedSystem,
 };
-use galos_index::store::names::{Delta, Table};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -206,7 +206,7 @@ impl Names {
     /// rebuild. The base is untouched and the log is copied on write, so a
     /// fetch task holding a clone keeps reading the table it was handed. See
     /// `crate::map::index::refresh`.
-    pub fn absorb(&mut self, tail: galos_index::store::names::Delta) {
+    pub fn absorb(&mut self, tail: galos_index::codec::names::Delta) {
         self.table.absorb(tail);
     }
 
@@ -247,7 +247,7 @@ impl Names {
     /// payloads being drawn from, so a search for `SOL` stalled the frame
     /// *and* the galaxy's reads. A prefix is a binary search of
     /// `byname.bin` and ~28 pages: measured 3.0 ms for `SOL` over the real
-    /// 200,071,629-name table. See `galos_index::store::names::Table::matching`.
+    /// 200,071,629-name table. See `galos_index::codec::names::Table::matching`.
     ///
     /// The cap is applied in the index rather than by collecting the
     /// galaxy and sorting it down. What `crate::map::search` does on top is

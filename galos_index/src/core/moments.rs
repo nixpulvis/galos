@@ -28,8 +28,6 @@
 //! by luminosity and reads a luminosity-weighted centroid and spread. It is the
 //! same arithmetic; only the weight differs.
 
-use crate::core::codec::{Decode, Encode, FixedCodec, record};
-
 /// The weighted moments of a set of points in three dimensions.
 ///
 /// Held about the running centroid rather than the origin, so a set far from
@@ -40,11 +38,11 @@ use crate::core::codec::{Decode, Encode, FixedCodec, record};
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Moments {
     /// Total weight, `sum(w_i)`.
-    weight: f64,
+    pub(crate) weight: f64,
     /// The weighted mean position, the centroid the deviations are about.
-    mean: [f64; 3],
+    pub(crate) mean: [f64; 3],
     /// Weighted sum of squared deviations from the mean, `sum(w_i * |p_i - mean|^2)`.
-    m2: f64,
+    pub(crate) m2: f64,
 }
 
 impl Moments {
@@ -137,14 +135,6 @@ impl Moments {
             - other.m2
             - delta_sq * (weight * other.weight / self.weight);
         Moments { weight, mean, m2 }
-    }
-}
-
-record! {
-    Moments {
-        weight: f64,
-        mean: [f64; 3],
-        m2: f64,
     }
 }
 

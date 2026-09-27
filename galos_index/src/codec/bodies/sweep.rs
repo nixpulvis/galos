@@ -6,10 +6,10 @@
 use super::migrate::PACKERS;
 use super::reclaim::{How, cost};
 use super::{Dead, Reclaimed, Table};
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     BODIES_DIR, BODY_SHARDS, body_data_path, body_index_path,
 };
-use crate::store::Directory;
 use std::io;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -130,9 +130,9 @@ impl Directory<'_> {
     /// new read does not reach.
     ///
     /// Safe beside a map *reading* the directory: a reader whose data file goes out
-    /// from under it reads the index again — see [`find_bodies`](crate::store::Directory::find_bodies). Not safe
+    /// from under it reads the index again — see [`find_bodies`](crate::codec::Directory::find_bodies). Not safe
     /// beside anything *writing* it, which is what
-    /// [`crate::format::lock::Lock`] is for.
+    /// [`crate::codec::lock::Lock`] is for.
     pub fn sweep_bodies(
         self,
         stop: &(dyn Fn() -> bool + Sync),
@@ -211,7 +211,7 @@ mod tests {
     use super::super::fixtures::{found, inside, scratch};
     use super::super::reclaim::Cost;
     use super::*;
-    use crate::format::layout::body_shard;
+    use crate::codec::layout::body_shard;
     use crate::records::SystemBodies;
     use std::collections::HashMap;
     use std::path::Path;
@@ -225,7 +225,7 @@ mod tests {
     /// of the same galaxy twice is, and what puts a shard *at* half dead
     /// rather than past it.
     ///
-    /// [`WORTH`]: crate::store::bodies::reclaim::WORTH
+    /// [`WORTH`]: crate::codec::bodies::reclaim::WORTH
     fn padded(id: i16) -> SystemBodies {
         let mut bodies = inside(id);
         bodies.stars[0].name = format!("Star {id} {}", "x".repeat(16 * 1024));
@@ -254,7 +254,7 @@ mod tests {
     /// writes without reading, so an import over a directory already holding
     /// the galaxy appends a fresh record for every system and leaves the one
     /// behind it dead. The write path folds when a shard's tail passes
-    /// [`tail_bound`](crate::store::bodies::tail_bound) and an import leaves
+    /// [`tail_bound`](crate::codec::bodies::tail_bound) and an import leaves
     /// every tail well under it, and a rewrite of every record with one the
     /// same size lands *exactly* on half dead, so a strict `>` at the
     /// compaction's bar would never reclaim it.

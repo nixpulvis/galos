@@ -23,9 +23,9 @@
 
 use crate::read::spansh;
 use galos_index::build::cold::{region_budget, Build, Built, OnStop, Start};
-use galos_index::format::checkpoint::Provenance;
+use galos_index::codec::checkpoint::Provenance;
+use galos_index::codec::tables::sidecars::TableWriter;
 use galos_index::prelude::BuildParams;
-use galos_index::store::sidecars::TableWriter;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracing::{info, warn};

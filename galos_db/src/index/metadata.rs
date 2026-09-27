@@ -26,12 +26,12 @@ use crate::{orbit, Database, Result};
 use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
+use galos_index::codec::tables::sidecars::Sidecars;
+use galos_index::codec::tables::Keyed;
+use galos_index::codec::tables::OpenTable;
+use galos_index::codec::Directory;
 use galos_index::prelude::TableSet;
 use galos_index::records;
-use galos_index::store::sidecars::Sidecars;
-use galos_index::store::tables::Keyed;
-use galos_index::store::tables::OpenTable;
-use galos_index::store::Directory;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
@@ -290,7 +290,7 @@ impl Metadata {
 ///
 /// The names table is not among them: it comes out of the same read of
 /// `systems` the cell tree does, streamed row by row into
-/// [`galos_index::store::names::Writer`], a galaxy of name entries held to be
+/// [`galos_index::codec::names::Writer`], a galaxy of name entries held to be
 /// published afterwards being tens of gigabytes.
 pub(super) async fn write_parts(
     db: &Database,
@@ -540,8 +540,8 @@ async fn bodies_of(
 /// taken back stops reading as one that still has it. Only a pass knows
 /// which addresses it asked about.
 ///
-/// Both go through [`galos_index::store::bodies`] and
-/// [`galos_index::store::Directory::remove_bodies`]: a directory published by an
+/// Both go through [`galos_index::codec::bodies`] and
+/// [`galos_index::codec::Directory::remove_bodies`]: a directory published by an
 /// older builder still holds loose files a read falls back onto, and a
 /// withdrawal has to clear those as well as the pack.
 fn write_bodies(
@@ -981,7 +981,7 @@ impl From<Barycenter> for records::Barycenter {
 mod tests {
     use super::*;
     use crate::testing::Scratch;
-    use galos_index::format::msgpack::write_meta;
+    use galos_index::codec::tables::msgpack::write_meta;
     use galos_index::prelude::Table as _;
     use galos_index::records::Parent;
     use galos_route::BoostTable;
@@ -990,7 +990,7 @@ mod tests {
     /// same path helpers, format and reader the client uses.
     ///
     /// No database: the values are built by hand, written with [`write_meta`]
-    /// under [`galos_index::format::layout::bodies_path`], and read back
+    /// under [`galos_index::codec::layout::bodies_path`], and read back
     /// through a [`FsSource`].
     ///
     /// The surfaced body is here on purpose: its [`BodyType`] and its
@@ -1079,11 +1079,11 @@ mod tests {
             at.timestamp_nanos_opt().unwrap_or(0),
         ));
         std::fs::create_dir_all(
-            dir.join(galos_index::format::layout::BODIES_DIR),
+            dir.join(galos_index::codec::layout::BODIES_DIR),
         )
         .unwrap();
         write_meta(
-            &galos_index::format::layout::bodies_path(&dir, address),
+            &galos_index::codec::layout::bodies_path(&dir, address),
             &want,
         )
         .unwrap();
@@ -1144,7 +1144,7 @@ mod tests {
             ..Default::default()
         };
         write_meta(
-            &galos_index::format::layout::bodies_path(&dir, address + 2),
+            &galos_index::codec::layout::bodies_path(&dir, address + 2),
             &surfaced_bodies,
         )
         .unwrap();
@@ -1188,22 +1188,22 @@ mod tests {
 
         // The tables a resume needs, all present and all empty.
         let empty: Vec<u8> = Vec::new();
-        galos_index::format::msgpack::write_meta(
-            &galos_index::format::layout::populated_path(&dir),
+        galos_index::codec::tables::msgpack::write_meta(
+            &galos_index::codec::layout::populated_path(&dir),
             &empty,
         )
         .expect("populated");
-        galos_index::format::msgpack::write_meta(
-            &galos_index::format::layout::reaches_path(&dir),
+        galos_index::codec::tables::msgpack::write_meta(
+            &galos_index::codec::layout::reaches_path(&dir),
             &empty,
         )
         .expect("reaches");
-        galos_index::format::msgpack::write_meta(
-            &galos_index::format::layout::factions_path(&dir),
+        galos_index::codec::tables::msgpack::write_meta(
+            &galos_index::codec::layout::factions_path(&dir),
             &empty,
         )
         .expect("factions");
-        galos_index::store::names::Writer::writing(&dir)
+        galos_index::codec::names::Writer::writing(&dir)
             .expect("names")
             .finish()
             .expect("names");

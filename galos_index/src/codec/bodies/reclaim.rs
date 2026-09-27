@@ -6,8 +6,8 @@
 //! [`Dead::Worth`]; the weighing both of them decide by is [`Cost`].
 
 use super::{ENTRY, Entry, HEADER, Table, header_bytes};
-use crate::format::layout::{body_data_path, body_index_path};
-use crate::store::Directory;
+use crate::codec::Directory;
+use crate::codec::layout::{body_data_path, body_index_path};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -490,7 +490,7 @@ mod tests {
     use super::super::Found;
     use super::super::fixtures::{found, inside, scratch};
     use super::*;
-    use crate::format::layout::body_shard;
+    use crate::codec::layout::body_shard;
     use crate::records::SystemBodies;
     use std::collections::HashMap;
 

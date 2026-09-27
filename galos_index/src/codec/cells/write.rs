@@ -1,13 +1,13 @@
 //! Putting a built tree down: the index file, a payload per cell, the
 //! changes a publish makes, and the sweep of what no cell names.
 
-use crate::core::codec::Encode;
-use crate::core::geometry::CellId;
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::bytes::Encode;
+use crate::codec::cells::format::payload_bytes;
+use crate::codec::layout::{
     INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
 };
-use crate::format::payload::payload_bytes;
-use crate::store::Directory;
+use crate::core::geometry::CellId;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use std::fs;
@@ -79,7 +79,7 @@ impl Directory<'_> {
     /// anything lands there.
     ///
     /// Beside the file and renamed over it, as
-    /// [`crate::format::msgpack::write_meta`] and the names table's generations
+    /// [`crate::codec::tables::msgpack::write_meta`] and the names table's generations
     /// are. Not for the torn-write reason those have — a payload's header states
     /// its count, and one shorter than that is refused as empty — but because a
     /// payload is **mapped**. `fs::write` truncates and rewrites in
@@ -214,7 +214,7 @@ fn payload_cell(name: &str) -> Option<CellId> {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::store::cells::fixtures::{Scratch, systems};
+    use crate::codec::cells::fixtures::{Scratch, systems};
     use crate::system::System;
     use std::path::PathBuf;
 

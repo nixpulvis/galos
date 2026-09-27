@@ -8,14 +8,14 @@
 
 use super::Names;
 use super::format::{BUCKET_BYTES, HEAD, MAGIC, SPAN, Text, VERSION, refused};
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     ADDR_FILE, BYNAME_FILE, EXCEPTION_FILE, SPAN_FILE, TEXT_FILE,
     generation_dir, names_delta_path, names_dir, names_head_path, scratch_dir,
 };
-use crate::format::rows;
-use crate::format::rows::Sheet;
+use crate::codec::rows;
+use crate::codec::rows::Sheet;
 use crate::records::NameEntry;
-use crate::store::Directory;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 /// What a build uses in place of [`Names`]: it names each system once, in
 /// whatever order it reads them, and never looks one up. The rows go to a file
 /// as they arrive, the file is sorted by address externally
-/// (`crate::format::rows`), and the sections are written from the sorted rows
+/// (`crate::codec::rows`), and the sections are written from the sorted rows
 /// in one pass.
 ///
 /// The sort is the price of the format and it is worth saying why it is
@@ -64,9 +64,9 @@ impl Writer {
     /// The same, seeded with what `dir` already publishes.
     ///
     /// What a build carrying on from a read a stop published starts with,
-    /// and what a [`crate::store::Directory::compact_names`] folds a log into a base with. The table's own
+    /// and what a [`crate::codec::Directory::compact_names`] folds a log into a base with. The table's own
     /// rows go in first and this read's rows go over them, which is
-    /// `crate::format::rows`'s one rule: the last row an address has wins.
+    /// `crate::codec::rows`'s one rule: the last row an address has wins.
     ///
     /// Seeded from the table as it *answers*, base under log, so a row the
     /// log renamed is carried at its new name and one it withdrew is not
@@ -102,7 +102,7 @@ impl Writer {
         let mut taken = 0;
         for chunk in legacy_chunks(dir)? {
             let entries: Vec<NameEntry> =
-                crate::format::msgpack::read_meta(&chunk)?;
+                crate::codec::tables::msgpack::read_meta(&chunk)?;
             for entry in entries {
                 self.push(entry)?;
                 taken += 1;
@@ -527,7 +527,7 @@ impl Directory<'_> {
         let mut writer = Writer::writing(dir)?;
         for chunk in &chunks {
             let entries: Vec<NameEntry> =
-                crate::format::msgpack::read_meta(chunk)?;
+                crate::codec::tables::msgpack::read_meta(chunk)?;
             for entry in entries {
                 writer.push(entry)?;
             }
@@ -559,9 +559,9 @@ pub(super) fn legacy_chunks(dir: &Path) -> io::Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::names::delta::{Delta, DeltaRow, FOLD_BYTES};
-    use crate::store::names::fixtures::{Scratch, entry, published};
-    use crate::store::names::table::Table;
+    use crate::codec::names::delta::{Delta, DeltaRow, FOLD_BYTES};
+    use crate::codec::names::fixtures::{Scratch, entry, published};
+    use crate::codec::names::table::Table;
     use std::collections::HashMap;
 
     /// The table a build wrote is the table a reader opens: every row, in

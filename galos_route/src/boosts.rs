@@ -8,9 +8,9 @@
 //! ([`BoostTable`]), derived from each system's [`System`] record, and read back
 //! as [`Boosts`].
 
+use galos_index::codec::Directory;
 use galos_index::prelude::{StarKind, System, Table};
 use galos_index::read::source::{Source, table};
-use galos_index::store::Directory;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -199,7 +199,7 @@ impl Table for BoostTable {
         // place already, in an order this does not care about.
         let index = galos_index::prelude::Index::read(dir)?;
         let mut table =
-            galos_index::store::tables::Keyed::new(Self::NAME, Self::address);
+            galos_index::codec::tables::Keyed::new(Self::NAME, Self::address);
         for cell in index.cells() {
             for point in
                 galos_index::prelude::Index::read_payload(dir, cell.id)?
@@ -357,7 +357,7 @@ mod tests {
 
         let dir = crate::testing::Scratch::new("unplaced");
         crate::testing::sky(dir.path(), &[(7, [1.0, 2.0, 3.0])]);
-        galos_index::format::msgpack::write_meta(
+        galos_index::codec::tables::msgpack::write_meta(
             &Directory::at(dir.path()).table_path(BoostTable::NAME),
             &vec![Unplaced { address: 7, boost: Boost::Neutron }],
         )

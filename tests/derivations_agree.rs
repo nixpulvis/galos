@@ -30,7 +30,7 @@
 //!   else, so what either directory is compared over is named rather than
 //!   taken wholesale only because a body file is read per system.
 //! - **The names table's row order.** Address-sorted now, both derivations
-//!   publishing it through `galos_index::store::names::Writer` — so the order
+//!   publishing it through `galos_index::codec::names::Writer` — so the order
 //!   *is* an invariant of the format, and what keeps it out of the comparison
 //!   is the comparison's own shape: each side is cut down to the systems this
 //!   test owns, a handful out of a mapped table, so what is checked is the

@@ -144,7 +144,7 @@ pub struct Barycenter {
 /// Everything a click into a system pulls: its stars, bodies and barycenters.
 ///
 /// One record per system, keyed by address and packed a shard to a file
-/// ([`crate::store::bodies`]), so the map fetches exactly the system a click
+/// ([`crate::codec::bodies`]), so the map fetches exactly the system a click
 /// opened and nothing else. Empty where a system has no scan on record, which
 /// reads the same as a system whose record was never written.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

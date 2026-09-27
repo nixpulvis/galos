@@ -2,17 +2,17 @@
 //! arrival star's class.
 
 use super::Table;
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     BODIES_DIR, BODY_SHARDS, body_data_path, body_index_path,
 };
-use crate::store::Directory;
 use std::fs::File;
 use std::io;
 
 impl Directory<'_> {
     /// What every packed system's arrival star is, shard by shard
     ///
-    /// **Sequential on purpose.** [`find_bodies`](crate::store::Directory::find_bodies) maps a shard's index,
+    /// **Sequential on purpose.** [`find_bodies`](crate::codec::Directory::find_bodies) maps a shard's index,
     /// searches it and seeks the data file, which is right for one system and wrong
     /// for ninety five million: a sweep that asked it per address would map the
     /// same index a thousand times a shard and seek at random through gigabytes.

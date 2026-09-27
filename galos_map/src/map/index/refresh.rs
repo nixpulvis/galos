@@ -48,11 +48,11 @@ use bevy::log::tracing::Instrument;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use galos_index::codec::names::Delta;
 use galos_index::prelude::{CellId, CellSystem, Index, Part, Stamp, Table};
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
 use galos_index::records::{Faction, PopulatedSystem, SystemReach};
-use galos_index::store::names::Delta;
 use galos_route::{BoostTable, Boosts, SystemBoost};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -470,11 +470,11 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use galos_index::codec::Directory;
     use galos_index::prelude::{
         BuildParams, FsSource, Snapshot, Source as IndexSource,
     };
     use galos_index::records::NameEntry;
-    use galos_index::store::Directory;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch published directory, removed when the guard drops
@@ -531,7 +531,7 @@ mod tests {
 
     /// Write `entries` as `dir`'s mapped base, the way a build's writer does
     fn publish_base(dir: &std::path::Path, entries: &[NameEntry]) {
-        let mut writing = galos_index::store::names::Writer::writing(dir)
+        let mut writing = galos_index::codec::names::Writer::writing(dir)
             .expect("the writer should open");
         for entry in entries {
             writing.push(entry.clone()).expect("the row should write");
@@ -777,10 +777,10 @@ mod tests {
     /// had just read to find nothing had moved.
     #[test]
     fn startup_stamps_every_part_it_read() {
-        use galos_index::format::layout::{
+        use galos_index::codec::layout::{
             factions_path, populated_path, reaches_path,
         };
-        use galos_index::format::msgpack::write_meta;
+        use galos_index::codec::tables::msgpack::write_meta;
 
         let dir = Scratch::new();
         publish(&dir.0, &[input(1, 0.0)]);

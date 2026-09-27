@@ -5,7 +5,8 @@
 //! [`cell`] is one node of the tree and the record each system in its payload
 //! is packed as; [`index`] is the whole tree held in memory for the walks.
 //! Nothing here is mutable: the tree a feed edits is [`crate::build::tree`],
-//! which publishes into these.
+//! which publishes into these. Nothing here knows a byte either: what these
+//! are written as is [`crate::codec::cells`]'s.
 
 pub mod cell;
 pub mod index;

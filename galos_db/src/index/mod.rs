@@ -14,11 +14,11 @@ use async_std::stream::StreamExt;
 use galos_index::build::cold::{
     Abandoned, Build, Built, OnStop, Start, Summary,
 };
-use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
-use galos_index::format::parts::CorePart;
+use galos_index::codec::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::codec::parts::CorePart;
+use galos_index::codec::tables::OpenTable;
 use galos_index::prelude::{BuildParams, Index, System, TableSet, Tree};
 use galos_index::records::derive::{self, NearestStar};
-use galos_index::store::tables::OpenTable;
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
 use sqlx::Row;
@@ -567,7 +567,7 @@ async fn write_names(
     told: &Told<'_>,
 ) -> Result<usize> {
     let of = estimated(db, "systems").await;
-    let mut names = galos_index::store::names::Writer::writing(dir)?;
+    let mut names = galos_index::codec::names::Writer::writing(dir)?;
     let query = format!(
         "{} WHERE position IS NOT NULL ORDER BY address",
         metadata::NAMES_SELECT
@@ -1131,7 +1131,7 @@ enum Resume {
 /// count, and replacing it unasked is the thing being prevented. So it
 /// answers "some", loudly, rather than zero.
 fn serving(dir: &Path) -> Option<u64> {
-    if !dir.join(galos_index::format::layout::INDEX_FILE).exists() {
+    if !dir.join(galos_index::codec::layout::INDEX_FILE).exists() {
         return None;
     }
     match Index::read(dir) {
@@ -1321,7 +1321,7 @@ impl fmt::Display for BuildReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use galos_index::store::Directory;
+    use galos_index::codec::Directory;
 
     /// The tables the program contributes, which a directory built here
     /// holds beside the index's own.
@@ -1435,7 +1435,7 @@ mod tests {
             .collect();
         let mut tree = Tree::build(&inputs, &params);
         tree.write(&dir).expect("the tree should write");
-        let mut names = galos_index::store::names::Writer::writing(&dir)
+        let mut names = galos_index::codec::names::Writer::writing(&dir)
             .expect("the names writer should open");
         for system in &inputs {
             names
@@ -1449,11 +1449,11 @@ mod tests {
         names.finish().expect("the names should publish");
         let empty: Vec<u8> = Vec::new();
         for table in [
-            galos_index::format::layout::populated_path(&dir),
-            galos_index::format::layout::reaches_path(&dir),
-            galos_index::format::layout::factions_path(&dir),
+            galos_index::codec::layout::populated_path(&dir),
+            galos_index::codec::layout::reaches_path(&dir),
+            galos_index::codec::layout::factions_path(&dir),
         ] {
-            galos_index::format::msgpack::write_meta(&table, &empty)
+            galos_index::codec::tables::msgpack::write_meta(&table, &empty)
                 .expect("a table should write");
         }
 
@@ -1628,12 +1628,11 @@ mod tests {
 
         // Past the look-back, so a pass has nothing to ask for rather than the
         // overlap's worth of what it just read.
-        let published = std::fs::metadata(
-            galos_index::format::layout::populated_path(&dir),
-        )
-        .expect("the populated table should stand")
-        .modified()
-        .expect("a modification time");
+        let published =
+            std::fs::metadata(galos_index::codec::layout::populated_path(&dir))
+                .expect("the populated table should stand")
+                .modified()
+                .expect("a modification time");
         async_std::task::sleep(CURSOR_OVERLAP + Duration::from_secs(1)).await;
 
         let again = catch_up(
@@ -1651,12 +1650,11 @@ mod tests {
         .end()
         .expect("nothing asked it to stop");
         assert!(again >= cursor, "the cursor went backwards");
-        let after = std::fs::metadata(
-            galos_index::format::layout::populated_path(&dir),
-        )
-        .expect("the populated table should stand")
-        .modified()
-        .expect("a modification time");
+        let after =
+            std::fs::metadata(galos_index::codec::layout::populated_path(&dir))
+                .expect("the populated table should stand")
+                .modified()
+                .expect("a modification time");
         assert_eq!(
             published, after,
             "a catch-up rebuilt a directory it had just brought level, so its \
@@ -1716,7 +1714,7 @@ mod tests {
             said,
         );
         assert!(
-            !galos_index::format::layout::reaches_path(&dir).exists(),
+            !galos_index::codec::layout::reaches_path(&dir).exists(),
             "the refusal came after the read it was there to save",
         );
 
@@ -1989,7 +1987,7 @@ mod tests {
             Reached::Stopped(Abandoned::unstarted()),
         );
         assert!(
-            !dir.join(galos_index::format::layout::INDEX_FILE).exists(),
+            !dir.join(galos_index::codec::layout::INDEX_FILE).exists(),
             "a build ran anyway",
         );
         assert!(!checkpoint.exists(), "a resume point was written");
@@ -2166,11 +2164,10 @@ mod tests {
             ),
             "the index's own parts did not stand alone",
         );
-        let cells = std::fs::metadata(
-            dir.join(galos_index::format::layout::INDEX_FILE),
-        )
-        .and_then(|it| it.modified())
-        .expect("the cells stand");
+        let cells =
+            std::fs::metadata(dir.join(galos_index::codec::layout::INDEX_FILE))
+                .and_then(|it| it.modified())
+                .expect("the cells stand");
 
         let only = Parts { tables: vec!["boosts"], ..Parts::NONE };
         catch_up(
@@ -2196,11 +2193,9 @@ mod tests {
             }]),
         );
         assert_eq!(
-            std::fs::metadata(
-                dir.join(galos_index::format::layout::INDEX_FILE)
-            )
-            .and_then(|it| it.modified())
-            .expect("the cells stand"),
+            std::fs::metadata(dir.join(galos_index::codec::layout::INDEX_FILE))
+                .and_then(|it| it.modified())
+                .expect("the cells stand"),
             cells,
             "adding a table rewrote the cells",
         );

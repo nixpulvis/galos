@@ -25,15 +25,15 @@
 //! between the versions, and `Cell::LEN` does not — so the tree, the
 //! aggregates and the index's own tables stay exactly as they are.
 
-use crate::core::codec::Decode as _;
-use crate::core::star::StarKind;
-use crate::format::layout::payload_path;
-use crate::format::payload::{
+use crate::codec::Directory;
+use crate::codec::bytes::Decode as _;
+use crate::codec::cells::format::{
     INDEX_VERSION, index_version, legacy_payload_points, payload_bytes,
     payload_head,
 };
-use crate::store::Directory;
-use crate::store::tables::TableSet;
+use crate::codec::layout::payload_path;
+use crate::codec::tables::TableSet;
+use crate::core::star::StarKind;
 use crate::tree::index::Index;
 use std::io;
 use std::path::Path;
@@ -58,7 +58,7 @@ pub struct Rewrote {
     pub kept: u64,
     /// Rows the contributed tables' own upgrades rewrote
     ///
-    /// [`crate::store::tables::Table::upgrade`] is a step of an open rather than
+    /// [`crate::codec::tables::Table::upgrade`] is a step of an open rather than
     /// of a build, and an open over a stale directory does nothing at all —
     /// [`crate::ops::migrate::migrate`] sets `upgrade` and returns, having
     /// touched nothing. So a directory brought forward by this command alone
@@ -217,7 +217,7 @@ pub fn rewrite(
 /// because the index record is the same at every version this accepts:
 /// `Cell::LEN` does not vary with it, only the payload beside it does.
 fn read_any_version(dir: &Path) -> io::Result<Index> {
-    let path = dir.join(crate::format::layout::INDEX_FILE);
+    let path = dir.join(crate::codec::layout::INDEX_FILE);
     let bytes = std::fs::read(&path)?;
     let refused = |said: String| {
         io::Error::new(
@@ -253,8 +253,8 @@ mod tests {
     use super::*;
     use crate::build::snapshot::BuildParams;
     use crate::build::tree::Tree;
-    use crate::core::codec::Encode as _;
-    use crate::format::payload::payload_points;
+    use crate::codec::bytes::Encode as _;
+    use crate::codec::cells::format::payload_points;
     use crate::records::{Star, SystemBodies};
     use crate::system::System;
 
@@ -421,7 +421,7 @@ mod tests {
     ///
     /// Nothing else will. An open over a directory this build cannot read
     /// does *nothing* — [`crate::ops::migrate::migrate`] asks
-    /// [`crate::store::Directory::stale_index`] first and returns having named this
+    /// [`crate::codec::Directory::stale_index`] first and returns having named this
     /// command — so a table in a shape its owner has moved on from would
     /// still be in it after the payloads come forward, and a reader that asks
     /// for it without opening the galaxy first, such as the map's perf guard
@@ -430,7 +430,7 @@ mod tests {
     fn a_rewrite_upgrades_the_contributed_tables() {
         /// A table whose every upgrade rewrites three rows.
         struct Stale;
-        impl crate::store::tables::Table for Stale {
+        impl crate::codec::tables::Table for Stale {
             const NAME: &'static str = "stale";
             const ABOUT: &'static str = "A table always behind.";
             type Row = i64;

@@ -3,7 +3,6 @@
 //! Here, below everything, because both the build's [`crate::system::System`]
 //! and the payload's [`crate::tree::cell::CellSystem`] carry it.
 
-use crate::core::codec::{Decode, Encode, FixedCodec};
 use serde::{Deserialize, Serialize};
 
 /// What kind of star a system arrives at, in one byte
@@ -176,20 +175,4 @@ impl StarKind {
             _ => StarKind::Unknown,
         }
     }
-}
-
-impl Encode for StarKind {
-    fn encode(&self, out: &mut Vec<u8>) {
-        Encode::encode(&self.code(), out);
-    }
-}
-
-impl Decode for StarKind {
-    fn decode(cur: &mut &[u8]) -> Option<StarKind> {
-        Some(StarKind::from_code(<u8 as Decode>::decode(cur)?))
-    }
-}
-
-impl FixedCodec for StarKind {
-    const LEN: usize = 1;
 }

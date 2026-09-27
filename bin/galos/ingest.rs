@@ -302,7 +302,7 @@ pub struct Cli {
 #[cfg(feature = "db")]
 fn parts() -> clap::builder::PossibleValuesParser {
     use clap::builder::PossibleValue;
-    use galos_index::format::parts::CorePart;
+    use galos_index::codec::parts::CorePart;
     let own =
         CorePart::ALL.map(|it| PossibleValue::new(it.name()).help(it.about()));
     let contributed: Vec<PossibleValue> = galos::tables()

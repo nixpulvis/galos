@@ -35,11 +35,11 @@
 //!   index naming the new generation is renamed over in the same step, and a
 //!   reader that finds its data file gone reads the index again. That retry
 //!   is the whole of the concurrency, there being one writer (the
-//!   directory's [`Lock`](crate::format::lock::Lock)) and any number of
+//!   directory's [`Lock`](crate::codec::lock::Lock)) and any number of
 //!   readers.
 //! - **A sweep** is a compaction of every shard, asked for rather than
 //!   waited on: what a whole-galaxy re-import leaves behind, which no
-//!   append reaches. See [`crate::store::Directory::sweep_bodies`].
+//!   append reaches. See [`crate::codec::Directory::sweep_bodies`].
 //!
 //! At 200 M systems that is 4,096 index files and a handful of data files
 //! rather than 188 M of them, **~450 GB rather than ~830 GB** — the
@@ -49,9 +49,9 @@
 //! ## What is still loose
 //!
 //! Two older layouts, a file a system, are read and never written:
-//! `bodies/{address}.bin` and `bodies/{shard:03x}/{address}.bin`. [`crate::store::Directory::pack_bodies`]
+//! `bodies/{address}.bin` and `bodies/{shard:03x}/{address}.bin`. [`crate::codec::Directory::pack_bodies`]
 //! walks both into the shards, one batch at a time and interruptibly, and
-//! [`crate::store::Directory::read_bodies`] falls back to them for whatever is
+//! [`crate::codec::Directory::read_bodies`] falls back to them for whatever is
 //! left, so a directory part way through answers for every system a
 //! finished one does.
 
@@ -279,9 +279,9 @@ fn header_bytes(generation: u16, base: usize) -> [u8; HEADER] {
 #[cfg(test)]
 mod fixtures {
     use super::Found;
-    use crate::format::layout::BODIES_DIR;
+    use crate::codec::Directory;
+    use crate::codec::layout::BODIES_DIR;
     use crate::records::{Star, SystemBodies};
-    use crate::store::Directory;
     use std::path::{Path, PathBuf};
 
     pub(super) fn scratch(name: &str) -> PathBuf {
@@ -328,7 +328,7 @@ mod fixtures {
 mod tests {
     use super::fixtures::{found, inside, scratch};
     use super::*;
-    use crate::store::Directory;
+    use crate::codec::Directory;
     use std::collections::HashMap;
 
     /// What was written is what is read, and the newer write is what is read

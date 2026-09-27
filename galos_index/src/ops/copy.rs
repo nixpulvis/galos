@@ -19,7 +19,7 @@
 //! business and sits *beside* it, three files: the base `<dir>.checkpoint`, the
 //! log `<dir>.checkpoint.pending` and the dump mark `<dir>.checkpoint.mark`.
 //! They are what says the directory can be followed — the served tree is lossy
-//! and no tree can be rebuilt from it (see [`crate::format::checkpoint`]) — so
+//! and no tree can be rebuilt from it (see [`crate::codec::checkpoint`]) — so
 //! a copy that took the directory alone would be a galaxy that cannot be
 //! resumed by `--watch` and cannot be carried on by a cold build. It would have
 //! to be reimported from nothing to be useful again, which is the day the
@@ -39,7 +39,7 @@
 //!   gives back. Taking the payloads before the index means a copy caught
 //!   across a publish holds orphans and can hold no holes, because every cell
 //!   the copied index names was on disk before the index was read. This is the
-//!   same argument [`sweep_payloads`](crate::store::Directory::sweep_payloads)
+//!   same argument [`sweep_payloads`](crate::codec::Directory::sweep_payloads)
 //!   makes for running after the index is written, in the other direction.
 //! - **The log before the base.** `Compaction::finish` renames the new base
 //!   into place and *then* clears the log, so a copy that takes the log
@@ -48,13 +48,13 @@
 //!   idempotent upserts. The other order can catch the old base and the
 //!   cleared log, which loses every publish the log was the only record of.
 //! - **Never `<dir>.lock`.** A lock is a live process's claim on a live
-//!   directory ([`crate::format::lock::Lock`]). Copied, it hands the
+//!   directory ([`crate::codec::lock::Lock`]). Copied, it hands the
 //!   destination a pid that has never heard of it, and the next writer there is
 //!   refused by a ghost until somebody runs `--force-lock`.
 //! - **Not the scratch.**
-//!   [`layout::scratch_dir`](crate::format::layout::scratch_dir) —
+//!   [`layout::scratch_dir`](crate::codec::layout::scratch_dir) —
 //!   `names/.building/` — is a fold in progress, and
-//!   [`layout::spill_dir`](crate::format::layout::spill_dir) —
+//!   [`layout::spill_dir`](crate::codec::layout::spill_dir) —
 //!   `<dir>.checkpoint.regions/` — is a cold build's per-region spill; both run
 //!   to gigabytes and neither means anything away from the run that made them.
 //!   The first is inside the directory and is skipped by name. The second, like
@@ -70,7 +70,7 @@
 //! and which preserves holes everywhere else.
 //!
 //! Holes are not a nicety here. A packed body shard is sparse by
-//! construction — [`crate::store::bodies`] punches the dead runs out of
+//! construction — [`crate::codec::bodies`] punches the dead runs out of
 //! `bodies/<shard>.<gen>.dat` and leaves the file's length alone, which is
 //! why `BLOAT` exists at all — and a hand-rolled `read`/`write` loop reads
 //! zeroes out of the holes and writes them down, inflating the backup to
@@ -95,7 +95,7 @@
 //! to run the copy again straight over it, because every step is a write of
 //! the same bytes to the same place.
 
-use crate::format::layout::{
+use crate::codec::layout::{
     INDEX_FILE, checkpoint_beside, mark_path, pending_path, scratch_dir,
 };
 use std::fmt;
@@ -299,7 +299,7 @@ pub fn discard(dir: &Path) -> io::Result<()> {
 ///
 /// The base is [`checkpoint_beside`], which is the workspace's one
 /// spelling of the suffix — `galos::sink::index` re-exports
-/// [`CHECKPOINT_SUFFIX`](crate::format::layout::CHECKPOINT_SUFFIX) and
+/// [`CHECKPOINT_SUFFIX`](crate::codec::layout::CHECKPOINT_SUFFIX) and
 /// publishes into the same name — and the two past it hang off it through
 /// [`pending_path`] and [`mark_path`], so a copy and a builder cannot come
 /// to disagree about which files the resume point is.
@@ -354,9 +354,9 @@ fn size(bytes: u64) -> String {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::format::checkpoint::{Checkpoint, Provenance, pending};
-    use crate::format::layout::{PAYLOAD_DIR, lock_path};
-    use crate::format::lock::Lock;
+    use crate::codec::checkpoint::{Checkpoint, Provenance, pending};
+    use crate::codec::layout::{PAYLOAD_DIR, lock_path};
+    use crate::codec::lock::Lock;
     use crate::system::System;
     use std::cell::Cell;
     use std::sync::atomic::{AtomicU32, Ordering};

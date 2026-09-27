@@ -272,7 +272,7 @@ impl Names {
     }
 
     /// Whether the delta has grown enough to be worth folding into the base
-    /// — see [`Delta::worth_folding`] and [`crate::store::Directory::compact_names`].
+    /// — see [`Delta::worth_folding`] and [`crate::codec::Directory::compact_names`].
     pub fn worth_compacting(&self) -> bool {
         self.delta.worth_folding()
     }

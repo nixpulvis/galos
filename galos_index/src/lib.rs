@@ -27,12 +27,11 @@
 
 pub mod accumulate;
 pub mod build;
+pub mod codec;
 pub mod core;
-pub mod format;
 pub mod ops;
 pub mod prelude;
 pub mod read;
 pub mod records;
-pub mod store;
 pub mod system;
 pub mod tree;

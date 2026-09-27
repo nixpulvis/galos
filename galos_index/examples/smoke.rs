@@ -4,8 +4,8 @@
 //!
 //! `cargo run -p galos_index --example smoke -- <dir> [sample]`
 
+use galos_index::codec::Directory;
 use galos_index::prelude::Source;
-use galos_index::store::Directory;
 use pollster::block_on;
 use std::path::Path;
 

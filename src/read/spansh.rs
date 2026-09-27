@@ -49,7 +49,7 @@ use chrono::{DateTime, Utc};
 use elite_journal::entry::{Entry, Event};
 use galos_index::accumulate::bodies::Shared;
 use galos_index::build::cold::{Build, ResumeMark};
-use galos_index::store::sidecars::TableWriter;
+use galos_index::codec::tables::sidecars::TableWriter;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::ops::ControlFlow;
@@ -487,7 +487,7 @@ impl Galaxy {
     /// nothing is read from the directory it is writing.
     ///
     /// The metadata tables ride in `rows`, which is the same
-    /// [`galos_index::store::sidecars::TableWriter`] the mark is cut against: a
+    /// [`galos_index::codec::tables::sidecars::TableWriter`] the mark is cut against: a
     /// row a system, written as it is derived and made into the three tables
     /// when the read is over, so that neither the read nor a stop holds a
     /// galaxy's worth of them.
@@ -506,7 +506,7 @@ impl Galaxy {
         let by = crate::read::from::published("Spansh", &self.path);
         // One store for the whole read, though the accumulator is a line's.
         // What it holds is what makes the body records go out a shard at a time
-        // rather than one append a system; see `galos_index::store::bodies` and
+        // rather than one append a system; see `galos_index::codec::bodies` and
         // [`Shared`].
         let store = Shared::raising(self.dir.as_path());
         loop {
@@ -580,7 +580,7 @@ impl Galaxy {
             // What the store has written since it was last asked. It holds what
             // it is told until `OnDisk::CARRIED` systems have piled up, so
             // most lines add nothing here and the line that does adds a shard's
-            // worth at a time — see `galos_index::store::bodies`.
+            // worth at a time — see `galos_index::codec::bodies`.
             bodies += store.written();
 
             // What the publish at the end of the read will record, kept

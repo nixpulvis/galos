@@ -39,7 +39,7 @@ context in place of a dozen arguments; do the same elsewhere:
 
 ## Core parts stand alone, contributed parts add to them
 
-The index's own parts are listed once (`galos_index::format::parts::CorePart`)
+The index's own parts are listed once (`galos_index::codec::parts::CorePart`)
 and `--only` names them and each contributed table one to one. What is left:
 
 - Which core parts are required and which the map can do without. Cells and

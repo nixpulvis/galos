@@ -11,19 +11,19 @@
 //! holds `Arc<dyn Source>` and picks its transport at runtime.
 //!
 //! The path helpers are the file-layout contract the builder writes to and
-//! this reads from, named once in [`crate::format::layout`] so the two cannot
+//! this reads from, named once in [`crate::codec::layout`] so the two cannot
 //! drift.
 
-use crate::core::geometry::CellId;
-use crate::format::layout::{
+use crate::codec::Directory;
+use crate::codec::layout::{
     factions_path, names_delta_path, names_head_path, populated_path,
     reaches_path,
 };
-use crate::format::msgpack::read_meta;
+use crate::codec::names;
+use crate::codec::tables::Table;
+use crate::codec::tables::msgpack::read_meta;
+use crate::core::geometry::CellId;
 use crate::records::{Faction, PopulatedSystem, SystemBodies, SystemReach};
-use crate::store::Directory;
-use crate::store::names;
-use crate::store::tables::Table;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use async_trait::async_trait;
@@ -255,10 +255,8 @@ impl Source for FsSource {
     /// that is not there.
     async fn stamp(&self, part: Part) -> io::Result<Option<Stamp>> {
         let path = match part {
-            Part::Index => self.dir.join(crate::format::layout::INDEX_FILE),
-            Part::Cell(id) => {
-                crate::format::layout::payload_path(&self.dir, id)
-            }
+            Part::Index => self.dir.join(crate::codec::layout::INDEX_FILE),
+            Part::Cell(id) => crate::codec::layout::payload_path(&self.dir, id),
             Part::Populated => populated_path(&self.dir),
             Part::Reaches => reaches_path(&self.dir),
             Part::Factions => factions_path(&self.dir),
@@ -279,8 +277,8 @@ impl Source for FsSource {
 
 #[cfg(test)]
 mod tests {
+    use crate::codec::Directory;
     use crate::records::{Barycenter, SystemBodies};
-    use crate::store::Directory;
     use std::path::PathBuf;
 
     /// An empty scratch directory named after the test using it.
@@ -432,8 +430,8 @@ mod tests {
 
     async fn a_body_file_reads_back() {
         use super::{FsSource, Source};
-        use crate::format::layout::{bodies_path, legacy_bodies_path};
-        use crate::format::msgpack::write_meta;
+        use crate::codec::layout::{bodies_path, legacy_bodies_path};
+        use crate::codec::tables::msgpack::write_meta;
 
         let dir = scratch("shardread");
         let source = FsSource::new(&dir);
