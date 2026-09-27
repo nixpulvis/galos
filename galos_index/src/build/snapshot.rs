@@ -10,6 +10,7 @@
 //! moved.
 
 use crate::core::aggregate::Aggregate;
+use crate::store::Directory;
 
 use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::system::System;
@@ -386,7 +387,7 @@ impl Snapshot {
     ///
     /// A directory that held an earlier tree keeps payloads nothing refers
     /// to. Sweeping them is
-    /// [`sweep_payloads`](crate::store::cells::sweep_payloads), which a build
+    /// [`sweep_payloads`](crate::store::Directory::sweep_payloads), which a build
     /// calls once its index file stands; [`write_diff`](Self::write_diff) is
     /// the incremental publish, which removes what it is told went.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
@@ -400,8 +401,7 @@ impl Snapshot {
     /// galaxy's, so the index file belongs to whoever joins them — see
     /// `crate::build::region`. A whole build is this and then the index.
     pub fn write_payloads(&self, dir: &Path) -> io::Result<()> {
-        crate::store::cells::write::write_payloads(
-            dir,
+        Directory::at(dir).write_payloads(
             self.payloads.iter().map(|(&id, points)| (id, points.as_slice())),
         )
     }
@@ -411,8 +411,7 @@ impl Snapshot {
     /// The directory ends identical to a full [`write`](Self::write) of this
     /// tree, having touched only the cells whose systems moved.
     pub fn write_diff(&self, dir: &Path, dirtied: &CellDiff) -> io::Result<()> {
-        crate::store::cells::write::write_changes(
-            dir,
+        Directory::at(dir).write_cell_changes(
             &self.index,
             dirtied.changed.iter().map(|&id| (id, self.payload(id))),
             dirtied.removed.iter().copied(),

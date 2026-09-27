@@ -29,28 +29,35 @@
 
 use crate::format::rows::{RUN_BYTES, Sheet};
 use crate::records::{Faction, NameEntry, PopulatedSystem, SystemReach};
+use crate::store::Directory;
 use crate::store::names::Names;
 use crate::store::tables::{
-    Held, Keyed, Spill, TableSet, each_row, sort_table,
+    Keyed, OpenTable, Spill, TableSet, each_row, sort_table,
 };
 use crate::system::System;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The populated table, `populated.bin`, held empty.
-pub fn populated() -> Keyed<PopulatedSystem> {
-    Keyed::new("populated", populated_key)
+impl Keyed<PopulatedSystem> {
+    /// The populated table, `populated.bin`, held empty.
+    pub fn populated() -> Keyed<PopulatedSystem> {
+        Keyed::new("populated", populated_key)
+    }
 }
 
-/// The reaches table, `reaches.bin`, held empty.
-pub fn reaches() -> Keyed<SystemReach> {
-    Keyed::new("reaches", reach_key)
+impl Keyed<SystemReach> {
+    /// The reaches table, `reaches.bin`, held empty.
+    pub fn reaches() -> Keyed<SystemReach> {
+        Keyed::new("reaches", reach_key)
+    }
 }
 
-/// The factions table, `factions.bin`, held empty: keyed by id, so written
-/// in id order.
-pub fn factions() -> Keyed<Faction> {
-    Keyed::new("factions", faction_key)
+impl Keyed<Faction> {
+    /// The factions table, `factions.bin`, held empty: keyed by id, so
+    /// written in id order.
+    pub fn factions() -> Keyed<Faction> {
+        Keyed::new("factions", faction_key)
+    }
 }
 
 fn populated_key(row: &PopulatedSystem) -> i64 {
@@ -90,7 +97,7 @@ pub struct Sidecars {
     /// The faction names. Ids come from a sequence and a name is never
     /// rewritten, so this only ever grows.
     factions: Keyed<Faction>,
-    contributed: Vec<Box<dyn Held>>,
+    contributed: Vec<Box<dyn OpenTable>>,
 }
 
 impl Sidecars {
@@ -98,10 +105,10 @@ impl Sidecars {
     pub fn empty(tables: &TableSet) -> Sidecars {
         Sidecars {
             names: Names::default(),
-            populated: populated(),
-            reaches: reaches(),
-            factions: factions(),
-            contributed: tables.iter().map(|it| it.held()).collect(),
+            populated: Keyed::populated(),
+            reaches: Keyed::reaches(),
+            factions: Keyed::factions(),
+            contributed: tables.iter().map(|it| it.empty()).collect(),
         }
     }
 
@@ -192,7 +199,7 @@ impl Sidecars {
         if !self.names.worth_compacting() {
             return Ok(false);
         }
-        crate::store::names::compact(dir)?;
+        Directory::at(dir).compact_names()?;
         self.names = Names::open(dir)?;
         Ok(true)
     }
@@ -407,11 +414,11 @@ impl TableWriter {
         tables: &TableSet,
     ) -> io::Result<TableWriter> {
         let mut rows = TableWriter::writing(dir, tables)?;
-        each_row(&crate::store::tables::path(served, "populated"), |row| {
+        each_row(&Directory::at(served).table_path("populated"), |row| {
             rows.populate(&row)
         })?;
         each_row(
-            &crate::store::tables::path(served, "reaches"),
+            &Directory::at(served).table_path("reaches"),
             |row: SystemReach| rows.reach(row.address, row.reach),
         )?;
         for table in &mut rows.contributed {
@@ -471,7 +478,7 @@ impl TableWriter {
                 self.populated.path(),
                 &at,
                 "populated",
-                &crate::store::tables::path(dir, "populated"),
+                &Directory::at(dir).table_path("populated"),
                 |it| it.address,
                 budget,
             )?,
@@ -479,7 +486,7 @@ impl TableWriter {
                 self.reaches.path(),
                 &at,
                 "reaches",
-                &crate::store::tables::path(dir, "reaches"),
+                &Directory::at(dir).table_path("reaches"),
                 |it| it.address,
                 budget,
             )?,
@@ -500,7 +507,6 @@ mod tests {
     use super::*;
     use crate::core::star::StarKind;
     use crate::format::msgpack::read_meta;
-    use crate::store::tables::path;
     use crate::store::tables::testing::{Cone, arriving, tables};
 
     /// A table stays moved until it is written, and is not written again
@@ -523,9 +529,9 @@ mod tests {
 
         held.write(&at.0).expect("the tables write");
         assert!(!held.moved(), "a written table stood moved");
-        assert!(path(&at.0, "populated").exists());
+        assert!(Directory::at(&at.0).table_path("populated").exists());
         assert!(
-            !path(&at.0, "reaches").exists(),
+            !Directory::at(&at.0).table_path("reaches").exists(),
             "a table nothing moved was written"
         );
     }
@@ -595,12 +601,16 @@ mod tests {
             Sidecars::resume(&at.0, &tables()).expect("a resume of nothing");
         held.populate(populated(1));
         held.write(&at.0).expect("the tables write");
-        assert!(!path(&at.0, "cones").exists(), "an absence was written over");
+        assert!(
+            !Directory::at(&at.0).table_path("cones").exists(),
+            "an absence was written over"
+        );
 
         held.claim_absent();
         held.write(&at.0).expect("the tables write");
         let cones: Vec<Cone> =
-            read_meta(&path(&at.0, "cones")).expect("the claimed table");
+            read_meta(&Directory::at(&at.0).table_path("cones"))
+                .expect("the claimed table");
         assert!(cones.is_empty());
 
         held.claim_absent();
@@ -666,11 +676,20 @@ mod tests {
 
         assert_eq!(counts.populated, 0);
         assert_eq!(counts.contributed, vec![("cones", 0)]);
-        assert!(path(&dir, "populated").exists(), "no populated table");
-        assert!(path(&dir, "reaches").exists(), "no reaches table");
-        assert!(path(&dir, "cones").exists(), "no contributed table");
         assert!(
-            !path(&dir, "factions").exists(),
+            Directory::at(&dir).table_path("populated").exists(),
+            "no populated table"
+        );
+        assert!(
+            Directory::at(&dir).table_path("reaches").exists(),
+            "no reaches table"
+        );
+        assert!(
+            Directory::at(&dir).table_path("cones").exists(),
+            "no contributed table"
+        );
+        assert!(
+            !Directory::at(&dir).table_path("factions").exists(),
             "an empty factions table says the galaxy has none"
         );
         assert!(
@@ -716,14 +735,16 @@ mod tests {
         assert_eq!(counts.contributed, vec![("cones", 2)]);
 
         let table: Vec<PopulatedSystem> =
-            read_meta(&path(&dir, "populated")).expect("the populated table");
+            read_meta(&Directory::at(&dir).table_path("populated"))
+                .expect("the populated table");
         assert_eq!(
             table.iter().map(|it| it.address).collect::<Vec<_>>(),
             vec![1, 2, 3],
             "the table is not in address order",
         );
         let reaches: Vec<SystemReach> =
-            read_meta(&path(&dir, "reaches")).expect("the reaches table");
+            read_meta(&Directory::at(&dir).table_path("reaches"))
+                .expect("the reaches table");
         assert_eq!(
             reaches.iter().find(|it| it.address == 1).map(|it| it.reach),
             Some(5.0),
@@ -762,7 +783,8 @@ mod tests {
         assert_eq!(counts.reaches, 9);
 
         let table: Vec<PopulatedSystem> =
-            read_meta(&path(&dir, "populated")).expect("the populated table");
+            read_meta(&Directory::at(&dir).table_path("populated"))
+                .expect("the populated table");
         assert_eq!(
             table.iter().map(|it| it.address).collect::<Vec<_>>(),
             (1..=9).collect::<Vec<_>>(),
@@ -779,7 +801,8 @@ mod tests {
         assert_eq!(won(5), Some(0));
 
         let reaches: Vec<SystemReach> =
-            read_meta(&path(&dir, "reaches")).expect("the reaches table");
+            read_meta(&Directory::at(&dir).table_path("reaches"))
+                .expect("the reaches table");
         assert_eq!(
             reaches.iter().find(|it| it.address == 3).map(|it| it.reach),
             Some(7.0),
@@ -789,7 +812,8 @@ mod tests {
         // And what it wrote is what the whole-table writer would have: the
         // array is streamed a row at a time, so its header is the one
         // thing a reader could be handed differently.
-        let bytes = std::fs::read(path(&dir, "populated")).expect("the table");
+        let bytes = std::fs::read(Directory::at(&dir).table_path("populated"))
+            .expect("the table");
         assert_eq!(
             bytes,
             rmp_serde::to_vec(&table).expect("the table encodes"),

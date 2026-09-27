@@ -55,7 +55,7 @@
 //! different distance for every system, the exchange running from eighty of
 //! its own reaches out to twenty, and asks the same question of each.
 //!
-use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
+use crate::map::bodies::spawn::{Body, Entered, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::System;
 use crate::map::ruled::{
@@ -902,7 +902,7 @@ fn rule(
     // behind keeps whatever share it had at the moment it was let go of —
     // nothing, in the case of one the camera was inside — and would hold the
     // ruler on a plane nobody is standing in.
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     outside: Query<&Grid, With<BigSpace>>,
     mut planes: Query<PlaneParts>,
     asked: Res<RulerUnit>,
@@ -1568,7 +1568,7 @@ mod tests {
         app.init_resource::<Bright>();
         app.init_resource::<RuledSystem>();
         app.init_resource::<Handover>();
-        app.init_resource::<HeldSystem>();
+        app.init_resource::<Entered>();
 
         let map = app
             .world_mut()

@@ -15,6 +15,7 @@ use crate::format::layout::{
 use crate::format::rows;
 use crate::format::rows::Sheet;
 use crate::records::NameEntry;
+use crate::store::Directory;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -63,7 +64,7 @@ impl Writer {
     /// The same, seeded with what `dir` already publishes.
     ///
     /// What a build carrying on from a read a stop published starts with,
-    /// and what a [`compact`] folds a log into a base with. The table's own
+    /// and what a [`crate::store::Directory::compact_names`] folds a log into a base with. The table's own
     /// rows go in first and this read's rows go over them, which is
     /// `crate::format::rows`'s one rule: the last row an address has wins.
     ///
@@ -149,44 +150,52 @@ impl Writer {
     }
 }
 
-/// Fold `dir`'s delta into its base, answering how many systems the table
-/// now names.
-///
-/// The same road a build takes, from the table that stands: every base row
-/// and every row the log named, sorted and written as a new generation. The
-/// log is removed after the swap, so a reader that sees the new base and the
-/// old log reads rows the base already holds — which is the same table —
-/// and one that sees the old base still has the log it needs.
-pub fn compact(dir: &Path) -> io::Result<usize> {
-    let writer = Writer::onto(dir)?;
-    writer.finish()
-}
-
-/// The version this build writes, which is what a migration compares
-/// against.
-pub fn writes() -> u16 {
-    VERSION
-}
-
-/// What version the table `dir` publishes is, or [`None`] where it
-/// publishes none.
-///
-/// Read off `head.bin` alone — sixty-four bytes, no sections mapped — so a
-/// caller deciding whether a rewrite is owed pays nothing to ask. A head
-/// that is not this format's is an error rather than a version, which is
-/// the same refusal [`Table::open`](super::Table::open) makes.
-pub fn version(dir: &Path) -> io::Result<Option<u16>> {
-    let head = match std::fs::read(names_head_path(dir)) {
-        Ok(head) => head,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    if head.len() < HEAD
-        || u64::from_ne_bytes(head[0..8].try_into().unwrap()) != MAGIC
-    {
-        return Err(refused("not a names table"));
+impl Directory<'_> {
+    /// Fold the names table's delta into its base, answering how many
+    /// systems the table now names.
+    ///
+    /// The same road a build takes, from the table that stands: every base row
+    /// and every row the log named, sorted and written as a new generation. The
+    /// log is removed after the swap, so a reader that sees the new base and the
+    /// old log reads rows the base already holds — which is the same table —
+    /// and one that sees the old base still has the log it needs.
+    pub fn compact_names(self) -> io::Result<usize> {
+        let dir = self.root;
+        let writer = Writer::onto(dir)?;
+        writer.finish()
     }
-    Ok(Some(u16::from_le_bytes(head[8..10].try_into().unwrap())))
+}
+
+impl Names {
+    /// The version this build writes, which is what a migration compares
+    /// against.
+    pub const VERSION: u16 = VERSION;
+}
+
+impl Directory<'_> {
+    /// What version the names table here is, or [`None`] where it
+    /// publishes none.
+    ///
+    /// Read off `head.bin` alone — sixty-four bytes, no sections mapped — so a
+    /// caller deciding whether a rewrite is owed pays nothing to ask. A head
+    /// that is not this format's is an error rather than a version, which is
+    /// the same refusal [`Table::open`](super::Table::open) makes.
+    pub fn names_version(self) -> io::Result<Option<u16>> {
+        let dir = self.root;
+        let head = match std::fs::read(names_head_path(dir)) {
+            Ok(head) => head,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            Err(err) => return Err(err),
+        };
+        if head.len() < HEAD
+            || u64::from_ne_bytes(head[0..8].try_into().unwrap()) != MAGIC
+        {
+            return Err(refused("not a names table"));
+        }
+        Ok(Some(u16::from_le_bytes(head[8..10].try_into().unwrap())))
+    }
 }
 
 /// Write the base from sorted rows and swap it in.
@@ -501,30 +510,34 @@ pub(super) fn sweep_generations(dir: &Path, live: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// The MessagePack chunk files a directory holds in place of a base, folded
-/// into one — or [`None`] where there are none.
-///
-/// The one migration this format has. A galaxy's worth of chunks takes an
-/// afternoon to derive and nothing should derive it again to change how it
-/// is stored, so the chunks are read once, a row at a time, sorted, and
-/// written as a generation. They are removed after the swap.
-pub fn fold_chunks(dir: &Path) -> io::Result<Option<usize>> {
-    let chunks = legacy_chunks(dir)?;
-    if chunks.is_empty() {
-        return Ok(None);
-    }
-    let mut writer = Writer::writing(dir)?;
-    for chunk in &chunks {
-        let entries: Vec<NameEntry> = crate::format::msgpack::read_meta(chunk)?;
-        for entry in entries {
-            writer.push(entry)?;
+impl Directory<'_> {
+    /// The MessagePack chunk files a directory holds in place of a base, folded
+    /// into one — or [`None`] where there are none.
+    ///
+    /// The one migration this format has. A galaxy's worth of chunks takes an
+    /// afternoon to derive and nothing should derive it again to change how it
+    /// is stored, so the chunks are read once, a row at a time, sorted, and
+    /// written as a generation. They are removed after the swap.
+    pub fn fold_name_chunks(self) -> io::Result<Option<usize>> {
+        let dir = self.root;
+        let chunks = legacy_chunks(dir)?;
+        if chunks.is_empty() {
+            return Ok(None);
         }
+        let mut writer = Writer::writing(dir)?;
+        for chunk in &chunks {
+            let entries: Vec<NameEntry> =
+                crate::format::msgpack::read_meta(chunk)?;
+            for entry in entries {
+                writer.push(entry)?;
+            }
+        }
+        let count = writer.finish()?;
+        for chunk in &chunks {
+            let _ = std::fs::remove_file(chunk);
+        }
+        Ok(Some(count))
     }
-    let count = writer.finish()?;
-    for chunk in &chunks {
-        let _ = std::fs::remove_file(chunk);
-    }
-    Ok(Some(count))
 }
 
 /// The `names/NNNNN.bin` MessagePack chunk files, in order.
@@ -602,7 +615,7 @@ mod tests {
         names.unname(2);
         names.publish(&dir.0).expect("a publish");
 
-        assert_eq!(compact(&dir.0).expect("a fold"), 2);
+        assert_eq!(Directory::at(&dir.0).compact_names().expect("a fold"), 2);
         assert!(!names_delta_path(&dir.0).exists(), "the log is gone");
 
         let read = Names::open(&dir.0).expect("the table re-opens");

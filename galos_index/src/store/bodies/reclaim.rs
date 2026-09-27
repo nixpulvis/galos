@@ -7,6 +7,7 @@
 
 use super::{ENTRY, Entry, HEADER, Table, header_bytes};
 use crate::format::layout::{body_data_path, body_index_path};
+use crate::store::Directory;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -66,27 +67,31 @@ impl Dead {
 /// more in writes than the file gives back in blocks.
 const WORTH: u64 = 1 << 20;
 
-/// Merge a shard's tail into its base, and reclaim the data file where
-/// enough of it is dead.
-///
-/// The index is written beside and renamed over, so a reader sees one whole
-/// index or the other. A compaction writes the *next* generation's data file
-/// and leaves the old one until the index naming the new one is in place: a
-/// reader holding offsets into the old bytes has to go on being right about
-/// them until it reads the index again.
-///
-/// At [`Dead::Half`], which is the write path's bar. [`reclaim`] is the
-/// same fold at a sweep's.
-pub fn fold(dir: &Path, shard: u64) -> io::Result<()> {
-    folded(dir, shard, Dead::Half).map(|_| ())
-}
+impl Directory<'_> {
+    /// Merge a shard's tail into its base, and reclaim the data file where
+    /// enough of it is dead.
+    ///
+    /// The index is written beside and renamed over, so a reader sees one whole
+    /// index or the other. A compaction writes the *next* generation's data file
+    /// and leaves the old one until the index naming the new one is in place: a
+    /// reader holding offsets into the old bytes has to go on being right about
+    /// them until it reads the index again.
+    ///
+    /// At [`Dead::Half`], which is the write path's bar. [`Self::reclaim_body_shard`] is the
+    /// same fold at a sweep's.
+    pub fn fold_body_shard(self, shard: u64) -> io::Result<()> {
+        let dir = self.root;
+        folded(dir, shard, Dead::Half).map(|_| ())
+    }
 
-/// Give one shard's dead bytes back, where a sweep's bar is reached.
-///
-/// The same report a whole sweep answers, for one shard: `shards` is one
-/// where it gave anything back and nought where it did not.
-pub fn reclaim(dir: &Path, shard: u64) -> io::Result<Reclaimed> {
-    folded(dir, shard, Dead::Worth)
+    /// Give one shard's dead bytes back, where a sweep's bar is reached.
+    ///
+    /// The same report a whole sweep answers, for one shard: `shards` is one
+    /// where it gave anything back and nought where it did not.
+    pub fn reclaim_body_shard(self, shard: u64) -> io::Result<Reclaimed> {
+        let dir = self.root;
+        folded(dir, shard, Dead::Worth)
+    }
 }
 
 /// One fold, at whichever bar the caller keeps.
@@ -482,8 +487,8 @@ fn punch(_file: &File, _at: u64, _len: u64) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fixtures::{held, inside, scratch};
-    use super::super::{Found, remove, write};
+    use super::super::Found;
+    use super::super::fixtures::{found, inside, scratch};
     use super::*;
     use crate::format::layout::body_shard;
     use crate::records::SystemBodies;
@@ -509,16 +514,23 @@ mod tests {
         for round in 1..=3i16 {
             for &address in &addresses {
                 let inside = inside(round);
-                write(&dir, HashMap::from([(address, inside.clone())]));
+                Directory::at(&dir).write_held_bodies(HashMap::from([(
+                    address,
+                    inside.clone(),
+                )]));
                 want.insert(address, inside);
             }
         }
         let withdrawn = addresses[0];
-        remove(&dir, withdrawn).expect("the withdrawal");
+        Directory::at(&dir)
+            .tombstone_bodies(withdrawn)
+            .expect("the withdrawal");
         want.remove(&withdrawn);
 
         let _ = shard;
-        fold(&dir, body_shard(addresses[0])).expect("the fold");
+        Directory::at(&dir)
+            .fold_body_shard(body_shard(addresses[0]))
+            .expect("the fold");
 
         let table =
             Table::read(&body_index_path(&dir, body_shard(addresses[0])))
@@ -528,13 +540,13 @@ mod tests {
 
         for (&address, inside) in &want {
             assert_eq!(
-                held(&dir, address),
+                found(&dir, address),
                 Found::Bodies(inside.clone()),
                 "a folded system reads as something else",
             );
         }
         assert_eq!(
-            held(&dir, withdrawn),
+            found(&dir, withdrawn),
             Found::Absent,
             "a fold kept a tombstone's system",
         );
@@ -557,13 +569,14 @@ mod tests {
         // Written enough times over that most of the data file is records
         // nothing points at any more.
         for round in 1..=8i16 {
-            write(&dir, HashMap::from([(address, inside(round))]));
+            Directory::at(&dir)
+                .write_held_bodies(HashMap::from([(address, inside(round))]));
         }
         let before = std::fs::metadata(body_data_path(&dir, shard, 0))
             .expect("a data file")
             .len();
 
-        fold(&dir, shard).expect("the fold");
+        Directory::at(&dir).fold_body_shard(shard).expect("the fold");
 
         assert!(
             !body_data_path(&dir, shard, 0).exists(),
@@ -577,7 +590,7 @@ mod tests {
             "the compaction kept the dead records: {after} of {before}",
         );
         assert_eq!(
-            held(&dir, address),
+            found(&dir, address),
             Found::Bodies(inside(8)),
             "the compaction lost the live record",
         );

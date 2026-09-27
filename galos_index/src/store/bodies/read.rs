@@ -10,23 +10,27 @@ use crate::format::layout::{
     legacy_bodies_path,
 };
 use crate::records::SystemBodies;
+use crate::store::Directory;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// What the pack holds for `address`.
-///
-/// The index is mapped rather than read: the base is binary-searched and the
-/// tail scanned newest-first, so a click costs a page or two of a file that
-/// may be megabytes. A data file that has gone out from under the read is a
-/// compaction landing, and the answer is to read the index again — the new
-/// one names the generation that exists.
-pub fn find(dir: &Path, address: i64) -> io::Result<Found> {
-    match found(dir, address) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            found(dir, address)
+impl Directory<'_> {
+    /// What the pack holds for `address`.
+    ///
+    /// The index is mapped rather than read: the base is binary-searched and the
+    /// tail scanned newest-first, so a click costs a page or two of a file that
+    /// may be megabytes. A data file that has gone out from under the read is a
+    /// compaction landing, and the answer is to read the index again — the new
+    /// one names the generation that exists.
+    pub fn find_bodies(self, address: i64) -> io::Result<Found> {
+        let dir = self.root;
+        match found(dir, address) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                found(dir, address)
+            }
+            answer => answer,
         }
-        answer => answer,
     }
 }
 
@@ -118,37 +122,40 @@ fn record(path: &Path, entry: &Entry) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// What the bodies of `address` are, empty where nothing has scanned it.
-///
-/// Three layouts, newest first: the packed shard files, then the loose file
-/// a system in its shard directory, then the flat, unsharded one. A
-/// directory part way through a packing answers out of whichever holds the
-/// system, and a system the pack says was *withdrawn* is empty rather than
-/// whatever a loose file for it still says.
-///
-/// A system nothing has scanned is [`SystemBodies::default`] rather than an
-/// error.
-pub fn read_bodies(dir: &Path, address: i64) -> io::Result<SystemBodies> {
-    match crate::store::bodies::find(dir, address)? {
-        crate::store::bodies::Found::Bodies(inside) => return Ok(inside),
-        crate::store::bodies::Found::Withdrawn => {
-            return Ok(SystemBodies::default());
-        }
-        crate::store::bodies::Found::Absent => {}
-    }
-    let bytes = match std::fs::read(bodies_path(dir, address)) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            match std::fs::read(legacy_bodies_path(dir, address)) {
-                Ok(bytes) => bytes,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    return Ok(SystemBodies::default());
-                }
-                Err(e) => return Err(e),
+impl Directory<'_> {
+    /// What the bodies of `address` are, empty where nothing has scanned it.
+    ///
+    /// Three layouts, newest first: the packed shard files, then the loose file
+    /// a system in its shard directory, then the flat, unsharded one. A
+    /// directory part way through a packing answers out of whichever holds the
+    /// system, and a system the pack says was *withdrawn* is empty rather than
+    /// whatever a loose file for it still says.
+    ///
+    /// A system nothing has scanned is [`SystemBodies::default`] rather than an
+    /// error.
+    pub fn read_bodies(self, address: i64) -> io::Result<SystemBodies> {
+        let dir = self.root;
+        match self.find_bodies(address)? {
+            crate::store::bodies::Found::Bodies(inside) => return Ok(inside),
+            crate::store::bodies::Found::Withdrawn => {
+                return Ok(SystemBodies::default());
             }
+            crate::store::bodies::Found::Absent => {}
         }
-        Err(e) => return Err(e),
-    };
-    rmp_serde::from_slice(&bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        let bytes = match std::fs::read(bodies_path(dir, address)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                match std::fs::read(legacy_bodies_path(dir, address)) {
+                    Ok(bytes) => bytes,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        return Ok(SystemBodies::default());
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
+        rmp_serde::from_slice(&bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
 }

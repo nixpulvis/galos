@@ -27,8 +27,10 @@ use async_std::stream::StreamExt;
 use elite_journal::body::{Material, Orbit, Spin};
 use futures_core::stream::BoxStream;
 use galos_index::records;
-use galos_index::store::sidecars::{self, Sidecars};
-use galos_index::store::tables::Held;
+use galos_index::store::sidecars::Sidecars;
+use galos_index::store::tables::Keyed;
+use galos_index::store::tables::OpenTable;
+use galos_index::store::Directory;
 use galos_index::TableSet;
 use sqlx::postgres::PgRow;
 use sqlx::Row;
@@ -121,7 +123,7 @@ impl std::fmt::Display for MetaReport {
 /// re-reads `population > 0` off the row, so it can tell a system that has
 /// emptied from one nothing has mentioned.
 pub(super) struct Metadata {
-    held: Sidecars,
+    sidecars: Sidecars,
     /// The highest faction id read. Ids come from a sequence and a name is
     /// never rewritten, so one query past this answers a whole pass.
     high: i32,
@@ -139,15 +141,15 @@ impl Metadata {
         dir: &Path,
         tables: &TableSet,
     ) -> io::Result<Metadata> {
-        let held = Sidecars::resume(dir, tables)?;
-        let high = held.highest_faction();
-        Ok(Metadata { held, high })
+        let sidecars = Sidecars::resume(dir, tables)?;
+        let high = sidecars.highest_faction();
+        Ok(Metadata { sidecars, high })
     }
 
     /// How many systems the names table stands for: every positioned one,
     /// which is what the served cell tree holds too.
     pub(super) fn names(&self) -> usize {
-        self.held.counts().names
+        self.sidecars.counts().names
     }
 
     /// Patch in the systems of `touched` — one chunk of a pass — and write
@@ -171,14 +173,14 @@ impl Metadata {
         let mut placed = HashSet::with_capacity(entries.len());
         for entry in entries {
             placed.insert(entry.address);
-            self.held.name(entry);
+            self.sidecars.name(entry);
         }
 
         let systems = populated_of(db, Some(touched)).await?;
         let mut inhabited = HashSet::with_capacity(systems.len());
         for system in systems {
             inhabited.insert(system.address);
-            self.held.populate(system);
+            self.sidecars.populate(system);
         }
 
         // A scan is what moves a reach. Worked out from the rows the body
@@ -194,7 +196,7 @@ impl Metadata {
         let mut scanned = HashSet::with_capacity(reached.len());
         for (address, reach) in reached {
             scanned.insert(address);
-            self.held.reach(address, reach);
+            self.sidecars.reach(address, reach);
         }
 
         // What the contributed tables derive their rows from: the records
@@ -203,21 +205,21 @@ impl Metadata {
         let mut recorded = HashSet::with_capacity(records.len());
         for system in records {
             recorded.insert(system.id64 as i64);
-            self.held.contribute(system);
+            self.sidecars.contribute(system);
         }
 
         for address in touched {
             if !placed.contains(address) {
-                self.held.unname(*address);
+                self.sidecars.unname(*address);
             }
             if !inhabited.contains(address) {
-                self.held.depopulate(*address);
+                self.sidecars.depopulate(*address);
             }
             if !scanned.contains(address) {
-                self.held.unreach(*address);
+                self.sidecars.unreach(*address);
             }
             if !recorded.contains(address) {
-                self.held.uncontribute(*address);
+                self.sidecars.uncontribute(*address);
             }
         }
 
@@ -240,7 +242,7 @@ impl Metadata {
         let named = factions_above(db, self.high).await?;
         if let Some(highest) = named.last() {
             self.high = highest.id;
-            self.held.add_factions(named);
+            self.sidecars.add_factions(named);
         }
         self.publish(dir, body_files)
     }
@@ -252,19 +254,19 @@ impl Metadata {
     /// moved; a build wanting one part goes through [`write_parts`]. The
     /// body files are written by whoever moved the tables.
     fn publish(&mut self, dir: &Path, body_files: usize) -> Result<MetaReport> {
-        let name_rows = self.held.write(dir)?;
+        let name_rows = self.sidecars.write(dir)?;
         // After the write and never before it: the fold reads the directory,
         // so what was taken has to be in it first. Rare by design — the log
         // reaches the threshold about monthly on the live feed — and a whole
         // base rewrite is minutes at 200 M systems, so an operator watching
         // a pass stall wants to be told which one folded.
-        if self.held.compact_names(dir)? {
+        if self.sidecars.compact_names(dir)? {
             info!(
                 dir = %dir.display(),
                 "folded the names log into a new base"
             );
         }
-        let counts = self.held.counts();
+        let counts = self.sidecars.counts();
         Ok(MetaReport {
             populated: Some(counts.populated),
             names: Some(counts.names),
@@ -294,7 +296,7 @@ pub(super) async fn write_parts(
     db: &Database,
     dir: &Path,
     parts: Parts,
-    mut contributed: Vec<Box<dyn Held>>,
+    mut contributed: Vec<Box<dyn OpenTable>>,
     told: &Told<'_>,
 ) -> Result<MetaReport> {
     let mut report = MetaReport::default();
@@ -304,7 +306,7 @@ pub(super) async fn write_parts(
         // population and the factions of each: seconds, and seconds of a
         // terminal saying nothing are what this is here to stop.
         told(Progress { step: step::POPULATED, done: 0, of: None });
-        let mut populated = sidecars::populated();
+        let mut populated = Keyed::populated();
         for system in populated_of(db, None).await? {
             populated.put(system);
         }
@@ -320,7 +322,7 @@ pub(super) async fn write_parts(
         // One pass over everything scanned, in address order, holding one
         // system's rows at a time. The reaches are gathered as it goes; the
         // body files go out as each system's rows arrive.
-        let mut reaches = sidecars::reaches();
+        let mut reaches = Keyed::reaches();
         let mut body_files = 0;
         each_scanned(db, told, |scanned| {
             if parts.reaches {
@@ -332,10 +334,8 @@ pub(super) async fn write_parts(
                 }
             }
             if parts.bodies {
-                galos_index::store::bodies::write_each(
-                    dir,
-                    [(scanned.address, &scanned.inside)],
-                )?;
+                Directory::at(dir)
+                    .write_bodies([(scanned.address, &scanned.inside)])?;
                 body_files += 1;
             }
             Ok(())
@@ -358,7 +358,7 @@ pub(super) async fn write_parts(
 
     if parts.factions {
         told(Progress { step: step::FACTIONS, done: 0, of: None });
-        let mut factions = sidecars::factions();
+        let mut factions = Keyed::factions();
         factions_above(db, 0).await?.into_iter().for_each(|it| {
             factions.put(it);
         });
@@ -541,7 +541,7 @@ async fn bodies_of(
 /// which addresses it asked about.
 ///
 /// Both go through [`galos_index::store::bodies`] and
-/// [`galos_index::store::bodies::remove_bodies`]: a directory published by an
+/// [`galos_index::store::Directory::remove_bodies`]: a directory published by an
 /// older builder still holds loose files a read falls back onto, and a
 /// withdrawal has to clear those as well as the pack.
 fn write_bodies(
@@ -549,14 +549,13 @@ fn write_bodies(
     grouped: &HashMap<i64, records::SystemBodies>,
     addresses: &[i64],
 ) -> Result<usize> {
-    galos_index::store::bodies::write_each(
-        dir,
+    Directory::at(dir).write_bodies(
         grouped.iter().map(|(address, inside)| (*address, inside)),
     )?;
 
     for &address in addresses {
         if !grouped.contains_key(&address) {
-            galos_index::store::bodies::remove_bodies(dir, address)?;
+            Directory::at(dir).remove_bodies(address)?;
         }
     }
 
@@ -1218,7 +1217,7 @@ mod tests {
         // A table half written, which is what a builder killed mid-pass left
         // before the write became a rename.
         std::fs::write(
-            galos_index::store::tables::path(&dir, BoostTable::NAME),
+            Directory::at(&dir).table_path(BoostTable::NAME),
             b"\xdd\xff\xff\xff\xff\x01",
         )
         .expect("a truncated table");

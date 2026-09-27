@@ -68,7 +68,7 @@ pub struct Cut {
     /// The regions, coarsest first.
     regions: Vec<CellId>,
     /// The same, for asking whether a cell is one.
-    held: HashSet<CellId>,
+    lookup: HashSet<CellId>,
 }
 
 impl Cut {
@@ -131,8 +131,8 @@ impl Cut {
         let mut regions: Vec<CellId> = regions.into_iter().collect();
         regions.sort_by_key(|cell| (cell.level, cell.morton()));
         regions.dedup();
-        let held: HashSet<CellId> = regions.iter().copied().collect();
-        Cut { regions, held }
+        let lookup: HashSet<CellId> = regions.iter().copied().collect();
+        Cut { regions, lookup }
     }
 
     /// The regions, coarsest first.
@@ -154,7 +154,7 @@ impl Cut {
         let deepest = self.regions.last().map_or(0, |cell| cell.level);
         (0..=deepest)
             .map(|level| CellId::of_point(position, level))
-            .find(|cell| self.held.contains(cell))
+            .find(|cell| self.lookup.contains(cell))
     }
 }
 

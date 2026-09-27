@@ -52,7 +52,7 @@
 //! warning is the only place it is said.
 
 use crate::records::SystemBodies;
-use crate::store::bodies;
+use crate::store::Directory;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
@@ -217,7 +217,7 @@ impl OnDisk {
             // no lookup worth making. See `raising`.
             return SystemBodies::default();
         }
-        match bodies::read_bodies(&self.dir, address) {
+        match Directory::at(&self.dir).read_bodies(address) {
             Ok(inside) => inside,
             Err(err) => {
                 eprintln!(
@@ -286,7 +286,7 @@ impl Bodies for OnDisk {
         }
 
         let mut addresses: Vec<i64> = self.dirty.keys().copied().collect();
-        match bodies::addresses(&self.dir) {
+        match Directory::at(&self.dir).body_addresses() {
             Ok(packed) => addresses.extend(packed),
             Err(err) => eprintln!("the packed bodies could not be read: {err}"),
         }
@@ -311,7 +311,8 @@ impl Bodies for OnDisk {
     /// The error is the first one met; the rest of the systems are still
     /// written.
     fn flush(&mut self) -> io::Result<usize> {
-        let done = bodies::write(&self.dir, std::mem::take(&mut self.dirty));
+        let done = Directory::at(&self.dir)
+            .write_held_bodies(std::mem::take(&mut self.dirty));
         self.dirty = done.kept;
         self.wrote += done.wrote;
         match done.failed {
@@ -355,7 +356,7 @@ impl Shared {
     /// What is held, on disk, and how many systems have been written since
     /// this was last asked.
     pub fn settle(&self) -> io::Result<usize> {
-        let mut held = self.held();
+        let mut held = self.lock();
         held.flush()?;
         Ok(held.written())
     }
@@ -365,7 +366,7 @@ impl Shared {
     /// The trait has the same answer and wants a `&mut`, which a store
     /// several accumulators share is never held as.
     pub fn written(&self) -> usize {
-        self.held().written()
+        self.lock().written()
     }
 
     /// The store, whatever a panicking writer left it as.
@@ -373,7 +374,7 @@ impl Shared {
     /// A poisoned store is one a write panicked in the middle of; what is
     /// in it is still the systems the run has read, and refusing to write
     /// them would lose more than it protects.
-    fn held(&self) -> std::sync::MutexGuard<'_, OnDisk> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OnDisk> {
         self.0.lock().unwrap_or_else(|it| it.into_inner())
     }
 }
@@ -382,23 +383,23 @@ impl Bodies for Shared {
     /// Cloned rather than borrowed: what is behind the lock cannot be lent
     /// out past it, and the caller is about to merge into it anyway.
     fn read(&self, address: i64) -> Cow<'_, SystemBodies> {
-        Cow::Owned(self.held().read(address).into_owned())
+        Cow::Owned(self.lock().read(address).into_owned())
     }
 
     fn edit(&mut self, address: i64, act: &mut dyn FnMut(&mut SystemBodies)) {
-        self.held().edit(address, act)
+        self.lock().edit(address, act)
     }
 
     fn scanned(&self) -> Vec<i64> {
-        self.held().scanned()
+        self.lock().scanned()
     }
 
     fn flush(&mut self) -> io::Result<usize> {
-        self.held().flush()
+        self.lock().flush()
     }
 
     fn written(&mut self) -> usize {
-        self.held().written()
+        self.lock().written()
     }
 }
 
@@ -541,8 +542,8 @@ mod tests {
         );
         assert!(
             matches!(
-                bodies::find(&dir, 11).expect("the pack reads"),
-                bodies::Found::Bodies(_)
+                Directory::at(&dir).find_bodies(11).expect("the pack reads"),
+                crate::store::bodies::Found::Bodies(_)
             ),
             "the pack does not hold what the store wrote",
         );
@@ -562,8 +563,8 @@ mod tests {
         store.edit(3, &mut |inside| inside.stars.push(star(0)));
 
         assert_eq!(
-            bodies::find(&dir, 3).expect("the pack reads"),
-            bodies::Found::Absent,
+            Directory::at(&dir).find_bodies(3).expect("the pack reads"),
+            crate::store::bodies::Found::Absent,
             "an edit reached the disk before it was asked to",
         );
         assert_eq!(store.read(3).stars.len(), 1, "the held edit was not read");
@@ -571,8 +572,8 @@ mod tests {
         store.flush().expect("the record writes");
         assert!(
             matches!(
-                bodies::find(&dir, 3).expect("the pack reads"),
-                bodies::Found::Bodies(_)
+                Directory::at(&dir).find_bodies(3).expect("the pack reads"),
+                crate::store::bodies::Found::Bodies(_)
             ),
             "the flush wrote nothing",
         );

@@ -711,9 +711,9 @@ impl Index {
     /// point written now would resume from, and `extent` what the line at
     /// the end calls this publish.
     /// The record this run publishes for a system the galaxy has placed; see
-    /// [`Self::over_held`].
+    /// [`Self::over_record`].
     fn record_of(&self, address: i64) -> Option<System> {
-        self.galaxy.system_of(address).map(|system| self.over_held(system))
+        self.galaxy.system_of(address).map(|system| self.over_record(system))
     }
 
     /// What the galaxy says of a system, over the record the directory holds.
@@ -726,9 +726,9 @@ impl Index {
     /// holds. The payload and every contributed table are derived from this
     /// one record, so the directory says what a rebuild from the database
     /// would.
-    fn over_held(&self, mut system: System) -> System {
+    fn over_record(&self, mut system: System) -> System {
         if system.kind == StarKind::Unknown {
-            if let Some(held) = self.tree.held(system.id64 as i64) {
+            if let Some(held) = self.tree.record(system.id64 as i64) {
                 system.kind = held.kind;
             }
         }
@@ -827,7 +827,7 @@ impl Index {
             .systems()
             .into_iter()
             .filter(|system| self.galaxy.name_of(system.id64 as i64).is_some())
-            .map(|system| self.over_held(system))
+            .map(|system| self.over_record(system))
             .collect();
         let all: HashSet<i64> =
             placed.iter().map(|system| system.id64 as i64).collect();
@@ -882,6 +882,7 @@ mod tests {
     use super::*;
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
+    use galos_index::store::Directory;
     use galos_index::{FsSource, Source as _, SystemName};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -1981,7 +1982,7 @@ mod tests {
         for path in [
             galos_index::format::layout::populated_path(&dir),
             galos_index::format::layout::reaches_path(&dir),
-            galos_index::store::tables::path(&dir, "boosts"),
+            Directory::at(&dir).table_path("boosts"),
             galos_index::format::layout::factions_path(&dir),
             galos_index::format::layout::names_delta_path(&dir),
             dir.join(galos_index::format::layout::INDEX_FILE),

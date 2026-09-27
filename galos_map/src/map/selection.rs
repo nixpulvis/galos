@@ -32,7 +32,7 @@
 //! out by [`mod@crate::ui::panels`], which the user asks for separately.
 
 use crate::input::Gesture;
-use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
+use crate::map::bodies::spawn::{Body, Entered, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
@@ -712,7 +712,7 @@ pub(crate) struct ClickedEmptySky;
 pub(crate) fn ring(
     mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     selected: Query<
         (
             &System,

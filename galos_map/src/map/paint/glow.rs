@@ -1084,7 +1084,7 @@ fn build_glow(
             // reached the marks and not the field would appear to take
             // effect only where the camera had come in far enough to draw
             // the systems themselves.
-            let held_named = named.held(splat.id);
+            let held_named = named.admitted(splat.id);
             let aged = cell.aggregate.aged();
             let backdrop_share = filtering.filters.admitted_share(
                 aged,

@@ -59,7 +59,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
-    app.init_resource::<Held>();
+    app.init_resource::<Stamps>();
     app.init_resource::<Refreshing>();
     // In the fetch set, before the walk asks for cells: a refreshed index is
     // what says which cells the walk should be marking, and a refreshed
@@ -83,7 +83,7 @@ pub fn plugin(app: &mut App) {
 /// read every pass, which is the honest fallback: not knowing whether
 /// something changed is not knowing that it did not.
 #[derive(Resource, Default)]
-pub struct Held {
+pub struct Stamps {
     index: Option<Stamp>,
     populated: Option<Stamp>,
     reaches: Option<Stamp>,
@@ -104,7 +104,7 @@ pub struct Held {
     cells: HashMap<CellId, Option<Stamp>>,
 }
 
-impl Held {
+impl Stamps {
     /// What every part is, taken before the map reads any of them
     ///
     /// Seeded rather than left empty, or the first refresh would find every
@@ -126,9 +126,9 @@ impl Held {
     /// Both halves of the names table are stamped: the base's head, which
     /// moves when the table is recompacted, and the log, which moves on
     /// every publish that named anything.
-    pub async fn before_reading(source: &dyn galos_index::Source) -> Held {
+    pub async fn before_reading(source: &dyn galos_index::Source) -> Stamps {
         let stamp = async |part| source.stamp(part).await.ok().flatten();
-        Held {
+        Stamps {
             index: stamp(Part::Index).await,
             populated: stamp(Part::Populated).await,
             reaches: stamp(Part::Reaches).await,
@@ -212,7 +212,7 @@ impl Refreshed {
 fn poll(
     transport: Res<Transport>,
     resident: Res<ResidentCells>,
-    held: Res<Held>,
+    held: Res<Stamps>,
     names: Res<Names>,
     time: Res<Time<Real>>,
     poll: Res<Poll>,
@@ -256,7 +256,7 @@ fn poll(
 
         // Whether a part has moved since the stamp in hand. Every part the
         // map holds was stamped before it was read (see
-        // [`Held::before_reading`]), so there is always something to compare
+        // [`Stamps::before_reading`]), so there is always something to compare
         // against: a part still absent stamps [`None`] on both sides and reads
         // as unchanged, where taking that for "cannot say" would re-read the
         // same absence on every poll and mark its table changed each time.
@@ -351,7 +351,7 @@ fn poll(
 )]
 fn apply(
     mut refreshing: ResMut<Refreshing>,
-    mut held: ResMut<Held>,
+    mut held: ResMut<Stamps>,
     mut index: ResMut<ResidentIndex>,
     mut resident: ResMut<ResidentCells>,
     mut admitted: ResMut<PointOrders>,
@@ -469,6 +469,7 @@ fn apply(
 mod tests {
     use super::*;
     use galos_index::records::NameEntry;
+    use galos_index::store::Directory;
     use galos_index::{BuildParams, FsSource, Snapshot, Source as IndexSource};
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -563,7 +564,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
         app.add_systems(Update, (apply, poll).chain());
-        app.insert_resource(block_on(Held::before_reading(&*source)));
+        app.insert_resource(block_on(Stamps::before_reading(&*source)));
         app.init_resource::<Refreshing>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<PointOrders>();
@@ -615,7 +616,7 @@ mod tests {
                 .resource_mut::<ResidentCells>()
                 .0
                 .insert(id, points.to_vec());
-            app.world_mut().resource_mut::<Held>().holding(id, stamp);
+            app.world_mut().resource_mut::<Stamps>().holding(id, stamp);
         }
         app
     }
@@ -788,7 +789,7 @@ mod tests {
         name(&dir.0, &[named(2, "Second")]);
 
         let transport: Arc<dyn IndexSource> = Arc::new(FsSource::new(&dir.0));
-        let held = block_on(Held::before_reading(&*transport));
+        let held = block_on(Stamps::before_reading(&*transport));
 
         assert!(held.index.is_some(), "the aggregates");
         assert!(held.populated.is_some(), "the populated table");
@@ -884,7 +885,7 @@ mod tests {
         app.update();
         app.world_mut().resource_mut::<ResidentCells>().0 =
             galos_index::read::resident::Resident::default();
-        app.world_mut().resource_mut::<Held>().clear();
+        app.world_mut().resource_mut::<Stamps>().clear();
 
         for _ in 0..40 {
             app.update();
@@ -1006,7 +1007,8 @@ mod tests {
         // The log folded into a new base, as a log grown long is.
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert_eq!(
-            galos_index::store::names::compact(&dir.0)
+            Directory::at(&dir.0)
+                .compact_names()
                 .expect("the fold should write"),
             2,
             "both systems should be in the base the fold wrote",

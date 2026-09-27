@@ -13,11 +13,12 @@
 //!
 //! **An absent table is not an empty one.** No file says "this directory
 //! cannot tell"; an empty array says "there are none". A reader keeps the
-//! two apart ([`read`]), and a table resumed from nothing remembers it was
+//! two apart ([`crate::store::Directory::table`]), and a table resumed from nothing remembers it was
 //! absent so a writer can choose to publish it ([`Keyed::claim`]).
 
 use crate::format::msgpack::{read_meta, write_meta};
 use crate::format::rows::{self, Sheet, Sorted};
+use crate::store::Directory;
 use crate::system::System;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -87,24 +88,30 @@ pub trait Table: Send + Sync + 'static {
         let _ = dir;
         Ok(None)
     }
+
+    /// The table's rows out of the bytes of its file, for a reader handed
+    /// the bytes by a transport rather than a path.
+    fn decode(bytes: &[u8]) -> io::Result<Vec<Self::Row>>
+    where
+        Self: Sized,
+    {
+        rmp_serde::from_slice(bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
 }
 
-/// Where the table called `name` is written within a directory.
-pub fn path(dir: &Path, name: &str) -> PathBuf {
-    dir.join(format!("{name}.bin"))
-}
+impl Directory<'_> {
+    /// Where the table called `name` is written within a directory.
+    pub fn table_path(self, name: &str) -> PathBuf {
+        let dir = self.root;
+        dir.join(format!("{name}.bin"))
+    }
 
-/// A contributed table as `dir` publishes it, or [`None`] where it has no
-/// such file.
-pub fn read<T: Table>(dir: &Path) -> io::Result<Option<Vec<T::Row>>> {
-    optional(&path(dir, T::NAME))
-}
-
-/// A contributed table's rows out of the bytes of its file, for a reader
-/// handed the bytes by a transport rather than a path.
-pub fn decode<T: Table>(bytes: &[u8]) -> io::Result<Vec<T::Row>> {
-    rmp_serde::from_slice(bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    /// A contributed table as the directory publishes it, or [`None`] where it has no
+    /// such file.
+    pub fn table<T: Table>(self) -> io::Result<Option<Vec<T::Row>>> {
+        optional(&self.table_path(T::NAME))
+    }
 }
 
 /// A table of rows keyed by address, held as a directory holds it.
@@ -155,7 +162,8 @@ impl<R: Serialize + DeserializeOwned + PartialEq> Keyed<R> {
         key: fn(&R) -> i64,
         dir: &Path,
     ) -> io::Result<Keyed<R>> {
-        let read: Option<Vec<R>> = optional(&path(dir, name))?;
+        let read: Option<Vec<R>> =
+            optional(&Directory::at(dir).table_path(name))?;
         let absent = read.is_none();
         let rows = read
             .unwrap_or_default()
@@ -236,7 +244,7 @@ impl<R: Serialize + DeserializeOwned + PartialEq> Keyed<R> {
     pub fn write(&mut self, dir: &Path) -> io::Result<usize> {
         let mut table: Vec<&R> = self.rows.values().collect();
         table.sort_unstable_by_key(|row| (self.key)(row));
-        write_meta(&path(dir, self.name), &table)?;
+        write_meta(&Directory::at(dir).table_path(self.name), &table)?;
         self.moved = false;
         self.absent = false;
         Ok(table.len())
@@ -263,7 +271,8 @@ impl<R: Serialize + DeserializeOwned + PartialEq> Keyed<R> {
     ) -> io::Result<u64> {
         let mut changed = 0;
         for row in
-            optional::<Vec<R>>(&path(from, self.name))?.unwrap_or_default()
+            optional::<Vec<R>>(&Directory::at(from).table_path(self.name))?
+                .unwrap_or_default()
         {
             let address = (self.key)(&row);
             if take(address, self.rows.contains_key(&address)) && self.put(row)
@@ -354,10 +363,10 @@ pub trait Contribution: Send + Sync {
     fn about(&self) -> &'static str;
 
     /// The table held open, empty.
-    fn held(&self) -> Box<dyn Held>;
+    fn empty(&self) -> Box<dyn OpenTable>;
 
     /// The table held open, as `dir` publishes it.
-    fn resume(&self, dir: &Path) -> io::Result<Box<dyn Held>>;
+    fn resume(&self, dir: &Path) -> io::Result<Box<dyn OpenTable>>;
 
     /// A file to push the rows of a build into, in `scratch`.
     fn spill(&self, scratch: &Path) -> io::Result<Box<dyn Spill>>;
@@ -372,7 +381,7 @@ pub trait Contribution: Send + Sync {
 /// One contributed table held open: a [`Keyed`] table whose rows are
 /// derived from a [`System`].
 #[allow(clippy::len_without_is_empty)]
-pub trait Held: Send + Sync + fmt::Debug {
+pub trait OpenTable: Send + Sync + fmt::Debug {
     /// What the table is called.
     fn name(&self) -> &'static str;
 
@@ -451,11 +460,11 @@ impl<T: Table> Contribution for Of<T> {
         T::ABOUT
     }
 
-    fn held(&self) -> Box<dyn Held> {
+    fn empty(&self) -> Box<dyn OpenTable> {
         Box::new(Derived::<T>(Keyed::new(T::NAME, T::address)))
     }
 
-    fn resume(&self, dir: &Path) -> io::Result<Box<dyn Held>> {
+    fn resume(&self, dir: &Path) -> io::Result<Box<dyn OpenTable>> {
         Ok(Box::new(Derived::<T>(Keyed::resume(T::NAME, T::address, dir)?)))
     }
 
@@ -469,11 +478,15 @@ impl<T: Table> Contribution for Of<T> {
     }
 
     fn compare(&self, a: &Path, b: &Path) -> io::Result<Agreement> {
-        Ok(agreement(read::<T>(a)?, read::<T>(b)?, T::address))
+        Ok(Agreement::of(
+            Directory::at(a).table::<T>()?,
+            Directory::at(b).table::<T>()?,
+            T::address,
+        ))
     }
 }
 
-/// [`Held`] over a [`Keyed`] table of `T`'s rows.
+/// [`OpenTable`] over a [`Keyed`] table of `T`'s rows.
 struct Derived<T: Table>(Keyed<T::Row>);
 
 impl<T: Table> fmt::Debug for Derived<T> {
@@ -482,7 +495,7 @@ impl<T: Table> fmt::Debug for Derived<T> {
     }
 }
 
-impl<T: Table> Held for Derived<T> {
+impl<T: Table> OpenTable for Derived<T> {
     fn name(&self) -> &'static str {
         T::NAME
     }
@@ -554,7 +567,9 @@ impl<T: Table> Spill for Spilled<T> {
     }
 
     fn seed(&mut self, served: &Path) -> io::Result<()> {
-        each_row(&path(served, T::NAME), |row: T::Row| self.sheet.push(&row))
+        each_row(&Directory::at(served).table_path(T::NAME), |row: T::Row| {
+            self.sheet.push(&row)
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -572,7 +587,7 @@ impl<T: Table> Spill for Spilled<T> {
             self.sheet.path(),
             scratch,
             T::NAME,
-            &path(dir, T::NAME),
+            &Directory::at(dir).table_path(T::NAME),
             T::address,
             budget,
         )
@@ -614,50 +629,52 @@ impl RowDiff {
     }
 }
 
-/// Compare two tables of rows keyed by address.
-///
-/// Two sorted runs walked together: a row on one side and not the other is
-/// a missing system, and one on both that is not the same row is a system
-/// the two derivations say different things about.
-pub fn agreement<R: PartialEq>(
-    a: Option<Vec<R>>,
-    b: Option<Vec<R>>,
-    key: impl Fn(&R) -> i64,
-) -> Agreement {
-    let (mut left, mut right) = match (a, b) {
-        (None, None) => return Agreement::AbsentBoth,
-        (Some(_), None) => return Agreement::OnlyA,
-        (None, Some(_)) => return Agreement::OnlyB,
-        (Some(left), Some(right)) => (left, right),
-    };
-    left.sort_by_key(&key);
-    right.sort_by_key(&key);
-    let mut diff =
-        RowDiff { a: left.len(), b: right.len(), ..RowDiff::default() };
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < left.len() && j < right.len() {
-        let (x, y) = (key(&left[i]), key(&right[j]));
-        match x.cmp(&y) {
-            std::cmp::Ordering::Less => {
-                diff.only_a += 1;
-                i += 1;
-            }
-            std::cmp::Ordering::Greater => {
-                diff.only_b += 1;
-                j += 1;
-            }
-            std::cmp::Ordering::Equal => {
-                if left[i] != right[j] {
-                    diff.differing.push(x);
+impl Agreement {
+    /// Compare two tables of rows keyed by address.
+    ///
+    /// Two sorted runs walked together: a row on one side and not the other is
+    /// a missing system, and one on both that is not the same row is a system
+    /// the two derivations say different things about.
+    pub fn of<R: PartialEq>(
+        a: Option<Vec<R>>,
+        b: Option<Vec<R>>,
+        key: impl Fn(&R) -> i64,
+    ) -> Agreement {
+        let (mut left, mut right) = match (a, b) {
+            (None, None) => return Agreement::AbsentBoth,
+            (Some(_), None) => return Agreement::OnlyA,
+            (None, Some(_)) => return Agreement::OnlyB,
+            (Some(left), Some(right)) => (left, right),
+        };
+        left.sort_by_key(&key);
+        right.sort_by_key(&key);
+        let mut diff =
+            RowDiff { a: left.len(), b: right.len(), ..RowDiff::default() };
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < left.len() && j < right.len() {
+            let (x, y) = (key(&left[i]), key(&right[j]));
+            match x.cmp(&y) {
+                std::cmp::Ordering::Less => {
+                    diff.only_a += 1;
+                    i += 1;
                 }
-                i += 1;
-                j += 1;
+                std::cmp::Ordering::Greater => {
+                    diff.only_b += 1;
+                    j += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if left[i] != right[j] {
+                        diff.differing.push(x);
+                    }
+                    i += 1;
+                    j += 1;
+                }
             }
         }
+        diff.only_a += left.len() - i;
+        diff.only_b += right.len() - j;
+        Agreement::Rows(diff)
     }
-    diff.only_a += left.len() - i;
-    diff.only_b += right.len() - j;
-    Agreement::Rows(diff)
 }
 
 /// A published table, or [`None`] where the directory has no such file.

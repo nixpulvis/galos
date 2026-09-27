@@ -1,7 +1,7 @@
 //! Bringing a directory's layout up to date, before anything reads it.
 //!
 //! The migrations an open runs on its own: packing the loose body files into
-//! their shards ([`crate::store::bodies::pack`]), moving loose payloads into
+//! their shards ([`crate::store::Directory::pack_bodies`]), moving loose payloads into
 //! theirs ([`reshard_cells`]), folding the names table's legacy MessagePack
 //! chunks into a mapped base, and bringing forward whatever a contributed
 //! table's own shape has moved on from ([`crate::store::tables::Table::upgrade`]).
@@ -13,6 +13,7 @@
 //! [`migrate`] names rather than attempts.
 
 use crate::format::layout::PAYLOAD_DIR;
+use crate::store::Directory;
 use crate::store::tables::TableSet;
 use std::fs;
 use std::io;
@@ -63,7 +64,7 @@ pub struct Migrated {
 }
 
 /// Bring an existing directory's *layout* up to date, before anything reads or
-/// writes it: [`crate::store::bodies::pack`],
+/// writes it: [`crate::store::Directory::pack_bodies`],
 /// [`crate::ops::migrate::reshard_cells`], the names chunks, and then the
 /// contributed tables' own upgrades.
 ///
@@ -99,7 +100,7 @@ pub fn migrate(
     // as a failed open with no remedy attached. A layout this build does
     // not read is not something an open can fix: it is hours of re-encoding
     // and a sweep of the scan record, which is `galos index migrate`.
-    if let Some(found) = crate::store::cells::stale(dir) {
+    if let Some(found) = Directory::at(dir).stale_index() {
         return Ok(Migrated {
             bodies: crate::store::bodies::Packed { moved: 0, finished: true },
             cells: None,
@@ -109,7 +110,7 @@ pub fn migrate(
         });
     }
 
-    let bodies = crate::store::bodies::pack(dir, stop)?;
+    let bodies = Directory::at(dir).pack_bodies(stop)?;
     if !bodies.finished {
         return Ok(Migrated {
             bodies,
@@ -120,7 +121,7 @@ pub fn migrate(
         });
     }
     let cells = crate::ops::migrate::reshard_cells(dir, stop)?;
-    let names = crate::store::names::fold_chunks(dir)?;
+    let names = Directory::at(dir).fold_name_chunks()?;
     // After the fold, so a table's upgrade reads a directory whose every
     // other part is current.
     let tables = upgraded(dir, tables)?;
@@ -144,7 +145,7 @@ pub fn upgraded(
 
 /// Move every loose `cells/*.bin` into its shard, stopping where asked.
 ///
-/// [`crate::store::bodies::pack`]'s twin, and [`migrate`] runs the pair: a
+/// [`crate::store::Directory::pack_bodies`]'s twin, and [`migrate`] runs the pair: a
 /// one-time migration, idempotent, a rename each. A directory already
 /// sharded costs one `readdir`.
 ///
@@ -153,7 +154,7 @@ pub fn upgraded(
 /// where the sharded path is absent, so a half-migrated directory serves every
 /// cell a finished one does, and the next open takes the rest. A payload
 /// already standing in its shard wins over the loose one, for the reason
-/// [`crate::store::bodies::pack`] gives.
+/// [`crate::store::Directory::pack_bodies`] gives.
 pub fn reshard_cells(
     dir: &Path,
     stop: &dyn Fn() -> bool,

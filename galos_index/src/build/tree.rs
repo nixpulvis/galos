@@ -41,25 +41,25 @@ use std::hash::{Hash, Hasher};
 /// So a set of them is looked up by id without a second copy of the id as a
 /// map key, and with no second type for what the tree holds.
 #[derive(Copy, Clone, Debug)]
-struct Held(System);
+struct ById(System);
 
-impl Hash for Held {
+impl Hash for ById {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.0.id64.hash(state);
     }
 }
 
-impl PartialEq for Held {
-    fn eq(&self, other: &Held) -> bool {
+impl PartialEq for ById {
+    fn eq(&self, other: &ById) -> bool {
         self.0.id64 == other.0.id64
     }
 }
 
-impl Eq for Held {}
+impl Eq for ById {}
 
 /// What a lookup by id borrows: hashing and equality are the id's own, which
 /// is the contract [`Borrow`] asks of a set key.
-impl Borrow<u64> for Held {
+impl Borrow<u64> for ById {
     fn borrow(&self) -> &u64 {
         &self.0.id64
     }
@@ -67,12 +67,12 @@ impl Borrow<u64> for Held {
 
 /// Every system the live tree holds, by id
 #[derive(Clone, Debug, Default)]
-struct Records(HashSet<Held>);
+struct Records(HashSet<ById>);
 
 impl Records {
     /// Hold `system`, in place of whatever was held under its id.
     fn insert(&mut self, system: System) {
-        self.0.replace(Held(system));
+        self.0.replace(ById(system));
     }
 
     fn remove(&mut self, id: u64) {
@@ -98,7 +98,7 @@ impl Records {
 
 impl FromIterator<System> for Records {
     fn from_iter<I: IntoIterator<Item = System>>(systems: I) -> Records {
-        Records(systems.into_iter().map(Held).collect())
+        Records(systems.into_iter().map(ById).collect())
     }
 }
 
@@ -307,7 +307,7 @@ impl Tree {
 
     /// The record the tree holds for a system, if it holds one: what the
     /// directory publishes of it, at full precision.
-    pub fn held(&self, address: i64) -> Option<&System> {
+    pub fn record(&self, address: i64) -> Option<&System> {
         self.records.get(address as u64)
     }
 

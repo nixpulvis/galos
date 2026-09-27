@@ -9,6 +9,7 @@
 //! as [`Boosts`].
 
 use galos_index::read::source::{Source, table};
+use galos_index::store::Directory;
 use galos_index::{StarKind, System, Table};
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -171,7 +172,7 @@ impl Table for BoostTable {
             boost: Boost,
         }
 
-        let path = galos_index::store::tables::path(dir, Self::NAME);
+        let path = Directory::at(dir).table_path(Self::NAME);
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -179,7 +180,7 @@ impl Table for BoostTable {
         };
         // Already placed, which is every table written since. Asked first,
         // so a current directory pays one decode and nothing else.
-        if galos_index::store::tables::decode::<BoostTable>(&bytes).is_ok() {
+        if BoostTable::decode(&bytes).is_ok() {
             return Ok(None);
         }
         let mut old: Vec<Unplaced> = rmp_serde::from_slice(&bytes)
@@ -355,7 +356,7 @@ mod tests {
         let dir = crate::testing::Scratch::new("unplaced");
         crate::testing::sky(dir.path(), &[(7, [1.0, 2.0, 3.0])]);
         galos_index::format::msgpack::write_meta(
-            &galos_index::store::tables::path(dir.path(), BoostTable::NAME),
+            &Directory::at(dir.path()).table_path(BoostTable::NAME),
             &vec![Unplaced { address: 7, boost: Boost::Neutron }],
         )
         .expect("a table of the old shape");
@@ -372,7 +373,8 @@ mod tests {
         };
         assert_eq!(rewrite().upgraded, 1, "the table stayed behind");
         assert_eq!(
-            galos_index::store::tables::read::<BoostTable>(dir.path())
+            Directory::at(dir.path())
+                .table::<BoostTable>()
                 .expect("the table reads as placed rows"),
             Some(vec![SystemBoost {
                 address: 7,

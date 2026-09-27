@@ -1,4 +1,4 @@
-use crate::map::bodies::spawn::{HeldSystem, Strength};
+use crate::map::bodies::spawn::{Entered, Strength};
 use crate::map::camera::{FRAMING_MARGIN, MoveCamera, OrbitCamera};
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::Spyglass;
@@ -426,7 +426,7 @@ pub(crate) enum Hop {
 /// Read off the system rather than worked out here, so that a route fading in
 /// as the camera descends and the mark it is fading in behind are the one
 /// figure and go together.
-fn standing(holding: &HeldSystem, marks: &Query<&Strength>) -> f32 {
+fn standing(holding: &Entered, marks: &Query<&Strength>) -> f32 {
     holding
         .of()
         .and_then(|system| marks.get(system).ok())
@@ -497,7 +497,7 @@ fn hops(
     filters: Res<Filters>,
     selected: Res<SelectedFilter>,
     contents: Res<crate::map::bodies::Contents>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     marks: Query<&Strength>,
     systems: Query<(Entity, &System, Option<&Hop>)>,
     mut commands: Commands,
@@ -953,7 +953,7 @@ pub(crate) fn strength(is_active: bool) -> f32 {
 fn emphasise(
     filters: Res<Filters>,
     selected: Res<SelectedFilter>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     marks: Query<&Strength>,
     lines: Query<(&Route, &MeshMaterial3d<StandardMaterial>)>,
     mut materials: ResMut<Assets<StandardMaterial>>,

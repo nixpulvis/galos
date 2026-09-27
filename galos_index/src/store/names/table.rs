@@ -289,12 +289,11 @@ mod tests {
     use crate::format::layout::{
         ADDR_FILE, EXCEPTION_FILE, SPAN_FILE, TEXT_FILE,
     };
+    use crate::store::Directory;
     use crate::store::names::Names;
     use crate::store::names::fixtures::{Scratch, entry, published};
     use crate::store::names::format::{ADDR, SPAN, VERSION};
-    use crate::store::names::write::{
-        compact, live_generation, span_bytes, version,
-    };
+    use crate::store::names::write::{live_generation, span_bytes};
     use std::fs::File;
 
     /// A name its address spells is not written down, and reads back anyway
@@ -322,7 +321,10 @@ mod tests {
             generation_dir(&dir.0, live_generation(&dir.0).unwrap().unwrap());
         let text = std::fs::metadata(at.join(TEXT_FILE)).unwrap().len();
         assert_eq!(text, "SOL".len() as u64, "the derived names were stored");
-        assert_eq!(version(&dir.0).unwrap(), Some(VERSION));
+        assert_eq!(
+            Directory::at(&dir.0).names_version().unwrap(),
+            Some(VERSION)
+        );
 
         // **And a derived row costs no span either**: one offset a *stored*
         // name plus a terminator, and one row number beside it. Three rows,
@@ -438,7 +440,7 @@ mod tests {
         head[40..48].copy_from_slice(&0u64.to_le_bytes());
         std::fs::write(&path, &head).expect("a version 2 head");
 
-        assert_eq!(version(&dir.0).unwrap(), Some(2));
+        assert_eq!(Directory::at(&dir.0).names_version().unwrap(), Some(2));
         let table = Table::open(&dir.0).expect("a version 2 table opens");
         table.audit().expect("a version 2 table is sound");
         assert_eq!(table.len(), 3);
@@ -453,8 +455,11 @@ mod tests {
 
         // And a rewrite brings it forward without reading anything but the
         // table itself.
-        assert_eq!(compact(&dir.0).expect("a fold"), 3);
-        assert_eq!(version(&dir.0).unwrap(), Some(VERSION));
+        assert_eq!(Directory::at(&dir.0).compact_names().expect("a fold"), 3);
+        assert_eq!(
+            Directory::at(&dir.0).names_version().unwrap(),
+            Some(VERSION)
+        );
         let table = Table::open(&dir.0).expect("the table reopens");
         table.audit().expect("a table the fold just wrote");
         assert_eq!(table.name_at(0), "SOL");

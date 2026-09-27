@@ -13,32 +13,34 @@
 
 use crate::format::layout::INDEX_FILE;
 use crate::format::payload::{INDEX_VERSION, index_version};
+use crate::store::Directory;
 use std::fs;
-use std::path::Path;
 
 pub(crate) mod read;
 pub(crate) mod write;
 
 pub use read::Payload;
-pub(crate) use write::write_payload;
-pub use write::{Swept, sweep_payloads};
+pub use write::Swept;
 
-/// The format version a directory claims, where it is not the one this
-/// build reads
-///
-/// [`None`] for a directory this build can read, or for one there is
-/// nothing of yet — a missing index file is a directory nothing has built,
-/// which is not the same as one built another way.
-///
-/// **Asked before any migration touches the place.** The automatic
-/// migrations are content-blind — they move files into shards and fold
-/// chunks — so they would run happily over a directory whose payloads this
-/// build cannot read, and the refusal would come later, out of whatever
-/// asked for a cell. See [`crate::ops::migrate::migrate`] and
-/// [`crate::ops::upgrade`].
-pub fn stale(dir: &Path) -> Option<u16> {
-    let bytes = fs::read(dir.join(INDEX_FILE)).ok()?;
-    index_version(&bytes).filter(|found| *found != INDEX_VERSION)
+impl Directory<'_> {
+    /// The format version a directory claims, where it is not the one this
+    /// build reads
+    ///
+    /// [`None`] for a directory this build can read, or for one there is
+    /// nothing of yet — a missing index file is a directory nothing has built,
+    /// which is not the same as one built another way.
+    ///
+    /// **Asked before any migration touches the place.** The automatic
+    /// migrations are content-blind — they move files into shards and fold
+    /// chunks — so they would run happily over a directory whose payloads this
+    /// build cannot read, and the refusal would come later, out of whatever
+    /// asked for a cell. See [`crate::ops::migrate::migrate`] and
+    /// [`crate::ops::upgrade`].
+    pub fn stale_index(self) -> Option<u16> {
+        let dir = self.root;
+        let bytes = fs::read(dir.join(INDEX_FILE)).ok()?;
+        index_version(&bytes).filter(|found| *found != INDEX_VERSION)
+    }
 }
 
 #[cfg(test)]

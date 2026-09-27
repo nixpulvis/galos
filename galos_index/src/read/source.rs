@@ -21,9 +21,9 @@ use crate::format::layout::{
 };
 use crate::format::msgpack::read_meta;
 use crate::records::{Faction, PopulatedSystem, SystemBodies, SystemReach};
-use crate::store::bodies::read_bodies;
+use crate::store::Directory;
 use crate::store::names;
-use crate::store::tables::{self, Table};
+use crate::store::tables::Table;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use async_trait::async_trait;
@@ -167,7 +167,7 @@ pub async fn table<T: Table>(
     source: &dyn Source,
 ) -> io::Result<Option<Vec<T::Row>>> {
     match source.table(T::NAME).await? {
-        Some(bytes) => Ok(Some(tables::decode::<T>(&bytes)?)),
+        Some(bytes) => Ok(Some(T::decode(&bytes)?)),
         None => Ok(None),
     }
 }
@@ -227,7 +227,7 @@ impl Source for FsSource {
     }
 
     async fn table(&self, name: &'static str) -> io::Result<Option<Vec<u8>>> {
-        match std::fs::read(tables::path(&self.dir, name)) {
+        match std::fs::read(Directory::at(&self.dir).table_path(name)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
@@ -235,7 +235,7 @@ impl Source for FsSource {
     }
 
     async fn bodies(&self, address: i64) -> io::Result<SystemBodies> {
-        read_bodies(&self.dir, address)
+        Directory::at(&self.dir).read_bodies(address)
     }
 
     /// The file's modification time, in nanoseconds since the epoch.
@@ -262,7 +262,7 @@ impl Source for FsSource {
             Part::Populated => populated_path(&self.dir),
             Part::Reaches => reaches_path(&self.dir),
             Part::Factions => factions_path(&self.dir),
-            Part::Table(name) => tables::path(&self.dir, name),
+            Part::Table(name) => Directory::at(&self.dir).table_path(name),
             Part::Names => names_head_path(&self.dir),
             Part::NamesDelta => names_delta_path(&self.dir),
         };
@@ -280,6 +280,7 @@ impl Source for FsSource {
 #[cfg(test)]
 mod tests {
     use crate::records::{Barycenter, SystemBodies};
+    use crate::store::Directory;
     use std::path::PathBuf;
 
     /// An empty scratch directory named after the test using it.
@@ -394,7 +395,7 @@ mod tests {
             .join(format!("galos_source_epoch_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch directory");
-        let path = super::tables::path(&dir, "cones");
+        let path = Directory::at(&dir).table_path("cones");
         std::fs::write(&path, b"\x90").expect("an empty table");
 
         // Ten years before the epoch, which is a negative seconds count on

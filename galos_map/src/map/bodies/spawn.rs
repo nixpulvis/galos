@@ -57,7 +57,7 @@ use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<DrawnContents>();
-    app.init_resource::<HeldSystem>();
+    app.init_resource::<Entered>();
     app.insert_resource(ShowOrbits(true));
     app.add_systems(Startup, init_materials);
     // After the rows have been taken in, so that a system's contents can be
@@ -235,9 +235,9 @@ pub(crate) const WORTH_HIDING: f32 = 0.05;
 /// This is the entity, for whoever has to reach the system itself rather than
 /// its rows, and it names the one system whose mark may go out.
 #[derive(Resource, Default)]
-pub struct HeldSystem(Option<Entity>);
+pub struct Entered(Option<Entity>);
 
-impl HeldSystem {
+impl Entered {
     /// Which system that is, if the map is drawing one
     pub fn of(&self) -> Option<Entity> {
         self.0
@@ -245,10 +245,10 @@ impl HeldSystem {
 }
 
 #[cfg(test)]
-impl HeldSystem {
+impl Entered {
     /// The map standing in `entity`, for tests that put the camera in a system.
-    pub(crate) fn holding(entity: Entity) -> HeldSystem {
-        HeldSystem(Some(entity))
+    pub(crate) fn holding(entity: Entity) -> Entered {
+        Entered(Some(entity))
     }
 }
 
@@ -294,7 +294,7 @@ pub(crate) const GOES_OUT_IN: f32 = 0.5;
 fn fade(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     mut systems: Query<(Entity, &System, &Visibility, &mut Strength)>,
 ) {
     let Ok(eye) = camera.single().map(|camera| camera.eye()) else { return };
@@ -757,7 +757,7 @@ fn draw(
     marks: Res<MarkMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut drawn: ResMut<DrawnContents>,
-    mut holding: ResMut<HeldSystem>,
+    mut holding: ResMut<Entered>,
     mut commands: Commands,
 ) {
     let Ok((eye_entity, eye, across)) =
@@ -1357,7 +1357,7 @@ fn strayed(strayed: f64, per_pixel: f32) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn relay(
     camera: Query<(&OrbitCamera, &Camera, Option<&Projection>)>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     systems: Query<&System>,
     grids: Query<&Grid>,
     contents: Res<Contents>,
@@ -2189,7 +2189,7 @@ mod tests {
             .world_mut()
             .spawn((crate::map::galaxy::tests::at(1, 0.), grid.clone()))
             .id();
-        app.insert_resource(HeldSystem::holding(system));
+        app.insert_resource(Entered::holding(system));
 
         // The ring as `draw` lays it: evenly, about where the body stands at
         // the moment it is drawn, so the run has a point exactly there.
@@ -2316,7 +2316,7 @@ mod tests {
             .id();
         // Held, since a mark only goes out where the map is drawing what it
         // stands for.
-        app.insert_resource(HeldSystem(Some(held)));
+        app.insert_resource(Entered(Some(held)));
         app.add_systems(Update, fade);
         app.update();
         app
@@ -2325,7 +2325,7 @@ mod tests {
     /// And one the map is not holding
     fn beside(away: f64) -> App {
         let mut app = approaching(away);
-        app.insert_resource(HeldSystem::default());
+        app.insert_resource(Entered::default());
         app
     }
 
@@ -2719,7 +2719,7 @@ mod tests {
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<Clock>();
         app.init_resource::<Selection>();
-        app.init_resource::<HeldSystem>();
+        app.init_resource::<Entered>();
         app.insert_resource(DrawnContents(Some((1, 0))));
         // The rows are about system 2 now, which is the whole of what the pan
         // did. One body, so the extent is known and the rows count as answered.

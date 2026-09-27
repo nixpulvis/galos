@@ -2277,7 +2277,7 @@ impl JumpGraph {
 
     /// How many systems the cell a node belongs to holds, which is how long
     /// the search's record of that cell has to be.
-    fn held(&self, node: Node) -> usize {
+    fn cell_size(&self, node: Node) -> usize {
         self.sky.payload(node.cell).map_or(0, |payload| payload.len())
     }
 
@@ -3502,7 +3502,7 @@ impl JumpGraph {
         let away = |at: [f64; 3]| dist2(at, goal) as u64;
 
         let from = self.place(start);
-        best.record(start, self.held(start), C::ZERO);
+        best.record(start, self.cell_size(start), C::ZERO);
         open.push(Reverse((
             estimate(from).share(weight, WHOLE),
             away(from),
@@ -3569,7 +3569,7 @@ impl JumpGraph {
                     continue;
                 }
                 let left = estimate(place);
-                best.record(next, self.held(next), cost);
+                best.record(next, self.cell_size(next), cost);
                 came.insert(next, node);
                 open.push(Reverse((
                     cost + left.share(weight, WHOLE),

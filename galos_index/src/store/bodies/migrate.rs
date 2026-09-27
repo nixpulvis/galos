@@ -8,6 +8,7 @@
 use super::Table;
 use super::write::append;
 use crate::format::layout::{BODIES_DIR, body_index_path, body_shard};
+use crate::store::Directory;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,91 +31,95 @@ pub struct Packed {
 /// quick and rarely enough that the appends are worth making.
 const BATCH: usize = 512;
 
-/// Walk a directory's loose body files into the shards.
-///
-/// Both older layouts at once: the unsharded `bodies/{address}.bin` and
-/// `bodies/{shard:03x}/{address}.bin`. A file's bytes are already the record
-/// the pack stores, so nothing is decoded on the way through.
-///
-/// Interruptible, because a galaxy of loose files is hours of them and a run
-/// asked to stop must not wait. What it abandons the next open takes up: a
-/// loose file is removed only once the pack has its record, and
-/// [`crate::store::bodies::read_bodies`] falls back to the loose paths for
-/// whatever is left, so a directory part way through answers for every system a
-/// finished one does.
-///
-/// A system the pack already holds wins over a loose file of the same
-/// address: the pack is where the newer write went, and reading the loose
-/// one back over it would put a stale scan back.
-pub fn pack(
-    dir: &Path,
-    stop: &(dyn Fn() -> bool + Sync),
-) -> io::Result<Packed> {
-    let bodies = dir.join(BODIES_DIR);
-    let mut moved = 0;
-    let mut loose: Vec<PathBuf> = Vec::new();
-    let mut shards: Vec<PathBuf> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&bodies) else {
-        return Ok(Packed { moved, finished: true });
-    };
-    for entry in entries.flatten() {
-        match entry.file_type() {
-            Ok(kind) if kind.is_dir() => shards.push(entry.path()),
-            Ok(_) => loose.push(entry.path()),
-            Err(_) => {}
+impl Directory<'_> {
+    /// Walk a directory's loose body files into the shards.
+    ///
+    /// Both older layouts at once: the unsharded `bodies/{address}.bin` and
+    /// `bodies/{shard:03x}/{address}.bin`. A file's bytes are already the record
+    /// the pack stores, so nothing is decoded on the way through.
+    ///
+    /// Interruptible, because a galaxy of loose files is hours of them and a run
+    /// asked to stop must not wait. What it abandons the next open takes up: a
+    /// loose file is removed only once the pack has its record, and
+    /// [`crate::store::Directory::read_bodies`] falls back to the loose paths for
+    /// whatever is left, so a directory part way through answers for every system a
+    /// finished one does.
+    ///
+    /// A system the pack already holds wins over a loose file of the same
+    /// address: the pack is where the newer write went, and reading the loose
+    /// one back over it would put a stale scan back.
+    pub fn pack_bodies(
+        self,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> io::Result<Packed> {
+        let dir = self.root;
+        let bodies = dir.join(BODIES_DIR);
+        let mut moved = 0;
+        let mut loose: Vec<PathBuf> = Vec::new();
+        let mut shards: Vec<PathBuf> = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&bodies) else {
+            return Ok(Packed { moved, finished: true });
+        };
+        for entry in entries.flatten() {
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => shards.push(entry.path()),
+                Ok(_) => loose.push(entry.path()),
+                Err(_) => {}
+            }
         }
-    }
 
-    let mut finished = true;
-    // The loose files at the top level are of every shard at once, so they
-    // are removed as they are taken: there is no directory to drop.
-    if take(dir, loose, &mut moved, stop, Removal::Eager)? == Took::Stopped {
-        return Ok(Packed { moved, finished: false });
-    }
-    // **A shard at a time, several shards at once.** Each directory's
-    // files belong to one shard, and a shard is its own index and its own
-    // data file, so two of them share nothing but the disk. What the work
-    // is bound by is small reads and metadata — measured at 2,100 files a
-    // second on one thread, where the drive will take several times that
-    // in flight — so the directories are dealt out to a few threads and
-    // each keeps its own `Holds` and its own batches.
-    //
-    // Sequential inside a shard all the same: its index is appended to and
-    // folded, and two threads doing that to one file is a corrupt shard.
-    let hands = std::thread::available_parallelism()
-        .map(|it| it.get().min(PACKERS))
-        .unwrap_or(1);
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let packed = std::sync::atomic::AtomicUsize::new(0);
-    let done = std::sync::atomic::AtomicBool::new(true);
-    let shards = &shards;
-    std::thread::scope(|threads| {
-        for _ in 0..hands {
-            threads.spawn(|| {
-                let mut mine = 0usize;
-                loop {
-                    let at = next.fetch_add(1, Relaxed);
-                    let Some(shard) = shards.get(at) else { break };
-                    match one_shard(dir, shard, &mut mine, stop) {
-                        Ok(true) => {}
-                        // Stopped, or a shard that would not pack: either
-                        // way the run is not finished and the rest of the
-                        // list is left for the next one.
-                        Ok(false) | Err(_) => {
-                            done.store(false, Relaxed);
-                            break;
+        let mut finished = true;
+        // The loose files at the top level are of every shard at once, so they
+        // are removed as they are taken: there is no directory to drop.
+        if take(dir, loose, &mut moved, stop, Removal::Eager)? == Took::Stopped
+        {
+            return Ok(Packed { moved, finished: false });
+        }
+        // **A shard at a time, several shards at once.** Each directory's
+        // files belong to one shard, and a shard is its own index and its own
+        // data file, so two of them share nothing but the disk. What the work
+        // is bound by is small reads and metadata — measured at 2,100 files a
+        // second on one thread, where the drive will take several times that
+        // in flight — so the directories are dealt out to a few threads and
+        // each keeps its own `Holds` and its own batches.
+        //
+        // Sequential inside a shard all the same: its index is appended to and
+        // folded, and two threads doing that to one file is a corrupt shard.
+        let hands = std::thread::available_parallelism()
+            .map(|it| it.get().min(PACKERS))
+            .unwrap_or(1);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let packed = std::sync::atomic::AtomicUsize::new(0);
+        let done = std::sync::atomic::AtomicBool::new(true);
+        let shards = &shards;
+        std::thread::scope(|threads| {
+            for _ in 0..hands {
+                threads.spawn(|| {
+                    let mut mine = 0usize;
+                    loop {
+                        let at = next.fetch_add(1, Relaxed);
+                        let Some(shard) = shards.get(at) else { break };
+                        match one_shard(dir, shard, &mut mine, stop) {
+                            Ok(true) => {}
+                            // Stopped, or a shard that would not pack: either
+                            // way the run is not finished and the rest of the
+                            // list is left for the next one.
+                            Ok(false) | Err(_) => {
+                                done.store(false, Relaxed);
+                                break;
+                            }
                         }
                     }
-                }
-                packed.fetch_add(mine, Relaxed);
-            });
+                    packed.fetch_add(mine, Relaxed);
+                });
+            }
+        });
+        moved += packed.load(Relaxed);
+        if !done.load(Relaxed) {
+            finished = false;
         }
-    });
-    moved += packed.load(Relaxed);
-    if !done.load(Relaxed) {
-        finished = false;
+        Ok(Packed { moved, finished })
     }
-    Ok(Packed { moved, finished })
 }
 
 /// How many shards are packed at once
@@ -355,7 +360,7 @@ fn settle(
 #[cfg(test)]
 mod tests {
     use super::super::Found;
-    use super::super::fixtures::{held, inside, scratch};
+    use super::super::fixtures::{found, inside, scratch};
     use super::*;
 
     /// A shard directory is taken away whole, unless it holds something else
@@ -384,10 +389,11 @@ mod tests {
         std::fs::write(&stray, b"nothing to do with bodies")
             .expect("a stray file writes");
 
-        let done = pack(&dir, &|| false).expect("the pack runs");
+        let done =
+            Directory::at(&dir).pack_bodies(&|| false).expect("the pack runs");
         assert!(done.finished);
         assert_eq!(done.moved, 1, "the body file was not counted");
-        assert!(matches!(held(&dir, address), Found::Bodies(_)));
+        assert!(matches!(found(&dir, address), Found::Bodies(_)));
         assert!(
             !crate::format::layout::bodies_path(&dir, address).exists(),
             "a packed file was left loose",
@@ -430,10 +436,13 @@ mod tests {
         // threads, so what it asks about stopping is shared.
         let some = std::sync::atomic::AtomicUsize::new(0);
         let stop = || some.fetch_add(1, Relaxed) > 4;
-        let part = pack(&dir, &stop).expect("the migration runs");
+        let part =
+            Directory::at(&dir).pack_bodies(&stop).expect("the migration runs");
         assert!(!part.finished, "an abandoned migration claimed to be done");
 
-        let rest = pack(&dir, &|| false).expect("the migration runs again");
+        let rest = Directory::at(&dir)
+            .pack_bodies(&|| false)
+            .expect("the migration runs again");
         assert!(rest.finished, "a migration nobody stopped did not finish");
         assert_eq!(
             part.moved + rest.moved,
@@ -442,7 +451,7 @@ mod tests {
         );
 
         for &address in &flat {
-            assert_eq!(held(&dir, address), Found::Bodies(inside(1)));
+            assert_eq!(found(&dir, address), Found::Bodies(inside(1)));
             assert!(
                 !crate::format::layout::legacy_bodies_path(&dir, address)
                     .exists(),
@@ -450,14 +459,15 @@ mod tests {
             );
         }
         for &address in &sharded {
-            assert_eq!(held(&dir, address), Found::Bodies(inside(2)));
+            assert_eq!(found(&dir, address), Found::Bodies(inside(2)));
             assert!(
                 !crate::format::layout::bodies_path(&dir, address).exists(),
                 "a packed file was left loose",
             );
         }
 
-        let again = pack(&dir, &|| false).expect("a third pass");
+        let again =
+            Directory::at(&dir).pack_bodies(&|| false).expect("a third pass");
         assert_eq!(again.moved, 0, "a second pass moved what was packed");
 
         let _ = std::fs::remove_dir_all(&dir);

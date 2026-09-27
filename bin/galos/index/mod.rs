@@ -57,7 +57,8 @@ use galos_index::accumulate::bodies::{Bodies, OnDisk};
 use galos_index::core::geometry::MAX_LEVEL;
 use galos_index::records::{NameEntry, PopulatedSystem, SystemReach};
 use galos_index::store::cells;
-use galos_index::store::tables::{agreement, path, Agreement};
+use galos_index::store::tables::Agreement;
+use galos_index::store::Directory;
 use galos_index::{Cell, Index, Names};
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
@@ -393,7 +394,7 @@ fn stopping() -> impl Fn() -> bool + Sync {
 /// does not name has no reader, and a shard is reclaimed whole. Not safe
 /// against one something is *writing*, which is what [`held`] is for.
 fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
-    let lock = held(dir, forced);
+    let lock = locked(dir, forced);
     let index = match galos_index::Index::read(dir) {
         Ok(index) => index,
         Err(err) => {
@@ -402,11 +403,9 @@ fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
         }
     };
     let at = std::time::Instant::now();
-    match galos_index::store::cells::sweep_payloads(
-        dir,
-        &|id| index.get(id).is_some(),
-        apply,
-    ) {
+    match Directory::at(dir)
+        .sweep_payloads(&|id| index.get(id).is_some(), apply)
+    {
         Ok(swept) if swept.orphans == 0 => {
             println!(
                 "{}: every payload belongs to a cell of the {} the index \
@@ -456,7 +455,7 @@ fn sweep(dir: &Path, bodies: bool, apply: bool, forced: bool) {
 fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
     let stop = stopping();
     let at = std::time::Instant::now();
-    let weighed = galos_index::store::bodies::weigh(dir, &stop)?;
+    let weighed = Directory::at(dir).weigh_bodies(&stop)?;
     println!(
         "{}: {} shards, {} systems, {} live, {} dead, in {:.1?}",
         dir.display(),
@@ -495,7 +494,7 @@ fn sweep_bodies(dir: &Path, apply: bool) -> io::Result<()> {
             from.elapsed(),
         );
     };
-    let swept = galos_index::store::bodies::sweep_bodies(dir, &stop, &said);
+    let swept = Directory::at(dir).sweep_bodies(&stop, &said);
     eprintln!();
     let swept = swept?;
     println!(
@@ -591,11 +590,9 @@ fn verify(dir: &Path, bodies: bool) {
             }
         }
     }
-    let orphans = match galos_index::store::cells::sweep_payloads(
-        dir,
-        &|id| index.get(id).is_some(),
-        false,
-    ) {
+    let orphans = match Directory::at(dir)
+        .sweep_payloads(&|id| index.get(id).is_some(), false)
+    {
         Ok(swept) => swept,
         Err(err) => {
             eprintln!("\n{}: {err}", dir.display());
@@ -611,7 +608,7 @@ fn verify(dir: &Path, bodies: bool) {
         at.elapsed(),
     );
 
-    match galos_index::store::bodies::weigh(dir, &stop) {
+    match Directory::at(dir).weigh_bodies(&stop) {
         Ok(weighed) => {
             println!(
                 "  bodies      {} shards, {} systems, {} live, {} dead \
@@ -691,12 +688,11 @@ fn strays(
     named.sort_unstable();
 
     let mut strays = 0u64;
-    let walked =
-        galos_index::store::bodies::each_address(dir, stop, &mut |address| {
-            if named.binary_search(&(address as u64)).is_err() {
-                strays += 1;
-            }
-        });
+    let walked = Directory::at(dir).each_body_address(stop, &mut |address| {
+        if named.binary_search(&(address as u64)).is_err() {
+            strays += 1;
+        }
+    });
     match walked {
         Ok(true) => println!(
             "              {strays} of {records} body records are for \
@@ -747,7 +743,7 @@ fn size(bytes: u64) -> String {
 /// last, and a table already at this version is not touched. The bodies,
 /// the sidecars and the tree itself are unchanged.
 fn migrate(dir: &Path, forced: bool) {
-    let lock = held(dir, forced);
+    let lock = locked(dir, forced);
     if !fold_names(dir, &lock) {
         leave(Some(lock), 2);
     }
@@ -821,18 +817,18 @@ fn migrate(dir: &Path, forced: bool) {
 /// alone.
 fn names_forward(dir: &Path, lock: &galos_index::Lock) {
     let _ = lock;
-    match galos_index::store::names::version(dir) {
+    match Directory::at(dir).names_version() {
         Ok(None) => {}
-        Ok(Some(version)) if version >= galos_index::store::names::writes() => {
+        Ok(Some(version)) if version >= galos_index::Names::VERSION => {
             println!("the names table is already version {version}");
         }
         Ok(Some(version)) => {
             let at = std::time::Instant::now();
             println!(
                 "rewriting the names table, version {version} to {}",
-                galos_index::store::names::writes(),
+                galos_index::Names::VERSION,
             );
-            match galos_index::store::names::compact(dir) {
+            match Directory::at(dir).compact_names() {
                 Ok(count) => {
                     println!("{count} names rewritten in {:.1?}", at.elapsed())
                 }
@@ -855,9 +851,9 @@ fn names_forward(dir: &Path, lock: &galos_index::Lock) {
 /// Not safe to run against a directory something is *writing*, which is
 /// what [`held`] is for.
 fn pack(dir: &Path, forced: bool) {
-    let lock = held(dir, forced);
+    let lock = locked(dir, forced);
     let start = std::time::Instant::now();
-    match galos_index::store::bodies::pack(dir, &|| false) {
+    match Directory::at(dir).pack_bodies(&|| false) {
         Ok(done) => println!(
             "{}: {} files packed in {:.1?}{}",
             dir.display(),
@@ -925,7 +921,7 @@ fn carry(from: &Path, to: &Path, force: bool, forced: bool, what: &str) {
     // The lock first, then the clearing: what `--force` replaces is a
     // directory, and a directory somebody is writing is not one to
     // replace out from under them.
-    let lock = held(to, forced);
+    let lock = locked(to, forced);
     if standing {
         if let Err(err) = galos_index::ops::copy::discard(to) {
             eprintln!("cannot clear {}: {err}", to.display());
@@ -1018,13 +1014,13 @@ fn merge(
         std::process::exit(2);
     }
 
-    let lock = held(dir, forced);
+    let lock = locked(dir, forced);
     let source = match dry_run {
         // Nothing is written on either side, and refusing a dry run
         // because a feed is live is refusing the one reading an operator
         // would do *while* deciding.
         true => None,
-        false => Some(held(from, forced)),
+        false => Some(locked(from, forced)),
     };
 
     let start = std::time::Instant::now();
@@ -1089,7 +1085,7 @@ fn merge(
 fn fold_names(dir: &Path, lock: &galos_index::Lock) -> bool {
     let _ = lock;
     let start = std::time::Instant::now();
-    match galos_index::store::names::fold_chunks(dir) {
+    match Directory::at(dir).fold_name_chunks() {
         Ok(Some(named)) => println!(
             "{}: {named} systems folded into the mapped table in {:.1?}",
             dir.display(),
@@ -1262,7 +1258,7 @@ fn sector_words(name: &str) -> Option<&str> {
 /// tell apart from a live builder: a lock whose process was killed. The
 /// refusal names the pid, and clearing one that is still running is two
 /// writers over a directory published whole — see [`galos_index::Lock`].
-fn held(dir: &Path, forced: bool) -> galos_index::Lock {
+fn locked(dir: &Path, forced: bool) -> galos_index::Lock {
     let taken = match forced {
         true => galos_index::Lock::force(dir),
         false => galos_index::Lock::take(dir),
@@ -1990,7 +1986,7 @@ fn same_base(a: &Path, b: &Path, left: &Names, right: &Names) -> bool {
         return false;
     };
     let version =
-        |dir: &Path| galos_index::store::names::version(dir).ok().flatten();
+        |dir: &Path| Directory::at(dir).names_version().ok().flatten();
     let Some(held) = version(a) else { return false };
     if Some(held) != version(b) {
         return false;
@@ -2139,16 +2135,22 @@ impl<'n> Rows<'n> {
 /// that is the road taken then, and it is the road this always took.
 fn tables(a: &Path, b: &Path, how: &Compare) -> Verdict {
     let mut verdict = agree("populated", a, b, how, || {
-        agreement(
-            table::<PopulatedSystem>(a, &path(a, "populated")),
-            table::<PopulatedSystem>(b, &path(b, "populated")),
+        Agreement::of(
+            table::<PopulatedSystem>(
+                a,
+                &Directory::at(a).table_path("populated"),
+            ),
+            table::<PopulatedSystem>(
+                b,
+                &Directory::at(b).table_path("populated"),
+            ),
             |it| it.address,
         )
     });
     verdict = verdict.and(agree("reaches", a, b, how, || {
-        agreement(
-            table::<SystemReach>(a, &path(a, "reaches")),
-            table::<SystemReach>(b, &path(b, "reaches")),
+        Agreement::of(
+            table::<SystemReach>(a, &Directory::at(a).table_path("reaches")),
+            table::<SystemReach>(b, &Directory::at(b).table_path("reaches")),
             |it| it.address,
         )
     }));
@@ -2171,7 +2173,10 @@ fn agree(
     rows: impl FnOnce() -> Agreement,
 ) -> Verdict {
     let at = std::time::Instant::now();
-    let (x, y) = (path(a, label), path(b, label));
+    let (x, y) = (
+        Directory::at(a).table_path(label),
+        Directory::at(b).table_path(label),
+    );
     let weigh = |dir: &Path, path: &Path| match std::fs::metadata(path) {
         Ok(meta) => Some(meta.len()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
@@ -2309,9 +2314,11 @@ fn bodies(a: &Path, b: &Path, limit: usize) -> Verdict {
             }
             std::cmp::Ordering::Equal => {
                 let address = left[i];
-                let x = galos_index::store::bodies::read_bodies(a, address)
+                let x = Directory::at(a)
+                    .read_bodies(address)
                     .unwrap_or_else(|e| fatal(a, e));
-                let y = galos_index::store::bodies::read_bodies(b, address)
+                let y = Directory::at(b)
+                    .read_bodies(address)
                     .unwrap_or_else(|e| fatal(b, e));
                 if x != y {
                     differing.push(address);

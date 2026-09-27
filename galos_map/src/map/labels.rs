@@ -45,7 +45,7 @@
 //! after the name has been painted on it, and not at all for a body spawned
 //! this frame, which read as the label being up and clicking doing nothing.
 
-use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
+use crate::map::bodies::spawn::{Body, Entered, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::Filtered;
 use crate::map::galaxy::spawn::{ShowNames, StarExposure};
@@ -538,7 +538,7 @@ pub(crate) fn choose_names(
     named: Query<Entity, With<Named>>,
     pointing: Query<&PointedAt>,
     selection: Query<(), With<Selected>>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     time: Res<Time<Real>>,
     sky: Sky,
     mut layout: Local<Layout>,
@@ -1272,7 +1272,7 @@ pub(crate) fn respawn(
     // granted room for on the frame the camera arrives, before the system it
     // arrives in has let go of its own name.
     standing_in: Query<&System>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     named_bodies: Query<(Entity, &Body, Option<&Children>), With<Named>>,
     // Whatever lost its name since this last ran, rather than everything that
     // does not have one. Nearly every name is the name it was last frame, and
@@ -2507,7 +2507,7 @@ mod tests {
     fn plated() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.init_resource::<HeldSystem>();
+        app.init_resource::<Entered>();
         app
     }
 

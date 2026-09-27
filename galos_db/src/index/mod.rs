@@ -17,7 +17,7 @@ use galos_index::build::cold::{
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::parts::CorePart;
 use galos_index::records::derive::{self, NearestStar};
-use galos_index::store::tables::Held;
+use galos_index::store::tables::OpenTable;
 use galos_index::{BuildParams, Index, System, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
@@ -288,7 +288,7 @@ async fn build_cells(
     params: BuildParams,
     budget: u64,
     now: chrono::NaiveDateTime,
-    contributed: &mut [Box<dyn Held>],
+    contributed: &mut [Box<dyn OpenTable>],
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Built> {
@@ -495,10 +495,10 @@ pub async fn build_to_dir(
     // The contributed tables asked for, derived from each system's record:
     // out of the cold build's own read where there is one, and out of the
     // same read on its own where only the tables are asked for.
-    let mut contributed: Vec<Box<dyn Held>> = tables
+    let mut contributed: Vec<Box<dyn OpenTable>> = tables
         .iter()
         .filter(|it| parts.tables.contains(&it.name()))
-        .map(|it| it.held())
+        .map(|it| it.empty())
         .collect();
     let cells = match parts.cells {
         false => {
@@ -1320,6 +1320,7 @@ impl fmt::Display for BuildReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use galos_index::store::Directory;
 
     /// The tables the program contributes, which a directory built here
     /// holds beside the index's own.
@@ -2154,7 +2155,7 @@ mod tests {
         )
         .await
         .expect("the core build should run");
-        let boosts = galos_index::store::tables::path(&dir, "boosts");
+        let boosts = Directory::at(&dir).table_path("boosts");
         assert!(!boosts.exists(), "a table nothing contributed was written");
         assert!(
             matches!(
@@ -2183,7 +2184,8 @@ mod tests {
         .await
         .expect("the table should be added");
         assert_eq!(
-            galos_index::store::tables::read::<BoostTable>(&dir)
+            Directory::at(&dir)
+                .table::<BoostTable>()
                 .expect("the added table reads"),
             Some(vec![SystemBoost {
                 address,

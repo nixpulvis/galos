@@ -5,7 +5,7 @@
 //! then answers to one component and they cannot disagree: pointing at a
 //! name rings its star, and pointing at a star lights its name.
 
-use crate::map::bodies::spawn::{Body, HeldSystem, Places, Strength};
+use crate::map::bodies::spawn::{Body, Entered, Places, Strength};
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
@@ -890,7 +890,7 @@ pub fn point_the_cursor(
 pub fn ring(
     mut contexts: EguiContexts,
     camera: Query<(&OrbitCamera, &Camera)>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     // A selected system is already ringed, in its own color. Ringing it
     // again for being pointed at would draw one circle over the other and
     // read as the selection having been lost.

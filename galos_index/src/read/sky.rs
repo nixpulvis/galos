@@ -76,7 +76,7 @@ const MAPPED_CELLS: usize = 8 * 1024;
 pub struct Sky {
     dir: PathBuf,
     index: Index,
-    held: Mutex<Held>,
+    held: Mutex<Mapped>,
 }
 
 /// The mapped payloads, in two generations.
@@ -87,7 +87,7 @@ pub struct Sky {
 /// is still reaching for is found in `old` and promoted, so the set a route
 /// actually uses survives, and the bound is twice [`MAPPED_CELLS`].
 #[derive(Default)]
-struct Held {
+struct Mapped {
     young: HashMap<CellId, Option<Arc<Payload>>>,
     old: HashMap<CellId, Option<Arc<Payload>>>,
 }
@@ -100,7 +100,7 @@ impl Sky {
 
     /// The same over an index already read, which every reader has.
     pub fn of(dir: &Path, index: Index) -> Sky {
-        Sky { dir: dir.to_owned(), index, held: Mutex::new(Held::default()) }
+        Sky { dir: dir.to_owned(), index, held: Mutex::new(Mapped::default()) }
     }
 
     /// The cell tree, for a caller that wants the aggregates.

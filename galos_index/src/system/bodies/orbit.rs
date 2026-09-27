@@ -597,10 +597,10 @@ fn eccentric_anomaly(mean: f64, eccentricity: f64) -> f64 {
 /// relative to its planet and its planet relative to the star, without any of
 /// them having to know how deep they sit.
 #[derive(Default)]
-pub struct Orbits(HashMap<i16, Held>);
+pub struct Orbits(HashMap<i16, Track>);
 
 /// One thing's path, what it goes round, and how much of that was read
-struct Held {
+struct Track {
     parent: Option<i16>,
     orbit: Orbit,
     standing: Standing,
@@ -685,7 +685,7 @@ impl Orbits {
         orbit: Orbit,
         standing: Standing,
     ) {
-        self.0.insert(id, Held { parent, orbit, standing });
+        self.0.insert(id, Track { parent, orbit, standing });
     }
 
     /// What `id` goes round, if it is held and goes round anything

@@ -32,6 +32,7 @@ use crate::format::payload::{
     INDEX_VERSION, index_version, legacy_payload_points, payload_bytes,
     payload_head,
 };
+use crate::store::Directory;
 use crate::store::tables::TableSet;
 use crate::tree::index::Index;
 use std::io;
@@ -86,8 +87,7 @@ impl Kinds {
     ) -> io::Result<Kinds> {
         let mut addresses = Vec::new();
         let mut kinds = Vec::new();
-        crate::store::bodies::each_arrival_class(
-            dir,
+        Directory::at(dir).each_arrival_class(
             stop,
             &mut |address, class| {
                 addresses.push(address);
@@ -170,7 +170,7 @@ pub fn rewrite(
             // those systems — every one of them coming out `Unknown` and
             // the column quietly wrong. The pack is idempotent and is the
             // same one an open runs.
-            crate::store::bodies::pack(dir, stop)?;
+            Directory::at(dir).pack_bodies(stop)?;
             swept = Some(Kinds::swept(dir, stop, said)?);
         }
         let kinds = swept.as_ref().expect("the sweep has run");
@@ -185,11 +185,8 @@ pub fn rewrite(
         wrote.systems += points.len() as u64;
         wrote.cells += 1;
 
-        crate::store::cells::write_payload(
-            dir,
-            cell.id,
-            payload_bytes(cell.id, &points),
-        )?;
+        Directory::at(dir)
+            .write_payload(cell.id, payload_bytes(cell.id, &points))?;
         if wrote.cells % 4096 == 0 {
             said(&wrote);
         }
@@ -326,12 +323,9 @@ mod tests {
                 .iter()
                 .map(|point| system(point.id64, point.position))
                 .collect();
-            crate::store::cells::write_payload(
-                &dir,
-                cell.id,
-                legacy_bytes(&legacy),
-            )
-            .expect("an old payload");
+            Directory::at(&dir)
+                .write_payload(cell.id, legacy_bytes(&legacy))
+                .expect("an old payload");
         }
 
         // And a scan record for two of the three: a neutron star and a
@@ -366,7 +360,7 @@ mod tests {
         for (address, inside) in [scanned(1, "N"), scanned(2, "G")] {
             rows.insert(address, inside);
         }
-        crate::store::bodies::write(&dir, rows);
+        Directory::at(&dir).write_held_bodies(rows);
 
         let wrote = rewrite(&dir, &TableSet::new(), &|| false, &mut |_| {})
             .expect("the payloads rewrite");
@@ -427,7 +421,7 @@ mod tests {
     ///
     /// Nothing else will. An open over a directory this build cannot read
     /// does *nothing* — [`crate::ops::migrate::migrate`] asks
-    /// [`crate::store::cells::stale`] first and returns having named this
+    /// [`crate::store::Directory::stale_index`] first and returns having named this
     /// command — so a table in a shape its owner has moved on from would
     /// still be in it after the payloads come forward, and a reader that asks
     /// for it without opening the galaxy first, such as the map's perf guard

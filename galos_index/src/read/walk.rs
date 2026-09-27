@@ -746,7 +746,7 @@ mod tests {
     /// its box is — the level-one cell over the galactic centre has a box
     /// middle thirty thousand light years off.
     #[derive(Copy, Clone)]
-    struct Held {
+    struct Ancestor {
         /// Where its systems sit.
         at: [f64; 3],
         /// How far they spread along x, light years.
@@ -762,7 +762,7 @@ mod tests {
     }
 
     /// A cell with the aggregate `held` describes.
-    fn holding(id: CellId, held: Held) -> Cell {
+    fn holding(id: CellId, held: Ancestor) -> Cell {
         let last = held.count.max(1) - 1;
         let step = if last == 0 { 0.0 } else { held.across / last as f64 };
         let agg = (0..held.count.max(1))
@@ -790,7 +790,7 @@ mod tests {
     fn cell(id: CellId, slice: u64, child_mask: u8, m_min: f64) -> Cell {
         holding(
             id,
-            Held {
+            Ancestor {
                 at: id.bounds().center(),
                 across: 0.0,
                 slice,
@@ -816,7 +816,7 @@ mod tests {
                 let next = CellId::of_point(HERE, level + 1);
                 holding(
                     here,
-                    Held {
+                    Ancestor {
                         at: HERE,
                         across: 0.0,
                         slice: 1,
@@ -847,7 +847,7 @@ mod tests {
         let mut cells = chain_to(parent, m_min, whole);
         cells.push(holding(
             parent,
-            Held {
+            Ancestor {
                 at: parent.bounds().center(),
                 across: parent.edge_ly(),
                 slice: parent_slice,
@@ -859,7 +859,7 @@ mod tests {
         for kid in [kids[0], kids[1]] {
             cells.push(holding(
                 kid,
-                Held {
+                Ancestor {
                     at: kid.bounds().center(),
                     across: kid.edge_ly(),
                     slice: child_slice,

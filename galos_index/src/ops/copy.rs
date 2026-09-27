@@ -39,7 +39,7 @@
 //!   gives back. Taking the payloads before the index means a copy caught
 //!   across a publish holds orphans and can hold no holes, because every cell
 //!   the copied index names was on disk before the index was read. This is the
-//!   same argument [`sweep_payloads`](crate::store::cells::sweep_payloads)
+//!   same argument [`sweep_payloads`](crate::store::Directory::sweep_payloads)
 //!   makes for running after the index is written, in the other direction.
 //! - **The log before the base.** `Compaction::finish` renames the new base
 //!   into place and *then* clears the log, so a copy that takes the log

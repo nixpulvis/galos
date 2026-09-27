@@ -844,7 +844,7 @@ pub(crate) fn weigh_blobs(
             light: average_mark(held, stands_for, *color_by, &gains),
             share: filtering.filters.admitted_share(
                 &blob.aged,
-                named.held(blob.id).whole(),
+                named.admitted(blob.id).whole(),
                 stands_for,
             ),
             stands_for,
@@ -868,7 +868,7 @@ pub(crate) fn weigh_blobs(
 /// the map did.
 #[derive(Resource, Default)]
 pub struct Named {
-    cells: rustc_hash::FxHashMap<CellId, Held>,
+    cells: rustc_hash::FxHashMap<CellId, Admitted>,
     revision: u32,
 }
 
@@ -881,14 +881,14 @@ pub struct Named {
 /// faction member at all — falls to the dim. Answered together, the
 /// backdrop would keep light for systems no such filter could ever admit.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Held {
+pub struct Admitted {
     /// Named systems with a population.
     pub populated: u32,
     /// Named systems with none.
     pub alone: u32,
 }
 
-impl Held {
+impl Admitted {
     /// Named either way, which is what a merged mark stands over.
     pub fn whole(self) -> u32 {
         self.populated + self.alone
@@ -958,7 +958,7 @@ impl Named {
     }
 
     /// What this cell holds of what the picking filters name.
-    pub fn held(&self, id: CellId) -> Held {
+    pub fn admitted(&self, id: CellId) -> Admitted {
         self.cells.get(&id).copied().unwrap_or_default()
     }
 }

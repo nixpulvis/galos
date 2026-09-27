@@ -5,14 +5,14 @@
 //! bound is folded on the way out, which is [`fold`]'s.
 
 use super::{
-    ENTRY, Entry, Found, HEADER, find, fold, header_bytes, header_fields,
-    tail_bound,
+    ENTRY, Entry, Found, HEADER, header_bytes, header_fields, tail_bound,
 };
 use crate::format::layout::{
     BODIES_DIR, bodies_path, body_data_path, body_index_path, body_shard,
     legacy_bodies_path,
 };
 use crate::records::SystemBodies;
+use crate::store::Directory;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -62,80 +62,91 @@ fn batches<'a>(
     (batches, failed)
 }
 
-/// Write what a store is holding into the pack.
-///
-/// Grouped by shard, so a shard is one open of each of its two files and
-/// one append to each however many of the held systems fell in it. A shard
-/// that cannot be written leaves its systems with the caller rather than
-/// dropping them.
-pub fn write(dir: &Path, mut rows: HashMap<i64, SystemBodies>) -> Wrote {
-    let (batches, failed) = batches(rows.iter().map(|(a, b)| (*a, b)));
-    let mut done = Wrote { failed, ..Wrote::default() };
-    for (shard, batch) in batches {
-        match append(dir, shard, &batch) {
-            Ok(()) => {
-                done.wrote += batch.len();
-                for (address, _) in &batch {
-                    rows.remove(address);
+impl Directory<'_> {
+    /// Write what a store is holding into the pack.
+    ///
+    /// Grouped by shard, so a shard is one open of each of its two files and
+    /// one append to each however many of the held systems fell in it. A shard
+    /// that cannot be written leaves its systems with the caller rather than
+    /// dropping them.
+    pub fn write_held_bodies(
+        self,
+        mut rows: HashMap<i64, SystemBodies>,
+    ) -> Wrote {
+        let dir = self.root;
+        let (batches, failed) = batches(rows.iter().map(|(a, b)| (*a, b)));
+        let mut done = Wrote { failed, ..Wrote::default() };
+        for (shard, batch) in batches {
+            match append(dir, shard, &batch) {
+                Ok(()) => {
+                    done.wrote += batch.len();
+                    for (address, _) in &batch {
+                        rows.remove(address);
+                    }
+                }
+                Err(err) => {
+                    done.failed.get_or_insert(err);
                 }
             }
-            Err(err) => {
-                done.failed.get_or_insert(err);
+        }
+        done.kept = rows;
+        done
+    }
+
+    /// The same, for a caller with nothing to keep: a write that fails is the
+    /// caller's error rather than a batch handed back.
+    pub fn write_bodies<'a>(
+        self,
+        rows: impl IntoIterator<Item = (i64, &'a SystemBodies)>,
+    ) -> io::Result<usize> {
+        let dir = self.root;
+        let (batches, failed) = batches(rows);
+        if let Some(err) = failed {
+            return Err(err);
+        }
+        let mut wrote = 0;
+        for (shard, batch) in batches {
+            append(dir, shard, &batch)?;
+            wrote += batch.len();
+        }
+        Ok(wrote)
+    }
+
+    /// Withdraw a system's bodies, answering whether the pack held any.
+    ///
+    /// A tombstone rather than an erasure: the entry it hides may be in the
+    /// base, and an absence would read straight through to it.
+    pub fn tombstone_bodies(self, address: i64) -> io::Result<bool> {
+        let dir = self.root;
+        match self.find_bodies(address)? {
+            Found::Bodies(_) => {
+                append(dir, body_shard(address), &[(address, Vec::new())])?;
+                Ok(true)
+            }
+            Found::Withdrawn | Found::Absent => Ok(false),
+        }
+    }
+
+    /// Withdraw the bodies of `address`, answering whether there were any.
+    ///
+    /// All three layouts: a tombstone in the pack, and the two loose files
+    /// removed. Leaving either loose file behind would leave the withdrawn scan
+    /// for a fallback to read, and leaving out the tombstone would leave it in
+    /// the pack.
+    pub fn remove_bodies(self, address: i64) -> io::Result<bool> {
+        let dir = self.root;
+        let mut removed = self.tombstone_bodies(address)?;
+        for path in
+            [bodies_path(dir, address), legacy_bodies_path(dir, address)]
+        {
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed = true,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
             }
         }
+        Ok(removed)
     }
-    done.kept = rows;
-    done
-}
-
-/// The same, for a caller with nothing to keep: a write that fails is the
-/// caller's error rather than a batch handed back.
-pub fn write_each<'a>(
-    dir: &Path,
-    rows: impl IntoIterator<Item = (i64, &'a SystemBodies)>,
-) -> io::Result<usize> {
-    let (batches, failed) = batches(rows);
-    if let Some(err) = failed {
-        return Err(err);
-    }
-    let mut wrote = 0;
-    for (shard, batch) in batches {
-        append(dir, shard, &batch)?;
-        wrote += batch.len();
-    }
-    Ok(wrote)
-}
-
-/// Withdraw a system's bodies, answering whether the pack held any.
-///
-/// A tombstone rather than an erasure: the entry it hides may be in the
-/// base, and an absence would read straight through to it.
-pub fn remove(dir: &Path, address: i64) -> io::Result<bool> {
-    match find(dir, address)? {
-        Found::Bodies(_) => {
-            append(dir, body_shard(address), &[(address, Vec::new())])?;
-            Ok(true)
-        }
-        Found::Withdrawn | Found::Absent => Ok(false),
-    }
-}
-
-/// Withdraw the bodies of `address`, answering whether there were any.
-///
-/// All three layouts: a tombstone in the pack, and the two loose files
-/// removed. Leaving either loose file behind would leave the withdrawn scan
-/// for a fallback to read, and leaving out the tombstone would leave it in
-/// the pack.
-pub fn remove_bodies(dir: &Path, address: i64) -> io::Result<bool> {
-    let mut removed = crate::store::bodies::remove(dir, address)?;
-    for path in [bodies_path(dir, address), legacy_bodies_path(dir, address)] {
-        match std::fs::remove_file(&path) {
-            Ok(()) => removed = true,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(removed)
 }
 
 /// Append a batch of records to one shard, and fold if the tail has grown.
@@ -212,7 +223,7 @@ pub(super) fn append(
     let entries = (index.metadata()?.len() as usize - HEADER) / ENTRY;
     let tail = entries - base;
     match tail > tail_bound(base) {
-        true => fold(dir, shard),
+        true => Directory::at(dir).fold_body_shard(shard),
         false => Ok(()),
     }
 }
@@ -220,8 +231,7 @@ pub(super) fn append(
 #[cfg(test)]
 mod tests {
     use super::super::Table;
-    use super::super::fixtures::{held, inside, scratch};
-    use super::super::read_bodies;
+    use super::super::fixtures::{found, inside, scratch};
     use super::*;
     use crate::records::Barycenter;
     use std::path::PathBuf;
@@ -241,9 +251,10 @@ mod tests {
         let address = 4_611_686_020_061_657_985_i64;
         let shard = body_shard(address);
 
-        write(&dir, HashMap::from([(address, inside(1))]));
+        Directory::at(&dir)
+            .write_held_bodies(HashMap::from([(address, inside(1))]));
         // Into the base, which is what a fold does with a tail.
-        fold(&dir, shard).expect("the shard folds");
+        Directory::at(&dir).fold_body_shard(shard).expect("the shard folds");
         let folded =
             Table::read(&body_index_path(&dir, shard)).expect("a table");
         assert_eq!(folded.base.len(), 1, "the fold left nothing in the base");
@@ -256,12 +267,13 @@ mod tests {
             .map(|n| address + n)
             .find(|&it| body_shard(it) == shard)
             .expect("another address in the same shard");
-        let wrote = write(&dir, HashMap::from([(next, inside(2))]));
+        let wrote = Directory::at(&dir)
+            .write_held_bodies(HashMap::from([(next, inside(2))]));
         assert!(wrote.failed.is_none(), "{:?}", wrote.failed);
 
         // Both readable, the folded one and the appended one.
-        assert!(matches!(held(&dir, address), Found::Bodies(_)));
-        assert!(matches!(held(&dir, next), Found::Bodies(_)));
+        assert!(matches!(found(&dir, address), Found::Bodies(_)));
+        assert!(matches!(found(&dir, next), Found::Bodies(_)));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -306,19 +318,21 @@ mod tests {
             .expect("the flat file writes");
 
         assert!(
-            remove_bodies(&dir, address).expect("the removal"),
+            Directory::at(&dir).remove_bodies(address).expect("the removal"),
             "the removal said there was nothing to remove",
         );
         assert!(!bodies_path(&dir, address).exists());
         assert!(!legacy_bodies_path(&dir, address).exists());
         assert_eq!(
-            read_bodies(&dir, address).expect("a read"),
+            Directory::at(&dir).read_bodies(address).expect("a read"),
             SystemBodies::default(),
             "a withdrawn scan still reads as one that stands",
         );
 
         assert!(
-            !remove_bodies(&dir, address).expect("a second removal"),
+            !Directory::at(&dir)
+                .remove_bodies(address)
+                .expect("a second removal"),
             "removing nothing was reported as removing something",
         );
 

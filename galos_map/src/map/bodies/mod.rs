@@ -107,7 +107,7 @@ pub struct Clock {
     ///
     /// One of these for the map rather than one per slider, there being one
     /// pointer and so one slider ever being dragged.
-    held: Option<Held>,
+    held: Option<Drag>,
 }
 
 impl Default for Clock {
@@ -148,14 +148,14 @@ fn span(from: DateTime<Utc>, to: DateTime<Utc>) -> f64 {
 /// The period is carried so that the turn is only ever applied to the slider
 /// it was taken for: the next body's slider would otherwise measure a turn of
 /// its own from a count of somebody else's.
-struct Held {
+struct Drag {
     /// What the slider is geared to
     period: f64,
     /// The whole turns it measures from
     turns: f64,
 }
 
-impl Held {
+impl Drag {
     /// Whether `offset` still stands in the turn this was taken for
     ///
     /// Measured rather than trusted. The offset may have been set anywhere
@@ -252,7 +252,7 @@ impl Clock {
     /// stands in it, and whichever turn the offset falls in otherwise. One
     /// answer for the reading and the write both: a slider drawn from one
     /// count and written from another is a slider whose handle is somewhere
-    /// its own drag did not put it. See [`Held`].
+    /// its own drag did not put it. See [`Drag`].
     fn turn_in(&self, period: f64) -> f64 {
         match &self.held {
             Some(held) if held.period == period && held.holds(self.offset) => {
@@ -314,7 +314,7 @@ impl Clock {
         }
         let turns = self.turn_in(period);
         self.offset = ((turns + through) * period).clamp(0., Self::CEILING);
-        self.held = Some(Held { period, turns });
+        self.held = Some(Drag { period, turns });
     }
 
     /// Run the map on to `past` seconds past the present

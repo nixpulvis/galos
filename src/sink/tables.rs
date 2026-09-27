@@ -49,14 +49,14 @@ pub struct Wrote {
     ///
     /// A fold rewrites every row the table names — minutes at 200 M systems —
     /// and happens about monthly on the live feed, so it is reported rather
-    /// than left silent. See `galos_index::store::names::compact`.
+    /// than left silent. See `galos_index::store::Directory::compact_names`.
     pub folded: bool,
 }
 
 /// The metadata sidecars as this side of the program keeps them, with the
 /// tables the program contributes ([`crate::tables`]) beside them.
 pub struct Tables {
-    held: Sidecars,
+    sidecars: Sidecars,
 }
 
 impl Tables {
@@ -72,9 +72,9 @@ impl Tables {
     /// say where a jet cone is" and refuses to plot a route for a drive
     /// that takes one.
     pub fn resume(dir: &Path) -> io::Result<Tables> {
-        let mut held = Sidecars::resume(dir, &crate::tables())?;
-        held.claim_absent();
-        let counts = held.counts();
+        let mut sidecars = Sidecars::resume(dir, &crate::tables())?;
+        sidecars.claim_absent();
+        let counts = sidecars.counts();
         debug!(
             names = counts.names,
             populated = counts.populated,
@@ -84,17 +84,17 @@ impl Tables {
             dir = %dir.display(),
             "resumed the metadata tables",
         );
-        Ok(Tables { held })
+        Ok(Tables { sidecars })
     }
 
     /// How many systems the names table holds.
     pub fn names(&self) -> usize {
-        self.held.counts().names
+        self.sidecars.counts().names
     }
 
     /// How many rows each table holds.
     pub fn counts(&self) -> Counts {
-        self.held.counts()
+        self.sidecars.counts()
     }
 
     /// Whether the names table holds a row for `address`.
@@ -103,7 +103,7 @@ impl Tables {
     /// address the table held — 5–8 GB transient at 200 M, on a path that
     /// runs at the end of every run — to answer the same question.
     pub fn names_hold(&self, address: i64) -> bool {
-        self.held.names_hold(address)
+        self.sidecars.names_hold(address)
     }
 
     /// Drop the names of systems `drawn` says the cell tree does not hold,
@@ -122,9 +122,9 @@ impl Tables {
     /// is nothing on a directory that does not need one.
     pub fn forget_names(&mut self, drawn: impl Fn(i64) -> bool) -> usize {
         let orphans: Vec<i64> =
-            self.held.named().filter(|address| !drawn(*address)).collect();
+            self.sidecars.named().filter(|address| !drawn(*address)).collect();
         for address in &orphans {
-            self.held.unname(*address);
+            self.sidecars.unname(*address);
         }
         orphans.len()
     }
@@ -148,12 +148,12 @@ impl Tables {
     ) {
         for &address in touched {
             if let Some(entry) = galaxy.name_of(address) {
-                self.held.name(entry);
+                self.sidecars.name(entry);
             }
         }
         self.patch_tables(galaxy, touched);
         for system in records {
-            self.held.contribute(system);
+            self.sidecars.contribute(system);
         }
     }
 
@@ -180,15 +180,15 @@ impl Tables {
                 // write path states column by column. `merge::populated_over`
                 // with `newer` set is that rule, stated once in `galos_index`
                 // for this and for a merge of two directories.
-                let row = match self.held.published(address) {
+                let row = match self.sidecars.published(address) {
                     Some(stood) => merge::populated_over(stood, said, true),
                     None => said,
                 };
-                self.held.populate(row);
+                self.sidecars.populate(row);
             }
 
             if let Some(reach) = galaxy.reach_of(address) {
-                self.held.reach(address, reach);
+                self.sidecars.reach(address, reach);
             }
         }
     }
@@ -202,15 +202,15 @@ impl Tables {
     /// reading the directory — and comes back in [`Wrote::folded`] because
     /// it is the one part of a publish that costs minutes.
     pub fn write(&mut self, dir: &Path) -> io::Result<Wrote> {
-        let name_rows = self.held.write(dir)?;
-        let folded = self.held.compact_names(dir)?;
+        let name_rows = self.sidecars.write(dir)?;
+        let folded = self.sidecars.compact_names(dir)?;
         Ok(Wrote { name_rows, folded })
     }
 
     /// [`Self::write`], every table whether it moved or not: what a
     /// directory being published from nothing wants.
     pub fn write_everything(&mut self, dir: &Path) -> io::Result<Wrote> {
-        self.held.touch_all();
+        self.sidecars.touch_all();
         self.write(dir)
     }
 }

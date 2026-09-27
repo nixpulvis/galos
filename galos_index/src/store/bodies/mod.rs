@@ -38,7 +38,7 @@
 //!   directory's [`Lock`](crate::Lock)) and any number of readers.
 //! - **A sweep** is a compaction of every shard, asked for rather than
 //!   waited on: what a whole-galaxy re-import leaves behind, which no
-//!   append reaches. See [`sweep_bodies`].
+//!   append reaches. See [`crate::store::Directory::sweep_bodies`].
 //!
 //! At 200 M systems that is 4,096 index files and a handful of data files
 //! rather than 188 M of them, **~450 GB rather than ~830 GB** — the
@@ -48,9 +48,9 @@
 //! ## What is still loose
 //!
 //! Two older layouts, a file a system, are read and never written:
-//! `bodies/{address}.bin` and `bodies/{shard:03x}/{address}.bin`. [`pack`]
+//! `bodies/{address}.bin` and `bodies/{shard:03x}/{address}.bin`. [`crate::store::Directory::pack_bodies`]
 //! walks both into the shards, one batch at a time and interruptibly, and
-//! [`crate::store::bodies::read_bodies`] falls back to them for whatever is
+//! [`crate::store::Directory::read_bodies`] falls back to them for whatever is
 //! left, so a directory part way through answers for every system a
 //! finished one does.
 
@@ -61,12 +61,10 @@ mod reclaim;
 mod sweep;
 mod write;
 
-pub use iter::{addresses, each_address, each_arrival_class};
-pub use migrate::{Packed, pack};
-pub use read::{find, read_bodies};
-pub use reclaim::{Dead, Reclaimed, fold, reclaim};
-pub use sweep::{Weighed, sweep_bodies, weigh};
-pub use write::{Wrote, remove, remove_bodies, write, write_each};
+pub use migrate::Packed;
+pub use reclaim::{Dead, Reclaimed};
+pub use sweep::Weighed;
+pub use write::Wrote;
 
 use crate::records::SystemBodies;
 use std::collections::BTreeMap;
@@ -279,9 +277,10 @@ fn header_bytes(generation: u16, base: usize) -> [u8; HEADER] {
 /// What the tests of every part of the pack build on.
 #[cfg(test)]
 mod fixtures {
-    use super::{Found, find};
+    use super::Found;
     use crate::format::layout::BODIES_DIR;
     use crate::records::{Star, SystemBodies};
+    use crate::store::Directory;
     use std::path::{Path, PathBuf};
 
     pub(super) fn scratch(name: &str) -> PathBuf {
@@ -292,8 +291,8 @@ mod fixtures {
         at
     }
 
-    pub(super) fn held(dir: &Path, address: i64) -> Found {
-        find(dir, address).expect("the pack reads")
+    pub(super) fn found(dir: &Path, address: i64) -> Found {
+        Directory::at(dir).find_bodies(address).expect("the pack reads")
     }
 
     pub(super) fn inside(id: i16) -> SystemBodies {
@@ -326,8 +325,9 @@ mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::{held, inside, scratch};
+    use super::fixtures::{found, inside, scratch};
     use super::*;
+    use crate::store::Directory;
     use std::collections::HashMap;
 
     /// What was written is what is read, and the newer write is what is read
@@ -341,28 +341,36 @@ mod tests {
         let dir = scratch("roundtrip");
         let address = 4_611_686_020_061_657_985_i64;
 
-        assert_eq!(held(&dir, address), Found::Absent);
+        assert_eq!(found(&dir, address), Found::Absent);
 
-        let wrote = write(&dir, HashMap::from([(address, inside(1))]));
+        let wrote = Directory::at(&dir)
+            .write_held_bodies(HashMap::from([(address, inside(1))]));
         assert_eq!(wrote.wrote, 1);
         assert!(wrote.failed.is_none(), "{:?}", wrote.failed);
-        assert_eq!(held(&dir, address), Found::Bodies(inside(1)));
+        assert_eq!(found(&dir, address), Found::Bodies(inside(1)));
 
-        write(&dir, HashMap::from([(address, inside(2))]));
+        Directory::at(&dir)
+            .write_held_bodies(HashMap::from([(address, inside(2))]));
         assert_eq!(
-            held(&dir, address),
+            found(&dir, address),
             Found::Bodies(inside(2)),
             "the older record was read over the newer one",
         );
 
-        assert!(remove(&dir, address).expect("the withdrawal"));
+        assert!(
+            Directory::at(&dir)
+                .tombstone_bodies(address)
+                .expect("the withdrawal")
+        );
         assert_eq!(
-            held(&dir, address),
+            found(&dir, address),
             Found::Withdrawn,
             "a withdrawn system read as published",
         );
         assert!(
-            !remove(&dir, address).expect("the second withdrawal"),
+            !Directory::at(&dir)
+                .tombstone_bodies(address)
+                .expect("the second withdrawal"),
             "withdrawing nothing said it had withdrawn something",
         );
 

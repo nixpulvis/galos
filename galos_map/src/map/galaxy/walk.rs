@@ -22,7 +22,7 @@
 //! `drain_evictions`. The rest of the map — visibility, sizing, pointing,
 //! selection, labels — reads a [`System`] without caring where it came from.
 
-use crate::map::bodies::spawn::HeldSystem;
+use crate::map::bodies::spawn::Entered;
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::map::galaxy::plan::{Accounted, Planned};
@@ -532,7 +532,7 @@ pub(crate) fn collect(
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
     mut republished: ResMut<Republished>,
-    mut held: ResMut<crate::map::index::refresh::Held>,
+    mut held: ResMut<crate::map::index::refresh::Stamps>,
 ) {
     tasks.0.retain(|&id, task| {
         let Some(result) = block_on(future::poll_once(task)) else {
@@ -1080,7 +1080,7 @@ pub(crate) fn reconcile(
     resident: Res<ResidentCells>,
     populated: Res<Populated>,
     names: Res<Names>,
-    holding: Res<HeldSystem>,
+    holding: Res<Entered>,
     spyglass: Res<Spyglass>,
     view_mode: Res<View>,
     selection: Res<crate::map::selection::Selection>,
@@ -1753,7 +1753,7 @@ pub(crate) fn evict_payloads(
     time: Res<Time<Real>>,
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
-    mut held: ResMut<crate::map::index::refresh::Held>,
+    mut held: ResMut<crate::map::index::refresh::Stamps>,
     mut keeping: ResMut<Keeping>,
     mut swept: Local<Option<Instant>>,
 ) {
@@ -2231,7 +2231,7 @@ mod tests {
         app.init_resource::<PendingEvictions>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<ResidentCells>();
-        app.init_resource::<HeldSystem>();
+        app.init_resource::<Entered>();
         app.init_resource::<crate::map::selection::Selection>();
         app.init_resource::<crate::map::filter::Filters>();
         app.init_resource::<crate::map::filter::DimTo>();
@@ -2368,7 +2368,7 @@ mod tests {
         let mut app = walking();
         let inside = app.world_mut().spawn(system(1)).id();
         app.world_mut().spawn(system(2));
-        app.insert_resource(HeldSystem::holding(inside));
+        app.insert_resource(Entered::holding(inside));
 
         app.update();
 

@@ -24,6 +24,7 @@ use crate::format::layout::{INDEX_FILE, mark_path, spill_dir};
 use crate::format::msgpack::{read_meta, write_meta};
 use crate::format::spill::Spilled;
 use crate::records::NameEntry;
+use crate::store::Directory;
 use crate::store::bodies::Reclaimed;
 use crate::store::cells::Swept;
 use crate::store::names;
@@ -455,20 +456,17 @@ impl<'a> Build<'a> {
         step("the index file", index.write(&dir))?;
         // The cells of whatever tree stood here before this one, which this
         // build neither wrote nor named: see
-        // `store::cells::sweep_payloads`. After the index file and never
+        // `Directory::sweep_payloads`. After the index file and never
         // before it, so an interrupted sweep leaves a directory that is
         // merely larger.
         let swept = step(
             "the sweep of the old cells",
-            crate::store::cells::sweep_payloads(
-                &dir,
-                &|id| index.get(id).is_some(),
-                true,
-            ),
+            Directory::at(&dir)
+                .sweep_payloads(&|id| index.get(id).is_some(), true),
         )?;
         // The dead records the body shards carry, which a re-import leaves one
         // of for every system it rewrote: see
-        // [`crate::store::bodies::sweep_bodies`]. After the index file, as the
+        // [`crate::store::Directory::sweep_bodies`]. After the index file, as the
         // cell sweep is, though less turns on the order — every live record is
         // in hand throughout a compaction, so an interruption here leaves a
         // directory that is merely larger.
@@ -479,7 +477,7 @@ impl<'a> Build<'a> {
         // the shards not yet reached exactly as this build left them.
         let reclaimed = step(
             "the compaction of the body shards",
-            crate::store::bodies::sweep_bodies(&dir, &|| false, &|_| {}),
+            Directory::at(&dir).sweep_bodies(&|| false, &|_| {}),
         )?;
         // Last, and only where the caller said where it had read to: the
         // mark stands for a published directory, so it goes out behind the
@@ -596,11 +594,11 @@ pub struct Summary {
     pub named_rows: usize,
     /// Payload files of cells the published tree does not name, removed
     /// after it was written: whatever the tree that stood here before held
-    /// and this one does not. See [`crate::store::cells::sweep_payloads`].
+    /// and this one does not. See [`crate::store::Directory::sweep_payloads`].
     pub swept: Swept,
     /// Dead records the body shards gave back, compacted once the index
     /// file stood: a re-import appends a fresh record for every system and
-    /// the one behind it is dead. See [`crate::store::bodies::sweep_bodies`].
+    /// the one behind it is dead. See [`crate::store::Directory::sweep_bodies`].
     pub reclaimed: Reclaimed,
 }
 
@@ -1322,10 +1320,12 @@ mod tests {
         for _ in 0..2 {
             let rows: HashMap<i64, crate::records::SystemBodies> =
                 addresses.iter().map(|&it| (it, inside.clone())).collect();
-            assert!(crate::store::bodies::write(&dir, rows).failed.is_none());
+            assert!(
+                Directory::at(&dir).write_held_bodies(rows).failed.is_none()
+            );
         }
         let dead =
-            crate::store::bodies::weigh(&dir, &|| false).expect("a weighing");
+            Directory::at(&dir).weigh_bodies(&|| false).expect("a weighing");
         assert!(dead.reclaimable > 0, "the re-import left nothing to reclaim");
 
         let report =
@@ -1342,7 +1342,8 @@ mod tests {
         // the half of a compaction that cannot be got wrong quietly.
         for &address in &addresses {
             assert_eq!(
-                crate::store::bodies::find(&dir, address)
+                Directory::at(&dir)
+                    .find_bodies(address)
                     .expect("the pack reads"),
                 crate::store::bodies::Found::Bodies(inside.clone()),
                 "system {address} did not survive the publish",

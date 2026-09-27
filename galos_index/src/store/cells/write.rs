@@ -7,6 +7,7 @@ use crate::format::layout::{
     INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
 };
 use crate::format::payload::payload_bytes;
+use crate::store::Directory;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use std::fs;
@@ -25,75 +26,81 @@ impl Index {
     }
 }
 
-/// Write a payload file for every cell that owns any systems, and no index.
-///
-/// Existing files are overwritten; a cell with no systems is left without
-/// one. See [`Snapshot::write`](crate::Snapshot::write).
-pub(crate) fn write_payloads<'a>(
-    dir: &Path,
-    payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
-) -> io::Result<()> {
-    fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-    for (id, points) in payloads {
-        if !points.is_empty() {
-            write_payload(dir, id, payload_bytes(id, points))?;
-        }
-    }
-    Ok(())
-}
-
-/// Publish a change: the index whole, the `changed` cells' payloads, and the
-/// `removed` cells' files deleted, in both layouts.
-///
-/// The directory ends identical to a full write of the same tree. See
-/// [`Snapshot::write_diff`](crate::Snapshot::write_diff).
-pub(crate) fn write_changes<'a>(
-    dir: &Path,
-    index: &Index,
-    changed: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
-    removed: impl IntoIterator<Item = CellId>,
-) -> io::Result<()> {
-    fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-    fs::write(dir.join(INDEX_FILE), index.to_bytes())?;
-    for (id, points) in changed {
-        write_payload(dir, id, payload_bytes(id, points))?;
-    }
-    for id in removed {
-        for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
-            match fs::remove_file(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
+impl Directory<'_> {
+    /// Write a payload file for every cell that owns any systems, and no index.
+    ///
+    /// Existing files are overwritten; a cell with no systems is left without
+    /// one. See [`Snapshot::write`](crate::Snapshot::write).
+    pub(crate) fn write_payloads<'a>(
+        self,
+        payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
+    ) -> io::Result<()> {
+        let dir = self.root;
+        fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
+        for (id, points) in payloads {
+            if !points.is_empty() {
+                Directory::at(dir)
+                    .write_payload(id, payload_bytes(id, points))?;
             }
         }
+        Ok(())
     }
-    Ok(())
-}
 
-/// Write one cell's payload, opening its shard directory the first time
-/// anything lands there.
-///
-/// Beside the file and renamed over it, as
-/// [`crate::format::msgpack::write_meta`] and the names table's generations
-/// are. Not for the torn-write reason those have — a payload's header states
-/// its count, and one shorter than that is refused as empty — but because a
-/// payload is **mapped**. `fs::write` truncates and rewrites in
-/// place, so a feed republishing a cell under a reader's mapping would give it
-/// torn bytes, and the truncation itself is a `SIGBUS` on the pages a reader
-/// still holds. A rename leaves the old inode alone for as long as anything has
-/// it open, which is the same guarantee a names generation gives.
-pub(crate) fn write_payload(
-    dir: &Path,
-    id: CellId,
-    bytes: Vec<u8>,
-) -> io::Result<()> {
-    let path = payload_path(dir, id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    /// Publish a change: the index whole, the `changed` cells' payloads, and the
+    /// `removed` cells' files deleted, in both layouts.
+    ///
+    /// The directory ends identical to a full write of the same tree. See
+    /// [`Snapshot::write_diff`](crate::Snapshot::write_diff).
+    pub(crate) fn write_cell_changes<'a>(
+        self,
+        index: &Index,
+        changed: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
+        removed: impl IntoIterator<Item = CellId>,
+    ) -> io::Result<()> {
+        let dir = self.root;
+        fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
+        fs::write(dir.join(INDEX_FILE), index.to_bytes())?;
+        for (id, points) in changed {
+            self.write_payload(id, payload_bytes(id, points))?;
+        }
+        for id in removed {
+            for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
+                match fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(())
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, &path)
+
+    /// Write one cell's payload, opening its shard directory the first time
+    /// anything lands there.
+    ///
+    /// Beside the file and renamed over it, as
+    /// [`crate::format::msgpack::write_meta`] and the names table's generations
+    /// are. Not for the torn-write reason those have — a payload's header states
+    /// its count, and one shorter than that is refused as empty — but because a
+    /// payload is **mapped**. `fs::write` truncates and rewrites in
+    /// place, so a feed republishing a cell under a reader's mapping would give it
+    /// torn bytes, and the truncation itself is a `SIGBUS` on the pages a reader
+    /// still holds. A rename leaves the old inode alone for as long as anything has
+    /// it open, which is the same guarantee a names generation gives.
+    pub(crate) fn write_payload(
+        self,
+        id: CellId,
+        bytes: Vec<u8>,
+    ) -> io::Result<()> {
+        let dir = self.root;
+        let path = payload_path(dir, id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("tmp");
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, &path)
+    }
 }
 
 /// What a sweep of the payload directory found.
@@ -107,58 +114,61 @@ pub struct Swept {
     pub removed: bool,
 }
 
-/// Remove the payloads of cells the published tree does not name.
-///
-/// A whole-directory build writes its own cells and knows nothing of the tree
-/// that stood before it, so every cell the old tree had and the new one does
-/// not is left behind. The live path has no such debt — a publish deletes what
-/// [`Snapshot::write_diff`](crate::Snapshot::write_diff) is told went — and the
-/// names table already retires its stale generations. This is the same sweep
-/// for the cells.
-///
-/// **Call it only once the new index file stands.** An orphan is a file
-/// nothing refers to and a hole is a cell the tree names with no payload
-/// under it, so a sweep that runs early — or is cut short — must leave the
-/// first and never the second. Running after the index is written makes
-/// that so whatever happens: what is swept is exactly what the published
-/// tree does not name, and an interrupted sweep leaves a directory that is
-/// merely larger.
-///
-/// Both layouts are considered: the sharded [`payload_path`] and the pre-shard
-/// [`legacy_payload_path`]. A loose file for a cell the tree *does* name is
-/// kept, being the payload a reader falls back to — bringing those forward is
-/// [`reshard_cells`](crate::ops::migrate::reshard_cells)'s work, and this must
-/// not stand in for it by deleting them.
-///
-/// `named` answers whether the published tree names a cell — which is
-/// `|id| index.get(id).is_some()` over the [`Index`](crate::Index) just
-/// written. `apply` false counts and removes nothing, which is what `galos
-/// index sweep` reports before it is asked to act.
-pub fn sweep_payloads(
-    dir: &Path,
-    named: &dyn Fn(CellId) -> bool,
-    apply: bool,
-) -> io::Result<Swept> {
-    let root = dir.join(PAYLOAD_DIR);
-    let entries = match fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            return Ok(Swept::default());
-        }
-        Err(e) => return Err(e),
-    };
-    let mut swept = Swept { removed: apply, ..Swept::default() };
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            for shard in fs::read_dir(entry.path())? {
-                orphan(&shard?, named, apply, &mut swept)?;
+impl Directory<'_> {
+    /// Remove the payloads of cells the published tree does not name.
+    ///
+    /// A whole-directory build writes its own cells and knows nothing of the tree
+    /// that stood before it, so every cell the old tree had and the new one does
+    /// not is left behind. The live path has no such debt — a publish deletes what
+    /// [`Snapshot::write_diff`](crate::Snapshot::write_diff) is told went — and the
+    /// names table already retires its stale generations. This is the same sweep
+    /// for the cells.
+    ///
+    /// **Call it only once the new index file stands.** An orphan is a file
+    /// nothing refers to and a hole is a cell the tree names with no payload
+    /// under it, so a sweep that runs early — or is cut short — must leave the
+    /// first and never the second. Running after the index is written makes
+    /// that so whatever happens: what is swept is exactly what the published
+    /// tree does not name, and an interrupted sweep leaves a directory that is
+    /// merely larger.
+    ///
+    /// Both layouts are considered: the sharded [`payload_path`] and the pre-shard
+    /// [`legacy_payload_path`]. A loose file for a cell the tree *does* name is
+    /// kept, being the payload a reader falls back to — bringing those forward is
+    /// [`reshard_cells`](crate::ops::migrate::reshard_cells)'s work, and this must
+    /// not stand in for it by deleting them.
+    ///
+    /// `named` answers whether the published tree names a cell — which is
+    /// `|id| index.get(id).is_some()` over the [`Index`] just
+    /// written. `apply` false counts and removes nothing, which is what `galos
+    /// index sweep` reports before it is asked to act.
+    pub fn sweep_payloads(
+        self,
+        named: &dyn Fn(CellId) -> bool,
+        apply: bool,
+    ) -> io::Result<Swept> {
+        let dir = self.root;
+        let root = dir.join(PAYLOAD_DIR);
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(Swept::default());
             }
-        } else {
-            orphan(&entry, named, apply, &mut swept)?;
+            Err(e) => return Err(e),
+        };
+        let mut swept = Swept { removed: apply, ..Swept::default() };
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                for shard in fs::read_dir(entry.path())? {
+                    orphan(&shard?, named, apply, &mut swept)?;
+                }
+            } else {
+                orphan(&entry, named, apply, &mut swept)?;
+            }
         }
+        Ok(swept)
     }
-    Ok(swept)
 }
 
 /// One payload file weighed against the tree, and removed where the tree
@@ -249,23 +259,25 @@ mod tests {
         let sharded = CellId { level: 11, x: 3, y: 4, z: 5 };
         let loose = CellId { level: 12, x: 6, y: 7, z: 8 };
         assert!(index.get(sharded).is_none() && index.get(loose).is_none());
-        write_payload(&scratch.0, sharded, vec![0u8; 64]).unwrap();
+        Directory::at(&scratch.0)
+            .write_payload(sharded, vec![0u8; 64])
+            .unwrap();
         let flat = legacy_payload_path(&scratch.0, loose);
         fs::write(&flat, vec![0u8; 32]).unwrap();
 
         // Counted and left alone until it is asked.
-        let looked =
-            sweep_payloads(&scratch.0, &|id| index.get(id).is_some(), false)
-                .unwrap();
+        let looked = Directory::at(&scratch.0)
+            .sweep_payloads(&|id| index.get(id).is_some(), false)
+            .unwrap();
         assert_eq!(looked.orphans, 2);
         assert_eq!(looked.bytes, 96);
         assert!(!looked.removed);
         assert!(payload_path(&scratch.0, sharded).exists());
         assert!(flat.exists());
 
-        let swept =
-            sweep_payloads(&scratch.0, &|id| index.get(id).is_some(), true)
-                .unwrap();
+        let swept = Directory::at(&scratch.0)
+            .sweep_payloads(&|id| index.get(id).is_some(), true)
+            .unwrap();
         assert_eq!(swept.orphans, 2);
         assert!(swept.removed);
         assert!(!payload_path(&scratch.0, sharded).exists());
@@ -284,7 +296,8 @@ mod tests {
 
         // Idempotent: a directory already swept has nothing left to find.
         assert_eq!(
-            sweep_payloads(&scratch.0, &|id| index.get(id).is_some(), true)
+            Directory::at(&scratch.0)
+                .sweep_payloads(&|id| index.get(id).is_some(), true)
                 .unwrap()
                 .orphans,
             0,

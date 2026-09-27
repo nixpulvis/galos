@@ -57,7 +57,7 @@ const BUFFERED: usize = 128;
 /// A galaxy being spilled, a system at a time, into its bucket's file.
 pub struct Buckets {
     dir: PathBuf,
-    held: HashMap<CellId, Bucket>,
+    buckets: HashMap<CellId, Bucket>,
 }
 
 /// One bucket: where it writes, what it has not written yet, how many it
@@ -87,14 +87,14 @@ impl Buckets {
     pub fn create(dir: &Path) -> io::Result<Buckets> {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
-        Ok(Buckets { dir: dir.to_owned(), held: HashMap::new() })
+        Ok(Buckets { dir: dir.to_owned(), buckets: HashMap::new() })
     }
 
     /// One more system, into the bucket its position falls in.
     pub fn push(&mut self, system: System) -> io::Result<()> {
         let id = CellId::of_point(system.position, BUCKET_LEVEL);
         let dir = &self.dir;
-        let bucket = self.held.entry(id).or_insert_with(|| Bucket {
+        let bucket = self.buckets.entry(id).or_insert_with(|| Bucket {
             path: spill_path(dir, id),
             buffer: Vec::new(),
             count: 0,
@@ -109,13 +109,13 @@ impl Buckets {
 
     /// How many systems have been pushed.
     pub fn count(&self) -> u64 {
-        self.held.values().map(|bucket| bucket.count).sum()
+        self.buckets.values().map(|bucket| bucket.count).sum()
     }
 
     /// Flush every bucket, answering where each landed and what it holds.
     pub fn finish(mut self) -> io::Result<HashMap<CellId, (PathBuf, u64)>> {
-        let mut spilled = HashMap::with_capacity(self.held.len());
-        for (&id, bucket) in self.held.iter_mut() {
+        let mut spilled = HashMap::with_capacity(self.buckets.len());
+        for (&id, bucket) in self.buckets.iter_mut() {
             bucket.flush()?;
             spilled.insert(id, (bucket.path.clone(), bucket.count));
         }
@@ -151,12 +151,12 @@ pub fn form(
     let budget = budget.max(params.leaf_cap as u64);
     let counted = buckets.iter().map(|(&id, &(_, count))| (id, count));
     let coarse = Cut::of(counted, budget, params);
-    let held: HashSet<CellId> = coarse.regions().iter().copied().collect();
+    let regions: HashSet<CellId> = coarse.regions().iter().copied().collect();
 
     let mut members: HashMap<CellId, Vec<CellId>> = HashMap::new();
     for &id in buckets.keys() {
         let mut at = id;
-        while !held.contains(&at) {
+        while !regions.contains(&at) {
             at = at.parent().expect("a bucket lies under some region");
         }
         members.entry(at).or_default().push(id);
@@ -369,7 +369,7 @@ mod tests {
     }
 
     /// A region's systems, read back off its spill.
-    fn held(formed: &Formed, region: CellId) -> Vec<System> {
+    fn members(formed: &Formed, region: CellId) -> Vec<System> {
         Spilled::open(&formed.spills[&region])
             .expect("a region's spill")
             .systems()
@@ -405,7 +405,7 @@ mod tests {
                     && ancestor(region, BUCKET_LEVEL) == core,
                 "{region:?} is not a piece of the bucket that was split",
             );
-            total += held(&formed, region).len();
+            total += members(&formed, region).len();
         }
         assert_eq!(total, systems.len(), "the pieces lost or gained systems");
     }
@@ -471,7 +471,7 @@ mod tests {
             .cut
             .regions()
             .iter()
-            .map(|&r| Offer::of(r, held(&formed, r), &params))
+            .map(|&r| Offer::of(r, members(&formed, r), &params))
             .collect();
         assert_eq!(
             offers.iter().map(Offer::count).sum::<u64>(),
@@ -484,7 +484,7 @@ mod tests {
         for &region in formed.cut.regions() {
             let built = Snapshot::of_region(
                 region,
-                &held(&formed, region),
+                &members(&formed, region),
                 crown.claimed(),
                 &params,
             );
@@ -528,6 +528,6 @@ mod tests {
 
         let formed = formed(&at.0, &systems, 100, &params);
         assert_eq!(formed.cut.regions(), &[core]);
-        assert_eq!(held(&formed, core).len(), systems.len());
+        assert_eq!(members(&formed, core).len(), systems.len());
     }
 }

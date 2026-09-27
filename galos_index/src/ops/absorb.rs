@@ -127,10 +127,10 @@ use crate::format::{layout, msgpack};
 use crate::records::{
     Faction, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
+use crate::store::Directory;
 use crate::store::names::Names;
 use crate::store::sidecars::Sidecars;
 use crate::store::tables::TableSet;
-use crate::store::{bodies, cells};
 use crate::system::System;
 use chrono::NaiveDateTime;
 use galos_photometry::{Magnitude, Temperature};
@@ -497,7 +497,7 @@ pub fn absorb(
     said: &mut dyn FnMut(&Folding),
 ) -> Result<Absorbed, Refused> {
     for dir in [into, from] {
-        if let Some(version) = cells::stale(dir) {
+        if let Some(version) = Directory::at(dir).stale_index() {
             return Err(Refused::Stale { dir: dir.to_owned(), version });
         }
     }
@@ -973,7 +973,8 @@ fn walk(
             // `INTO` has no record for costs one absent lookup.
             let address = mine as i64;
             if arrived && !relit.contains_key(&address) {
-                let inside = bodies::read_bodies(into, address)
+                let inside = Directory::at(into)
+                    .read_bodies(address)
                     .map_err(failed("a standing body record"))?;
                 if let Some(afresh) = relit_over(&inside, address) {
                     relit.insert(address, afresh);
@@ -1261,8 +1262,8 @@ fn carry_bodies(
             }
             folded += 1;
             let read = || -> io::Result<SystemBodies> {
-                let said = bodies::read_bodies(from, address)?;
-                let stood = bodies::read_bodies(into, address)?;
+                let said = Directory::at(from).read_bodies(address)?;
+                let stood = Directory::at(into).read_bodies(address)?;
                 Ok(merge::bodies_over(stood, said))
             };
             let merged = match read() {
@@ -1290,7 +1291,8 @@ fn carry_bodies(
                 say(&Folding { phase: Phase::Bodies, done: folded, total: 0 });
             }
         };
-        bodies::each_address(from, stop, &mut each)
+        Directory::at(from)
+            .each_body_address(stop, &mut each)
             .map_err(failed("the incoming body records"))?
     };
 
@@ -1369,10 +1371,9 @@ fn rebuild(
 mod tests {
     use super::*;
     use crate::records::{Body, NameEntry, Star};
-    use crate::store::sidecars::reaches;
+    use crate::store::tables::Keyed;
     use crate::store::tables::Table;
     use crate::store::tables::testing::{Cone, Cones, tables};
-    use crate::store::tables::{self, Keyed};
     use crate::tree::index::Index;
     use chrono::{DateTime, Utc};
     use elite_journal::body::{Orbit, Spin};
@@ -1534,7 +1535,7 @@ mod tests {
 
     /// A reaches table of `rows` published in `dir`.
     fn write_reaches(dir: &Path, rows: &[(i64, f32)]) {
-        let mut table = reaches();
+        let mut table = Keyed::reaches();
         for &(address, reach) in rows {
             table.put(SystemReach { address, reach });
         }
@@ -1694,8 +1695,12 @@ mod tests {
             stars: vec![neutron.clone()],
             ..SystemBodies::default()
         };
-        bodies::write_each(&into.0, [(1i64, &stood)]).expect("what stood");
-        bodies::write_each(&from.0, [(1i64, &arriving)]).expect("what arrived");
+        Directory::at(&into.0)
+            .write_bodies([(1i64, &stood)])
+            .expect("what stood");
+        Directory::at(&from.0)
+            .write_bodies([(1i64, &arriving)])
+            .expect("what arrived");
         // And the sidecar rows each side derived over its own star: the
         // neutron one has a row in the contributed table, so the arriving
         // directory publishes a row the merged directory must not keep.
@@ -1707,7 +1712,7 @@ mod tests {
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.replaced, 1, "the arriving record won the system");
 
-        let merged = bodies::read_bodies(&into.0, 1).expect("the bodies");
+        let merged = Directory::at(&into.0).read_bodies(1).expect("the bodies");
         assert_eq!(merged.stars.len(), 2, "both scans are on record");
 
         let point = Checkpoint::read(&into.1).expect("the resume point");
@@ -1731,7 +1736,8 @@ mod tests {
         );
 
         // A G star has no row in the table, so the arriving row goes.
-        let cones = tables::read::<Cones>(&into.0)
+        let cones = Directory::at(&into.0)
+            .table::<Cones>()
             .expect("the merged cones")
             .expect("a table was published");
         assert!(
@@ -1889,14 +1895,18 @@ mod tests {
             bodies: vec![a_body(2, 200)],
             barycenters: Vec::new(),
         };
-        bodies::write_each(&into.0, [(1i64, &stood)]).expect("what stood");
-        bodies::write_each(&from.0, [(1i64, &arriving)]).expect("what arrived");
+        Directory::at(&into.0)
+            .write_bodies([(1i64, &stood)])
+            .expect("what stood");
+        Directory::at(&from.0)
+            .write_bodies([(1i64, &arriving)])
+            .expect("what arrived");
 
         let done = folded(&into, &from, false).expect("a fold");
         assert_eq!(done.bodies, 1, "one system's record was folded");
 
         let merged =
-            bodies::read_bodies(&into.0, 1).expect("the merged record");
+            Directory::at(&into.0).read_bodies(1).expect("the merged record");
         assert_eq!(merged.stars.len(), 1);
         assert_eq!(
             merged.stars[0].temperature, 5_100.0,

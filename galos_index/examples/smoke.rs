@@ -5,6 +5,7 @@
 //! `cargo run -p galos_index --example smoke -- <dir> [sample]`
 
 use galos_index::Source;
+use galos_index::store::Directory;
 use pollster::block_on;
 use std::path::Path;
 
@@ -72,7 +73,8 @@ async fn run() {
     // that put an offset wrong is a decode failure here and nowhere else,
     // so a directory swept by `galos index sweep --bodies` is checked by
     // running this over it.
-    let held = galos_index::store::bodies::addresses(Path::new(&dir))
+    let held = Directory::at(Path::new(&dir))
+        .body_addresses()
         .expect("the pack lists its systems");
     let step = (held.len() / sample.max(1)).max(1);
     let mut packed = Read::default();

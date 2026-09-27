@@ -245,11 +245,11 @@ impl Flight {
         app.init_resource::<crate::map::galaxy::blobs::Standing>();
         app.init_resource::<crate::map::galaxy::blobs::Named>();
         app.init_resource::<crate::map::galaxy::populated::PopulatedOrder>();
-        app.init_resource::<crate::map::index::refresh::Held>();
+        app.init_resource::<crate::map::index::refresh::Stamps>();
         app.init_resource::<PendingSpawns>();
         app.init_resource::<PendingEvictions>();
         app.init_resource::<crate::map::galaxy::Evictions>();
-        app.init_resource::<crate::map::bodies::spawn::HeldSystem>();
+        app.init_resource::<crate::map::bodies::spawn::Entered>();
         app.init_resource::<crate::map::selection::Selection>();
         app.init_resource::<Filters>();
         app.init_resource::<DimTo>();

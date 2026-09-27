@@ -30,7 +30,7 @@
 //! and those carry the gate themselves.
 
 use crate::map::index::names;
-use crate::map::index::refresh::Held;
+use crate::map::index::refresh::Stamps;
 use crate::map::index::{
     Factions, IndexDir, Names, Populated, ResidentIndex, Settled, Transport,
 };
@@ -154,7 +154,7 @@ impl Reading {
 /// graph are a couple of million entries each -- and building it here means
 /// the frame that takes the read in only has to hand the resources over.
 struct Loaded {
-    held: Held,
+    held: Stamps,
     index: ResidentIndex,
     populated: Populated,
     settled: Settled,
@@ -196,7 +196,7 @@ fn start(
 /// read is then held under the older stamp and re-read on the first poll;
 /// stamped afterwards, a part read before the publish would be filed under the
 /// stamp of the publish and never asked for again. See
-/// [`Held::before_reading`].
+/// [`Stamps::before_reading`].
 async fn read(
     source: &Arc<dyn galos_index::Source>,
     step: &Arc<AtomicU8>,
@@ -205,7 +205,7 @@ async fn read(
     let at = |reached: Step| step.store(reached as u8, Ordering::Relaxed);
 
     at(Step::Stamps);
-    let held = Held::before_reading(&**source).await;
+    let held = Stamps::before_reading(&**source).await;
 
     at(Step::Cells);
     let index = source
@@ -306,7 +306,7 @@ fn finish(
 #[allow(clippy::too_many_arguments)]
 fn stood_up(
     dir: &str,
-    held: Held,
+    held: Stamps,
     index: Index,
     populated: Vec<PopulatedSystem>,
     table: galos_index::Names,
