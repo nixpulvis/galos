@@ -337,7 +337,7 @@ pub(super) fn map(path: &Path, want: usize) -> io::Result<Mmap> {
     // never modified after; the generation a reader holds is unlinked, not
     // rewritten, so the bytes under the mapping do not change.
     let map = unsafe { Mmap::map(&file)? };
-    if map.as_ptr() as usize % ADDR != 0 {
+    if !(map.as_ptr() as usize).is_multiple_of(ADDR) {
         return Err(refused("a mapping that is not eight-byte aligned"));
     }
     Ok(map)

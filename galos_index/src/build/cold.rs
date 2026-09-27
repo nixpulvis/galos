@@ -417,10 +417,10 @@ impl<'a> Build<'a> {
         // beneath it, so it comes down here and the new one goes in at the
         // end: what a reader finds in between is a directory with no index,
         // which is what it reads as nothing at all.
-        if let Err(err) = std::fs::remove_file(dir.join(INDEX_FILE)) {
-            if err.kind() != io::ErrorKind::NotFound {
-                return Err(err);
-            }
+        if let Err(err) = std::fs::remove_file(dir.join(INDEX_FILE))
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            return Err(err);
         }
         crown.built().write_payloads(&dir)?;
         let mut indexes = vec![crown.built().index.clone()];

@@ -504,10 +504,8 @@ mod tests {
     fn folding_keeps_what_the_tail_said() {
         let dir = scratch("fold");
         let shard = 1u64;
-        let addresses: Vec<i64> = (0..64)
-            .map(|n| n)
-            .filter(|n| body_shard(*n) == body_shard(0))
-            .collect();
+        let addresses: Vec<i64> =
+            (0..64).filter(|n| body_shard(*n) == body_shard(0)).collect();
         // One shard's worth, written a few times each, so the fold has
         // duplicates to merge.
         let mut want: HashMap<i64, SystemBodies> = HashMap::new();

@@ -2,7 +2,7 @@
 //! shards.
 //!
 //! See [`super`]'s "What is still loose". Read, never written: this is the
-//! only thing that moves them, and [`read_bodies`](super::read_bodies) falls
+//! only thing that moves them, and [`read_bodies`](crate::codec::Directory::read_bodies) falls
 //! back to them until it has.
 
 use super::Table;
@@ -179,7 +179,7 @@ fn one_shard(
 /// **One shard's live set, not a lookup apiece.** The question asked of
 /// every loose file is whether the pack already holds that system — the pack
 /// being the newer of the two wherever both exist — and asking it with
-/// [`find`](super::find), which maps the shard's index, scans its tail
+/// [`find_bodies`](crate::codec::Directory::find_bodies), which maps the shard's index, scans its tail
 /// backwards, binary searches its base and reads the data file, fifty million
 /// times over would be the whole of the cost, where the reads and unlinks
 /// alone are thousands of files a second.
@@ -211,7 +211,7 @@ impl Holds {
 
     /// And what this run has just put there, so a second loose file of the same
     /// address is dropped rather than appended twice — which is what asking
-    /// [`find`](super::find) afresh would conclude.
+    /// [`find_bodies`](crate::codec::Directory::find_bodies) afresh would conclude.
     fn took(&mut self, address: i64) {
         if self.shard == Some(body_shard(address)) {
             self.live.insert(address);
@@ -249,7 +249,7 @@ fn take(
     stop: &(dyn Fn() -> bool + Sync),
     removal: Removal,
 ) -> io::Result<Took> {
-    let mut batch: HashMap<u64, Vec<(i64, PathBuf, Vec<u8>)>> = HashMap::new();
+    let mut batch = Batch::new();
     let mut holds = Holds::new();
     let mut held = 0usize;
     // What this took, against what stood there: a directory is only taken
@@ -318,13 +318,17 @@ fn take(
     Ok(Took::Some)
 }
 
+/// Encoded records by shard, each with its address and the loose file it
+/// came from.
+type Batch = HashMap<u64, Vec<(i64, PathBuf, Vec<u8>)>>;
+
 /// Append a batch and drop the loose files it came from.
 ///
 /// In that order: a file removed before its record was durable is a system
 /// nothing holds.
 fn settle(
     dir: &Path,
-    batch: &mut HashMap<u64, Vec<(i64, PathBuf, Vec<u8>)>>,
+    batch: &mut Batch,
     moved: &mut usize,
     holds: &mut Holds,
     removal: Removal,

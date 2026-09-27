@@ -704,7 +704,7 @@ mod tests {
         assert!(built.len() > 8, "{}", built.len());
         assert!(built.contains(&1_038_034_644), "{built:?}");
         for address in built {
-            assert_eq!(name_of(address).is_some(), true, "{address}");
+            assert!(name_of(address).is_some(), "{address}");
         }
     }
 

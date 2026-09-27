@@ -990,7 +990,7 @@ fn walk(
                 relight(chosen, relit);
             }
             done += 1;
-            if done % SAID_SYSTEMS == 0 {
+            if done.is_multiple_of(SAID_SYSTEMS) {
                 say(&Folding { phase: Phase::Systems, done, total });
             }
             Ok(())
@@ -1037,7 +1037,7 @@ fn walk(
         union.taken += 1;
         union.won.push(said.id64 as i64);
         done += 1;
-        if done % SAID_SYSTEMS == 0 {
+        if done.is_multiple_of(SAID_SYSTEMS) {
             say(&Folding { phase: Phase::Systems, done, total });
         }
     }
@@ -1211,11 +1211,11 @@ fn carry_sidecars(
 /// see [`merge::bodies_over`] for the rule.
 ///
 /// What is walked is the incoming directory's *pack*
-/// ([`bodies::each_address`]), one shard index at a time. A directory still
+/// ([`each_body_address`](crate::codec::Directory::each_body_address)), one shard index at a time. A directory still
 /// holding legacy loose `bodies/<address>.bin` files has those moved in by
 /// `galos index pack`, which is one rename each and is idempotent; until it
 /// has, those systems are not offered here. Reading is
-/// through [`bodies::read_bodies`], which answers out of whichever of the
+/// through [`read_bodies`](crate::codec::Directory::read_bodies), which answers out of whichever of the
 /// three layouts holds the system, so `INTO` half way through a packing is
 /// read correctly whatever `FROM` is.
 ///
@@ -1288,7 +1288,7 @@ fn carry_bodies(
                     }
                 });
             }
-            if folded % SAID_BODIES == 0 {
+            if folded.is_multiple_of(SAID_BODIES) {
                 say(&Folding { phase: Phase::Bodies, done: folded, total: 0 });
             }
         };
@@ -1433,7 +1433,7 @@ mod tests {
             position: [spread(1), spread(2), spread(3)],
             absolute_magnitude: 4.83 - (at % 97) as f64 / 10.0,
             temperature: 3_000.0 + (at % 13) as f64 * 500.0,
-            age_bucket: (at % 8) as u32,
+            age_bucket: (at % 8),
             updated_at: at,
             kind: StarKind::G,
         }

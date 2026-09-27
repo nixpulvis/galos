@@ -1,6 +1,6 @@
 //! Weighing every shard, and sweeping the dead records out of them.
 //!
-//! The whole directory at once, where [`Directory::at().reclaim_body_shard()`] is one shard: what
+//! The whole directory at once, where [`reclaim_body_shard`](crate::codec::Directory::reclaim_body_shard) is one shard: what
 //! `galos index verify` and `galos index sweep --bodies` ask.
 
 use super::migrate::PACKERS;

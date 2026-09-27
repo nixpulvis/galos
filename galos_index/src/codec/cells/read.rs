@@ -1,8 +1,8 @@
 //! Reading a built tree back: the index file whole, and a cell's payload
 //! decoded or mapped where it lies.
 
+use super::format::{self, INDEX_VERSION, index_version};
 use crate::codec::bytes::Decode;
-use crate::codec::cells::format::{INDEX_VERSION, index_version};
 use crate::codec::layout::{INDEX_FILE, legacy_payload_path, payload_path};
 use crate::core::aggregate::TempBucket;
 use crate::core::geometry::CellId;
@@ -56,8 +56,7 @@ impl Index {
             }
             Err(e) => return Err(e),
         };
-        Ok(crate::codec::cells::format::payload_points(id, &bytes)
-            .unwrap_or_default())
+        Ok(format::payload_points(id, &bytes).unwrap_or_default())
     }
 
     /// The first `limit` systems of a cell's payload, brightest first.
@@ -107,12 +106,12 @@ impl Index {
 /// a star kind is one, laid in runs of their own, so an expansion that
 /// measures every system in a cell walks 6 bytes a row and touches the
 /// magnitude, the temperature and the moment not at all. See
-/// [`crate::codec::cells::format::payload_bytes`].
+/// [`format::payload_bytes`].
 pub struct Payload {
     map: memmap2::Mmap,
     count: usize,
     /// How wide one axis of a position is, 2 bytes or 4; see
-    /// [`crate::codec::cells::format::position_width`].
+    /// [`format::position_width`].
     width: usize,
     /// The cell's low corner, which a position is counted from.
     origin: [f64; 3],
@@ -147,7 +146,7 @@ impl Payload {
             Err(e) => return Err(e),
         };
         let len = file.metadata()?.len() as usize;
-        if len < crate::codec::cells::format::PAYLOAD_HEADER {
+        if len < format::PAYLOAD_HEADER {
             return Ok(None);
         }
         // SAFETY: a payload is written beside its path and renamed over it
@@ -156,12 +155,10 @@ impl Payload {
         // republished cell is a new inode and this one lives as long as the
         // mapping does.
         let map = unsafe { memmap2::Mmap::map(&file)? };
-        let Some(held) = crate::codec::cells::format::payload_head(&map) else {
+        let Some(held) = format::payload_head(&map) else {
             return Ok(None);
         };
-        if len
-            < crate::codec::cells::format::payload_len(held.count, held.width)
-        {
+        if len < format::payload_len(held.count, held.width) {
             return Ok(None);
         }
         Ok(Some(Payload {
@@ -196,10 +193,9 @@ impl Payload {
     /// Counted out from the cell's own corner on the galaxy's
     /// thirty-second-of-a-light-year grid, which is exact for every position
     /// the game states: see
-    /// [`POSITION_STEP`](crate::codec::cells::format::POSITION_STEP).
+    /// [`POSITION_STEP`](format::POSITION_STEP).
     pub fn position_at(&self, at: usize) -> [f64; 3] {
-        let from =
-            crate::codec::cells::format::PAYLOAD_HEADER + at * 3 * self.width;
+        let from = format::PAYLOAD_HEADER + at * 3 * self.width;
         let axis = |n: usize| {
             let from = from + n * self.width;
             let counts = match self.width {
@@ -210,7 +206,7 @@ impl Payload {
                     self.map[from..from + 4].try_into().unwrap(),
                 ) as f64,
             };
-            self.origin[n] + counts * crate::codec::cells::format::POSITION_STEP
+            self.origin[n] + counts * format::POSITION_STEP
         };
         [axis(0), axis(1), axis(2)]
     }

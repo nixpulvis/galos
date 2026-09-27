@@ -330,10 +330,10 @@ impl Compaction {
     /// Open a new base beside `path`, with room for the header the count
     /// goes in once it is known.
     pub fn begin(path: &Path) -> io::Result<Compaction> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("tmp");
         let mut out = BufWriter::with_capacity(1 << 20, File::create(&tmp)?);
@@ -420,10 +420,10 @@ pub mod pending {
         systems: &[System],
     ) -> io::Result<bool> {
         let path = pending_path(checkpoint);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         let mut file =
             OpenOptions::new().create(true).append(true).open(&path)?;
@@ -503,7 +503,7 @@ fn read_frames(checkpoint: &Path) -> (Vec<System>, Option<NaiveDateTime>) {
         if end > bytes.len() {
             break;
         }
-        for record in bytes[at + FRAME..end].chunks_exact(RECORD) {
+        for record in bytes[at + FRAME..end].as_chunks::<RECORD>().0 {
             // SAFETY: 64 initialised bytes read unaligned as the `repr(C)`
             // record they were written from, every bit pattern of whose
             // fields is a valid value of that field.

@@ -117,7 +117,7 @@ impl Table {
     /// address spells where the row stored none.
     ///
     /// Upper case either way — the table is written from
-    /// [`SystemName`](crate::core::name::SystemName)s and
+    /// [`SystemName`]s and
     /// [`crate::core::procedural`] spells upper case by construction — and
     /// borrowed wherever there is something to borrow, which is every row
     /// of a version 1 table and every stored exception of a later one.
@@ -231,13 +231,13 @@ impl Table {
                 ));
             }
         }
-        if let Some(last) = exceptions.last() {
-            if *last as usize >= held.count() {
-                return Err(format!(
-                    "exception row {last} of {} rows",
-                    held.count()
-                ));
-            }
+        if let Some(last) = exceptions.last()
+            && *last as usize >= held.count()
+        {
+            return Err(format!(
+                "exception row {last} of {} rows",
+                held.count()
+            ));
         }
         // A sparse span covers a name, so it has length; a dense one may
         // be empty, that being how a version 1 or 2 generation says the

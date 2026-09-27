@@ -206,7 +206,7 @@ impl OnDisk {
 
     /// What the directory holds for `address`, empty where it holds nothing.
     ///
-    /// [`bodies::read_bodies`] answers empty for a system with no record, in
+    /// [`read_bodies`](crate::codec::Directory::read_bodies) answers empty for a system with no record, in
     /// any of its layouts. A record that is there and will not read is warned
     /// and read as empty rather than taken as an error. It is one system's
     /// insides; refusing the whole run over it would lose the feed, and the
@@ -241,10 +241,9 @@ impl Bodies for OnDisk {
     fn edit(&mut self, address: i64, act: &mut dyn FnMut(&mut SystemBodies)) {
         if self.dirty.len() >= OnDisk::CARRIED
             && !self.dirty.contains_key(&address)
+            && let Err(err) = self.flush()
         {
-            if let Err(err) = self.flush() {
-                eprintln!("body files could not be written: {err}");
-            }
+            eprintln!("body files could not be written: {err}");
         }
         // Read before the entry is taken: `on_disk` borrows `self`, and the
         // entry holds `self.dirty` mutably for as long as it lives.

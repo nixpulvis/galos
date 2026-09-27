@@ -162,7 +162,11 @@ impl Table {
             Err(err) => return Err(err),
         };
         let header = header_of(&bytes, path)?;
-        let mut entries = bytes[HEADER..].chunks_exact(ENTRY).map(Entry::of);
+        let mut entries = bytes[HEADER..]
+            .as_chunks::<ENTRY>()
+            .0
+            .iter()
+            .map(|it| Entry::of(it));
         let base = entries.by_ref().take(header.base).collect();
         Table { generation: header.generation, base, tail: entries.collect() }
             .checked(path)

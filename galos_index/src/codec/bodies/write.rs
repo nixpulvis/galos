@@ -2,7 +2,7 @@
 //! tombstones that beat the entries behind them.
 //!
 //! A write is two appends and no directory operation; a tail grown past its
-//! bound is folded on the way out, which is [`fold`]'s.
+//! bound is folded on the way out, which is [`fold_body_shard`](crate::codec::Directory::fold_body_shard)'s.
 
 use super::{
     ENTRY, Entry, Found, HEADER, header_bytes, header_fields, tail_bound,
@@ -34,14 +34,17 @@ pub struct Wrote {
     pub failed: Option<io::Error>,
 }
 
+/// Encoded records by shard, each with the address it is for.
+type Batches = HashMap<u64, Vec<(i64, Vec<u8>)>>;
+
 /// Group rows by shard, encoding each record on the way.
 ///
 /// A body that will not encode is not a body a retry fixes, so it is
 /// reported rather than batched; the systems either side of it still go.
 fn batches<'a>(
     rows: impl IntoIterator<Item = (i64, &'a SystemBodies)>,
-) -> (HashMap<u64, Vec<(i64, Vec<u8>)>>, Option<io::Error>) {
-    let mut batches: HashMap<u64, Vec<(i64, Vec<u8>)>> = HashMap::new();
+) -> (Batches, Option<io::Error>) {
+    let mut batches = Batches::new();
     let mut failed = None;
     for (address, inside) in rows {
         match rmp_serde::to_vec(inside) {
@@ -164,8 +167,13 @@ pub(super) fn append(
     }
     std::fs::create_dir_all(dir.join(BODIES_DIR))?;
     let path = body_index_path(dir, shard);
-    let mut index =
-        OpenOptions::new().read(true).write(true).create(true).open(&path)?;
+    // Opened to add to what stands, never to empty it.
+    let mut index = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
     let mut head = [0u8; HEADER];
     let length = index.metadata()?.len();
     let (generation, base) = match length >= HEADER as u64 {

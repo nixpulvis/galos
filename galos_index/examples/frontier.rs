@@ -533,5 +533,5 @@ fn main() {
 /// frame, and the galaxy's own edge past that.
 fn reach_of(view: &View, back: f64) -> f64 {
     let seen = back * (f64::from(view.fov_y) / 2.0).tan();
-    (seen * 0.9).min(f64::from(65_000.0))
+    (seen * 0.9).min(65_000.0)
 }

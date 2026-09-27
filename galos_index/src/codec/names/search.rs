@@ -73,15 +73,13 @@ pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     let last = hay.len() - needle.len();
     let mut at = 0usize;
     while at <= last {
-        match hay[at..=last].iter().position(|byte| *byte == first) {
-            Some(off) => {
-                let from = at + off;
-                if &hay[from..from + needle.len()] == needle {
-                    return Some(from);
-                }
-                at = from + 1;
+        {
+            let off = hay[at..=last].iter().position(|byte| *byte == first)?;
+            let from = at + off;
+            if &hay[from..from + needle.len()] == needle {
+                return Some(from);
             }
-            None => return None,
+            at = from + 1;
         }
     }
     None

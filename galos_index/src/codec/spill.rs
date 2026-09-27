@@ -44,7 +44,7 @@ pub fn as_bytes(systems: &[System]) -> &[u8] {
 /// `f64` and `u32` fields is a valid value of that field, so there is
 /// nothing else to check.
 pub fn of_bytes(bytes: &[u8]) -> Option<&[System]> {
-    if bytes.len() % RECORD != 0 {
+    if !bytes.len().is_multiple_of(RECORD) {
         return None;
     }
     if bytes.as_ptr().align_offset(std::mem::align_of::<System>()) != 0 {
@@ -68,10 +68,10 @@ pub struct Spill {
 impl Spill {
     /// Open `path` for writing, replacing anything there.
     pub fn create(path: &Path) -> io::Result<Spill> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         Ok(Spill {
             path: path.to_owned(),
@@ -125,7 +125,7 @@ impl Spilled {
         if len == 0 {
             return Ok(Spilled { map: None, count: 0 });
         }
-        if len % RECORD != 0 {
+        if !len.is_multiple_of(RECORD) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("{} is not a whole number of records", path.display()),

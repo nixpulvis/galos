@@ -827,10 +827,10 @@ where
         // is being read is a file the run still has to be able to say
         // something about, and half a decode is not a state serde defines.
         while let Some(row) = seq.next_element::<T>()? {
-            if self.failed.is_none() {
-                if let Err(err) = (self.take)(row) {
-                    *self.failed = Some(err);
-                }
+            if self.failed.is_none()
+                && let Err(err) = (self.take)(row)
+            {
+                *self.failed = Some(err);
             }
         }
         Ok(())

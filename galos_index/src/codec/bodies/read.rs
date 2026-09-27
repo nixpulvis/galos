@@ -34,7 +34,7 @@ impl Directory<'_> {
     }
 }
 
-/// One attempt at [`find`].
+/// One attempt at [`find_bodies`](crate::codec::Directory::find_bodies).
 fn found(dir: &Path, address: i64) -> io::Result<Found> {
     let shard = body_shard(address);
     let path = body_index_path(dir, shard);

@@ -236,10 +236,7 @@ fn merge<T: Serialize + DeserializeOwned>(
 
     let mut sorted = Sheet::open(out.to_owned())?;
     let mut count = 0usize;
-    loop {
-        let Some(address) = heads.iter().flatten().map(key).min() else {
-            break;
-        };
+    while let Some(address) = heads.iter().flatten().map(key).min() {
         // The runs in order, so a later run's row is taken over an earlier
         // one's, and inside a run the last of a stretch over the first:
         // both are the one rule, that the last row written wins.

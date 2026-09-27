@@ -1,9 +1,9 @@
 //! Putting a built tree down: the index file, a payload per cell, the
 //! changes a publish makes, and the sweep of what no cell names.
 
+use super::format::payload_bytes;
 use crate::codec::Directory;
 use crate::codec::bytes::Encode;
-use crate::codec::cells::format::payload_bytes;
 use crate::codec::layout::{
     INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
 };
