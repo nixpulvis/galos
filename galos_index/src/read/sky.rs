@@ -22,8 +22,8 @@
 //! holding keeps reading the galaxy the route started on.
 
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
 use crate::store::cells::Payload;
+use crate::tree::index::Index;
 use elite_journal::Boxel;
 use std::collections::HashMap;
 use std::io;
@@ -251,7 +251,7 @@ fn dist2(a: [f64; 3], b: [f64; 3]) -> f64 {
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::ExactSystem;
+    use crate::system::System;
 
     /// A scratch directory removed with the test.
     struct Scratch(PathBuf);
@@ -270,7 +270,7 @@ mod tests {
     }
 
     /// A lattice of systems, one every `step` light years on a side.
-    fn lattice(side: usize, step: f64) -> Vec<ExactSystem> {
+    fn lattice(side: usize, step: f64) -> Vec<System> {
         let span = (side.saturating_sub(1)) as f64 * step;
         let base = [-span / 2.0, 900.0 - span / 2.0, 24400.0 - span / 2.0];
         let mut out = Vec::new();
@@ -278,7 +278,7 @@ mod tests {
         for x in 0..side {
             for y in 0..side {
                 for z in 0..side {
-                    out.push(ExactSystem {
+                    out.push(System {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,
@@ -289,7 +289,7 @@ mod tests {
                         temperature: 5000.0,
                         age_bucket: 0,
                         updated_at: 0,
-                        kind: crate::core::record::StarKind::G,
+                        kind: crate::core::star::StarKind::G,
                     });
                     id += 1;
                 }
@@ -298,7 +298,7 @@ mod tests {
         out
     }
 
-    fn built(dir: &Path, systems: &[ExactSystem]) {
+    fn built(dir: &Path, systems: &[System]) {
         Snapshot::build(systems, &BuildParams::default())
             .write(dir)
             .expect("a build");

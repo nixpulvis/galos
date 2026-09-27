@@ -14,9 +14,12 @@
 //!
 //! The modules are layers, each reading only the ones above it in this list:
 //!
-//! - [`core`]: the cube, the sums, the fixed-width records.
+//! - [`core`]: the cube, the sums a cell carries, the codecs, a star's kind.
 //! - [`records`]: the serde rows the client reads beside the cells.
-//! - [`system`]: where things are inside one system.
+//! - [`system`]: one system — [`System`], where it is in the galaxy, and
+//!   [`system::bodies`], what is inside it.
+//! - [`tree`]: the cell tree as it is served — [`Cell`], [`Index`], and the
+//!   [`CellSystem`] a cell's payload packs each system as.
 //! - [`format`](mod@format): file names, byte layouts and the resume point.
 //! - [`store`]: the stores a directory is made of, read and written.
 //! - [`read`]: the client's walks over the resident index.
@@ -28,7 +31,7 @@
 //! [`build::cold`] takes records — a database's rows, a dump's lines — and
 //! raises the whole tree at once. [`Galaxy`] takes events one at a time,
 //! from a feed or from a commander's own files, and accumulates them into
-//! [`ExactSystem`] records and the metadata sidecars, keeping what a scan found in
+//! [`System`] records and the metadata sidecars, keeping what a scan found in
 //! [`accumulate::bodies`].
 //!
 //! Pure and dependency-light on purpose. Physics is [`galos_photometry`];
@@ -43,6 +46,7 @@ pub mod read;
 pub mod records;
 pub mod store;
 pub mod system;
+pub mod tree;
 
 // The core API, re-exported at the crate root so a caller writes
 // `galos_index::Tree` rather than reaching through the modules. Everything
@@ -51,12 +55,10 @@ pub use crate::accumulate::galaxy::Galaxy;
 pub use crate::accumulate::report::SystemReport;
 pub use crate::build::snapshot::{BuildParams, Snapshot};
 pub use crate::build::tree::Tree;
-pub use crate::core::aggregate::Cell;
 pub use crate::core::geometry::CellId;
-pub use crate::core::index::Index;
 pub use crate::core::moments::Moments;
 pub use crate::core::name::SystemName;
-pub use crate::core::record::{ExactSystem, Point, StarKind};
+pub use crate::core::star::StarKind;
 pub use crate::format::lock::Lock;
 pub use crate::format::payload::INDEX_VERSION;
 pub use crate::read::sky::Sky;
@@ -65,3 +67,6 @@ pub use crate::read::walk::{Mode, Needed, View};
 pub use crate::records::{Arrival, Table};
 pub use crate::store::names::Names;
 pub use crate::store::tables::TableSet;
+pub use crate::system::System;
+pub use crate::tree::cell::{Cell, CellSystem};
+pub use crate::tree::index::Index;

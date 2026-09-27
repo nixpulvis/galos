@@ -924,7 +924,7 @@ fn flying_stays_quick() {
     );
     println!(
         "peak {held} cells, {peak} points, {:.1} MB of payload",
-        (peak * std::mem::size_of::<galos_index::Point>()) as f64 / 1e6,
+        (peak * std::mem::size_of::<galos_index::CellSystem>()) as f64 / 1e6,
     );
     // Every row of the flight, as one line each, is a wall of text to read a
     // shape off; the percentiles are the shape.

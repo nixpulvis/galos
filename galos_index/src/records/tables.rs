@@ -71,6 +71,22 @@ pub struct NameEntry {
     pub position: [f32; 3],
 }
 
+impl NameEntry {
+    /// Roughly where the system sits, in light years
+    ///
+    /// **The middle of the boxel its address names**, which is what a
+    /// published row answers with since a name became a function of an
+    /// address: within five light years of the truth at the class most
+    /// systems are, and half a sector at the largest. Good enough to order a
+    /// list by and to read a distance off across a galaxy tens of thousands
+    /// of light years wide, and free, being arithmetic. Anything that *acts*
+    /// on a system — a camera sent there, a star drawn there, a route
+    /// plotted from there — wants the galaxy's own answer instead.
+    pub fn place(&self) -> [f64; 3] {
+        self.position.map(f64::from)
+    }
+}
+
 /// A faction's id and the name it is shown under.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Faction {

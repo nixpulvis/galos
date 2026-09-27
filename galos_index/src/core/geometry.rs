@@ -40,11 +40,6 @@ pub(crate) const ROOT_MIN_LY: [f64; 3] = [
 /// encoding rather than a limit anything reaches.
 pub const MAX_LEVEL: u8 = 21;
 
-/// The edge of a cell at `level`, in light years.
-pub const fn edge_ly(level: u8) -> f64 {
-    ROOT_EDGE_LY / (1u64 << level) as f64
-}
-
 /// An axis-aligned box in light years, what a cell occupies and what the walks
 /// measure the eye against.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -99,9 +94,14 @@ impl CellId {
     /// The root cube, level zero.
     pub const ROOT: CellId = CellId { level: 0, x: 0, y: 0, z: 0 };
 
+    /// The edge of a cell at `level`, in light years.
+    pub const fn edge_at(level: u8) -> f64 {
+        ROOT_EDGE_LY / (1u64 << level) as f64
+    }
+
     /// The edge of this cell, in light years.
     pub fn edge_ly(&self) -> f64 {
-        edge_ly(self.level)
+        CellId::edge_at(self.level)
     }
 
     /// The low corner of this cell, in light years.
@@ -127,7 +127,7 @@ impl CellId {
     /// wrapping or overflowing; nothing on record sits outside, but a caller
     /// should not have to prove it before asking.
     pub fn of_point(p: [f64; 3], level: u8) -> CellId {
-        let edge = edge_ly(level);
+        let edge = CellId::edge_at(level);
         let last = ((1u64 << level) - 1) as f64;
         let idx = |v: f64, min: f64| {
             ((v - min) / edge).floor().clamp(0.0, last) as u32
@@ -235,13 +235,13 @@ fn compact3(m: u64) -> u32 {
 
 /// Interleave three coordinates into one Morton key, `x` in the low bit of each
 /// triple, then `y`, then `z`.
-pub(crate) fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
+fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
     split3(x) | split3(y) << 1 | split3(z) << 2
 }
 
 /// Recover three coordinates from a Morton key, the inverse of
 /// [`morton_encode`].
-pub(crate) fn morton_decode(m: u64) -> (u32, u32, u32) {
+fn morton_decode(m: u64) -> (u32, u32, u32) {
     (compact3(m), compact3(m >> 1), compact3(m >> 2))
 }
 
@@ -257,9 +257,9 @@ mod tests {
     /// one at level 17.
     #[test]
     fn each_level_halves_the_edge() {
-        assert!(close(edge_ly(0), 131072.0));
-        assert!(close(edge_ly(13), 16.0));
-        assert!(close(edge_ly(17), 1.0));
+        assert!(close(CellId::edge_at(0), 131072.0));
+        assert!(close(CellId::edge_at(13), 16.0));
+        assert!(close(CellId::edge_at(17), 1.0));
     }
 
     /// The cube is placed over the galaxy, so its low corner is the centre less

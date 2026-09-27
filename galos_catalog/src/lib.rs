@@ -16,7 +16,7 @@
 //! - **Frames.** A catalog's axes are the sky's as seen from Earth. [`frame`]
 //!   is where those are turned into anything else.
 //!
-//! [`Star`] is deliberately richer than `galos_index::ExactSystem`. A catalog row
+//! [`Star`] is deliberately richer than `galos_index::System`. A catalog row
 //! carries a name, a measured apparent magnitude, a color index and a
 //! spectral type, and the reason to read a real catalog at all is to check
 //! claims against those. `System` is the lossy projection that survives into

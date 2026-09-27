@@ -759,7 +759,7 @@ where
 /// that arrives at a neutron star, and nothing for any other.
 #[cfg(test)]
 pub(crate) mod testing {
-    use crate::core::record::StarKind;
+    use crate::core::star::StarKind;
     use crate::records::{Arrival, Table};
     use serde::{Deserialize, Serialize};
 

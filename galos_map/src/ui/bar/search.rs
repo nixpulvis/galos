@@ -83,7 +83,7 @@ fn act_on(
     // frame: a line is drawn every frame and acted on when it is clicked,
     // and a published row carries no place to read off. The list's own
     // ordering and distance readout stand on the boxel middle — see
-    // [`crate::map::galaxy::system_to_vec`].
+    // [`galos_index::records::NameEntry::place`].
     //
     // Its political columns fill in when a fetch draws it.
     let placed = crate::map::galaxy::System::named_at(system, at);
@@ -292,7 +292,7 @@ pub(crate) fn system_list<'a>(
     // again.
     let listed: Vec<(&NameEntry, Option<String>)> = systems
         .map(|system| {
-            let at = crate::map::galaxy::system_to_vec(system);
+            let at = DVec3::from(system.place());
             // How far off it is, where there is anywhere to measure from.
             let away =
                 center.map(|center| format!("{:.1} Ly", center.distance(at)));
@@ -525,7 +525,7 @@ mod tests {
         act_on(
             SystemAction::Select { gathering },
             system,
-            crate::map::galaxy::system_to_vec(system),
+            DVec3::from(system.place()),
             selection,
             &mut travelled,
             &mut described,

@@ -384,16 +384,16 @@ fn frame(
         tally.points += payload.len();
         for point in &payload {
             let off = [
-                point.pos[0] - at_ly[0],
-                point.pos[1] - at_ly[1],
-                point.pos[2] - at_ly[2],
+                point.position[0] - at_ly[0],
+                point.position[1] - at_ly[1],
+                point.position[2] - at_ly[2],
             ];
             if dot(off, off) > reach * reach {
                 continue;
             }
             tally.drawn += 1;
             tally.levels[id.level as usize].drawn += 1;
-            marks.push(Mark { at: point.pos, merged: false });
+            marks.push(Mark { at: point.position, merged: false });
         }
     }
     let read = at.elapsed();
@@ -469,7 +469,7 @@ fn face_at(level: u8) -> [f64; 3] {
 fn frontier_level(view: &View, back: f64) -> u8 {
     let want = MERGE_PX * back / view.pixels_per_radian();
     (0..=20u8)
-        .find(|&level| galos_index::core::geometry::edge_ly(level) <= want)
+        .find(|&level| galos_index::CellId::edge_at(level) <= want)
         .unwrap_or(20)
 }
 
@@ -513,7 +513,7 @@ fn main() {
         let close = Lens::of(&view).magnified(face_at(level), 8.0);
         println!(
             "  close-up across a level-{level} face ({:.0} ly cells)",
-            galos_index::core::geometry::edge_ly(level),
+            galos_index::CellId::edge_at(level),
         );
 
         let shots = frame(&index, &dir, &view, reach, &[wide, close]);

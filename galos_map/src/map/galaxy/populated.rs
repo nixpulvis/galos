@@ -174,9 +174,9 @@ mod tests {
     /// A world holding an index over `at` and the populated table beside it.
     fn gathered(rows: Vec<PopulatedSystem>) -> App {
         use galos_index::{BuildParams, Snapshot, StarKind};
-        let systems: Vec<galos_index::ExactSystem> = rows
+        let systems: Vec<galos_index::System> = rows
             .iter()
-            .map(|row| galos_index::ExactSystem {
+            .map(|row| galos_index::System {
                 id64: row.address as u64,
                 position: [
                     f64::from(row.position[0]),

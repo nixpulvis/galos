@@ -1,7 +1,7 @@
 //! The builder's private resume point: a base compacted rarely, and the
 //! deltas since.
 //!
-//! The served index is lossy — a payload [`Point`](crate::Point) downcasts
+//! The served index is lossy — a payload [`CellSystem`](crate::CellSystem) downcasts
 //! the magnitude, buckets the temperature and drops the age — so the
 //! editable [`Tree`](crate::Tree) cannot be rebuilt from it. This holds the
 //! full-precision inputs the tree was last built from and the database time
@@ -19,9 +19,9 @@
 //!
 //! ## Why the base is fixed-width and this machine's
 //!
-//! A 64-byte header and then nothing but [`ExactSystem`] records, 56 bytes each
+//! A 64-byte header and then nothing but [`System`] records, 56 bytes each
 //! as this machine holds one. [`Checkpoint::read`] maps the file and hands
-//! [`Tree::build`](crate::Tree::build) a `&[ExactSystem]` pointing into the
+//! [`Tree::build`](crate::Tree::build) a `&[System]` pointing into the
 //! mapping: mapped, not decoded, so the inputs cost no heap. Decoding *is*
 //! the allocation.
 //!
@@ -30,7 +30,7 @@
 //! the magic is a native `u64`, and the record width and a format version
 //! are in the header. Refusal costs a rebuild and nothing else.
 
-use crate::ExactSystem;
+use crate::System;
 use crate::format::layout::pending_path;
 use chrono::NaiveDateTime;
 use memmap2::Mmap;
@@ -76,7 +76,7 @@ impl Provenance {
 }
 
 /// Bytes one system occupies in the base and in the log alike.
-const RECORD: usize = std::mem::size_of::<ExactSystem>();
+const RECORD: usize = std::mem::size_of::<System>();
 
 /// Bytes of header ahead of the base's first record. A multiple of eight,
 /// so the records behind it are aligned in the mapping.
@@ -136,7 +136,7 @@ pub struct Checkpoint {
     /// The header's count, checked against the file's length when it was
     /// read.
     count: usize,
-    deltas: Vec<ExactSystem>,
+    deltas: Vec<System>,
 }
 
 /// Counts rather than contents: a resume point's contents are a galaxy.
@@ -219,18 +219,18 @@ impl Checkpoint {
     }
 
     /// Everything the base holds, in the order it was compacted in.
-    pub fn base(&self) -> &[ExactSystem] {
+    pub fn base(&self) -> &[System] {
         // SAFETY: `read` is the only thing that builds a `Checkpoint`, and
         // it checks all four of what this needs before it does: the
         // header's magic (so the file is this machine's and this format's),
         // its record width against `RECORD`, its count against the file's
         // length, and the alignment of the mapping past the header.
-        // `ExactSystem` is `repr(C)` with no padding and every bit pattern of
+        // `System` is `repr(C)` with no padding and every bit pattern of
         // its `u64`, `f64` and `u32` fields is a valid value of that field,
         // so any 56 aligned bytes are one.
         unsafe {
             std::slice::from_raw_parts(
-                self.map.as_ptr().add(HEADER).cast::<ExactSystem>(),
+                self.map.as_ptr().add(HEADER).cast::<System>(),
                 self.count,
             )
         }
@@ -239,7 +239,7 @@ impl Checkpoint {
     /// What the log holds, in the order it was published in: later wins,
     /// which is what applying them over a tree built from [`base`](Self::base)
     /// does.
-    pub fn deltas(&self) -> &[ExactSystem] {
+    pub fn deltas(&self) -> &[System] {
         &self.deltas
     }
 
@@ -251,7 +251,7 @@ impl Checkpoint {
         path: &Path,
         cursor: Option<NaiveDateTime>,
         by: Provenance,
-        systems: impl IntoIterator<Item = ExactSystem>,
+        systems: impl IntoIterator<Item = System>,
     ) -> io::Result<u64> {
         let mut writing = Compaction::begin(path)?;
         for system in systems {
@@ -280,13 +280,13 @@ impl Checkpoint {
         struct Whole {
             cursor: Option<NaiveDateTime>,
             by: Provenance,
-            inputs: Vec<ExactSystem>,
+            inputs: Vec<System>,
         }
 
         #[derive(Deserialize)]
         struct Old {
             cursor: NaiveDateTime,
-            inputs: Vec<ExactSystem>,
+            inputs: Vec<System>,
         }
 
         let (cursor, by, inputs) = if let Ok(it) =
@@ -342,7 +342,7 @@ impl Compaction {
     }
 
     /// One more system.
-    pub fn push(&mut self, system: ExactSystem) -> io::Result<()> {
+    pub fn push(&mut self, system: System) -> io::Result<()> {
         self.out.write_all(as_bytes(std::slice::from_ref(&system)))?;
         self.count += 1;
         Ok(())
@@ -417,7 +417,7 @@ pub mod pending {
     pub fn append(
         checkpoint: &Path,
         cursor: Option<NaiveDateTime>,
-        systems: &[ExactSystem],
+        systems: &[System],
     ) -> io::Result<bool> {
         let path = pending_path(checkpoint);
         if let Some(parent) = path.parent() {
@@ -484,7 +484,7 @@ fn stamped(micros: i64) -> Option<NaiveDateTime> {
 ///
 /// A missing log is nothing to replay. A frame that runs past the end of the
 /// file is the torn tail of a kill and ends the replay there.
-fn read_frames(checkpoint: &Path) -> (Vec<ExactSystem>, Option<NaiveDateTime>) {
+fn read_frames(checkpoint: &Path) -> (Vec<System>, Option<NaiveDateTime>) {
     let Ok(bytes) = std::fs::read(pending_path(checkpoint)) else {
         return (Vec::new(), None);
     };
@@ -508,7 +508,7 @@ fn read_frames(checkpoint: &Path) -> (Vec<ExactSystem>, Option<NaiveDateTime>) {
             // record they were written from, every bit pattern of whose
             // fields is a valid value of that field.
             replayed.push(unsafe {
-                record.as_ptr().cast::<ExactSystem>().read_unaligned()
+                record.as_ptr().cast::<System>().read_unaligned()
             });
         }
         cursor = stamped_at.or(cursor);
@@ -520,7 +520,7 @@ fn read_frames(checkpoint: &Path) -> (Vec<ExactSystem>, Option<NaiveDateTime>) {
 /// The log as it was framed before the fixed-width format: a `u32` length
 /// ahead of a MessagePack batch, and no cursor anywhere in it. Read once,
 /// by the upgrade, and written back in the current framing.
-fn read_legacy_frames(checkpoint: &Path) -> Vec<ExactSystem> {
+fn read_legacy_frames(checkpoint: &Path) -> Vec<System> {
     let Ok(bytes) = std::fs::read(pending_path(checkpoint)) else {
         return Vec::new();
     };
@@ -535,7 +535,7 @@ fn read_legacy_frames(checkpoint: &Path) -> Vec<ExactSystem> {
         ]) as usize;
         at += 4;
         let Some(frame) = bytes.get(at..at + len) else { break };
-        let Ok(batch) = rmp_serde::from_slice::<Vec<ExactSystem>>(frame) else {
+        let Ok(batch) = rmp_serde::from_slice::<Vec<System>>(frame) else {
             break;
         };
         replayed.extend(batch);
@@ -545,8 +545,8 @@ fn read_legacy_frames(checkpoint: &Path) -> Vec<ExactSystem> {
 }
 
 /// The bytes of `systems`, for a write.
-fn as_bytes(systems: &[ExactSystem]) -> &[u8] {
-    // SAFETY: `ExactSystem` is `repr(C)` with no padding in it — asserted where it
+fn as_bytes(systems: &[System]) -> &[u8] {
+    // SAFETY: `System` is `repr(C)` with no padding in it — asserted where it
     // is declared — so every byte of the slice is an initialised byte of a
     // field, and a `u8` has no alignment to violate.
     unsafe {
@@ -559,7 +559,7 @@ fn as_bytes(systems: &[ExactSystem]) -> &[u8] {
 
 /// Whether records may be read where this mapping's do.
 fn aligned(bytes: &[u8]) -> bool {
-    bytes.as_ptr().align_offset(std::mem::align_of::<ExactSystem>()) == 0
+    bytes.as_ptr().align_offset(std::mem::align_of::<System>()) == 0
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> u32 {
@@ -595,15 +595,15 @@ mod tests {
         dir
     }
 
-    fn system(id: u64) -> ExactSystem {
-        ExactSystem {
+    fn system(id: u64) -> System {
+        System {
             id64: id,
             position: [id as f64, -(id as f64), 12.5],
             absolute_magnitude: 4.83 - id as f64,
             temperature: 3000.0 + id as f64,
             age_bucket: (id % 8) as u32,
             updated_at: 1_700_000_000 + id as u32,
-            kind: crate::core::record::StarKind::G,
+            kind: crate::core::star::StarKind::G,
         }
     }
 
@@ -618,7 +618,7 @@ mod tests {
         let dir = scratch("round-trip");
         let path = dir.join("checkpoint");
 
-        let inputs: Vec<ExactSystem> = (0..1000).map(system).collect();
+        let inputs: Vec<System> = (0..1000).map(system).collect();
         let wrote = Checkpoint::compact(
             &path,
             at(1_700_000_000),
@@ -647,7 +647,7 @@ mod tests {
         let dir = scratch("eventful");
         let path = dir.join("checkpoint");
 
-        let inputs: Vec<ExactSystem> = (0..10).map(system).collect();
+        let inputs: Vec<System> = (0..10).map(system).collect();
         Checkpoint::compact(
             &path,
             None,
@@ -672,7 +672,7 @@ mod tests {
         let dir = scratch("logged");
         let path = dir.join("checkpoint");
 
-        let base: Vec<ExactSystem> = (0..10).map(system).collect();
+        let base: Vec<System> = (0..10).map(system).collect();
         Checkpoint::compact(
             &path,
             at(100),
@@ -796,13 +796,13 @@ mod tests {
         struct Whole {
             cursor: Option<chrono::NaiveDateTime>,
             by: Provenance,
-            inputs: Vec<ExactSystem>,
+            inputs: Vec<System>,
         }
 
         let dir = scratch("legacy");
         let path = dir.join("checkpoint");
 
-        let inputs: Vec<ExactSystem> = (1..40).map(system).collect();
+        let inputs: Vec<System> = (1..40).map(system).collect();
         let old = Whole {
             cursor: at(1_700_000_000),
             by: Provenance::Database,
@@ -851,13 +851,13 @@ mod tests {
         #[derive(Serialize)]
         struct Old {
             cursor: chrono::NaiveDateTime,
-            inputs: Vec<ExactSystem>,
+            inputs: Vec<System>,
         }
 
         let dir = scratch("old-form");
         let path = dir.join("checkpoint");
 
-        let inputs: Vec<ExactSystem> = (1..40).map(system).collect();
+        let inputs: Vec<System> = (1..40).map(system).collect();
         let old =
             Old { cursor: at(1_700_000_000).unwrap(), inputs: inputs.clone() };
         std::fs::write(&path, rmp_serde::to_vec(&old).unwrap()).unwrap();

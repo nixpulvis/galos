@@ -157,7 +157,7 @@ const POWERS: [(u8, f64); 7] = [
 ///
 /// The longest run of stops a ship crosses with **nothing to scoop**, and
 /// which stop it sets out from. A fuel scoop takes hydrogen off the main
-/// sequence and off nothing else (`galos_index::core::record::scoopable`), so a
+/// sequence and off nothing else ([`galos_index::StarKind::scoopable`]), so a
 /// stretch of white dwarfs, brown dwarfs and black holes is a stretch the
 /// ship crosses on the fuel it had — and where that stretch is longer than
 /// the tank, the route is not a slower route, it is a stranded ship.
@@ -229,7 +229,7 @@ impl Scooping {
 
         for (name, class, jump) in stops {
             match class {
-                Some(class) if galos_index::core::record::scoopable(class) => {
+                Some(class) if galos_index::StarKind::of(class).scoopable() => {
                     // The jump that arrived here was flown before the tank
                     // was filled here, so it is the run's to pay for.
                     jumps.extend(jump);

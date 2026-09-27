@@ -1,6 +1,6 @@
 use crate::map::filter::{Filter, Filters};
-use crate::map::galaxy::fetch::{FetchIndex, FetchTasks, RawSystem};
-use crate::map::galaxy::spawn::build_system;
+use crate::map::galaxy::System;
+use crate::map::galaxy::fetch::{FetchIndex, FetchTasks};
 use crate::map::index::{Names, Populated};
 use crate::map::route::SelectedFilter;
 use crate::map::route::frontier::Frontiers;
@@ -335,16 +335,11 @@ fn ask_leg(
                 .map(|hops| {
                     hops.into_iter()
                         .map(|(address, position)| {
-                            let raw = RawSystem {
-                                address,
-                                position,
-                                magnitude: None,
-                                temp_bucket: None,
-                                // A stop comes out of the jump graph,
-                                // which is places and nothing else.
-                                updated_at: None,
-                            };
-                            build_system(&raw, &populated, &names)
+                            // A stop comes out of the jump graph, which is
+                            // places and nothing else.
+                            System::build(
+                                address, position, None, &populated, &names,
+                            )
                         })
                         .collect()
                 })

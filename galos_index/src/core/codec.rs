@@ -7,7 +7,7 @@
 //! a write took, which is why no width is a magic number and no decode counts
 //! offsets. The index file and a cell's payload block are variable-length
 //! encodings of the fixed records below them; their layouts are
-//! [`crate::format::payload`] and [`crate::core::index`].
+//! [`crate::format::payload`] and [`crate::tree::index`].
 //!
 //! The layout is explicit rather than a derived serialization because these
 //! bytes are a contract both sides hold across versions. The primitives get

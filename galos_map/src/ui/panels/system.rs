@@ -71,18 +71,27 @@ pub(super) fn described(
             field(
                 ui,
                 "Population",
-                crate::ui::text::thousands(system.population),
+                crate::ui::text::thousands(system.population()),
             );
-            field(ui, "Allegiance", named(&system.allegiance));
-            field(ui, "Government", named(&system.government));
-            field(ui, "Security", named(&system.security));
-            economies(ui, &system.economies);
+            let politics = system.politics.as_ref();
+            field(
+                ui,
+                "Allegiance",
+                named(&politics.and_then(|p| p.allegiance)),
+            );
+            field(
+                ui,
+                "Government",
+                named(&politics.and_then(|p| p.government)),
+            );
+            field(ui, "Security", named(&politics.and_then(|p| p.security)));
+            economies(ui, &politics.and_then(|p| p.economies));
             // Unknown for the same systems the magnitude is: the moment rides
             // on the payload point, and one built off the names table has none.
             field(
                 ui,
                 "Updated",
-                match system.updated_at {
+                match system.updated_at() {
                     Some(at) => at.format("%Y-%m-%d %H:%M UTC").to_string(),
                     None => UNKNOWN.into(),
                 },
@@ -90,7 +99,7 @@ pub(super) fn described(
         },
     );
 
-    factions(ui, &system.factions, names, wanted);
+    factions(ui, system.factions(), names, wanted);
 
     // Its own system rather than whatever is selected, since several panels
     // stand open at once and each one is about the system named in its title

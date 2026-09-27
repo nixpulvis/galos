@@ -661,7 +661,7 @@ pub(super) fn state_bar(
     if let Some((stops, gathering)) = row_ask.picked {
         selection.pick_out(
             stops.iter().filter_map(|address| {
-                crate::map::galaxy::spawn::system_at(
+                crate::map::galaxy::System::find(
                     *address,
                     &filter.populated,
                     &filter.names,

@@ -1,12 +1,13 @@
 //! Reading a built tree back: the index file whole, and a cell's payload
 //! decoded or mapped where it lies.
 
+use crate::core::aggregate::TempBucket;
 use crate::core::codec::Decode;
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
-use crate::core::record::Point;
 use crate::format::layout::{INDEX_FILE, legacy_payload_path, payload_path};
 use crate::format::payload::{INDEX_VERSION, index_version};
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -40,7 +41,7 @@ impl Index {
     /// The sharded path first and the flat one after it, so a directory
     /// published before the sharding, or one being resharded as this reads,
     /// answers with what it has.
-    pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<Point>> {
+    pub fn read_payload(dir: &Path, id: CellId) -> io::Result<Vec<CellSystem>> {
         let bytes = match fs::read(payload_path(dir, id)) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -75,7 +76,7 @@ impl Index {
         dir: &Path,
         id: CellId,
         limit: usize,
-    ) -> io::Result<Vec<Point>> {
+    ) -> io::Result<Vec<CellSystem>> {
         let Some(payload) = Payload::open(dir, id)? else {
             let mut points = Index::read_payload(dir, id)?;
             points.truncate(limit);
@@ -89,7 +90,7 @@ impl Index {
 /// One cell's payload, mapped rather than decoded.
 ///
 /// [`Index::read_payload`](crate::Index::read_payload) reads the file and
-/// decodes a [`Point`] per record into a `Vec`, which is right for drawing —
+/// decodes a [`CellSystem`] per record into a `Vec`, which is right for drawing —
 /// the map wants owned points to build entities from — and wrong for anything
 /// that asks repeatedly. The router asks per expansion, half a million times a
 /// route, and the LOD walk asks for 152 M points in a zoom and pays 24 s and
@@ -212,9 +213,9 @@ impl Payload {
     ///
     /// One byte, which is why it is here: a route asks it of every system it
     /// expands, for whether a ship can refuel and whether it can
-    /// supercharge. See [`crate::core::record::StarKind`].
-    pub fn kind_at(&self, at: usize) -> crate::core::record::StarKind {
-        crate::core::record::StarKind::from_code(self.map[self.kinds + at])
+    /// supercharge. See [`crate::core::star::StarKind`].
+    pub fn kind_at(&self, at: usize) -> crate::core::star::StarKind {
+        crate::core::star::StarKind::from_code(self.map[self.kinds + at])
     }
 
     /// The photometry of the `at`th system: how bright, how hot, how lately
@@ -222,12 +223,12 @@ impl Payload {
     ///
     /// A column of its own because the router never reads it and the
     /// drawing always does.
-    pub fn lit_at(&self, at: usize) -> (f32, u8, u32) {
+    pub fn lit_at(&self, at: usize) -> (f32, TempBucket, u32) {
         let from = self.lit + at * 9;
         let bytes = &self.map[from..from + 9];
         (
             f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            bytes[4],
+            TempBucket::new(bytes[4]),
             u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
         )
     }
@@ -237,11 +238,11 @@ impl Payload {
     /// One row out of five columns, which is the shape a draw wants and the
     /// shape the layout is deliberately not in: the router reads one column
     /// of millions of rows, and the map reads every column of a handful.
-    pub fn point_at(&self, at: usize) -> Point {
+    pub fn point_at(&self, at: usize) -> CellSystem {
         let (magnitude, temp_bucket, updated_at) = self.lit_at(at);
-        Point {
+        CellSystem {
             id64: self.id64_at(at),
-            pos: self.position_at(at),
+            position: self.position_at(at),
             magnitude,
             temp_bucket,
             updated_at,
@@ -287,7 +288,7 @@ mod tests {
                     assert_eq!(mapped.len(), decoded.len(), "{:?}", cell.id);
                     for (at, point) in decoded.iter().enumerate() {
                         assert_eq!(mapped.id64_at(at), point.id64);
-                        assert_eq!(mapped.position_at(at), point.pos);
+                        assert_eq!(mapped.position_at(at), point.position);
                         seen += 1;
                     }
                 }

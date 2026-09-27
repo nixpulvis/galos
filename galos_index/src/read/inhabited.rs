@@ -40,9 +40,9 @@
 
 use crate::core::codec::{Decode, Encode, FixedCodec, record};
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
 use crate::core::moments::Moments;
 use crate::records::PopulatedSystem;
+use crate::tree::index::Index;
 use elite_journal::prelude::{Allegiance, Government, Security};
 use std::collections::HashMap;
 
@@ -429,8 +429,9 @@ impl Inhabitance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::aggregate::{Aggregate, Cell};
+    use crate::core::aggregate::Aggregate;
     use crate::core::name::SystemName;
+    use crate::tree::cell::Cell;
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9

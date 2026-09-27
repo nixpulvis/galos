@@ -34,7 +34,7 @@ use crate::map::camera::{FIELD_LAYER, FIELD_ORDER, OrbitCamera, STAR_BLOOM};
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
 use crate::map::galaxy::spawn::{
-    ColorBy, Shell, StarExposure, StarSprite, hue, photometric_emissive,
+    ColorBy, Shell, StarExposure, StarSprite, photometric_emissive,
 };
 use crate::map::paint::sizing::{Drawn, UNSEEN, View};
 use crate::map::schedule::MapSet;
@@ -51,6 +51,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
+use galos_index::core::aggregate::TempBucket;
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {
@@ -439,10 +440,10 @@ pub(crate) fn build_field(
             // nine ten-thousandths of a unit, which is black. See
             // [`crate::map::galaxy::spawn::Hue::light`].
             View::Map => {
-                let tone = hue(system, &color_by);
+                let tone = color_by.hue(system);
                 let level = crate::map::paint::glow::mark_light(
                     tone,
-                    system.population > 0,
+                    system.population() > 0,
                     &gains,
                 ) * fade;
                 let c = tone.light() * level;
@@ -573,7 +574,7 @@ pub(crate) fn build_field(
                 else {
                     continue;
                 };
-                let e = photometric_emissive(0, peak);
+                let e = photometric_emissive(TempBucket::new(0), peak);
                 let fade = blob.fade;
                 [e.red * fade, e.green * fade, e.blue * fade, 1.]
             }

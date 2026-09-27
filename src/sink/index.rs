@@ -50,9 +50,7 @@ use galos_index::accumulate::bodies::OnDisk;
 use galos_index::accumulate::galaxy::UNKNOWN;
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::layout::pending_path;
-use galos_index::{
-    BuildParams, ExactSystem, Galaxy, Index as ServedIndex, Tree,
-};
+use galos_index::{BuildParams, Galaxy, Index as ServedIndex, System, Tree};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -479,7 +477,7 @@ impl Index {
     /// [`pending::append`] answers. Without the frame a restart rebuilds the
     /// tree short of what the directory serves and publishes the shortfall
     /// over it. Not fatal: the directory is published regardless.
-    fn record(&mut self, cursor: Option<NaiveDateTime>, moved: &[ExactSystem]) {
+    fn record(&mut self, cursor: Option<NaiveDateTime>, moved: &[System]) {
         let folding = match pending::append(&self.checkpoint, cursor, moved) {
             Ok(folding) => folding,
             Err(err) => {

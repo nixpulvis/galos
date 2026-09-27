@@ -11,15 +11,15 @@
 //! the loop turns on.
 
 use crate::core::geometry::CellId;
-use crate::core::record::Point;
 use crate::read::walk::Needed;
+use crate::tree::cell::CellSystem;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 
 /// A cell whose payload has loaded, and the systems it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResidentCell {
-    pub points: Box<[Point]>,
+    pub points: Box<[CellSystem]>,
 }
 
 /// A multiply-shift hash over an address, for the one map a frame asks
@@ -78,7 +78,7 @@ pub struct Resident {
 
 impl Resident {
     /// A cell's payload arrives, replacing anything held for that cell.
-    pub fn insert(&mut self, id: CellId, points: Vec<Point>) {
+    pub fn insert(&mut self, id: CellId, points: Vec<CellSystem>) {
         self.cells
             .insert(id, ResidentCell { points: points.into_boxed_slice() });
     }
@@ -133,15 +133,15 @@ impl Resident {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::StarKind;
+    use crate::core::star::StarKind;
     use crate::read::walk::{BlobRef, MarkRef, Mode, SplatRef};
 
-    fn point(id: u64) -> Point {
-        Point {
+    fn point(id: u64) -> CellSystem {
+        CellSystem {
             id64: id,
-            pos: [1.0, 2.0, 3.0],
+            position: [1.0, 2.0, 3.0],
             magnitude: 4.0,
-            temp_bucket: 2,
+            temp_bucket: crate::core::aggregate::TempBucket::new(2),
             updated_at: 1_757_260_000,
             kind: StarKind::G,
         }

@@ -1,4 +1,5 @@
 use crate::map::camera::OrbitCamera;
+use crate::map::index::{Names, Populated};
 use crate::map::schedule::MapSet;
 use bevy::ecs::entity::EntityHashSet;
 use bevy::math::DVec3;
@@ -10,9 +11,10 @@ use elite_journal::{
     Government,
     system::Security,
 };
+use galos_index::CellSystem;
 use galos_index::SystemName;
-use galos_index::core::aggregate::{bucket_temperature, temp_bucket};
-use galos_index::records::{Economies, NameEntry};
+use galos_index::core::aggregate::TempBucket;
+use galos_index::records::{Economies, NameEntry, PopulatedSystem};
 use galos_photometry::ClassLight;
 
 pub fn plugin(app: &mut App) {
@@ -73,18 +75,12 @@ pub(crate) struct System {
     /// undiminished, and everything that wants to know how far apart two
     /// systems are asks this instead of unpicking the split.
     pub(crate) position: [f64; 3],
-    pub(crate) population: u64,
-    pub(crate) allegiance: Option<Allegiance>,
-    pub(crate) government: Option<Government>,
-    pub(crate) security: Option<Security>,
-    pub(crate) economies: Option<Economies>,
-    /// The factions present in the system, by id
+    /// What the populated table says about the system, where it is one of
+    /// the dynamic set
     ///
-    /// What [`filter`] asks a system about, so ids rather than names: the
-    /// question is put to every system drawn, every frame, and an integer
-    /// compare is what that wants. A filter naming a faction has resolved it
-    /// to an id already, since it was picked from a list.
-    pub(crate) factions: Vec<i32>,
+    /// [`None`] for a system nobody lives in, which is most of the galaxy and
+    /// is drawn ungoverned.
+    pub(crate) politics: Option<Politics>,
     /// How many bodies the system holds, and how many belts and rings
     ///
     /// What the system is made of rather than what the map has fetched of it,
@@ -104,36 +100,59 @@ pub(crate) struct System {
     /// asked. Both are the map unable to say how far the system reaches, and
     /// both are drawn at [`bodies::STAND_IN`].
     pub(crate) reach: Option<f32>,
-    /// The star's combined absolute magnitude, for the realistic view
+    /// The cell payload's record of the system: the star's photometry for the
+    /// realistic view, and when the system was last updated for the filters
     ///
-    /// The builder works a system's stars down to one absolute magnitude and
-    /// carries it on the payload point; kept here so the realistic view can
-    /// work out how bright the star looks from where the camera stands. [`None`]
-    /// where the system was built from a path with no payload — a route's
-    /// stops, a searched system flown to — and drawn at the default class then.
-    pub(crate) absolute_magnitude: Option<f32>,
-    /// Which blackbody temperature bucket the star's tint falls in
+    /// [`None`] where the system was built from a path with no payload — a
+    /// route's stops, a searched system flown to — which come off the jump
+    /// graph and the names table. Those are drawn at the default class, and a
+    /// span admits none of them rather than a moment being invented to stand
+    /// in for one; [`spawn::spawn_systems`] replaces the system in place the
+    /// frame its cell payload lands.
     ///
-    /// Already binned by the index, so the client needs no per-star
-    /// temperature. [`None`] alongside [`Self::absolute_magnitude`].
-    pub(crate) temp_bucket: Option<u8>,
-    /// When the system was last updated
-    ///
-    /// What [`filter`]'s span is asked of: which systems have been heard from
-    /// inside the last minute, hour, thirty days. The database's own
-    /// `updated_at`, carried through the index on the payload point — the
-    /// table that is rewritten a cell at a time, so a stamp that moves
-    /// whenever a system is reported costs tens of kilobytes a pass.
-    ///
-    /// [`None`] where the system was built with no payload point behind it: a
-    /// route's stops and a searched system flown to, which come off the names
-    /// table, as [`Self::absolute_magnitude`] is [`None`] for them. A span
-    /// admits neither, rather than a moment being invented to stand in for one,
-    /// and [`spawn::spawn_systems`] replaces the system in place the frame its
-    /// cell payload lands, which is where the stamp arrives.
+    /// The point's own `position` is the same place as [`Self::position`], which is
+    /// the one read, since a system without a point has a place too.
     ///
     /// [`spawn::spawn_systems`]: crate::map::galaxy::spawn::spawn_systems
-    pub(crate) updated_at: Option<DateTime<Utc>>,
+    pub(crate) indexed: Option<CellSystem>,
+}
+
+/// A populated system's political columns, as the populated table holds them
+///
+/// One part of a [`System`] rather than six fields beside it, because they
+/// arrive together or not at all: a system is in the populated table or it is
+/// not.
+#[derive(Clone, Default)]
+pub(crate) struct Politics {
+    pub(crate) population: u64,
+    pub(crate) allegiance: Option<Allegiance>,
+    pub(crate) government: Option<Government>,
+    pub(crate) security: Option<Security>,
+    pub(crate) economies: Option<Economies>,
+    /// The factions present in the system, by id
+    ///
+    /// What [`filter`] asks a system about, so ids rather than names: the
+    /// question is put to every system drawn, every frame, and an integer
+    /// compare is what that wants. A filter naming a faction has resolved it
+    /// to an id already, since it was picked from a list.
+    pub(crate) factions: Vec<i32>,
+}
+
+impl Politics {
+    /// The columns off a populated table's row
+    pub(crate) fn of(row: &PopulatedSystem) -> Politics {
+        Politics {
+            population: row.population,
+            allegiance: row.allegiance,
+            government: row.government,
+            security: row.security,
+            economies: Economies::new(
+                row.primary_economy,
+                row.secondary_economy,
+            ),
+            factions: row.factions.clone(),
+        }
+    }
 }
 
 impl System {
@@ -180,17 +199,39 @@ impl System {
     /// The absolute magnitude the realistic view reads the star's brightness
     /// from, at the default class where the index carried none.
     pub(crate) fn absolute_magnitude(&self) -> f64 {
-        self.absolute_magnitude
+        self.indexed_magnitude()
             .map(f64::from)
             .unwrap_or(ClassLight::DEFAULT.absolute_magnitude.0)
     }
 
     /// Which temperature bucket the star's blackbody tint falls in, at the
     /// default class's bucket where the index carried none.
-    pub(crate) fn temp_bucket(&self) -> usize {
-        self.temp_bucket
-            .map(usize::from)
-            .unwrap_or_else(|| temp_bucket(ClassLight::DEFAULT.temperature.0))
+    pub(crate) fn temp_bucket(&self) -> TempBucket {
+        self.indexed.map(|point| point.temp_bucket).unwrap_or_else(|| {
+            TempBucket::of(ClassLight::DEFAULT.temperature.0)
+        })
+    }
+
+    /// How many people live in the system, none where it is not populated
+    pub(crate) fn population(&self) -> u64 {
+        self.politics.as_ref().map_or(0, |politics| politics.population)
+    }
+
+    /// The factions present in the system, by id, none where it is not
+    /// populated
+    pub(crate) fn factions(&self) -> &[i32] {
+        self.politics.as_ref().map_or(&[], |politics| &politics.factions)
+    }
+
+    /// When the system was last updated, as its payload point carries it
+    ///
+    /// Unix seconds on the wire and a moment on the map: the payload keeps
+    /// four bytes a system and the filter compares against a clock. [`None`]
+    /// where no point is behind the system; see [`Self::indexed`].
+    pub(crate) fn updated_at(&self) -> Option<DateTime<Utc>> {
+        self.indexed.and_then(|point| {
+            DateTime::from_timestamp(i64::from(point.updated_at), 0)
+        })
     }
 
     /// The whole of what the filters ask about this system
@@ -201,8 +242,8 @@ impl System {
     pub(crate) fn candidate(&self) -> crate::map::filter::Candidate<'_> {
         crate::map::filter::Candidate {
             address: self.address,
-            factions: &self.factions,
-            updated_at: self.updated_at,
+            factions: self.factions(),
+            updated_at: self.updated_at(),
         }
     }
 
@@ -213,13 +254,13 @@ impl System {
     /// default class, so a panel can say what the derivation actually assigned
     /// and a too-bright star can be told from a merely unscanned one.
     pub(crate) fn indexed_magnitude(&self) -> Option<f32> {
-        self.absolute_magnitude
+        self.indexed.map(|point| point.magnitude)
     }
 
     /// A representative temperature for the star's tint bucket, if the index
     /// carried one, kelvin.
     pub(crate) fn indexed_temperature(&self) -> Option<f64> {
-        self.temp_bucket.map(|bucket| bucket_temperature(bucket as usize))
+        self.indexed.map(|point| point.temp_bucket.temperature())
     }
 }
 
@@ -460,7 +501,7 @@ pub(crate) fn visibility(
 
         // A route's stop and the system the camera is standing inside are
         // drawn whatever any of the three say; see above.
-        let peopled = !by_population || system.population > 0;
+        let peopled = !by_population || system.population() > 0;
         visibility.set_if_neq(
             if hop
                 || descended
@@ -664,28 +705,6 @@ pub(crate) fn reach_with_camera(
     }
 }
 
-/// Roughly where a listed system sits, in light years
-///
-/// **The middle of the boxel its address names**, which is what a published
-/// row answers with since a name became a function of an address: within
-/// five light years of the truth at the class most systems are, and half a
-/// sector at the largest. Good enough for the two things that ask it — the
-/// order a search's results are listed in and the distance each line reads
-/// out, both over a galaxy tens of thousands of light years across — and
-/// free, being arithmetic.
-///
-/// Anything that *acts* on a system asks the galaxy instead
-/// ([`crate::map::index::Names::placed`]): a camera sent to a place, a star drawn there,
-/// a route plotted from there. A list that is redrawn every frame cannot
-/// afford a sphere query a line.
-pub(crate) fn system_to_vec(entry: &NameEntry) -> DVec3 {
-    DVec3::new(
-        entry.position[0] as f64,
-        entry.position[1] as f64,
-        entry.position[2] as f64,
-    )
-}
-
 impl System {
     /// A system as a name and a place, with no political columns
     ///
@@ -695,26 +714,115 @@ impl System {
     ///
     /// The place is handed in rather than taken off the entry, because a
     /// published row no longer carries one — see [`crate::map::index::Names::placed`]
-    /// for where it comes from and [`system_to_vec`] for the approximation
+    /// for where it comes from and [`NameEntry::place`] for the approximation
     /// that is allowed to stand in for it.
     pub(crate) fn named_at(entry: &NameEntry, at: DVec3) -> System {
         System {
             address: entry.address,
             name: entry.name.clone(),
             position: [at.x, at.y, at.z],
-            population: 0,
-            allegiance: None,
-            government: None,
-            security: None,
-            economies: None,
-            factions: Vec::new(),
+            politics: None,
             body_count: None,
             non_body_count: None,
             reach: None,
-            absolute_magnitude: None,
-            temp_bucket: None,
-            updated_at: None,
+            indexed: None,
         }
+    }
+
+    /// Name and color a system from the resident tables
+    ///
+    /// The cells give an address and a place and nothing political. Everything
+    /// a [`System`] is colored and filtered by comes from the [`Populated`]
+    /// table where the system is one of the dynamic set, and its name from
+    /// [`Names`]. A system absent from `populated` is ungoverned, which is most
+    /// of the galaxy, and drawn as such.
+    ///
+    /// `point` is the cell payload's record of the system, where one is behind
+    /// it, and [`None`] on the paths that carry none — a route's stops, a
+    /// searched system flown to. See [`System::indexed`].
+    pub(crate) fn build(
+        address: i64,
+        position: [f64; 3],
+        point: Option<&CellSystem>,
+        populated: &Populated,
+        names: &Names,
+    ) -> System {
+        let name = names
+            .get(address)
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| SystemName::new(address.to_string()));
+        let populated = populated.get(address);
+        System {
+            address,
+            name,
+            position,
+            politics: populated.map(Politics::of),
+            body_count: populated.and_then(|row| row.body_count),
+            non_body_count: populated.and_then(|row| row.non_body_count),
+            // How far it reaches comes from the reaches table rather than from
+            // the political one: most systems with anything scanned in them
+            // are not populated, and a system drawn at a stood-in size wears a
+            // shell many times the orbits inside it.
+            reach: names.reach(address),
+            indexed: point.copied(),
+        }
+    }
+
+    /// One payload point as a drawable system: placed where the payload puts
+    /// it, named and colored off the resident tables
+    ///
+    /// The position comes straight from the payload, in light years — finer
+    /// than the names table's whole-light-year placement, and present for every
+    /// system, named or not. The name and the political columns are the same
+    /// join a system named by hand gets, keyed by the point's id.
+    pub(crate) fn of(
+        point: &CellSystem,
+        populated: &Populated,
+        names: &Names,
+    ) -> System {
+        System::build(
+            point.id64 as i64,
+            point.position,
+            Some(point),
+            populated,
+            names,
+        )
+    }
+
+    /// The drawable system at an address, if the resident tables can place it
+    ///
+    /// A search or a filter names a system by address; its name comes from the
+    /// [`Names`] table, its place from the galaxy behind it, and everything
+    /// political from [`Populated`]. [`None`] where the table does not name
+    /// it, which is a system the map cannot draw.
+    pub(crate) fn find(
+        address: i64,
+        populated: &Populated,
+        names: &Names,
+    ) -> Option<System> {
+        // Named or nothing: one the table cannot name is one the map cannot
+        // draw, and `System::build` reads the name itself.
+        names.get(address)?;
+        // **The place comes from the galaxy, or from the populated table where
+        // that already holds it.** The names table stopped holding positions
+        // when a name became a function of an address, and what its row would
+        // answer with is the middle of a boxel — ten light years across at the
+        // class most systems are and 1,280 at the largest, which is a star
+        // drawn in the wrong place. A populated system's exact place is
+        // resident already, so that is asked first and costs nothing; anything
+        // else is one sphere query ([`Names::placed`]).
+        let at = match populated.get(address) {
+            Some(known) => DVec3::new(
+                known.position[0] as f64,
+                known.position[1] as f64,
+                known.position[2] as f64,
+            ),
+            None => names.placed(address),
+        };
+        // The names table says where a system is and what it is called, and
+        // nothing about when it was last heard from. A span excludes it until
+        // its cell payload lands and the system is rebuilt from the point.
+        Some(System::build(address, [at.x, at.y, at.z], None, populated, names))
     }
 }
 
@@ -733,18 +841,11 @@ pub(crate) mod tests {
             address,
             name: format!("Test {address}").into(),
             position: [0., 0., 0.],
-            population: 0,
-            allegiance: None,
-            government: None,
-            security: None,
-            economies: None,
-            factions: vec![],
+            politics: None,
             body_count: None,
             non_body_count: None,
             reach: None,
-            absolute_magnitude: None,
-            temp_bucket: None,
-            updated_at: None,
+            indexed: None,
         }
     }
 
@@ -782,6 +883,14 @@ pub(crate) mod tests {
         system
     }
 
+    /// The political part of `system`, made empty first where it had none
+    ///
+    /// For whoever tests what the map does with a population or a faction:
+    /// a system is given the part and the field set on it.
+    pub(crate) fn politics(system: &mut System) -> &mut Politics {
+        system.politics.get_or_insert_with(Politics::default)
+    }
+
     /// A system reported to us `secs` after the epoch
     ///
     /// Shared for the same reason [`named`] is. A moment is set from in here
@@ -789,9 +898,27 @@ pub(crate) mod tests {
     /// it reads it.
     pub(crate) fn heard(address: i64, secs: i64) -> System {
         let mut system = system(address);
-        system.updated_at =
-            Some(DateTime::from_timestamp(secs, 0).expect("a moment"));
+        stamp(
+            &mut system,
+            DateTime::from_timestamp(secs, 0).expect("a moment"),
+        );
         system
+    }
+
+    /// `system`, as a payload point updated at `at` would have built it
+    ///
+    /// A moment rides on the point, so a system is stamped by being given
+    /// one; its photometry is left at zero, which nothing stamped asks about.
+    pub(crate) fn stamp(system: &mut System, at: DateTime<Utc>) {
+        system.indexed = Some(CellSystem {
+            id64: system.address as u64,
+            position: system.position,
+            magnitude: 0.,
+            temp_bucket: TempBucket::new(0),
+            updated_at: u32::try_from(at.timestamp())
+                .expect("a moment a payload can carry"),
+            kind: galos_index::StarKind::Unknown,
+        });
     }
 
     /// A system at `away` light years from the origin, on the x axis
@@ -1004,7 +1131,7 @@ pub(crate) mod tests {
     /// A system with `population` living in it, five light years off
     fn peopled(address: i64, population: u64) -> System {
         let mut system = at(address, 5.);
-        system.population = population;
+        politics(&mut system).population = population;
         system
     }
 

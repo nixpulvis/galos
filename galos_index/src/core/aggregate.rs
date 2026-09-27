@@ -21,43 +21,83 @@
 //! leaves it be.
 
 use crate::core::codec::{Decode, Encode, FixedCodec, record};
-use crate::core::geometry::CellId;
 use crate::core::moments::Moments;
 use galos_photometry::Magnitude;
-
-/// Temperature buckets the glow keeps its color structure in: a warm bulge
-/// and blue arms without storing a temperature per star.
-pub(crate) const TEMP_BUCKETS: usize = 6;
 
 /// Age buckets for the Recency axis, which a prefix sum answers any span from.
 pub const AGE_BUCKETS: usize = 8;
 
 /// The temperature range the buckets span, log-spaced between them: the
 /// coolest star worth coloring and the hottest whose blue has stopped moving.
-/// [`temp_bucket`] bins the range and [`bucket_temperature`] names a point
-/// back out of a bucket.
+/// [`TempBucket::of`] bins the range and [`TempBucket::temperature`] names a
+/// point back out of a bucket.
 const TEMP_LO: f64 = 2000.0;
 const TEMP_HI: f64 = 50000.0;
 
 /// Which temperature bucket a star falls in, log-spaced across the stellar
-/// range and clamped at both ends. The buckets are even in log temperature,
-/// which is where color is even.
-pub fn temp_bucket(temperature_k: f64) -> usize {
-    let t = temperature_k.clamp(TEMP_LO, TEMP_HI);
-    let f = (t.ln() - TEMP_LO.ln()) / (TEMP_HI.ln() - TEMP_LO.ln());
-    ((f * TEMP_BUCKETS as f64) as usize).min(TEMP_BUCKETS - 1)
+/// range: what the glow keeps its color structure in, a warm bulge and blue
+/// arms without a temperature stored per star.
+///
+/// One byte on the wire, and always one of the [`Self::COUNT`] buckets: both
+/// ways in clamp.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TempBucket(u8);
+
+impl TempBucket {
+    /// How many buckets the range is split into.
+    pub const COUNT: usize = 6;
+
+    /// The bucket at `index`, clamped to the hottest.
+    pub const fn new(index: u8) -> TempBucket {
+        let last = (TempBucket::COUNT - 1) as u8;
+        TempBucket(if index > last { last } else { index })
+    }
+
+    /// The bucket a star of `temperature_k` falls in, clamped at both ends.
+    /// The buckets are even in log temperature, which is where color is even.
+    pub fn of(temperature_k: f64) -> TempBucket {
+        let t = temperature_k.clamp(TEMP_LO, TEMP_HI);
+        let f = (t.ln() - TEMP_LO.ln()) / (TEMP_HI.ln() - TEMP_LO.ln());
+        TempBucket::new((f * TempBucket::COUNT as f64) as u8)
+    }
+
+    /// Every bucket, coolest first.
+    pub fn all() -> impl Iterator<Item = TempBucket> {
+        (0..TempBucket::COUNT as u8).map(TempBucket)
+    }
+
+    /// Where the bucket stands among [`Self::COUNT`], for indexing a
+    /// per-bucket array.
+    pub fn index(self) -> usize {
+        usize::from(self.0)
+    }
+
+    /// A representative temperature for the bucket, kelvin: the inverse of
+    /// [`Self::of`].
+    ///
+    /// The geometric centre of the bucket's log-temperature span, so
+    /// `TempBucket::of(b.temperature()) == b` for every bucket, and the color
+    /// a bucket is drawn in is the blackbody tint at that centre.
+    pub fn temperature(self) -> f64 {
+        let f = (f64::from(self.0) + 0.5) / TempBucket::COUNT as f64;
+        (TEMP_LO.ln() + f * (TEMP_HI.ln() - TEMP_LO.ln())).exp()
+    }
 }
 
-/// A representative temperature for a bucket, kelvin: the inverse of
-/// [`temp_bucket`].
-///
-/// The geometric centre of the bucket's log-temperature span, so
-/// `temp_bucket(bucket_temperature(b)) == b` for every bucket, and the color a
-/// bucket is drawn in is the blackbody tint at that centre.
-pub fn bucket_temperature(bucket: usize) -> f64 {
-    let bucket = bucket.min(TEMP_BUCKETS - 1);
-    let f = (bucket as f64 + 0.5) / TEMP_BUCKETS as f64;
-    (TEMP_LO.ln() + f * (TEMP_HI.ln() - TEMP_LO.ln())).exp()
+impl Encode for TempBucket {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
+impl Decode for TempBucket {
+    fn decode(cur: &mut &[u8]) -> Option<TempBucket> {
+        Some(TempBucket::new(u8::decode(cur)?))
+    }
+}
+
+impl FixedCodec for TempBucket {
+    const LEN: usize = 1;
 }
 
 /// The totals a cell carries over its whole subtree.
@@ -74,7 +114,7 @@ pub struct Aggregate {
     /// How many systems the subtree holds.
     count: u64,
     /// Linear flux per temperature bucket, summed.
-    flux: [f64; TEMP_BUCKETS],
+    flux: [f64; TempBucket::COUNT],
     /// Position moments weighted by flux, for the glow's centroid and spread.
     light: Moments,
     /// Position moments weighted by count, for the count-weighted centroid
@@ -98,7 +138,7 @@ impl Aggregate {
     pub const ZERO: Aggregate = Aggregate {
         m_min: None,
         count: 0,
-        flux: [0.0; TEMP_BUCKETS],
+        flux: [0.0; TempBucket::COUNT],
         light: Moments::ZERO,
         mass: Moments::ZERO,
         aged: [0; AGE_BUCKETS],
@@ -118,8 +158,8 @@ impl Aggregate {
         age_bucket: u32,
     ) -> Aggregate {
         let f = Magnitude(absolute_magnitude).flux().0;
-        let mut flux_by_bucket = [0.0; TEMP_BUCKETS];
-        flux_by_bucket[temp_bucket(temperature)] = f;
+        let mut flux_by_bucket = [0.0; TempBucket::COUNT];
+        flux_by_bucket[TempBucket::of(temperature).index()] = f;
         let mut aged = [0; AGE_BUCKETS];
         if (age_bucket as usize) < AGE_BUCKETS {
             aged[age_bucket as usize] = 1;
@@ -213,7 +253,7 @@ impl Aggregate {
 
     /// The flux in each temperature bucket, which is what the glow's color is
     /// resolved from.
-    pub fn flux(&self) -> &[f64; TEMP_BUCKETS] {
+    pub fn flux(&self) -> &[f64; TempBucket::COUNT] {
         &self.flux
     }
 
@@ -287,7 +327,7 @@ record! {
     Aggregate {
         m_min: Option<f32> as BrightestMag,
         count: u64,
-        flux: [f64; TEMP_BUCKETS],
+        flux: [f64; TempBucket::COUNT],
         light: Moments,
         mass: Moments,
         aged: [u32; AGE_BUCKETS],
@@ -306,57 +346,6 @@ fn min_opt(a: Option<f32>, b: Option<f32>) -> Option<f32> {
         (Some(a), Some(b)) => Some(a.min(b)),
         (Some(a), None) => Some(a),
         (None, b) => b,
-    }
-}
-
-/// One node of the tree: its address, the magnitude-ordered slice it owns, the
-/// children it has, and the totals it stands for.
-///
-/// A node at level `L` owns ranks `[rank_lo, rank_hi)` of its subtree's
-/// magnitude order, holding only what its ancestors did not, so drawing a
-/// node with its loaded ancestors is exactly the union with no system twice.
-/// The `aggregate` is the total over the whole subtree, not the slice; with
-/// the slice absent it is drawn as it stands, and with the slice present the
-/// residual is drawn instead.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Cell {
-    /// Where the cell sits in the tree.
-    pub id: CellId,
-    /// The first rank of the subtree's magnitude order this cell owns.
-    pub rank_lo: u64,
-    /// One past the last rank this cell owns.
-    pub rank_hi: u64,
-    /// Which of the eight children exist, one bit each, in octant order.
-    pub child_mask: u8,
-    /// The totals over the whole subtree.
-    pub aggregate: Aggregate,
-}
-
-impl Cell {
-    /// How many systems this cell owns in its own slice, the width of its rank
-    /// range.
-    pub fn slice_len(&self) -> u64 {
-        self.rank_hi - self.rank_lo
-    }
-
-    /// Whether the cell has a child in the given octant, `0..8`.
-    pub fn has_child(&self, octant: u8) -> bool {
-        self.child_mask & (1 << octant) != 0
-    }
-
-    /// Whether the cell is a leaf, with no children to refine into.
-    pub fn is_leaf(&self) -> bool {
-        self.child_mask == 0
-    }
-}
-
-record! {
-    Cell {
-        id: CellId,
-        rank_lo: u64,
-        rank_hi: u64,
-        child_mask: u8,
-        aggregate: Aggregate,
     }
 }
 
@@ -389,16 +378,17 @@ mod tests {
     /// the top, and never leave it.
     #[test]
     fn temperature_buckets_span_the_range() {
-        assert_eq!(temp_bucket(1000.0), 0);
-        assert_eq!(temp_bucket(2000.0), 0);
-        assert_eq!(temp_bucket(60000.0), TEMP_BUCKETS - 1);
-        assert!(temp_bucket(30000.0) > temp_bucket(4000.0));
+        let last = TempBucket::new(TempBucket::COUNT as u8 - 1);
+        assert_eq!(TempBucket::of(1000.0), TempBucket::new(0));
+        assert_eq!(TempBucket::of(2000.0), TempBucket::new(0));
+        assert_eq!(TempBucket::of(60000.0), last);
+        assert!(TempBucket::of(30000.0) > TempBucket::of(4000.0));
         // Monotonic non-decreasing across the range.
-        let mut last = 0;
+        let mut was = TempBucket::new(0);
         for k in (2000..=50000).step_by(1000) {
-            let b = temp_bucket(k as f64);
-            assert!(b >= last);
-            last = b;
+            let b = TempBucket::of(k as f64);
+            assert!(b >= was);
+            was = b;
         }
     }
 
@@ -408,9 +398,9 @@ mod tests {
     #[test]
     fn bucket_temperature_round_trips() {
         let mut last = f64::NEG_INFINITY;
-        for bucket in 0..TEMP_BUCKETS {
-            let t = bucket_temperature(bucket);
-            assert_eq!(temp_bucket(t), bucket, "bucket {bucket} centre");
+        for bucket in TempBucket::all() {
+            let t = bucket.temperature();
+            assert_eq!(TempBucket::of(t), bucket, "{bucket:?} centre");
             assert!(t > last, "centres climb with the bucket");
             last = t;
         }
@@ -431,8 +421,8 @@ mod tests {
     fn flux_stays_in_its_temperature_bucket() {
         let cool = Aggregate::of_system([0.0; 3], 5.0, 3000.0, 0);
         let hot = Aggregate::of_system([0.0; 3], 5.0, 25000.0, 0);
-        let cool_b = temp_bucket(3000.0);
-        let hot_b = temp_bucket(25000.0);
+        let cool_b = TempBucket::of(3000.0).index();
+        let hot_b = TempBucket::of(25000.0).index();
         assert_ne!(cool_b, hot_b);
         let both = cool.merge(hot);
         assert!(close(both.flux()[cool_b], Magnitude(5.0).flux().0));
@@ -531,43 +521,5 @@ mod tests {
         assert_eq!(Aggregate::ZERO.merge(a), a);
         assert_eq!(Aggregate::ZERO.count(), 0);
         assert_eq!(Aggregate::ZERO.m_min(), None);
-    }
-
-    /// A cell reads its slice width and its children off the record.
-    #[test]
-    fn a_cell_reads_its_slice_and_children() {
-        let cell = Cell {
-            id: CellId::ROOT,
-            rank_lo: 0,
-            rank_hi: 512,
-            child_mask: 0b0000_0101,
-            aggregate: Aggregate::ZERO,
-        };
-        assert_eq!(cell.slice_len(), 512);
-        assert!(cell.has_child(0));
-        assert!(!cell.has_child(1));
-        assert!(cell.has_child(2));
-        assert!(!cell.is_leaf());
-        assert!(Cell { child_mask: 0, ..cell }.is_leaf());
-    }
-
-    /// A cell's whole index record survives the round trip exactly, aggregate
-    /// and all; the moments are `f64` and lose nothing.
-    #[test]
-    fn a_cell_record_round_trips() {
-        let agg = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2)
-            .merge(Aggregate::of_system([5.0, 6.0, 7.0], -1.0, 12000.0, 5));
-        let cell = Cell {
-            id: CellId { level: 3, x: 5, y: 6, z: 7 },
-            rank_lo: 512,
-            rank_hi: 1024,
-            child_mask: 0b1010_0001,
-            aggregate: agg,
-        };
-        let mut buf = Vec::new();
-        cell.encode(&mut buf);
-        assert_eq!(buf.len(), Cell::LEN);
-        let mut cur = &buf[..];
-        assert_eq!(Cell::decode(&mut cur), Some(cell));
     }
 }

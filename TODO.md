@@ -3,13 +3,14 @@
 Left over from the reorganization into `galos_map::{map, ui}`, `galos_route`
 and galos_index's layers.
 
-## Naming the core types — needs discussion
+## Naming the core types
 
-- `System`, `Index`, `Sky` and `Source` each mean something else nearby:
-  galos_map and galos_db both have a `System`, the root crate imports `Index`
-  as `ServedIndex`, galos_map imports `Source` as `IndexSource`, and `Sky` is
-  also the galos_sky crate. Candidates floated: `SystemRecord`, `CellIndex`,
-  `MappedGalaxy`, `Transport`. Every consumer changes, so agree on names first.
+- Settled: galos_index's `System` (a system as the build reads it, in
+  `system`, beside `system::bodies`), `CellSystem` (the served record, in
+  `tree::cell`), `Index` (the served tree, `tree::index`) and `Tree` (the live
+  one). `galos::sink::Index` keeps its name, the sink's own.
+- Still open: `Sky` is also the galos_sky crate, and galos_map imports
+  `Source` as `IndexSource`.
 - A system's identity is `id64: u64` in about a hundred places and
   `address: i64` in about eighty-five (`Tree::holds(address: i64)` beside
   `Tree::forget(id: u64)`). One newtype, and which sign, is the question.

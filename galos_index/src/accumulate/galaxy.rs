@@ -18,7 +18,7 @@
 //! derivations had already disagreed once about which events name a system.
 //! What differs is where it lands: `galos_db::record` writes fourteen tables and a
 //! build reads them back, while this keeps the two shapes the index wants -
-//! [`crate::ExactSystem`] and the metadata records - and skips the round trip.
+//! [`crate::System`] and the metadata records - and skips the round trip.
 //!
 //! Narrower below system level, and not above it. `galos_db::record` also records
 //! dockings, settlements, body signals and codex entries, and the index has
@@ -77,11 +77,11 @@ use crate::accumulate::bodies::{Bodies, InMemory};
 // galaxy bins itself two ways.
 use crate::accumulate::merge;
 use crate::accumulate::report::SystemReport;
-use crate::core::record::ExactSystem;
 use crate::records::{
     Arrival, NameEntry, PopulatedSystem, SystemBodies, SystemReach, derive,
 };
 use crate::store::sidecars::TableWriter;
+use crate::system::System;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::incremental::exploration::{Scan, ScanTarget};
 use elite_journal::entry::{Entry, Event};
@@ -362,7 +362,7 @@ impl Galaxy {
     /// rarer than it sounds — the game writes `StarPos` on the arrival event
     /// and on every scan — and a system named only by an event that omitted
     /// it is one the map has nothing to draw for anyway.
-    pub fn systems(&self) -> Vec<ExactSystem> {
+    pub fn systems(&self) -> Vec<System> {
         self.systems
             .keys()
             .filter_map(|&address| self.system_of(address))
@@ -374,7 +374,7 @@ impl Galaxy {
     /// What a sink following a feed asks, against the handful of addresses a
     /// pass touched, rather than deriving the whole galaxy to publish fifty
     /// systems. [`Self::systems`] is this over everything.
-    pub fn system_of(&self, address: i64) -> Option<ExactSystem> {
+    pub fn system_of(&self, address: i64) -> Option<System> {
         let report = self.systems.get(&address)?;
         Some(self.system(report, report.placed()?))
     }
@@ -430,7 +430,7 @@ impl Galaxy {
     /// index answer with: its scanned stars if it has any, failing that the
     /// arrival star's class, which only a plotted route states here, failing
     /// that the default M dwarf the galaxy is mostly made of.
-    fn system(&self, report: &SystemReport, position: [f64; 3]) -> ExactSystem {
+    fn system(&self, report: &SystemReport, position: [f64; 3]) -> System {
         let inside = self.inside.read(report.address);
         // The scanned magnitude is bolometric — the star's whole output as
         // one figure — so it is turned into the visual magnitude the sky
@@ -447,7 +447,7 @@ impl Galaxy {
             derive::lit(stars, report.star_class.as_deref().unwrap_or(""));
         let (age_bucket, updated_at) =
             derive::updated(report.at.naive_utc(), self.now.naive_utc());
-        ExactSystem {
+        System {
             id64: report.address as u64,
             position,
             absolute_magnitude,
@@ -473,7 +473,7 @@ impl Galaxy {
 
     /// How far each scanned system reaches, in metres.
     ///
-    /// [`crate::system::inside`]'s answer, which is the same call the published
+    /// [`crate::system::bodies`]'s answer, which is the same call the published
     /// build makes: the map sizes a system by this and draws the inside of it
     /// from the same records, and a shell smaller than the orbits it contains
     /// is the one thing a reach cannot be.
@@ -548,7 +548,7 @@ impl TableWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::StarKind;
+    use crate::core::star::StarKind;
     use elite_journal::entry::Entry;
     use elite_journal::prelude::{Allegiance, Economy};
     use galos_photometry::ClassLight;
@@ -924,7 +924,7 @@ mod tests {
 
     /// The class survives a trip through the byte a payload carries
     ///
-    /// Which is the whole point of [`crate::core::record::StarKind`]: a router
+    /// Which is the whole point of [`crate::core::star::StarKind`]: a router
     /// asks what kind of star every system it expands has, and the answer has
     /// to be a byte beside a position rather than a lookup in a table of
     /// ninety-five million. So every kind has to come back out of its code as
@@ -967,12 +967,12 @@ mod tests {
 
         // And the two readings a route wants, off the byte rather than off
         // the class string.
-        assert!(StarKind::of("K").scoops());
-        assert!(!StarKind::of("DA").scoops());
+        assert!(StarKind::of("K").scoopable());
+        assert!(!StarKind::of("DA").scoopable());
 
         // Nothing said reads as nothing said, and says nothing.
         assert_eq!(StarKind::of("").named(), None);
-        assert!(!StarKind::Unknown.scoops());
+        assert!(!StarKind::Unknown.scoopable());
     }
 
     /// A ship refuels at the main sequence and nowhere else
@@ -999,7 +999,7 @@ mod tests {
             "F_WhiteSuperGiant",
         ] {
             assert!(
-                crate::core::record::scoopable(class),
+                StarKind::of(class).scoopable(),
                 "{class} would not refuel a ship"
             );
         }
@@ -1032,7 +1032,7 @@ mod tests {
             "",
         ] {
             assert!(
-                !crate::core::record::scoopable(class),
+                !StarKind::of(class).scoopable(),
                 "{class} would refuel a ship"
             );
         }
@@ -1093,7 +1093,7 @@ mod tests {
         assert!(galaxy.names().is_empty());
     }
 
-    /// A scanned system reaches as far as [`crate::system::inside`] says
+    /// A scanned system reaches as far as [`crate::system::bodies`] says
     ///
     /// The map sizes a system by this and draws the inside of it from the same
     /// records, so the two have to be one answer. Asked here only for the

@@ -782,7 +782,7 @@ impl Orbits {
     /// Where the walk ends is the point the system's stars go round, which is
     /// the arrival star itself only where there is one of them. The map wants
     /// the arrival star either way, that being where it puts the middle of a
-    /// system, so what draws a system subtracts [`crate::system::inside`]'s
+    /// system, so what draws a system subtracts [`crate::system::bodies`]'s
     /// middle from this and every one of them lands short of it.
     ///
     /// A parent that is not on record ends the walk, and what is left is

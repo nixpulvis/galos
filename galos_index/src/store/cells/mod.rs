@@ -43,7 +43,7 @@ pub fn stale(dir: &Path) -> Option<u16> {
 
 #[cfg(test)]
 pub(super) mod fixtures {
-    use crate::core::record::ExactSystem;
+    use crate::system::System;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -72,7 +72,7 @@ pub(super) mod fixtures {
 
     /// A cube lattice of systems well inside the root cube, each a touch
     /// brighter than the last so the magnitude ordering is unambiguous.
-    pub(super) fn systems(n: usize) -> Vec<ExactSystem> {
+    pub(super) fn systems(n: usize) -> Vec<System> {
         let side = (n as f64).cbrt().ceil() as usize;
         let step = 80.0;
         let span = (side.saturating_sub(1)) as f64 * step;
@@ -85,7 +85,7 @@ pub(super) mod fixtures {
                     if out.len() >= n {
                         break 'lattice;
                     }
-                    out.push(ExactSystem {
+                    out.push(System {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,
@@ -99,7 +99,7 @@ pub(super) mod fixtures {
                         // stamp or carried a neighbour's would show up in the
                         // round trip below.
                         updated_at: 1_700_000_000 + id as u32,
-                        kind: crate::core::record::StarKind::G,
+                        kind: crate::core::star::StarKind::G,
                     });
                     id += 1;
                 }

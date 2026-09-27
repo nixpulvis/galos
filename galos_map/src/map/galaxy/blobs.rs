@@ -26,7 +26,7 @@
 //! merged marks would otherwise ask for one a frame.
 
 use crate::map::camera::OrbitCamera;
-use crate::map::galaxy::walk::{Blob, Blobs, build_from_point};
+use crate::map::galaxy::walk::{Blob, Blobs};
 use crate::map::galaxy::{MapSet, System};
 use crate::map::index::{Names, Populated, Transport};
 use crate::map::pointing::{DRAG_THRESHOLD, DragDistance, PointedAt};
@@ -37,7 +37,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::{CellId, Point};
+use galos_index::{CellId, CellSystem};
 use rustc_hash::FxHashMap;
 
 pub fn plugin(app: &mut App) {
@@ -134,7 +134,7 @@ fn ring_blob(
         crate::map::paint::sizing::by_population(&view, &scale_population);
     let said = match prominent
         .of(blob.id, by_population, &populated)
-        .map(|point| build_from_point(point, &populated, &names))
+        .map(|point| System::of(point, &populated, &names))
     {
         Some(system) => format!("{} · {} systems", system.name, blob.count),
         None => format!("{} systems", blob.count),
@@ -187,8 +187,8 @@ pub struct PointedBlob(pub Option<Blob>);
 /// pointer rests on it.
 #[derive(Resource, Default)]
 pub struct Prominent {
-    known: FxHashMap<CellId, Vec<Point>>,
-    reading: FxHashMap<CellId, Task<Option<Vec<Point>>>>,
+    known: FxHashMap<CellId, Vec<CellSystem>>,
+    reading: FxHashMap<CellId, Task<Option<Vec<CellSystem>>>>,
 }
 
 impl Prominent {
@@ -213,7 +213,7 @@ impl Prominent {
         id: CellId,
         by_population: bool,
         populated: &Populated,
-    ) -> Option<&Point> {
+    ) -> Option<&CellSystem> {
         let read = self.known.get(&id)?;
         if !by_population {
             return read.first();
@@ -384,7 +384,7 @@ fn click_blobs(
     // Held down, a modifier gathers rather than replaces, exactly as it
     // does over a drawn system; see `crate::map::galaxy::spawn::select_on_click`.
     let gathering = crate::input::gathering(&keys);
-    let system: System = build_from_point(point, &populated, &names);
+    let system: System = System::of(point, &populated, &names);
     selection.pick(Picked::System(system), gathering);
 }
 
@@ -609,11 +609,11 @@ mod tests {
             "nothing is known unasked",
         );
 
-        let head = Point {
+        let head = CellSystem {
             id64: 7,
-            pos: [1., 2., 3.],
+            position: [1., 2., 3.],
             magnitude: 1.5,
-            temp_bucket: 4,
+            temp_bucket: galos_index::core::aggregate::TempBucket::new(4),
             updated_at: 0,
             kind: StarKind::Unknown,
         };
@@ -625,12 +625,12 @@ mod tests {
     }
 
     /// One system of a merged mark's prefix, at `magnitude`.
-    fn point(id64: u64, magnitude: f32) -> Point {
-        Point {
+    fn point(id64: u64, magnitude: f32) -> CellSystem {
+        CellSystem {
             id64,
-            pos: [1., 2., 3.],
+            position: [1., 2., 3.],
             magnitude,
-            temp_bucket: 4,
+            temp_bucket: galos_index::core::aggregate::TempBucket::new(4),
             updated_at: 0,
             kind: StarKind::Unknown,
         }

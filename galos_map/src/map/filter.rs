@@ -33,7 +33,6 @@
 
 use crate::map::galaxy::System;
 use crate::map::galaxy::fetch::Poll;
-use crate::map::galaxy::spawn::system_at;
 use crate::map::index::{Factions, Names, Populated};
 use crate::map::schedule::MapSet;
 use crate::map::search::Pending;
@@ -549,13 +548,15 @@ impl Filter {
                 .values()
                 .filter(|system| system.factions.contains(id))
                 .filter_map(|system| {
-                    system_at(system.address, populated, names)
+                    System::find(system.address, populated, names)
                 })
                 .collect(),
             Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
                 systems
                     .iter()
-                    .filter_map(|&address| system_at(address, populated, names))
+                    .filter_map(|&address| {
+                        System::find(address, populated, names)
+                    })
                     .collect()
             }
             // Nothing describes a span, so nothing asks this of one. See
@@ -1652,7 +1653,7 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::galaxy::tests::{heard, system};
+    use crate::map::galaxy::tests::{heard, politics, stamp, system};
     use galos_route::graph::Crossing;
 
     /// A moment `secs` after the epoch
@@ -1685,7 +1686,7 @@ mod tests {
     /// A system belonging to each of `factions`
     fn member(address: i64, factions: &[i32]) -> System {
         let mut system = system(address);
-        system.factions = factions.to_vec();
+        politics(&mut system).factions = factions.to_vec();
         system
     }
 
@@ -2313,7 +2314,7 @@ mod tests {
         filters.add(route(&[1, 2]));
 
         let mut on_both = member(1, &[7]);
-        on_both.factions = vec![7];
+        politics(&mut on_both).factions = vec![7];
         assert!(filters.admit(&on_both, now()));
         // On the route, though the faction is nowhere near it.
         assert!(filters.admit(&member(2, &[]), now()));
@@ -2430,7 +2431,7 @@ mod tests {
                 for factions in [vec![], vec![7], vec![3]] {
                     for heard in [moment(199), moment(100)] {
                         let mut held = member(address, &factions);
-                        held.updated_at = Some(heard);
+                        stamp(&mut held, heard);
                         assert_eq!(
                             filters.admit(&held, now()),
                             gathered.admit(&held, now()),
@@ -2554,7 +2555,7 @@ mod tests {
     /// A system belonging to each of `factions`, heard from at `secs`
     fn member_heard(address: i64, factions: &[i32], secs: i64) -> System {
         let mut system = heard(address, secs);
-        system.factions = factions.to_vec();
+        politics(&mut system).factions = factions.to_vec();
         system
     }
 

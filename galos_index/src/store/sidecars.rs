@@ -498,7 +498,7 @@ impl TableWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::record::StarKind;
+    use crate::core::star::StarKind;
     use crate::format::msgpack::read_meta;
     use crate::store::tables::path;
     use crate::store::tables::testing::{Cone, arriving, tables};

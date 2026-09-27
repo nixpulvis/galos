@@ -10,8 +10,10 @@
 //! Pure: its bytes are [`crate::format::payload`]'s, and the file it is read
 //! from and written to is [`crate::store::cells`]'s.
 
-use crate::core::aggregate::{AGE_BUCKETS, Cell};
+use crate::core::aggregate::AGE_BUCKETS;
+
 use crate::core::geometry::CellId;
+use crate::tree::cell::Cell;
 use std::collections::HashMap;
 
 /// The resident tree of cell aggregates, keyed by address, and the same tree
@@ -52,19 +54,19 @@ pub struct Index {
 /// cell in the tree.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct Node {
-    /// Where a cell's contents sit: [`contents_center`].
+    /// Where a cell's contents sit: [`Cell::contents_center`].
     pub(crate) center: [f64; 3],
-    /// How far they spread about that centre: [`contents_extent`], the RMS
+    /// How far they spread about that centre: [`Cell::contents_extent`], the RMS
     /// radius the field lays a Gaussian at.
     pub(crate) extent: f64,
-    /// How wide they are: [`contents_width`], rolled up from the children.
+    /// How wide they are: [`Cell::contents_width`], rolled up from the children.
     ///
     /// A spread and a width are not the same question and the walk asks
     /// both. The field wants a standard deviation, which is what a Gaussian
     /// is laid at; the merge rule wants the *support* — does everything this
     /// cell holds fall inside one mark — and a distribution's support is
     /// several times its RMS radius and is not a scalar fact about it at
-    /// all. See [`contents_width`].
+    /// all. See [`Cell::contents_width`].
     pub(crate) width: f64,
     /// How many systems the subtree holds.
     pub(crate) count: u64,
@@ -93,9 +95,9 @@ pub(crate) struct Node {
 impl Node {
     fn of(cell: &Cell) -> Node {
         Node {
-            center: contents_center(cell),
-            extent: contents_extent(cell),
-            width: contents_width(cell),
+            center: cell.contents_center(),
+            extent: cell.contents_extent(),
+            width: cell.contents_width(),
             count: cell.aggregate.count(),
             slice: cell.slice_len(),
             m_min: cell.aggregate.m_min(),
@@ -152,7 +154,7 @@ fn flatten(cells: &HashMap<CellId, Cell>) -> Vec<Node> {
 /// most sixty-four gaps a cell, paid once when the index is built and never
 /// in a frame.
 ///
-/// What this buys over the scalar estimate [`contents_width`] seeds is
+/// What this buys over the scalar estimate [`Cell::contents_width`] seeds is
 /// **shape**. A filament running through a cell has its systems in two or
 /// three children with the rest empty, and the gap between those children's
 /// centroids is the filament's own length; the RMS radius of the same
@@ -307,48 +309,3 @@ pub(crate) fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
-
-/// A cell's contents' spread in light years: the count-weighted RMS radius,
-/// floored at the mean spacing so a cell of one or a few systems still resolves
-/// as the camera closes rather than staying a zero-extent point forever.
-pub(crate) fn contents_extent(cell: &Cell) -> f64 {
-    let count = cell.aggregate.count().max(1) as f64;
-    let spacing = cell.id.edge_ly() / count.cbrt();
-    cell.aggregate.count_extent().max(spacing)
-}
-
-/// Where a cell's contents sit: the count-weighted centroid, or the box centre
-/// where the aggregate carries no weight of its own.
-pub(crate) fn contents_center(cell: &Cell) -> [f64; 3] {
-    cell.aggregate.count_centroid().unwrap_or_else(|| cell.id.bounds().center())
-}
-
-/// How wide a cell's contents are in light years, before its children are
-/// rolled into the answer: the RMS radius read as the span of an even
-/// spread.
-///
-/// **A spread is not a width, and the merge rule needs the width.** A cell
-/// carries one scalar about how far its systems sit from their centroid, the
-/// RMS radius `r`. For a set spread evenly along anything — a box, a line, a
-/// sheet — the distance between its two furthest members is `2·sqrt(3)·r`:
-/// a uniform segment of length `L` has `r = L/sqrt(12)`, and a uniform cube
-/// of edge `e` has `r = e/2` against a diagonal of `e·sqrt(3)`. So the span
-/// is the radius times [`UNIFORM_SPAN`], and reading the radius itself as a
-/// width understates a cell by three and a half — which is a filament of
-/// three marks merged into one and gone from the picture.
-///
-/// Unfloored, where [`contents_extent`] floors at the mean spacing. The
-/// floor is the field's: a lone system must still splat as something. Here
-/// the honest answer for one system is zero width, and what keeps it drawn
-/// as itself rather than merged into a blob is [`split_to_marks`]'s rule
-/// that a cell holding no more than its footprint can show is never merged.
-///
-/// This is the seed [`widen`] rolls up. Where a cell has children their
-/// centroids say far more about its shape than this does, and the larger of
-/// the two answers stands.
-pub(crate) fn contents_width(cell: &Cell) -> f64 {
-    UNIFORM_SPAN * cell.aggregate.count_extent()
-}
-
-/// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
-pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;

@@ -828,7 +828,7 @@ mod tests {
     use super::*;
     use crate::input::PRIMARY;
     use crate::input::PressOwner;
-    use crate::map::galaxy::tests::system;
+    use crate::map::galaxy::tests::{politics, system};
 
     /// A system picked out, which is what most of these are about
     fn picked(address: i64) -> Picked {
@@ -1442,14 +1442,14 @@ mod tests {
         app.update();
 
         let mut fresher = system(2);
-        fresher.population = 900;
+        politics(&mut fresher).population = 900;
         app.world_mut().entity_mut(two).insert(fresher);
         app.update();
 
         let selection = app.world().resource::<Selection>();
         assert_eq!(selection.addresses(), vec![1, 2]);
-        assert_eq!(selection.systems().nth(0).unwrap().population, 0);
-        assert_eq!(selection.systems().nth(1).unwrap().population, 900);
+        assert_eq!(selection.systems().nth(0).unwrap().population(), 0);
+        assert_eq!(selection.systems().nth(1).unwrap().population(), 900);
     }
 
     /// A system selected before it is on the map is marked when it arrives
@@ -1627,7 +1627,7 @@ mod tests {
         app.update();
 
         let mut fetched = system(1);
-        fetched.population = 42;
+        politics(&mut fetched).population = 42;
         app.world_mut().spawn(fetched);
         app.update();
 
@@ -1649,7 +1649,7 @@ mod tests {
         app.update();
 
         let mut fresher = system(1);
-        fresher.population = 1_000;
+        politics(&mut fresher).population = 1_000;
         app.world_mut().entity_mut(one).insert(fresher);
         app.update();
 
@@ -1658,7 +1658,12 @@ mod tests {
 
     /// What the selection holds for the population
     fn population_shown(app: &App) -> u64 {
-        app.world().resource::<Selection>().systems().next().unwrap().population
+        app.world()
+            .resource::<Selection>()
+            .systems()
+            .next()
+            .unwrap()
+            .population()
     }
 
     /// The selection says where what is picked out is

@@ -8,7 +8,7 @@
 //! of them that happens to agree.
 
 use bevy_egui::egui;
-use galos_index::{BuildParams, ExactSystem, Sky, Snapshot};
+use galos_index::{BuildParams, Sky, Snapshot, System};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -54,9 +54,9 @@ fn built(
     places: &[(i64, [f64; 3])],
     params: &BuildParams,
 ) -> Arc<Sky> {
-    let systems: Vec<ExactSystem> = places
+    let systems: Vec<System> = places
         .iter()
-        .map(|&(address, position)| ExactSystem {
+        .map(|&(address, position)| System {
             id64: address as u64,
             position,
             absolute_magnitude: address as f64 * 0.001 - 3.0,

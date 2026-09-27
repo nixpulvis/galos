@@ -11,7 +11,6 @@ use crate::map::{
     galaxy::System,
     galaxy::fetch::FetchIndex,
     galaxy::fetch::FetchTasks,
-    galaxy::fetch::RawSystem,
     pointing::{DRAG_THRESHOLD, DragDistance, Indicator, PointedAt},
     route::spawn::spawn_route,
     route::{self, PlottedRoute, Route},
@@ -31,15 +30,12 @@ use bevy::tasks::futures_lite::future;
 use big_space::prelude::*;
 use chrono::Utc;
 use elite_journal::{Allegiance, Government, system::Security};
-use galos_index::SystemName;
-use galos_index::core::aggregate::bucket_temperature;
-use galos_index::records::Economies;
+use galos_index::core::aggregate::TempBucket;
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
 use galos_route::graph::{Drive, Routing, Tuning};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    ops::Deref,
     time::{Duration, Instant},
 };
 
@@ -129,8 +125,11 @@ impl StarExposure {
 /// a field of near-identical dots. The law is now the one `galos_sky` renders
 /// with: linear energy through the profile, and the tonemapper is what
 /// compresses it. See [`crate::map::paint::sizing::psf_draw`].
-pub(crate) fn photometric_emissive(bucket: usize, peak: f32) -> LinearRgba {
-    let tint = Temperature(bucket_temperature(bucket)).color();
+pub(crate) fn photometric_emissive(
+    bucket: TempBucket,
+    peak: f32,
+) -> LinearRgba {
+    let tint = Temperature(bucket.temperature()).color();
     LinearRgba::rgb(tint[0] * peak, tint[1] * peak, tint[2] * peak)
 }
 
@@ -1041,11 +1040,8 @@ pub(crate) fn drain_spawns(
                 // waited, which renumbers its members: a point that is no
                 // longer the system that was offered is not this offer's, and
                 // the walk offers whatever is there now next frame.
-                (point.id64 as i64 == address).then(|| {
-                    crate::map::galaxy::walk::build_from_point(
-                        point, &populated, &names,
-                    )
-                })
+                (point.id64 as i64 == address)
+                    .then(|| System::of(point, &populated, &names))
             }
         })
     };
@@ -1061,113 +1057,6 @@ pub(crate) fn drain_spawns(
         &time,
         &arrived_at,
     );
-}
-
-/// Name and color a raw system from the resident tables
-///
-/// The cells give an address and a place and nothing political. Everything a
-/// [`System`] is colored and filtered by comes from the [`Populated`] table
-/// where the system is one of the dynamic set, and its name from [`Names`]. A
-/// system absent from `populated` is ungoverned, which is most of the galaxy,
-/// and drawn as such.
-///
-/// When the system was last updated comes off the payload point with the rest
-/// of it, so a [`System`] built here says what the database says. [`None`]
-/// where the raw system came from the names table instead, which carries no
-/// moment; see [`RawSystem::updated_at`].
-pub(crate) fn build_system(
-    raw: &RawSystem,
-    populated: &Populated,
-    names: &Names,
-) -> System {
-    let name = names
-        .get(raw.address)
-        .map(|entry| entry.name.clone())
-        .unwrap_or_else(|| SystemName::new(raw.address.to_string()));
-    // How far it reaches comes from the reaches table rather than from the
-    // political one: most systems with anything scanned in them are not
-    // populated, and a system drawn at a stood-in size wears a shell many
-    // times the orbits inside it.
-    let reach = names.reach(raw.address);
-    match populated.get(raw.address) {
-        Some(p) => System {
-            address: raw.address,
-            name,
-            position: raw.position,
-            population: p.population,
-            allegiance: p.allegiance,
-            government: p.government,
-            security: p.security,
-            economies: Economies::new(p.primary_economy, p.secondary_economy),
-            factions: p.factions.clone(),
-            body_count: p.body_count,
-            non_body_count: p.non_body_count,
-            reach,
-            absolute_magnitude: raw.magnitude,
-            temp_bucket: raw.temp_bucket,
-            updated_at: raw.updated_at,
-        },
-        None => System {
-            address: raw.address,
-            name,
-            position: raw.position,
-            population: 0,
-            allegiance: None,
-            government: None,
-            security: None,
-            economies: None,
-            factions: Vec::new(),
-            body_count: None,
-            non_body_count: None,
-            reach,
-            absolute_magnitude: raw.magnitude,
-            temp_bucket: raw.temp_bucket,
-            updated_at: raw.updated_at,
-        },
-    }
-}
-
-/// The drawable system at an address, if the resident tables can place it
-///
-/// A search or a filter names a system by address; its name comes from the
-/// [`Names`] table, its place from the galaxy behind it, and everything
-/// political from [`Populated`]. [`None`] where the table does not name it,
-/// which is a system the map cannot draw.
-pub(crate) fn system_at(
-    address: i64,
-    populated: &Populated,
-    names: &Names,
-) -> Option<System> {
-    // Named or nothing: one the table cannot name is one the map cannot
-    // draw, and `build_system` reads the name itself.
-    names.get(address)?;
-    // **The place comes from the galaxy, or from the populated table where
-    // that already holds it.** The names table stopped holding positions
-    // when a name became a function of an address, and what its row would
-    // answer with is the middle of a boxel — ten light years across at the
-    // class most systems are and 1,280 at the largest, which is a star
-    // drawn in the wrong place. A populated system's exact place is
-    // resident already, so that is asked first and costs nothing; anything
-    // else is one sphere query ([`Names::placed`]).
-    let at = match populated.get(address) {
-        Some(known) => DVec3::new(
-            known.position[0] as f64,
-            known.position[1] as f64,
-            known.position[2] as f64,
-        ),
-        None => names.placed(address),
-    };
-    let raw = RawSystem {
-        address,
-        position: [at.x, at.y, at.z],
-        magnitude: None,
-        temp_bucket: None,
-        // The names table says where a system is and what it is called, and
-        // nothing about when it was last heard from. A span excludes it until
-        // its cell payload lands and the system is rebuilt from the point.
-        updated_at: None,
-    };
-    Some(build_system(&raw, populated, names))
 }
 
 /// Create or refresh the entities for each row fetched
@@ -1342,12 +1231,21 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
     (cell, Transform::from_translation(translation))
 }
 
-/// Which color a star is drawn in
-pub(crate) fn hue(system: &System, color_by: &Res<ColorBy>) -> Hue {
-    match color_by.deref() {
-        ColorBy::Allegiance => allegiance_hue(system.allegiance),
-        ColorBy::Government => government_hue(system.government),
-        ColorBy::Security => security_hue(system.security),
+impl ColorBy {
+    /// Which color a star is drawn in
+    pub(crate) fn hue(self, system: &System) -> Hue {
+        let politics = system.politics.as_ref();
+        match self {
+            ColorBy::Allegiance => {
+                Hue::allegiance(politics.and_then(|p| p.allegiance))
+            }
+            ColorBy::Government => {
+                Hue::government(politics.and_then(|p| p.government))
+            }
+            ColorBy::Security => {
+                Hue::security(politics.and_then(|p| p.security))
+            }
+        }
     }
 }
 
@@ -1389,66 +1287,68 @@ fn reprofile(
     }
 }
 
-/// The color an allegiance is drawn in
-///
-/// Off the reading rather than off a system, so that the aggregate field
-/// colors a cell's allegiance histogram through the same mapping a mark is
-/// painted by and the two cannot drift apart. See
-/// [`galos_index::read::inhabited::allegiance_at`], which names the reading a
-/// bucket counts.
-pub(crate) fn allegiance_hue(allegiance: Option<Allegiance>) -> Hue {
-    match allegiance {
-        Some(Allegiance::Alliance) => Hue::Green,
-        Some(Allegiance::Empire) => Hue::Cyan,
-        Some(Allegiance::Federation) => Hue::Red,
-        // A company rather than a power, as the Pilots Federation is
-        Some(Allegiance::PilotsFederation | Allegiance::FrontlineSolutions) => {
-            Hue::Orange
+impl Hue {
+    /// The color an allegiance is drawn in
+    ///
+    /// Off the reading rather than off a system, so that the aggregate field
+    /// colors a cell's allegiance histogram through the same mapping a mark
+    /// is painted by and the two cannot drift apart. See
+    /// [`galos_index::read::inhabited::allegiance_at`], which names the
+    /// reading a bucket counts.
+    pub(crate) fn allegiance(allegiance: Option<Allegiance>) -> Hue {
+        match allegiance {
+            Some(Allegiance::Alliance) => Hue::Green,
+            Some(Allegiance::Empire) => Hue::Cyan,
+            Some(Allegiance::Federation) => Hue::Red,
+            // A company rather than a power, as the Pilots Federation is
+            Some(
+                Allegiance::PilotsFederation | Allegiance::FrontlineSolutions,
+            ) => Hue::Orange,
+            Some(Allegiance::PlayerPilots) => Hue::Yellow,
+            Some(Allegiance::Independent) => Hue::Yellow,
+            Some(Allegiance::Guardian) => Hue::Blue,
+            Some(Allegiance::Thargoid) => Hue::Magenta,
+            Some(Allegiance::None) | None => Hue::Grey,
         }
-        Some(Allegiance::PlayerPilots) => Hue::Yellow,
-        Some(Allegiance::Independent) => Hue::Yellow,
-        Some(Allegiance::Guardian) => Hue::Blue,
-        Some(Allegiance::Thargoid) => Hue::Magenta,
-        Some(Allegiance::None) | None => Hue::Grey,
     }
-}
 
-/// The color a government is drawn in. See [`allegiance_hue`].
-pub(crate) fn government_hue(government: Option<Government>) -> Hue {
-    match government {
-        Some(Government::Anarchy) => Hue::Yellow,
-        // None of the three is a way of governing anybody. A carrier
-        // answers to whoever owns it, a megaconstruction site to whoever
-        // is building it, and a privately owned settlement to its owner.
-        Some(
-            Government::Carrier
-            | Government::Megaconstruction
-            | Government::PrivateOwnership,
-        ) => Hue::Green,
-        Some(Government::Communism) => Hue::Red,
-        Some(Government::Confederacy) => Hue::Red,
-        Some(Government::Cooperative) => Hue::Orange,
-        Some(Government::Corporate) => Hue::Cyan,
-        Some(Government::Democracy) => Hue::Blue,
-        Some(Government::Dictatorship) => Hue::Red,
-        Some(Government::Engineer) => Hue::Magenta,
-        Some(Government::Feudal) => Hue::Red,
-        Some(Government::Patronage) => Hue::Red,
-        Some(Government::Prison) => Hue::Red,
-        Some(Government::PrisonColony) => Hue::Red,
-        Some(Government::Theocracy) => Hue::Blue,
-        Some(Government::None) | None => Hue::Grey,
+    /// The color a government is drawn in. See [`Hue::allegiance`].
+    pub(crate) fn government(government: Option<Government>) -> Hue {
+        match government {
+            Some(Government::Anarchy) => Hue::Yellow,
+            // None of the three is a way of governing anybody. A carrier
+            // answers to whoever owns it, a megaconstruction site to whoever
+            // is building it, and a privately owned settlement to its owner.
+            Some(
+                Government::Carrier
+                | Government::Megaconstruction
+                | Government::PrivateOwnership,
+            ) => Hue::Green,
+            Some(Government::Communism) => Hue::Red,
+            Some(Government::Confederacy) => Hue::Red,
+            Some(Government::Cooperative) => Hue::Orange,
+            Some(Government::Corporate) => Hue::Cyan,
+            Some(Government::Democracy) => Hue::Blue,
+            Some(Government::Dictatorship) => Hue::Red,
+            Some(Government::Engineer) => Hue::Magenta,
+            Some(Government::Feudal) => Hue::Red,
+            Some(Government::Patronage) => Hue::Red,
+            Some(Government::Prison) => Hue::Red,
+            Some(Government::PrisonColony) => Hue::Red,
+            Some(Government::Theocracy) => Hue::Blue,
+            Some(Government::None) | None => Hue::Grey,
+        }
     }
-}
 
-/// The color a security rating is drawn in. See [`allegiance_hue`].
-pub(crate) fn security_hue(security: Option<Security>) -> Hue {
-    match security {
-        Some(Security::High) => Hue::Blue,
-        Some(Security::Medium) => Hue::Cyan,
-        Some(Security::Low) => Hue::Green,
-        Some(Security::Anarchy) => Hue::Red,
-        Some(Security::None) | None => Hue::Grey,
+    /// The color a security rating is drawn in. See [`Hue::allegiance`].
+    pub(crate) fn security(security: Option<Security>) -> Hue {
+        match security {
+            Some(Security::High) => Hue::Blue,
+            Some(Security::Medium) => Hue::Cyan,
+            Some(Security::Low) => Hue::Green,
+            Some(Security::Anarchy) => Hue::Red,
+            Some(Security::None) | None => Hue::Grey,
+        }
     }
 }
 
@@ -1507,7 +1407,7 @@ mod tests {
 
         let names = Names::over(sky, entries.clone(), Vec::new());
         let system =
-            system_at(entries[0].address, &Populated::default(), &names)
+            System::find(entries[0].address, &Populated::default(), &names)
                 .expect("a named system is drawable");
 
         assert_eq!(system.position, at);
@@ -1515,14 +1415,10 @@ mod tests {
 
     /// A system at `address`, with nothing else on record
     fn system(address: i64) -> System {
-        build_system(
-            &RawSystem {
-                address,
-                position: [address as f64, 0., 0.],
-                magnitude: None,
-                temp_bucket: None,
-                updated_at: None,
-            },
+        System::build(
+            address,
+            [address as f64, 0., 0.],
+            None,
             &Populated::default(),
             &Names::default(),
         )

@@ -52,7 +52,7 @@ use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
 use galos_index::records::{Faction, PopulatedSystem, SystemReach};
 use galos_index::store::names::Delta;
-use galos_index::{CellId, Index, Part, Point, Stamp, Table};
+use galos_index::{CellId, CellSystem, Index, Part, Stamp, Table};
 use galos_route::{BoostTable, Boosts, SystemBoost};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -187,7 +187,7 @@ struct Refreshed {
     /// named something moves.
     delta: Option<(Delta, Option<Stamp>)>,
     /// The payloads re-read, by cell
-    cells: Vec<(CellId, Vec<Point>, Option<Stamp>)>,
+    cells: Vec<(CellId, Vec<CellSystem>, Option<Stamp>)>,
 }
 
 impl Refreshed {
@@ -493,8 +493,8 @@ mod tests {
     }
 
     /// One system for the builder, placed along the x axis
-    fn input(id: u64, at: f64) -> galos_index::ExactSystem {
-        galos_index::ExactSystem {
+    fn input(id: u64, at: f64) -> galos_index::System {
+        galos_index::System {
             id64: id,
             position: [at, 900.0, 24400.0],
             absolute_magnitude: id as f64,
@@ -508,7 +508,7 @@ mod tests {
     /// Publish `systems` to `dir` and hand back the built tree
     fn publish(
         dir: &std::path::Path,
-        systems: &[galos_index::ExactSystem],
+        systems: &[galos_index::System],
     ) -> Snapshot {
         let built = Snapshot::build(systems, &BuildParams::default());
         built.write(dir).expect("the build should write");

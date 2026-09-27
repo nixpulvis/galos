@@ -14,8 +14,6 @@
 //! this reads from, named once here so the two cannot drift.
 
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
-use crate::core::record::Point;
 use crate::format::layout::{
     factions_path, names_delta_path, names_head_path, populated_path,
     reaches_path,
@@ -27,6 +25,8 @@ use crate::records::{
 use crate::store::bodies::read_bodies;
 use crate::store::names;
 use crate::store::tables;
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
 use async_trait::async_trait;
 use std::io;
 use std::path::PathBuf;
@@ -82,7 +82,7 @@ pub trait Source: Send + Sync {
 
     /// One cell's payload: its systems, positions in light years. Empty
     /// where the cell owns nothing.
-    async fn payload(&self, id: CellId) -> io::Result<Vec<Point>>;
+    async fn payload(&self, id: CellId) -> io::Result<Vec<CellSystem>>;
 
     /// The brightest `limit` of one cell's payload.
     ///
@@ -95,7 +95,7 @@ pub trait Source: Send + Sync {
         &self,
         id: CellId,
         limit: usize,
-    ) -> io::Result<Vec<Point>> {
+    ) -> io::Result<Vec<CellSystem>> {
         let mut points = self.payload(id).await?;
         points.truncate(limit);
         Ok(points)
@@ -195,7 +195,7 @@ impl Source for FsSource {
         Index::read(&self.dir)
     }
 
-    async fn payload(&self, id: CellId) -> io::Result<Vec<Point>> {
+    async fn payload(&self, id: CellId) -> io::Result<Vec<CellSystem>> {
         Index::read_payload(&self.dir, id)
     }
 
@@ -203,7 +203,7 @@ impl Source for FsSource {
         &self,
         id: CellId,
         limit: usize,
-    ) -> io::Result<Vec<Point>> {
+    ) -> io::Result<Vec<CellSystem>> {
         Index::read_payload_prefix(&self.dir, id, limit)
     }
 
@@ -322,19 +322,19 @@ mod tests {
         use super::{FsSource, Part, Source};
         use crate::build::snapshot::BuildParams;
         use crate::core::geometry::CellId;
-        use crate::core::record::ExactSystem;
+        use crate::system::System;
 
         let dir = std::env::temp_dir()
             .join(format!("galos_source_stamp_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let system = |id: u64, at: f64| ExactSystem {
+        let system = |id: u64, at: f64| System {
             id64: id,
             position: [at, 900.0, 24400.0],
             absolute_magnitude: id as f64,
             temperature: 5000.0,
             age_bucket: 0,
             updated_at: 0,
-            kind: crate::core::record::StarKind::G,
+            kind: crate::core::star::StarKind::G,
         };
 
         let built = crate::build::snapshot::Snapshot::build(

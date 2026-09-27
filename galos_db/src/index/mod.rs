@@ -2,7 +2,7 @@
 //!
 //! Reads every positioned system and its scanned stars, turns them into
 //! photometry through `galos_photometry`'s fallback chain, and hands the
-//! result to `galos_index`'s pure builder. The two crates meet at [`ExactSystem`].
+//! result to `galos_index`'s pure builder. The two crates meet at [`System`].
 //! The metadata beside the tree is `metadata`.
 //!
 //! The queries are unchecked `sqlx::query`; the columns are read back by
@@ -17,7 +17,7 @@ use galos_index::build::cold::{
 use galos_index::format::checkpoint::{pending, Checkpoint, Provenance};
 use galos_index::format::parts::CorePart;
 use galos_index::records::derive::{self, NearestStar};
-use galos_index::{BuildParams, ExactSystem, Index, TableSet, Tree};
+use galos_index::{BuildParams, Index, System, TableSet, Tree};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
 use sqlx::Row;
@@ -201,7 +201,7 @@ fn input_from_row(
     row: &sqlx::postgres::PgRow,
     scanned: &Scanned,
     now: chrono::NaiveDateTime,
-) -> Result<ExactSystem> {
+) -> Result<System> {
     let address: i64 = row.try_get("address")?;
     let x: f64 = row.try_get("x")?;
     let y: f64 = row.try_get("y")?;
@@ -213,7 +213,7 @@ fn input_from_row(
         class.as_deref().unwrap_or(""),
     );
     let (age_bucket, updated_at) = derive::updated(at, now);
-    Ok(ExactSystem {
+    Ok(System {
         id64: address as u64,
         position: [x, y, z],
         absolute_magnitude,
@@ -540,10 +540,7 @@ async fn write_names(
 /// Each is rebuilt whole from its current record through the fallback
 /// [`Galaxy`] uses, so an incremental system lands where a full rebuild
 /// would put it. An address with no positioned row is not in the result.
-async fn inputs_for(
-    db: &Database,
-    addresses: &[i64],
-) -> Result<Vec<ExactSystem>> {
+async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
     if addresses.is_empty() {
         return Ok(Vec::new());
     }
@@ -974,7 +971,7 @@ async fn build_level(
 fn record(
     checkpoint: &Path,
     cursor: chrono::NaiveDateTime,
-    systems: impl IntoIterator<Item = ExactSystem>,
+    systems: impl IntoIterator<Item = System>,
 ) -> Result<()> {
     Checkpoint::compact(
         checkpoint,
@@ -1020,7 +1017,7 @@ async fn pass(
     // The tables written whole remember what moved until they are written;
     // the body files are one per system, so those are summed.
     let mut body_files = 0;
-    let mut applied: Vec<ExactSystem> = Vec::new();
+    let mut applied: Vec<System> = Vec::new();
     // A catch-up's first passes are the week the directory was behind by,
     // which is chunks of ten thousand and minutes of them. Addresses asked
     // about rather than systems found: an address with no positioned row
@@ -1296,10 +1293,10 @@ mod tests {
 
     /// A system at `position`, lit as the class `G` names rather than by a
     /// scan.
-    fn input(address: i64, position: [f64; 3]) -> ExactSystem {
+    fn input(address: i64, position: [f64; 3]) -> System {
         let (absolute_magnitude, temperature) =
             derive::lit(std::iter::empty(), "G");
-        ExactSystem {
+        System {
             id64: address as u64,
             position,
             absolute_magnitude,
@@ -1381,7 +1378,7 @@ mod tests {
         // A directory that is every gate's idea of consistent: the cell tree
         // and the names table standing for the same two systems.
         let params = BuildParams::default();
-        let inputs: Vec<ExactSystem> = [(1i64, 0.0f64), (2, 10.0)]
+        let inputs: Vec<System> = [(1i64, 0.0f64), (2, 10.0)]
             .iter()
             .map(|&(address, x)| input(address, [x, 0.0, 0.0]))
             .collect();

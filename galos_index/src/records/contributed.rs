@@ -13,7 +13,7 @@
 //! reader — through [`crate::store::tables`], without knowing what a row
 //! says.
 
-use crate::core::record::StarKind;
+use crate::core::star::StarKind;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;

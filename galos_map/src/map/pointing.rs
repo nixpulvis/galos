@@ -450,7 +450,7 @@ pub(crate) fn point_at(
                 let people = if by_population {
                     peopled.get(thing).map_or(0, |(system, hop)| {
                         crate::map::paint::sizing::drawn_population(
-                            system.population,
+                            system.population(),
                             hop,
                         )
                     })
@@ -1219,7 +1219,8 @@ mod tests {
             .enumerate()
             .map(|(n, (population, dim, depth))| {
                 let mut row = crate::map::galaxy::tests::at(n as i64, 5.);
-                row.population = *population;
+                crate::map::galaxy::tests::politics(&mut row).population =
+                    *population;
                 let system = app.world_mut().spawn((row, Indicator(0.))).id();
                 if *dim {
                     app.world_mut().entity_mut(system).insert(Filtered);
@@ -1278,15 +1279,14 @@ mod tests {
         app.add_systems(Update, point_at);
 
         // The stop, empty, and drawn at an ordinary mark for being a stop.
-        let mut stop_row = crate::map::galaxy::tests::at(0, 5.);
-        stop_row.population = 0;
+        let stop_row = crate::map::galaxy::tests::at(0, 5.);
         let stop = app
             .world_mut()
             .spawn((stop_row, Indicator(0.), crate::map::route::Hop::Next))
             .id();
         // A hamlet of ten, nearer the camera and drawn a quarter the size.
         let mut hamlet_row = crate::map::galaxy::tests::at(1, 5.);
-        hamlet_row.population = 10;
+        crate::map::galaxy::tests::politics(&mut hamlet_row).population = 10;
         let hamlet = app.world_mut().spawn((hamlet_row, Indicator(0.))).id();
 
         let mut over = EntityHashMap::default();

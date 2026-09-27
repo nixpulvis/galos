@@ -2,7 +2,7 @@
 //! index build.
 //!
 //! `galos_db/src/index/mod.rs` reads Postgres and hands back
-//! `Vec<galos_index::ExactSystem>`. This does the same from a catalog file, and the
+//! `Vec<galos_index::System>`. This does the same from a catalog file, and the
 //! point of it is that everything downstream — the tree, the walks, the cells,
 //! the client — cannot tell which one it got. A tree of real stars drawn by
 //! the map is both a thing worth seeing and the sharpest test that
@@ -30,7 +30,7 @@
 //!   precisely because a second dataset has nothing to say about it.
 
 use crate::{MAX_ID, Star};
-use galos_index::ExactSystem;
+use galos_index::System;
 
 /// The high bit that marks an id as a catalog's rather than a system address.
 ///
@@ -47,7 +47,7 @@ impl Star {
     ///
     /// The three fields that survive are the position, the absolute magnitude
     /// and the temperature — the name, the measured apparent magnitude, the
-    /// color index and the spectral type do not, which is what makes `ExactSystem`
+    /// color index and the spectral type do not, which is what makes `System`
     /// the lossy projection and [`Star`] the fuller record.
     /// The index id this star takes: the catalog tag, its source's namespace,
     /// and its own id.
@@ -68,8 +68,8 @@ impl Star {
             | (self.id & MAX_ID)
     }
 
-    pub fn to_system(&self) -> ExactSystem {
-        ExactSystem {
+    pub fn to_system(&self) -> System {
+        System {
             id64: self.system_id(),
             position: self.position,
             absolute_magnitude: self.absolute_magnitude,

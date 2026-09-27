@@ -15,7 +15,7 @@
 //! So each such rule is kept here once, this crate being the format both
 //! sides agree on.
 
-use crate::core::record::StarKind;
+use crate::core::star::StarKind;
 use crate::records::{Arrival, SystemBodies};
 use chrono::NaiveDateTime;
 use galos_photometry::{ClassLight, Flux, Magnitude};
@@ -37,7 +37,7 @@ pub const AGE_EDGES: [i64; 7] = [1, 7, 30, 90, 365, 1095, 3650];
 /// — falls in bucket 0 with everything else fresh.
 ///
 /// A `u32` and not the `usize` an array index wants, because where it is kept
-/// is an [`ExactSystem`](crate::ExactSystem), and that record is written to disk as its
+/// is an [`System`](crate::System), and that record is written to disk as its
 /// own bytes; see its doc.
 pub fn age_bucket(days: i64) -> u32 {
     AGE_EDGES.iter().filter(|&&edge| days >= edge).count() as u32

@@ -139,7 +139,7 @@
 //! the way.
 
 use galos_index::core::codec::FixedCodec as _;
-use galos_index::{FsSource, Index, Mode, Point, Source as _, View};
+use galos_index::{CellSystem, FsSource, Index, Mode, Source as _, View};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -196,7 +196,7 @@ fn zooming_out_stays_quick() {
             let payload = pollster::block_on(source.payload(mark.id))
                 .expect("a marked cell should read");
             points += payload.len();
-            bytes += payload.len() * Point::LEN;
+            bytes += payload.len() * CellSystem::LEN;
         }
         let read = at.elapsed();
         println!(

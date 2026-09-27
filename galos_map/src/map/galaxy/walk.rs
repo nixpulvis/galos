@@ -25,9 +25,8 @@
 use crate::map::bodies::spawn::HeldSystem;
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{Candidate, Cut, Filtering, Prepared};
-use crate::map::galaxy::fetch::RawSystem;
 use crate::map::galaxy::plan::{Accounted, Planned};
-use crate::map::galaxy::spawn::{PendingSpawns, build_system, system_at};
+use crate::map::galaxy::spawn::PendingSpawns;
 use crate::map::galaxy::{PendingEvictions, Spyglass, System};
 use crate::map::index::{Names, Populated, Transport};
 use crate::map::paint::sizing::{ScalePopulation, View, by_population};
@@ -45,7 +44,7 @@ use galos_index::read::resident::Resident;
 use galos_index::read::screen::{
     Crowded, Empty, crowded_marks, frame_marks, share, wanted,
 };
-use galos_index::{CellId, Part, Point, Stamp};
+use galos_index::{CellId, CellSystem, Part, Stamp};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
@@ -327,7 +326,7 @@ pub(crate) struct Worked<'w> {
 /// again on the next poll — the safe way round.
 #[derive(Resource, Default)]
 pub(crate) struct BoundedTasks(
-    HashMap<CellId, Task<io::Result<(Vec<Point>, Option<Stamp>)>>>,
+    HashMap<CellId, Task<io::Result<(Vec<CellSystem>, Option<Stamp>)>>>,
 );
 
 #[cfg(test)]
@@ -636,7 +635,7 @@ impl PointOrders {
     fn walk(
         &mut self,
         id: CellId,
-        points: &[Point],
+        points: &[CellSystem],
         filters: &Prepared<'_>,
         populated: &Populated,
         now: DateTime<Utc>,
@@ -750,7 +749,7 @@ pub(crate) fn adopt(
     orders: &mut PointOrders,
     republished: &mut Republished,
     id: CellId,
-    points: Vec<Point>,
+    points: Vec<CellSystem>,
 ) {
     resident.0.insert(id, points);
     orders.forget(id);
@@ -762,9 +761,12 @@ pub(crate) fn adopt(
 ///
 /// The same three facts a [`System`] answers, so a point is weighed by the one
 /// predicate a drawn system is, and without building a system to ask —
-/// [`build_from_point`] clones a name and reads a reach, work worth avoiding
+/// [`System::of`] clones a name and reads a reach, work worth avoiding
 /// for a point that is not going to be drawn.
-fn candidate<'a>(point: &Point, populated: &'a Populated) -> Candidate<'a> {
+fn candidate<'a>(
+    point: &CellSystem,
+    populated: &'a Populated,
+) -> Candidate<'a> {
     let address = point.id64 as i64;
     Candidate {
         address,
@@ -785,7 +787,7 @@ fn candidate<'a>(point: &Point, populated: &'a Populated) -> Candidate<'a> {
 /// drawn at all and queueing one costs a slot of the spawn budget and buys
 /// nothing.
 fn drawn_first<'a>(
-    points: &'a [Point],
+    points: &'a [CellSystem],
     admits: &'a [u32],
     fill: bool,
 ) -> impl Iterator<Item = usize> + 'a {
@@ -1425,14 +1427,18 @@ pub(crate) fn reconcile(
                 if let Some(limit) = limit
                     && Magnitude(f64::from(point.magnitude))
                         .apparent(Distance::light_years(
-                            orbit.eye().distance(DVec3::from(point.pos)),
+                            orbit.eye().distance(DVec3::from(point.position)),
                         ))
                         .0
                         > limit
                 {
                     continue;
                 }
-                taken.push((point.id64 as i64, point.pos, Some(index as u32)));
+                taken.push((
+                    point.id64 as i64,
+                    point.position,
+                    Some(index as u32),
+                ));
             }
         }
         // What this cell's marks account for, so [`crate::map::paint::glow`] can lay the
@@ -1488,26 +1494,20 @@ pub(crate) fn reconcile(
             // small: the whole galaxy holds 148,199 systems anybody lives
             // in, and a frame in this mode draws tens.
             //
-            // Built from the row and not through `system_at`, which
+            // Built from the row and not through `System::find`, which
             // refuses a system the names table has no row for. A name is
             // one thing a system may be missing and being drawn is
             // another: the payload path names an unnamed system by its
-            // address ([`build_system`]) and draws it, and a mode that
+            // address ([`System::build`]) and draws it, and a mode that
             // silently dropped the same system would be a hole in the
             // sky wherever the two tables disagree.
             let queue = |pending: &mut PendingSpawns| match index {
                 Some(index) => pending.offer(address, id, index),
                 None => {
-                    let raw = RawSystem {
-                        address,
-                        position: pos,
-                        magnitude: None,
-                        temp_bucket: None,
-                        // A moment is a payload's to carry; see
-                        // [`Filters::asking_a_span`].
-                        updated_at: None,
-                    };
-                    let system = build_system(&raw, &populated, &names);
+                    // A moment is a payload's to carry; see
+                    // [`Filters::asking_a_span`].
+                    let system =
+                        System::build(address, pos, None, &populated, &names);
                     pending.push(system, false, true, now);
                     true
                 }
@@ -1593,20 +1593,11 @@ pub(crate) fn reconcile(
                         // Built from the row: a system the names table
                         // cannot name is still a system with a
                         // population, and the payload path names one by
-                        // its address. See [`build_system`].
-                        let raw = RawSystem {
-                            address,
-                            position: at,
-                            magnitude: None,
-                            temp_bucket: None,
-                            updated_at: None,
-                        };
-                        pending.push(
-                            build_system(&raw, &populated, &names),
-                            false,
-                            true,
-                            now,
+                        // its address. See [`System::build`].
+                        let system = System::build(
+                            address, at, None, &populated, &names,
                         );
+                        pending.push(system, false, true, now);
                     }
                 }
             }
@@ -1699,7 +1690,8 @@ pub(crate) fn reconcile(
                 wanted_by.insert(entity);
             }
             None => {
-                if let Some(system) = system_at(address, &populated, &names) {
+                if let Some(system) = System::find(address, &populated, &names)
+                {
                     pending.push(system, true, true, now);
                 }
             }
@@ -1835,36 +1827,6 @@ pub(crate) fn evict_payloads(
     }
 }
 
-/// One payload point as a drawable system: placed where the payload puts it,
-/// named and colored off the resident tables
-///
-/// The position comes straight from the payload, in light years — finer than
-/// the names table's whole-light-year placement, and present for every system,
-/// named or not. The name and the political columns are the same join a
-/// system named by hand gets, keyed by the point's id.
-///
-/// The one place a point becomes a system, so the payload's
-/// [`Point::updated_at`] is read into a moment here rather than at each
-/// caller. Unix seconds on the wire and a moment on the map: the payload
-/// keeps four bytes a system and the filter compares against a clock.
-pub(crate) fn build_from_point(
-    point: &Point,
-    populated: &Populated,
-    names: &Names,
-) -> System {
-    build_system(
-        &RawSystem {
-            address: point.id64 as i64,
-            position: point.pos,
-            magnitude: Some(point.magnitude),
-            temp_bucket: Some(point.temp_bucket),
-            updated_at: DateTime::from_timestamp(point.updated_at as i64, 0),
-        },
-        populated,
-        names,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1876,16 +1838,16 @@ mod tests {
     #[test]
     fn a_point_becomes_a_placed_system() {
         let at = [1234.5, -678.25, 90123.75];
-        let point = Point {
+        let point = CellSystem {
             id64: 7,
-            pos: at,
+            position: at,
             magnitude: 0.,
-            temp_bucket: 0,
+            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
             kind: galos_index::StarKind::G,
         };
 
-        let system = build_from_point(
+        let system = System::of(
             &point,
             &Populated::default(),
             &Names::reaching(Vec::new(), Vec::new()),
@@ -1909,16 +1871,16 @@ mod tests {
         use chrono::{Duration as Span, Utc};
 
         let now = Utc::now();
-        let point = |id: u64, ago: i64| Point {
+        let point = |id: u64, ago: i64| CellSystem {
             id64: id,
-            pos: [0.; 3],
+            position: [0.; 3],
             magnitude: 0.,
-            temp_bucket: 0,
+            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: (now - Span::seconds(ago)).timestamp() as u32,
             kind: galos_index::StarKind::G,
         };
-        let built = |point: &Point| {
-            build_from_point(
+        let built = |point: &CellSystem| {
+            System::of(
                 point,
                 &Populated::default(),
                 &Names::reaching(Vec::new(), Vec::new()),
@@ -1942,12 +1904,12 @@ mod tests {
     }
 
     /// A payload point at `id`, faintness rising with the id
-    fn point(id: u64) -> Point {
-        Point {
+    fn point(id: u64) -> CellSystem {
+        CellSystem {
             id64: id,
-            pos: [0.; 3],
+            position: [0.; 3],
             magnitude: id as f32,
-            temp_bucket: 0,
+            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
             kind: galos_index::StarKind::G,
         }
@@ -1963,7 +1925,7 @@ mod tests {
 
     /// The addresses the draw would take, in order, from a budget of `target`
     fn drawn(
-        points: &[Point],
+        points: &[CellSystem],
         admits: &[u32],
         fill: bool,
         target: usize,
@@ -1982,7 +1944,7 @@ mod tests {
     /// nothing from a cell of thousands with a faction filter on.
     #[test]
     fn the_admitted_take_the_budget_before_the_excluded() {
-        let points: Vec<Point> = (1..=6).map(point).collect();
+        let points: Vec<CellSystem> = (1..=6).map(point).collect();
         // The fourth and sixth brightest are the ones asked for.
         let admits = [3u32, 5];
 
@@ -1999,7 +1961,7 @@ mod tests {
     /// the first thing to give way when there is less room than systems.
     #[test]
     fn the_excluded_fill_what_is_left_and_go_first() {
-        let points: Vec<Point> = (1..=6).map(point).collect();
+        let points: Vec<CellSystem> = (1..=6).map(point).collect();
         let admits = [3u32];
 
         assert_eq!(
@@ -2022,7 +1984,7 @@ mod tests {
     /// since it never becomes an entity to be found already drawn.
     #[test]
     fn nothing_excluded_is_offered_while_the_dim_drops_it() {
-        let points: Vec<Point> = (1..=6).map(point).collect();
+        let points: Vec<CellSystem> = (1..=6).map(point).collect();
         let admits = [3u32];
 
         assert_eq!(
@@ -2038,7 +2000,7 @@ mod tests {
     /// be, so a filter admitting everything draws exactly what no filter draws.
     #[test]
     fn a_dense_filter_decimates_by_magnitude() {
-        let points: Vec<Point> = (1..=6).map(point).collect();
+        let points: Vec<CellSystem> = (1..=6).map(point).collect();
         let all: Vec<u32> = (0..6).collect();
 
         assert_eq!(drawn(&points, &all, true, 3), vec![1, 2, 3]);
@@ -2059,7 +2021,7 @@ mod tests {
         use crate::map::filter::{Filter, Filters};
         use galos_index::records::PopulatedSystem;
 
-        let points: Vec<Point> = (1..=4).map(point).collect();
+        let points: Vec<CellSystem> = (1..=4).map(point).collect();
         let id = CellId::of_point([0.; 3], 4);
         // The third point is the only one a faction is present in.
         let populated = Populated(std::sync::Arc::new(HashMap::from([(
@@ -2155,7 +2117,7 @@ mod tests {
     fn a_cut_is_worked_through_a_budget_at_a_time() {
         use crate::map::filter::{Filter, Filters};
 
-        let points: Vec<Point> = (1..=10).map(point).collect();
+        let points: Vec<CellSystem> = (1..=10).map(point).collect();
         let cells = [CellId::ROOT, CellId { level: 1, x: 1, y: 0, z: 0 }];
         let populated = Populated::default();
         let now = Utc::now();
@@ -2493,8 +2455,8 @@ mod tests {
         // Five systems a few light years apart, faintest last, and the faction
         // is in that faintest one.
         let held = 5i64;
-        let inputs: Vec<galos_index::ExactSystem> = (1..=5)
-            .map(|id| galos_index::ExactSystem {
+        let inputs: Vec<galos_index::System> = (1..=5)
+            .map(|id| galos_index::System {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
@@ -2597,8 +2559,8 @@ mod tests {
             [at[0], at[1], -25.]
         };
 
-        let inputs: Vec<galos_index::ExactSystem> = (1..=5)
-            .map(|id| galos_index::ExactSystem {
+        let inputs: Vec<galos_index::System> = (1..=5)
+            .map(|id| galos_index::System {
                 id64: id as u64,
                 position: in_view(id as i64),
                 absolute_magnitude: id as f64,
@@ -2624,7 +2586,7 @@ mod tests {
                     name: format!("Home {address}").into(),
                     // Where the tree put it. The populated table's own
                     // place is what the population scale draws a mark at
-                    // — the same place `system_at` builds one at — so a
+                    // — the same place `System::find` builds one at — so a
                     // fixture that disagrees with its index is testing
                     // two galaxies.
                     position: in_view(address).map(|it| it as f32),
@@ -2682,8 +2644,8 @@ mod tests {
         use galos_index::records::PopulatedSystem;
         use galos_index::{BuildParams, Snapshot};
 
-        let inputs: Vec<galos_index::ExactSystem> = (1..=4)
-            .map(|id| galos_index::ExactSystem {
+        let inputs: Vec<galos_index::System> = (1..=4)
+            .map(|id| galos_index::System {
                 id64: id as u64,
                 position: placed(id as i64),
                 absolute_magnitude: id as f64,
@@ -2843,7 +2805,7 @@ mod tests {
     fn a_republished_cell_rebuilds_the_systems_already_drawn() {
         use galos_index::{BuildParams, Snapshot};
 
-        let at = |id: u64, when: u32| galos_index::ExactSystem {
+        let at = |id: u64, when: u32| galos_index::System {
             id64: id,
             position: placed(id as i64),
             absolute_magnitude: id as f64,

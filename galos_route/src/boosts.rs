@@ -209,9 +209,9 @@ impl Table for BoostTable {
                     address: old[which].address,
                     boost: old[which].boost,
                     position: [
-                        point.pos[0] as f32,
-                        point.pos[1] as f32,
-                        point.pos[2] as f32,
+                        point.position[0] as f32,
+                        point.position[1] as f32,
+                        point.position[2] as f32,
                     ],
                 });
             }

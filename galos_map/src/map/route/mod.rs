@@ -723,7 +723,7 @@ impl UnflownLeg {
 /// What the names table spells the system at `address`
 ///
 /// The map's own spelling rather than whatever the user typed, which is how
-/// [`crate::map::galaxy::spawn::build_system`] names a stop and so how a landed
+/// [`System::build`] names a stop and so how a landed
 /// route's label is built: a leg's row is put up before its answer and has to
 /// read the same after, being the one row.
 pub(crate) fn said(names: &Names, address: i64) -> String {
@@ -1053,7 +1053,7 @@ const SOLID: f32 = 0.35;
 ///
 /// A count against the screen rather than a length in the world, which is how
 /// the rings inside a system are dashed as well — see `Spacing`'s `DASHES` in
-/// `galos_index::system::orbit`. **A dash held at a fixed distance cannot be read at
+/// `galos_index::system::bodies::orbit`. **A dash held at a fixed distance cannot be read at
 /// more than one zoom**: half a light year is a clear mark with one stop in
 /// view and a hundredth of a pixel with the galaxy in view, so a leg trailing
 /// off the map read as a faint solid line exactly where the dashes were the

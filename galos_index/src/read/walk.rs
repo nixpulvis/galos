@@ -27,7 +27,7 @@
 
 use crate::core::aggregate::AGE_BUCKETS;
 use crate::core::geometry::CellId;
-use crate::core::index::{Index, Node, distance};
+use crate::tree::index::{Index, Node, distance};
 use galos_photometry::{Distance, Magnitude};
 
 /// The field's resolution limit, in pixels: the widest a cell's own contents
@@ -664,8 +664,8 @@ fn splitting(view: &View, node: &Node, merge_px: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::aggregate::{Aggregate, Cell};
-    use crate::core::index::{contents_extent, contents_width};
+    use crate::core::aggregate::Aggregate;
+    use crate::tree::cell::Cell;
 
     /// The sky read at the eye's own limit, which is where the exposure
     /// rests.
@@ -941,8 +941,8 @@ mod tests {
         let (index, _parent, _kids) = small_tree(10, 10, 4.0);
         let root = index.root().expect("a root");
         let lens = eye_out(CellId::ROOT, 1.0);
-        let out =
-            contents_extent(root) * lens.pixels_per_radian() / (SPLIT_PX * 0.5);
+        let out = root.contents_extent() * lens.pixels_per_radian()
+            / (SPLIT_PX * 0.5);
         let far = eye_out(CellId::ROOT, out);
         let out = index.walk_screen(&far, None);
         assert!(out.marks.is_empty(), "a point-sized galaxy read a payload");
@@ -1036,7 +1036,7 @@ mod tests {
         // distance, from the far side of the band. Past it nothing is read
         // and the tree comes out as one merged mark.
         let lens = eye_out(id, 1.0);
-        let span = contents_width(&leaf);
+        let span = leaf.contents_width();
         let out = span * lens.pixels_per_radian() / MERGE_PX;
         let far = index.walk_screen(&eye_out(id, out * 2.0), None);
         assert!(!mark_ids(&far).contains(&id), "still reading at one dot");
@@ -1208,8 +1208,8 @@ mod tests {
 mod merging {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::index::contents_center;
-    use crate::core::record::{ExactSystem, StarKind};
+    use crate::core::star::StarKind;
+    use crate::system::System;
 
     /// Where the test skies are hung: the galactic centre, so the cells a
     /// build makes are the ones a real sky would land in.
@@ -1223,10 +1223,10 @@ mod merging {
     /// against a subtree of millions. At the defaults a handful of systems
     /// is one leaf and there is no frontier to test.
     fn sky(at: &[[f64; 3]]) -> Snapshot {
-        let systems: Vec<ExactSystem> = at
+        let systems: Vec<System> = at
             .iter()
             .enumerate()
-            .map(|(n, position)| ExactSystem {
+            .map(|(n, position)| System {
                 id64: n as u64 + 1,
                 position: *position,
                 absolute_magnitude: 4.0,
@@ -1280,10 +1280,10 @@ mod merging {
         let mut at = Vec::new();
         for blob in &needed.blobs {
             let cell = sky.index.get(blob.id).expect("a blob names a cell");
-            at.push(contents_center(cell));
+            at.push(cell.contents_center());
         }
         for mark in &needed.marks {
-            at.extend(sky.payload(mark.id).iter().map(|point| point.pos));
+            at.extend(sky.payload(mark.id).iter().map(|point| point.position));
         }
         at
     }
@@ -1515,7 +1515,7 @@ mod merging {
         );
         let merged = needed.blobs.iter().any(|blob| {
             let cell = sky.index.get(blob.id).expect("a blob names a cell");
-            gap(&view, contents_center(cell), HERE) <= MERGE_PX
+            gap(&view, cell.contents_center(), HERE) <= MERGE_PX
         });
         assert!(merged, "nothing merged over the clump");
     }

@@ -1,4 +1,4 @@
-//! What a system is made of, and where each piece sits
+//! A system's bodies arranged: what goes round what, and where each stands
 //!
 //! One system's rows — its stars, its bodies and the points a close pair goes
 //! round — read as an arrangement: what goes round what, where each thing
@@ -13,15 +13,17 @@
 //!
 //! # Units
 //!
-//! Metres and seconds, as [`crate::system::orbit`] is. The journal records
-//! lengths in metres and distances from arrival in light seconds, so the one
-//! conversion stands at [`LIGHT_SECOND`] below.
+//! Metres and seconds, as [`orbit`] is. The journal records lengths in metres
+//! and distances from arrival in light seconds, so the one conversion stands
+//! at [`LIGHT_SECOND`] below.
+
+pub mod orbit;
 
 use crate::records::{Barycenter, Body, Parent, Star, SystemBodies};
-use crate::system::orbit::{Orbit, Orbits, made_up_direction};
 use chrono::{DateTime, Utc};
 use elite_journal::body::Orbit as JournalOrbit;
 use glam::DVec3;
+use orbit::{Orbit, Orbits, made_up_direction};
 use std::collections::{HashMap, HashSet};
 
 /// Metres in a light second
@@ -597,7 +599,7 @@ fn reach(semi_major_axis: f32, eccentricity: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::orbit::Spacing;
+    use crate::system::bodies::orbit::Spacing;
     use elite_journal::body::Spin as JournalSpin;
 
     /// The system every fixture here is about

@@ -9,10 +9,13 @@
 //! against the one before it, which touches only the cells whose systems
 //! moved.
 
-use crate::core::aggregate::{Aggregate, Cell};
+use crate::core::aggregate::Aggregate;
+
 use crate::core::geometry::{CellId, MAX_LEVEL};
-use crate::core::index::Index;
-use crate::core::record::{ExactSystem, Point};
+use crate::system::System;
+use crate::tree::cell::Cell;
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
@@ -53,7 +56,7 @@ impl Default for BuildParams {
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub index: Index,
-    pub payloads: HashMap<CellId, Vec<Point>>,
+    pub payloads: HashMap<CellId, Vec<CellSystem>>,
 }
 
 /// Which cells changed between one build and the next, the whole of what a
@@ -74,7 +77,7 @@ pub struct CellDiff {
 
 impl Snapshot {
     /// The payload of a cell, empty if the cell owns no systems.
-    pub fn payload(&self, id: CellId) -> &[Point] {
+    pub fn payload(&self, id: CellId) -> &[CellSystem] {
         self.payloads.get(&id).map_or(&[], Vec::as_slice)
     }
 
@@ -91,7 +94,7 @@ impl Snapshot {
     /// first. For the live, editable form raise a [`Tree`](crate::Tree) with
     /// [`Tree::build`](crate::Tree::build), which builds this and holds it
     /// open.
-    pub fn build(systems: &[ExactSystem], params: &BuildParams) -> Snapshot {
+    pub fn build(systems: &[System], params: &BuildParams) -> Snapshot {
         Snapshot::of_region(CellId::ROOT, systems, &HashSet::new(), params)
     }
 
@@ -108,7 +111,7 @@ impl Snapshot {
     /// region and the rest of the galaxy.
     pub fn of_region(
         region: CellId,
-        systems: &[ExactSystem],
+        systems: &[System],
         claimed: &HashSet<u64>,
         params: &BuildParams,
     ) -> Snapshot {
@@ -170,7 +173,7 @@ impl Snapshot {
     /// lands the same directory.
     pub fn rebuild(
         &self,
-        systems: &[ExactSystem],
+        systems: &[System],
         params: &BuildParams,
     ) -> (Snapshot, CellDiff) {
         let next = Snapshot::build(systems, params);
@@ -188,7 +191,7 @@ impl Snapshot {
 /// handed over must fall inside it.
 fn split_into_leaves(
     root: CellId,
-    systems: &[ExactSystem],
+    systems: &[System],
     leaf_cap: usize,
 ) -> HashMap<CellId, Vec<usize>> {
     let mut leaves: HashMap<CellId, Vec<usize>> = HashMap::new();
@@ -250,7 +253,7 @@ fn tree_of(
 /// parent. The result at the root is the whole galaxy, and every cell between
 /// is the exact total of the systems beneath it.
 fn roll_up(
-    systems: &[ExactSystem],
+    systems: &[System],
     leaves: &HashMap<CellId, Vec<usize>>,
     cells: &HashSet<CellId>,
 ) -> HashMap<CellId, Aggregate> {
@@ -287,7 +290,7 @@ fn roll_up(
 /// the index needs beside them.
 struct Slices {
     /// Each cell's owned systems, packed into its payload.
-    payloads: HashMap<CellId, Vec<Point>>,
+    payloads: HashMap<CellId, Vec<CellSystem>>,
     /// Each cell's `rank_lo`: how many of its subtree its ancestors claimed.
     rank_lo: HashMap<CellId, u64>,
     /// How many systems each cell owns in its own slice.
@@ -309,7 +312,7 @@ struct Slices {
 /// and an empty claim.
 fn assign_slices(
     root: CellId,
-    systems: &[ExactSystem],
+    systems: &[System],
     leaves: &HashMap<CellId, Vec<usize>>,
     claimed: &HashSet<u64>,
     params: &BuildParams,
@@ -329,7 +332,7 @@ fn assign_slices(
             .then(systems[a].id64.cmp(&systems[b].id64))
     });
 
-    let mut payloads: HashMap<CellId, Vec<Point>> = HashMap::new();
+    let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
     let mut slice_count: HashMap<CellId, usize> = HashMap::new();
     let mut rank_lo: HashMap<CellId, u64> = HashMap::new();
 
@@ -354,7 +357,7 @@ fn assign_slices(
                 if *count < cap {
                     *count += 1;
                     owner = level;
-                    payloads.entry(cid).or_default().push(Point::of(s));
+                    payloads.entry(cid).or_default().push(CellSystem::of(s));
                     break;
                 }
             }
@@ -427,7 +430,7 @@ mod tests {
     /// brighter than the last so the ordering is unambiguous. Positions are
     /// pulled toward the cube centre so they sit well inside it whatever `n`
     /// and `step` are.
-    fn grid(n: usize, step: f64) -> Vec<ExactSystem> {
+    fn grid(n: usize, step: f64) -> Vec<System> {
         let mut out = Vec::new();
         let span = (n as f64 - 1.0) * step;
         let base = [-span / 2.0, 900.0 - span / 2.0, 24400.0 - span / 2.0];
@@ -435,7 +438,7 @@ mod tests {
         for x in 0..n {
             for y in 0..n {
                 for z in 0..n {
-                    out.push(ExactSystem {
+                    out.push(System {
                         id64: id,
                         position: [
                             base[0] + x as f64 * step,
@@ -446,7 +449,7 @@ mod tests {
                         temperature: 5000.0,
                         age_bucket: 0,
                         updated_at: 0,
-                        kind: crate::core::record::StarKind::G,
+                        kind: crate::core::star::StarKind::G,
                     });
                     id += 1;
                 }
@@ -622,7 +625,7 @@ mod tests {
             assert_eq!(back.len(), built.payload(cell.id).len());
             for p in &back {
                 assert_eq!(
-                    p.pos, by_id[&p.id64],
+                    p.position, by_id[&p.id64],
                     "position not carried exactly"
                 );
             }

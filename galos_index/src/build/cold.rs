@@ -18,8 +18,6 @@ use crate::build::bucket::{Buckets, Formed};
 use crate::build::region::{Crown, Offer};
 use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::build::{bucket, region};
-use crate::core::index::Index;
-use crate::core::record::ExactSystem;
 use crate::format::checkpoint::{Checkpoint, Compaction, Provenance};
 use crate::format::layout::{INDEX_FILE, mark_path, spill_dir};
 use crate::format::msgpack::{read_meta, write_meta};
@@ -28,6 +26,8 @@ use crate::records::NameEntry;
 use crate::store::bodies::Reclaimed;
 use crate::store::cells::Swept;
 use crate::store::names;
+use crate::system::System;
+use crate::tree::index::Index;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -340,7 +340,7 @@ impl<'a> Build<'a> {
     /// rather than raising a tree nobody is waiting for.
     pub fn push(
         &mut self,
-        system: ExactSystem,
+        system: System,
         name: NameEntry,
     ) -> io::Result<ControlFlow<()>> {
         if (self.stop)() {
@@ -736,7 +736,7 @@ mod tests {
     }
 
     /// A galaxy lumpy enough that a cut by count is not a cut by level.
-    fn galaxy(n: u64) -> Vec<ExactSystem> {
+    fn galaxy(n: u64) -> Vec<System> {
         let mut rng = Rng(0x5EED);
         let clumps: Vec<[f64; 3]> =
             (0..6).map(|_| [rng.coord(), rng.coord(), rng.coord()]).collect();
@@ -748,7 +748,7 @@ mod tests {
                     (rng.next() % 2_000) as f64 / 1_000.0 * spread
                         - spread / 2.0
                 };
-                ExactSystem {
+                System {
                     id64: id,
                     position: [
                         near[0] + off(&mut rng),
@@ -760,14 +760,14 @@ mod tests {
                     temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                     age_bucket: (rng.next() % 8) as u32,
                     updated_at: 1_700_000_000 + (id as u32 % 1_000),
-                    kind: crate::core::record::StarKind::G,
+                    kind: crate::core::star::StarKind::G,
                 }
             })
             .collect()
     }
 
     /// The name a test galaxy carries for a system.
-    fn entry(system: &ExactSystem) -> NameEntry {
+    fn entry(system: &System) -> NameEntry {
         NameEntry {
             address: system.id64 as i64,
             name: format!("Sys {}", system.id64).into(),
@@ -783,7 +783,7 @@ mod tests {
     /// bucket, so a bucket overflows and has to be split; a disc around
     /// it; and a scattering of lone systems out to the corners of the
     /// cube, so buckets holding a handful have to be grouped instead.
-    fn lumpy(n: u64) -> Vec<ExactSystem> {
+    fn lumpy(n: u64) -> Vec<System> {
         /// Anywhere in the cube.
         fn wide(rng: &mut Rng) -> f64 {
             (rng.next() % 120_001) as f64 - 60_000.0
@@ -807,7 +807,7 @@ mod tests {
                         5_000.0 + tight(&mut rng),
                     ]
                 };
-                ExactSystem {
+                System {
                     id64: id,
                     position,
                     absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0
@@ -815,7 +815,7 @@ mod tests {
                     temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                     age_bucket: (rng.next() % 8) as u32,
                     updated_at: 1_700_000_000 + (id as u32 % 1_000),
-                    kind: crate::core::record::StarKind::G,
+                    kind: crate::core::star::StarKind::G,
                 }
             })
             .collect()
@@ -828,7 +828,7 @@ mod tests {
         name: &str,
         params: BuildParams,
         budget: u64,
-        systems: &[ExactSystem],
+        systems: &[System],
     ) -> io::Result<Summary> {
         let never = || false;
         let mut build = Build::begin(
@@ -864,7 +864,7 @@ mod tests {
         at: &Scratch,
         dir: &Path,
         params: BuildParams,
-        systems: &[ExactSystem],
+        systems: &[System],
     ) {
         let whole_dir = at.join("whole");
         let whole = Snapshot::build(systems, &params);
@@ -974,15 +974,15 @@ mod tests {
         let at = Scratch::new("stuck");
         let mut rng = Rng(0x5EED);
         let on = [1_000.0, 200.0, 5_000.0];
-        let systems: Vec<ExactSystem> = (1..=400)
-            .map(|id| ExactSystem {
+        let systems: Vec<System> = (1..=400)
+            .map(|id| System {
                 id64: id,
                 position: on,
                 absolute_magnitude: (rng.next() % 2_000) as f64 / 100.0 - 5.0,
                 temperature: 3_000.0 + (rng.next() % 20_000) as f64,
                 age_bucket: (rng.next() % 8) as u32,
                 updated_at: 1_700_000_000,
-                kind: crate::core::record::StarKind::G,
+                kind: crate::core::star::StarKind::G,
             })
             .collect();
 

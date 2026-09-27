@@ -52,7 +52,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use big_space::prelude::*;
 use galos_index::records::{Body as DbBody, Star as DbStar};
-use galos_index::system::orbit::{Orbits, Spacing, turn};
+use galos_index::system::bodies::orbit::{Orbits, Spacing, turn};
 use std::collections::HashSet;
 
 pub fn plugin(app: &mut App) {
@@ -1601,7 +1601,7 @@ mod tests {
     /// there, and the pair's own ellipses about it are readings and are drawn.
     #[test]
     fn a_guessed_path_is_not_drawn() {
-        use galos_index::system::orbit::Orbit;
+        use galos_index::system::bodies::orbit::Orbit;
 
         let mut orbits = Orbits::default();
         orbits.insert(1, None, Orbit::still());

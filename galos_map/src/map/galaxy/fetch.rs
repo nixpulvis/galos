@@ -1,5 +1,4 @@
 use crate::map::galaxy::System;
-use crate::map::galaxy::spawn::system_at;
 use crate::map::index::{Names, Populated};
 use crate::map::route::fetch::fetch_route;
 use crate::map::schedule::MapSet;
@@ -7,7 +6,6 @@ use crate::map::search::Search;
 use crate::map::selection::Selection;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
-use chrono::{DateTime, Utc};
 use galos_route::graph::{Drive, Routing, Tuning};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -126,33 +124,11 @@ pub struct FetchTasks {
     pub fetched: HashMap<FetchIndex, (Task<Fetched>, Instant)>,
 }
 
-/// A system as the cells give it, before the resident tables name and color
-/// it: an address and where it sits, in light years.
-///
-/// The cells carry position and photometry and nothing political, so a fetch
-/// task turns each point into one of these and then joins it against
-/// [`Populated`] and [`Names`] to build a drawable [`System`] — all on its own
-/// thread, so the main thread only ever applies the finished rows.
-pub struct RawSystem {
-    pub address: i64,
-    pub position: [f64; 3],
-    /// The payload point's combined absolute magnitude and temperature bucket,
-    /// for the realistic view's photometry. [`None`] on the paths that carry no
-    /// point — a route's stops, a searched system flown to.
-    pub magnitude: Option<f32>,
-    pub temp_bucket: Option<u8>,
-    /// When the system was last updated, as the payload point carries it.
-    ///
-    /// What the filter on time is asked of. [`None`] alongside the photometry
-    /// and for the same reason: no point behind this one, so nothing on record
-    /// here says when the system was last heard from.
-    pub updated_at: Option<DateTime<Utc>>,
-}
-
 /// What a fetch came back with: already-built [`System`]s.
 ///
 /// Naming and coloring happen in the task off the main thread (see
-/// [`RawSystem`]), so [`crate::map::galaxy::spawn`] has only to queue what arrives.
+/// [`System::build`]), so
+/// [`crate::map::galaxy::spawn`] has only to queue what arrives.
 pub type Fetched = Vec<System>;
 
 /// Ask for whatever a search named
@@ -277,7 +253,7 @@ fn fetch_selected(
     // route's stops do and [`crate::map::galaxy::spawn`] has one queue to drain.
     let systems: Vec<System> = wanted
         .iter()
-        .filter_map(|&address| system_at(address, &populated, &names))
+        .filter_map(|&address| System::find(address, &populated, &names))
         .collect();
     let task = task_pool.spawn(async move { systems });
     tasks.fetched.insert(FetchIndex::Systems(wanted), (task, now));

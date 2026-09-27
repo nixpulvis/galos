@@ -26,37 +26,86 @@
 //! count are integer-exact.
 
 use crate::build::snapshot::{BuildParams, CellDiff, Snapshot};
-use crate::core::aggregate::{Aggregate, Cell};
+use crate::core::aggregate::Aggregate;
 use crate::core::geometry::{CellId, MAX_LEVEL};
-use crate::core::index::Index;
-use crate::core::record::{ExactSystem, Point, StarKind};
+use crate::system::System;
+use crate::tree::cell::Cell;
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
-/// One system as the live tree holds it: its place and its photometry, the
-/// input stripped of its id, the key it is stored under.
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct Record {
-    position: [f64; 3],
-    magnitude: f64,
-    temperature: f64,
-    age_bucket: u32,
-    updated_at: u32,
-    /// What kind of star a ship arrives at, for the payload to carry.
-    kind: StarKind,
+/// One system as the live tree holds it, hashed and compared by its id alone
+///
+/// So a set of them is looked up by id without a second copy of the id as a
+/// map key: the same sixty-four bytes a system the tree held under its id
+/// took before, with no second type for what the tree holds.
+#[derive(Copy, Clone, Debug)]
+struct Held(System);
+
+impl Hash for Held {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.id64.hash(state);
+    }
 }
 
-impl Record {
-    /// The system this is, at the precision it was inserted at.
-    fn exact(&self, id64: u64) -> ExactSystem {
-        ExactSystem {
-            id64,
-            position: self.position,
-            absolute_magnitude: self.magnitude,
-            temperature: self.temperature,
-            age_bucket: self.age_bucket,
-            updated_at: self.updated_at,
-            kind: self.kind,
-        }
+impl PartialEq for Held {
+    fn eq(&self, other: &Held) -> bool {
+        self.0.id64 == other.0.id64
+    }
+}
+
+impl Eq for Held {}
+
+/// What a lookup by id borrows: hashing and equality are the id's own, which
+/// is the contract [`Borrow`] asks of a set key.
+impl Borrow<u64> for Held {
+    fn borrow(&self) -> &u64 {
+        &self.0.id64
+    }
+}
+
+/// Every system the live tree holds, by id
+#[derive(Clone, Debug, Default)]
+struct Records(HashSet<Held>);
+
+impl Records {
+    /// Hold `system`, in place of whatever was held under its id.
+    fn insert(&mut self, system: System) {
+        self.0.replace(Held(system));
+    }
+
+    fn remove(&mut self, id: u64) {
+        self.0.remove(&id);
+    }
+
+    fn contains(&self, id: u64) -> bool {
+        self.0.contains(&id)
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &System> {
+        self.0.iter().map(|held| &held.0)
+    }
+}
+
+impl FromIterator<System> for Records {
+    fn from_iter<I: IntoIterator<Item = System>>(systems: I) -> Records {
+        Records(systems.into_iter().map(Held).collect())
+    }
+}
+
+/// The system held under an id, which panics where none is, as a map's own
+/// index does: every id the tree's other maps name is one it holds.
+impl std::ops::Index<&u64> for Records {
+    type Output = System;
+
+    fn index(&self, id: &u64) -> &System {
+        &self.0.get(id).expect("the tree holds every id it names").0
     }
 }
 
@@ -102,7 +151,7 @@ impl Node {
 #[derive(Clone, Debug)]
 pub struct Tree {
     cells: HashMap<CellId, Node>,
-    records: HashMap<u64, Record>,
+    records: Records,
     /// Which cell owns each system: whose slice, hence payload, holds it.
     owner: HashMap<u64, CellId>,
     /// Which leaf each system physically falls in.
@@ -133,24 +182,9 @@ impl Tree {
     ///
     /// The first build is the batch [`Snapshot::build`]; every edit after it
     /// is incremental.
-    pub fn build(systems: &[ExactSystem], params: &BuildParams) -> Tree {
+    pub fn build(systems: &[System], params: &BuildParams) -> Tree {
         let built = Snapshot::build(systems, params);
-        let records = systems
-            .iter()
-            .map(|s| {
-                (
-                    s.id64,
-                    Record {
-                        position: s.position,
-                        magnitude: s.absolute_magnitude,
-                        temperature: s.temperature,
-                        age_bucket: s.age_bucket,
-                        updated_at: s.updated_at,
-                        kind: s.kind,
-                    },
-                )
-            })
-            .collect();
+        let records = systems.iter().copied().collect();
 
         let mut tree = Tree {
             cells: HashMap::new(),
@@ -175,7 +209,7 @@ impl Tree {
             };
             for point in built.payload(cell.id) {
                 node.slice.insert((
-                    mag_key(tree.records[&point.id64].magnitude),
+                    mag_key(tree.records[&point.id64].absolute_magnitude),
                     point.id64,
                 ));
                 tree.owner.insert(point.id64, cell.id);
@@ -184,7 +218,8 @@ impl Tree {
         }
 
         // Physical membership: the deepest existing cell each system falls in.
-        for (&id, rec) in &tree.records {
+        for rec in tree.records.iter() {
+            let id = rec.id64;
             let leaf = tree.physical_leaf(rec.position);
             tree.leaf.insert(id, leaf);
             tree.cells.get_mut(&leaf).unwrap().physical.push(id);
@@ -243,15 +278,15 @@ impl Tree {
     ///
     /// A system already known is moved to its new record; one never seen is
     /// added. What a feed calls with the systems a run of messages touched.
-    pub fn apply(&mut self, changed: &[ExactSystem]) {
+    pub fn apply(&mut self, changed: &[System]) {
         for system in changed {
             self.upsert(*system);
         }
     }
 
     /// Add a system, or move one already present to its new record.
-    pub fn upsert(&mut self, system: ExactSystem) {
-        if self.records.contains_key(&system.id64) {
+    pub fn upsert(&mut self, system: System) {
+        if self.records.contains(system.id64) {
             self.remove(system.id64);
         }
         self.insert(system);
@@ -264,7 +299,7 @@ impl Tree {
     /// whole pass of readings has accumulated, so there is no telling
     /// which of them brought a system in.
     pub fn holds(&self, address: i64) -> bool {
-        self.records.contains_key(&(address as u64))
+        self.records.contains(address as u64)
     }
 
     /// How many systems the tree holds. No `is_empty`: a size is asked for a
@@ -274,38 +309,29 @@ impl Tree {
         self.records.len()
     }
 
-    /// The inputs this tree was built from, reconstructed from its records:
-    /// the full-precision [`ExactSystem`] values a checkpoint persists so the tree
-    /// can be rebuilt without the database. Exact, since a record holds every
-    /// field a system carries; order is arbitrary, which the
+    /// The inputs this tree was built from, as it holds them: the
+    /// full-precision [`System`] values a checkpoint persists so the tree
+    /// can be rebuilt without the database. Order is arbitrary, which the
     /// order-independent [`build`](Self::build) does not care about.
     ///
     /// An iterator rather than a collection: a galaxy's worth is gigabytes,
     /// streamed past the checkpoint's writer instead of held beside the tree
     /// it was copied out of.
-    pub fn inputs(&self) -> impl Iterator<Item = ExactSystem> + '_ {
-        self.records.iter().map(|(&id64, rec)| rec.exact(id64))
+    pub fn inputs(&self) -> impl Iterator<Item = System> + '_ {
+        self.records.iter().copied()
     }
 
     // --- insertion --------------------------------------------------------
 
-    fn insert(&mut self, system: ExactSystem) {
-        let rec = Record {
-            position: system.position,
-            magnitude: system.absolute_magnitude,
-            temperature: system.temperature,
-            age_bucket: system.age_bucket,
-            updated_at: system.updated_at,
-            kind: system.kind,
-        };
+    fn insert(&mut self, system: System) {
         let id = system.id64;
-        self.records.insert(id, rec);
+        self.records.insert(system);
 
         // Physical placement: drop it in its leaf and count it down the path.
-        let leaf = self.find_or_create_leaf(rec.position);
+        let leaf = self.find_or_create_leaf(system.position);
         self.leaf.insert(id, leaf);
         self.cells.get_mut(&leaf).unwrap().physical.push(id);
-        self.bump_count(rec.position, leaf.level, 1);
+        self.bump_count(system.position, leaf.level, 1);
 
         // A leaf grown past the cap divides before ownership is settled, so the
         // cascade below always has a child to descend into.
@@ -377,7 +403,7 @@ impl Tree {
                         let r = &self.records[pid];
                         aggregate = aggregate.merge(Aggregate::of_system(
                             r.position,
-                            r.magnitude,
+                            r.absolute_magnitude,
                             r.temperature,
                             r.age_bucket,
                         ));
@@ -406,7 +432,7 @@ impl Tree {
         loop {
             let (mk, position) = {
                 let r = &self.records[&id];
-                (mag_key(r.magnitude), r.position)
+                (mag_key(r.absolute_magnitude), r.position)
             };
             let key = (mk, id);
 
@@ -522,7 +548,7 @@ impl Tree {
     /// is trimmed to what both hold before it is published over. See
     /// `galos::sink::index::Index::open`.
     pub fn forget(&mut self, id: u64) -> bool {
-        if !self.records.contains_key(&id) {
+        if !self.records.contains(id) {
             return false;
         }
         self.remove(id);
@@ -540,11 +566,11 @@ impl Tree {
             .get_mut(&owner)
             .unwrap()
             .slice
-            .remove(&(mag_key(rec.magnitude), id));
+            .remove(&(mag_key(rec.absolute_magnitude), id));
         self.dirty.insert(owner);
         self.cells.get_mut(&leaf).unwrap().physical.retain(|&x| x != id);
         self.bump_count(rec.position, leaf.level, -1);
-        self.records.remove(&id);
+        self.records.remove(id);
 
         // Fill the hole the departed owner left by promoting the brightest
         // system from below, which leaves a hole one level down.
@@ -723,11 +749,11 @@ impl Tree {
 
     /// One cell's payload: what it owns, brightest first, as the slice holds
     /// it.
-    fn payload_of(&self, id: CellId) -> Vec<Point> {
+    fn payload_of(&self, id: CellId) -> Vec<CellSystem> {
         let Some(node) = self.cells.get(&id) else { return Vec::new() };
         node.slice
             .iter()
-            .map(|&(_, pid)| Point::of(&self.records[&pid].exact(pid)))
+            .map(|&(_, pid)| CellSystem::of(&self.records[&pid]))
             .collect()
     }
 
@@ -754,7 +780,7 @@ impl Tree {
     pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
         self.settle();
         let mut dirtied = CellDiff::default();
-        let mut payloads: HashMap<CellId, Vec<Point>> = HashMap::new();
+        let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
         let touched: HashSet<CellId> =
             self.dirty.iter().chain(self.gone.iter()).copied().collect();
         for id in touched {
@@ -807,8 +833,8 @@ mod tests {
         }
     }
 
-    fn input(id: u64, rng: &mut Rng) -> ExactSystem {
-        ExactSystem {
+    fn input(id: u64, rng: &mut Rng) -> System {
+        System {
             id64: id,
             position: rng.position(),
             absolute_magnitude: rng.magnitude(),
@@ -818,7 +844,7 @@ mod tests {
             // sequence they had, and distinct per system, so a payload that
             // mixed the stamps up fails the equivalence check.
             updated_at: 1_700_000_000 + id as u32,
-            kind: crate::core::record::StarKind::G,
+            kind: crate::core::star::StarKind::G,
         }
     }
 
@@ -917,7 +943,7 @@ mod tests {
         // moves are exercised as hard as the cascade.
         let params = BuildParams { internal_slice: 8, leaf_cap: 32 };
         let mut rng = Rng(seed);
-        let mut present: std::collections::BTreeMap<u64, ExactSystem> =
+        let mut present: std::collections::BTreeMap<u64, System> =
             std::collections::BTreeMap::new();
         let mut next_id = 1u64;
 
@@ -1010,8 +1036,8 @@ mod tests {
             if node.count != recomputed {
                 let by_leaf = tree
                     .records
-                    .keys()
-                    .filter(|k| is_ancestor(id, tree.leaf[k]))
+                    .iter()
+                    .filter(|s| is_ancestor(id, tree.leaf[&s.id64]))
                     .count();
                 let phys: u64 = tree
                     .cells
@@ -1038,7 +1064,7 @@ mod tests {
                     ctx()
                 );
                 assert!(
-                    tree.records.contains_key(&sid),
+                    tree.records.contains(sid),
                     "cell {id:?} owns ghost {sid}; {}",
                     ctx()
                 );
@@ -1050,7 +1076,8 @@ mod tests {
             }
         }
         // Every record is owned once and physically placed at the deepest cell.
-        for (&sid, rec) in &tree.records {
+        for rec in tree.records.iter() {
+            let sid = rec.id64;
             let owner = *tree
                 .owner
                 .get(&sid)

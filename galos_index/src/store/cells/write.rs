@@ -3,12 +3,12 @@
 
 use crate::core::codec::Encode;
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
-use crate::core::record::Point;
 use crate::format::layout::{
     INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
 };
 use crate::format::payload::payload_bytes;
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -31,7 +31,7 @@ impl Index {
 /// one. See [`Snapshot::write`](crate::Snapshot::write).
 pub(crate) fn write_payloads<'a>(
     dir: &Path,
-    payloads: impl IntoIterator<Item = (CellId, &'a [Point])>,
+    payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
 ) -> io::Result<()> {
     fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
     for (id, points) in payloads {
@@ -50,7 +50,7 @@ pub(crate) fn write_payloads<'a>(
 pub(crate) fn write_changes<'a>(
     dir: &Path,
     index: &Index,
-    changed: impl IntoIterator<Item = (CellId, &'a [Point])>,
+    changed: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
     removed: impl IntoIterator<Item = CellId>,
 ) -> io::Result<()> {
     fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
@@ -199,16 +199,15 @@ fn payload_cell(name: &str) -> Option<CellId> {
     let (level, morton) = rest.split_once('-')?;
     let level: u8 = level.parse().ok()?;
     let morton = u64::from_str_radix(morton, 16).ok()?;
-    let (x, y, z) = crate::core::geometry::morton_decode(morton);
-    Some(CellId { level, x, y, z })
+    Some(CellId::from_morton(level, morton))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::build::snapshot::{BuildParams, Snapshot};
-    use crate::core::record::ExactSystem;
     use crate::store::cells::fixtures::{Scratch, systems};
+    use crate::system::System;
     use std::path::PathBuf;
 
     /// A build written to disk and read back is the same index and the same
@@ -358,14 +357,14 @@ mod tests {
         // The shapes churn takes: one system moved within the ordering, one
         // new faint system, one dropped.
         s[100].absolute_magnitude += 2.0;
-        s.push(ExactSystem {
+        s.push(System {
             id64: 999_999,
             position: [40.0, 940.0, 24440.0],
             absolute_magnitude: 9.0,
             temperature: 3500.0,
             age_bucket: 0,
             updated_at: 1_800_000_000,
-            kind: crate::core::record::StarKind::G,
+            kind: crate::core::star::StarKind::G,
         });
         s.remove(0);
 

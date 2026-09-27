@@ -77,9 +77,7 @@
 
 use crate::map::camera::{FIELD_LAYER, OrbitCamera};
 use crate::map::galaxy::plan::Planned;
-use crate::map::galaxy::spawn::{
-    ColorBy, Hue, allegiance_hue, government_hue, security_hue,
-};
+use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::index::{ResidentIndex, Settled};
 use crate::map::paint::sizing::View;
 use crate::map::schedule::MapSet;
@@ -92,10 +90,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::core::index::UNIFORM_SPAN;
 use galos_index::read::inhabited::{
     Inhabited, allegiance_at, government_at, security_at,
 };
+use galos_index::tree::cell::UNIFORM_SPAN;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
@@ -842,17 +840,17 @@ pub(crate) fn political(
     match color_by {
         ColorBy::Allegiance => {
             for (bucket, count) in held.allegiance().iter().enumerate() {
-                over(allegiance_hue(allegiance_at(bucket)), *count);
+                over(Hue::allegiance(allegiance_at(bucket)), *count);
             }
         }
         ColorBy::Government => {
             for (bucket, count) in held.government().iter().enumerate() {
-                over(government_hue(government_at(bucket)), *count);
+                over(Hue::government(government_at(bucket)), *count);
             }
         }
         ColorBy::Security => {
             for (bucket, count) in held.security().iter().enumerate() {
-                over(security_hue(security_at(bucket)), *count);
+                over(Hue::security(security_at(bucket)), *count);
             }
         }
     }

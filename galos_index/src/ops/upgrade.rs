@@ -2,7 +2,7 @@
 //!
 //! One place for the migrations an operator runs on purpose, rather than one
 //! command per format change: `galos index migrate` is what
-//! [`crate::core::index::Index::read`]'s refusal names, and what it does is
+//! [`crate::tree::index::Index::read`]'s refusal names, and what it does is
 //! whatever the directory turns out to need. Today that is the payloads,
 //! which became columns; the next thing lands here beside it rather than as
 //! another subcommand named after a layout.
@@ -22,19 +22,19 @@
 //! What it does, per cell: read the old block, join the kind on, write the
 //! new block. Then rewrite `index.bin` so its version says what the
 //! payloads now are. The cells' own records are untouched — only
-//! [`crate::core::record::Point`]'s width changed, and `Cell::LEN` did
+//! [`crate::tree::cell::CellSystem`]'s width changed, and `Cell::LEN` did
 //! not — so the tree, the aggregates and every other table stay exactly as
 //! they were.
 
 use crate::core::codec::Decode as _;
-use crate::core::index::Index;
-use crate::core::record::StarKind;
+use crate::core::star::StarKind;
 use crate::format::layout::payload_path;
 use crate::format::payload::{
     INDEX_VERSION, index_version, legacy_payload_points, payload_bytes,
     payload_head,
 };
 use crate::store::tables::TableSet;
+use crate::tree::index::Index;
 use std::io;
 use std::path::Path;
 
@@ -245,7 +245,7 @@ fn read_any_version(dir: &Path) -> io::Result<Index> {
         .ok_or_else(|| refused("a header with no count in it".to_owned()))?;
     let mut cells = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let cell = crate::core::aggregate::Cell::decode(&mut cur)
+        let cell = crate::tree::cell::Cell::decode(&mut cur)
             .ok_or_else(|| refused("a cell short of its bytes".to_owned()))?;
         cells.push(cell);
     }
@@ -258,9 +258,9 @@ mod tests {
     use crate::build::snapshot::BuildParams;
     use crate::build::tree::Tree;
     use crate::core::codec::Encode as _;
-    use crate::core::record::ExactSystem;
     use crate::format::payload::payload_points;
     use crate::records::{Star, SystemBodies};
+    use crate::system::System;
 
     /// A scratch directory unique to this run.
     fn scratch(what: &str) -> std::path::PathBuf {
@@ -272,8 +272,8 @@ mod tests {
     }
 
     /// One system, placed.
-    fn system(id: u64, at: [f64; 3]) -> ExactSystem {
-        ExactSystem {
+    fn system(id: u64, at: [f64; 3]) -> System {
+        System {
             id64: id,
             position: at,
             absolute_magnitude: 4.83,
@@ -285,7 +285,7 @@ mod tests {
     }
 
     /// A payload in the layout written before the columns.
-    fn legacy_bytes(systems: &[ExactSystem]) -> Vec<u8> {
+    fn legacy_bytes(systems: &[System]) -> Vec<u8> {
         let mut out = Vec::new();
         for held in systems {
             held.id64.encode(&mut out);
@@ -323,9 +323,9 @@ mod tests {
             if points.is_empty() {
                 continue;
             }
-            let legacy: Vec<ExactSystem> = points
+            let legacy: Vec<System> = points
                 .iter()
-                .map(|point| system(point.id64, point.pos))
+                .map(|point| system(point.id64, point.position))
                 .collect();
             crate::store::cells::write_payload(
                 &dir,
@@ -383,7 +383,7 @@ mod tests {
                 Err(_) => continue,
             };
             for point in payload_points(cell.id, &bytes).expect("columns") {
-                seen.insert(point.id64, (point.pos, point.kind));
+                seen.insert(point.id64, (point.position, point.kind));
             }
         }
         assert_eq!(seen.len(), 3);

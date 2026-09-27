@@ -12,11 +12,13 @@
 //! keeps growing, as the aggregate gains the field step's filter marginals
 //! and its quantization.
 
-use crate::core::aggregate::Cell;
+use crate::core::aggregate::TempBucket;
 use crate::core::codec::{Decode, Encode, FixedCodec};
 use crate::core::geometry::CellId;
-use crate::core::index::Index;
-use crate::core::record::{Point, StarKind};
+use crate::core::star::StarKind;
+use crate::tree::cell::Cell;
+use crate::tree::cell::CellSystem;
+use crate::tree::index::Index;
 
 /// The magic at the head of a cell's payload.
 pub(crate) const PAYLOAD_MAGIC: [u8; 4] = *b"GPAY";
@@ -48,7 +50,7 @@ pub const POSITION_STEP: f64 = 1.0 / 32.0;
 
 /// How wide a position axis is for a cell of this level, in bytes.
 pub(crate) fn position_width(level: u8) -> u8 {
-    let counts = crate::core::geometry::edge_ly(level) / POSITION_STEP;
+    let counts = crate::core::geometry::CellId::edge_at(level) / POSITION_STEP;
     if counts <= u16::MAX as f64 { 2 } else { 4 }
 }
 
@@ -79,7 +81,7 @@ pub(crate) fn payload_len(count: usize, width: u8) -> usize {
 /// Positions are cell-relative integers on [`POSITION_STEP`], so the block
 /// needs its cell to be read at all — which every reader has, the cell
 /// being how the file was found.
-pub fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
+pub fn payload_bytes(cell: CellId, points: &[CellSystem]) -> Vec<u8> {
     let width = position_width(cell.level);
     let mut out = Vec::with_capacity(payload_len(points.len(), width));
     PAYLOAD_MAGIC.encode(&mut out);
@@ -90,7 +92,7 @@ pub fn payload_bytes(cell: CellId, points: &[Point]) -> Vec<u8> {
 
     let origin = cell.min_ly();
     for point in points {
-        for (axis, origin) in point.pos.iter().zip(origin) {
+        for (axis, origin) in point.position.iter().zip(origin) {
             let count = ((axis - origin) / POSITION_STEP)
                 .round()
                 .clamp(0., u32::MAX as f64) as u32;
@@ -155,7 +157,10 @@ pub(crate) fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
 /// carries its own magic and version, so unlike the record blocks this
 /// replaced, a stale one cannot decode as a plausible number of systems
 /// with every field read out of the wrong bytes.
-pub(crate) fn payload_points(cell: CellId, bytes: &[u8]) -> Option<Vec<Point>> {
+pub(crate) fn payload_points(
+    cell: CellId,
+    bytes: &[u8],
+) -> Option<Vec<CellSystem>> {
     let head = payload_head(bytes)?;
     let PayloadHead { count, width, kinds: kind, ids: id64, lit } = head;
     if bytes.len() < payload_len(count, width) {
@@ -177,14 +182,14 @@ pub(crate) fn payload_points(cell: CellId, bytes: &[u8]) -> Option<Vec<Point>> {
             *held = origin[axis] + counts * POSITION_STEP;
         }
         let mut lit = &bytes[lit + at * 9..];
-        points.push(Point {
+        points.push(CellSystem {
             id64: {
                 let mut cur = &bytes[id64 + at * 8..];
                 u64::decode(&mut cur)?
             },
-            pos: axes,
+            position: axes,
             magnitude: f32::decode(&mut lit)?,
-            temp_bucket: u8::decode(&mut lit)?,
+            temp_bucket: TempBucket::decode(&mut lit)?,
             updated_at: u32::decode(&mut lit)?,
             kind: StarKind::from_code(bytes[kind + at]),
         });
@@ -204,7 +209,7 @@ pub(crate) const LEGACY_POINT_LEN: usize = 8 + 24 + 4 + 1 + 4;
 /// Whole records only, so a trailing partial row is dropped rather than
 /// failed. The star kind was not among them, so every system comes back as
 /// [`StarKind::Unknown`] and the migration fills it from the scan record.
-pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<Point> {
+pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<CellSystem> {
     let mut points = Vec::with_capacity(bytes.len() / LEGACY_POINT_LEN);
     let (rows, _) = bytes.as_chunks::<LEGACY_POINT_LEN>();
     for row in rows {
@@ -212,11 +217,11 @@ pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<Point> {
         let Some(id64) = u64::decode(&mut cur) else { continue };
         let Some(pos) = <[f64; 3]>::decode(&mut cur) else { continue };
         let Some(magnitude) = f32::decode(&mut cur) else { continue };
-        let Some(temp_bucket) = u8::decode(&mut cur) else { continue };
+        let Some(temp_bucket) = TempBucket::decode(&mut cur) else { continue };
         let Some(updated_at) = u32::decode(&mut cur) else { continue };
-        points.push(Point {
+        points.push(CellSystem {
             id64,
-            pos,
+            position: pos,
             magnitude,
             temp_bucket,
             updated_at,
@@ -238,11 +243,11 @@ pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
 ///
 /// That argument holds for the index file and not for the payload. A block
 /// of points carries no magic, no version and no count, so nothing about it
-/// can be held to a width: [`Vec<Point>`]'s decode takes whole records until
+/// can be held to a width: [`Vec<CellSystem>`]'s decode takes whole records until
 /// fewer than one remains, and a file written at another width decodes as a
 /// plausible number of systems with every field read out of the wrong bytes.
 /// The index beside it cannot tell either, `Cell::LEN` being unchanged. So a
-/// change to [`Point`]'s width has to be caught in the one header there is,
+/// change to [`CellSystem`]'s width has to be caught in the one header there is,
 /// and this is it: a stale directory is refused at `index.bin`, named by
 /// [`index_version`], and rebuilt.
 ///
@@ -323,12 +328,12 @@ impl Decode for Index {
 mod tests {
     use super::*;
 
-    fn point(id: u64, mag: f32) -> Point {
-        Point {
+    fn point(id: u64, mag: f32) -> CellSystem {
+        CellSystem {
             id64: id,
-            pos: [10.5, -40000.25, 65535.0],
+            position: [10.5, -40000.25, 65535.0],
             magnitude: mag,
-            temp_bucket: 3,
+            temp_bucket: TempBucket::new(3),
             updated_at: 1_757_260_000,
             kind: StarKind::G,
         }
@@ -374,7 +379,7 @@ mod tests {
 
         let mut points = vec![point(1, 2.0), point(2, -3.5), point(3, 9.25)];
         for (n, held) in points.iter_mut().enumerate() {
-            held.pos = on_grid(n as f64 * 3.0);
+            held.position = on_grid(n as f64 * 3.0);
             held.kind = StarKind::from_code(n as u8 + 5);
         }
 
@@ -388,7 +393,7 @@ mod tests {
         assert_eq!(back.len(), points.len());
         for (a, b) in points.iter().zip(&back) {
             assert_eq!(a.id64, b.id64);
-            assert_eq!(a.pos, b.pos, "a position on the grid moved");
+            assert_eq!(a.position, b.position, "a position on the grid moved");
             assert_eq!(a.temp_bucket, b.temp_bucket);
             assert_eq!(a.updated_at, b.updated_at);
             assert_eq!(a.magnitude, b.magnitude);
@@ -411,12 +416,15 @@ mod tests {
         let cell = CellId { level: 3, x: 3, y: 3, z: 3 };
         let origin = cell.min_ly();
         let mut held = point(9, 1.5);
-        held.pos = [origin[0] + 9000.0, origin[1] + 0.25, origin[2] + 3.0];
+        held.position = [origin[0] + 9000.0, origin[1] + 0.25, origin[2] + 3.0];
 
         let bytes = payload_bytes(cell, &[held]);
         assert_eq!(bytes.len(), payload_len(1, 4));
         let back = payload_points(cell, &bytes).unwrap();
-        assert_eq!(back[0].pos, held.pos, "a coarse cell lost a position");
+        assert_eq!(
+            back[0].position, held.position,
+            "a coarse cell lost a position"
+        );
     }
 
     /// An empty block is empty, and bytes that are not a payload are refused
@@ -429,7 +437,7 @@ mod tests {
     #[test]
     fn bytes_that_are_not_a_payload_are_refused() {
         let cell = CellId { level: 11, x: 0, y: 0, z: 0 };
-        let empty: &[Point] = &[];
+        let empty: &[CellSystem] = &[];
         let bytes = payload_bytes(cell, empty);
         assert_eq!(payload_points(cell, &bytes).unwrap().len(), 0);
 
@@ -466,8 +474,8 @@ mod tests {
         let back = legacy_payload_points(&bytes);
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].id64, 7);
-        assert_eq!(back[0].pos, [1.5, -2.0, 3.25]);
-        assert_eq!(back[0].temp_bucket, 3);
+        assert_eq!(back[0].position, [1.5, -2.0, 3.25]);
+        assert_eq!(back[0].temp_bucket, TempBucket::new(3));
         assert_eq!(
             back[0].kind,
             StarKind::Unknown,

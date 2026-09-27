@@ -420,7 +420,7 @@ pub(crate) fn size_by_distance(
             // answers where to go next, and a stop shrunk to a speck for
             // having nobody living on it is a stop that cannot be found.
             let prominence = if scale_population.0 && !hop {
-                population_factor(system.population)
+                population_factor(system.population())
             } else {
                 1.
             };
@@ -1170,7 +1170,8 @@ mod tests {
     /// A system with `population` living in it, `away` light years off
     fn peopled(address: i64, away: f64, population: u64) -> System {
         let mut system = at(address, away);
-        system.population = population;
+        crate::map::galaxy::tests::politics(&mut system).population =
+            population;
         system
     }
 
