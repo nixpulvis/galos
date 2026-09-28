@@ -2,6 +2,8 @@ use crate::map::camera::OrbitCamera;
 use crate::map::index::{Names, Populated};
 use crate::map::schedule::MapSet;
 use bevy::ecs::entity::EntityHashSet;
+use bevy::ecs::lifecycle::HookContext;
+use bevy::ecs::world::DeferredWorld;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use chrono::{DateTime, Utc};
@@ -18,6 +20,7 @@ use galos_index::records::{Economies, NameEntry, PopulatedSystem};
 use galos_photometry::ClassLight;
 
 pub fn plugin(app: &mut App) {
+    app.init_resource::<Addresses>();
     app.insert_resource(Spyglass {
         radius: Spyglass::OPENING,
         clear: true,
@@ -62,6 +65,7 @@ pub fn plugin(app: &mut App) {
 /// the map has fetched it or after it has been despawned.
 #[derive(Component, Clone)]
 #[require(crate::map::bodies::spawn::Strength)]
+#[component(on_insert = addressed, on_discard = unaddressed)]
 pub(crate) struct System {
     pub(crate) address: i64,
     /// Upper case, and typed so: see [`galos_index::prelude::SystemName`]. A
@@ -115,6 +119,48 @@ pub(crate) struct System {
     ///
     /// [`spawn::spawn_systems`]: crate::map::galaxy::spawn::spawn_systems
     pub(crate) indexed: Option<CellSystem>,
+}
+
+/// Which entity draws each system, by address
+///
+/// Kept by [`System`]'s own hooks as systems are spawned, replaced and
+/// despawned, so nothing has to build it. The walk and the spawn batch each
+/// used to, every frame, over every drawn system: a map of tens of
+/// thousands of entries twice a frame to answer the few lookups the frame
+/// actually made.
+#[derive(Resource, Default)]
+pub(crate) struct Addresses(rustc_hash::FxHashMap<i64, Entity>);
+
+impl Addresses {
+    /// The entity drawing `address`, if the map has one.
+    pub(crate) fn get(&self, address: i64) -> Option<Entity> {
+        self.0.get(&address).copied()
+    }
+}
+
+/// A [`System`] has landed on `ctx.entity`: note where it is drawn.
+fn addressed(mut world: DeferredWorld, ctx: HookContext) {
+    let Some(address) = world.get::<System>(ctx.entity).map(|it| it.address)
+    else {
+        return;
+    };
+    if let Some(mut addresses) = world.get_resource_mut::<Addresses>() {
+        addresses.0.insert(address, ctx.entity);
+    }
+}
+
+/// A [`System`] is leaving `ctx.entity`, replaced or despawned: forget it,
+/// unless the address has since been taken by another entity.
+fn unaddressed(mut world: DeferredWorld, ctx: HookContext) {
+    let Some(address) = world.get::<System>(ctx.entity).map(|it| it.address)
+    else {
+        return;
+    };
+    if let Some(mut addresses) = world.get_resource_mut::<Addresses>()
+        && addresses.get(address) == Some(ctx.entity)
+    {
+        addresses.0.remove(&address);
+    }
 }
 
 /// A populated system's political columns, as the populated table holds them
@@ -523,7 +569,7 @@ pub(crate) fn visibility(
 
 /// How many systems the evictor may despawn in one frame
 ///
-/// The companion to [`spawn`]'s `SPAWN_BUDGET`. A big eviction — a zoom-out
+/// The companion to [`spawn::SpawnBudget`]. A big eviction — a zoom-out
 /// resolved a wide sky and the walk has since moved off it — is spread over
 /// frames so the structural churn a frame does stays bounded.
 const EVICT_BUDGET: usize = 4096;
@@ -858,6 +904,33 @@ pub(crate) mod tests {
         let mut system = system(address);
         system.name = SystemName::new(name);
         system
+    }
+
+    /// The address index follows every system as it lands, is rebuilt in
+    /// place and goes
+    ///
+    /// What the walk and the spawn batch look drawn systems up in, so a
+    /// system it lost would be spawned twice and one it kept after its
+    /// despawn would be marked wanted when it is not on the map at all.
+    #[test]
+    fn the_address_index_follows_the_systems() {
+        let mut world = World::new();
+        world.init_resource::<Addresses>();
+        let one = world.spawn(system(1)).id();
+        let two = world.spawn(system(2)).id();
+        assert_eq!(world.resource::<Addresses>().get(1), Some(one));
+        assert_eq!(world.resource::<Addresses>().get(2), Some(two));
+
+        // Rebuilt in place, as a refresh does, and as a different system.
+        world.entity_mut(one).insert(system(1));
+        assert_eq!(world.resource::<Addresses>().get(1), Some(one));
+        world.entity_mut(two).insert(system(3));
+        assert_eq!(world.resource::<Addresses>().get(2), None);
+        assert_eq!(world.resource::<Addresses>().get(3), Some(two));
+
+        world.despawn(one);
+        assert_eq!(world.resource::<Addresses>().get(1), None);
+        assert_eq!(world.resource::<Addresses>().get(3), Some(two));
     }
 
     /// A system placed at `at`, in light years, for whoever tests what the

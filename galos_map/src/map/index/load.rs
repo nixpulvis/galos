@@ -197,6 +197,14 @@ fn start(
 /// stamped afterwards, a part read before the publish would be filed under the
 /// stamp of the publish and never asked for again. See
 /// [`Stamps::before_reading`].
+///
+/// **The two big tables beside everything else, not after it.** The reaches
+/// are a gigabyte of MessagePack and the supercharge table a tenth of one,
+/// and measured over `.index/full` they were 1.54 s and 0.22 s of a 2.14 s
+/// opening read one after another. Nothing else read here waits on them, so
+/// they decode on threads of their own while the cells, the names and the
+/// rest are read and worked up on this one, and the opening is as long as
+/// the reaches alone. The step said is whichever is being waited on.
 async fn read(
     source: &Arc<dyn galos_index::prelude::Source>,
     step: &Arc<AtomicU8>,
@@ -207,59 +215,68 @@ async fn read(
     at(Step::Stamps);
     let held = Stamps::before_reading(&**source).await;
 
-    at(Step::Cells);
-    let index = source
-        .index()
-        .await
-        .map_err(|e| format!("reading the index at {dir}: {e}"))?;
+    std::thread::scope(|scope| {
+        let reaching = scope.spawn(|| {
+            names::Reaches::of(block_on(source.reaches()).unwrap_or_default())
+        });
+        let boosting = scope.spawn(|| {
+            block_on(galos_index::read::source::table::<BoostTable>(&**source))
+                .unwrap_or_default()
+        });
 
-    at(Step::Populated);
-    let populated = source.populated().await.unwrap_or_default();
-    at(Step::Names);
-    // One call, and nothing decoded: the table is a file the client maps.
-    //
-    // This was the heaviest part of opening by a long way. A galaxy's names
-    // were 8.70 GiB of MessagePack over 3,053 chunks, which had to be read,
-    // decoded and packed across the whole task pool to be had in 33 s and
-    // 7.9 GB of resident arrays. [`galos_index::prelude::Names::open`] maps the
-    // five sections of the published base and reads the delta log, so what a
-    // session touches is what the kernel pages in and the rest costs
-    // nothing. See [`crate::map::index::names`].
-    //
-    // Refused rather than read as an empty galaxy: a directory that has
-    // published no names opens as the empty table, so an error here is a
-    // head this build of the map does not know or a section that is not the
-    // length it claims, and saying which path said so is the whole point of
-    // the failed-read screen.
-    let table = source
-        .names()
-        .await
-        .map_err(|e| format!("reading the names table at {dir}: {e}"))?;
-    // And the text a search sweeps read once, in order, here rather than
-    // on the first query: a cold sweep faults 128 MB a page at a time and
-    // was reported as a four-second search for `SOL`. See
-    // [`galos_index::prelude::Names::warm`] for what it leaves cold, which is
-    // every other section — the point of the format is not reading those.
-    //
-    // Best effort: a warming read that failed is a slow first search, not
-    // a directory that cannot be opened, and the table has already been
-    // mapped by the line above.
-    if let Err(err) = table.warm() {
-        warn!("the names text could not be read ahead: {err}");
-    }
+        at(Step::Cells);
+        let index = block_on(source.index())
+            .map_err(|e| format!("reading the index at {dir}: {e}"))?;
 
-    at(Step::Reaches);
-    let reaches =
-        names::Reaches::of(source.reaches().await.unwrap_or_default());
-    at(Step::Boosts);
-    let boosts = galos_index::read::source::table::<BoostTable>(&**source)
-        .await
-        .unwrap_or_default();
-    at(Step::Factions);
-    let factions = source.factions().await.unwrap_or_default();
+        at(Step::Populated);
+        let populated = block_on(source.populated()).unwrap_or_default();
+        at(Step::Names);
+        // One call, and nothing decoded: the table is a file the client maps.
+        //
+        // This was the heaviest part of opening by a long way. A galaxy's names
+        // were 8.70 GiB of MessagePack over 3,053 chunks, which had to be read,
+        // decoded and packed across the whole task pool to be had in 33 s and
+        // 7.9 GB of resident arrays. [`galos_index::prelude::Names::open`] maps the
+        // five sections of the published base and reads the delta log, so what a
+        // session touches is what the kernel pages in and the rest costs
+        // nothing. See [`crate::map::index::names`].
+        //
+        // Refused rather than read as an empty galaxy: a directory that has
+        // published no names opens as the empty table, so an error here is a
+        // head this build of the map does not know or a section that is not the
+        // length it claims, and saying which path said so is the whole point of
+        // the failed-read screen.
+        let table = block_on(source.names())
+            .map_err(|e| format!("reading the names table at {dir}: {e}"))?;
+        // And the text a search sweeps read once, in order, here rather than
+        // on the first query: a cold sweep faults 128 MB a page at a time and
+        // was reported as a four-second search for `SOL`. See
+        // [`galos_index::prelude::Names::warm`] for what it leaves cold, which is
+        // every other section — the point of the format is not reading those.
+        //
+        // Best effort: a warming read that failed is a slow first search, not
+        // a directory that cannot be opened, and the table has already been
+        // mapped by the line above.
+        if let Err(err) = table.warm() {
+            warn!("the names text could not be read ahead: {err}");
+        }
 
-    at(Step::Jumps);
-    Ok(stood_up(dir, held, index, populated, table, reaches, boosts, factions))
+        at(Step::Factions);
+        let factions = block_on(source.factions()).unwrap_or_default();
+
+        at(Step::Jumps);
+        let (sky, settled) = worked_up(dir, &index, &populated);
+
+        at(Step::Reaches);
+        let reaches = reaching.join().map_err(|_| "reading the reaches")?;
+        at(Step::Boosts);
+        let boosts = boosting.join().map_err(|_| "reading the boosts")?;
+
+        Ok(stood_up(
+            dir, held, index, populated, table, reaches, boosts, factions, sky,
+            settled,
+        ))
+    })
 }
 
 /// Take the read in once it lands, and let the map draw
@@ -297,6 +314,39 @@ fn finish(
     opening.set(Opening::Drawn);
 }
 
+/// What the cells alone are worked up into: the sky the router reads and the
+/// political rollup
+///
+/// Apart from [`stood_up`] so it runs while the reaches are still decoding;
+/// neither reads them.
+fn worked_up(
+    dir: &str,
+    index: &Index,
+    populated: &[PopulatedSystem],
+) -> (Option<Arc<galos_index::prelude::Sky>>, Settled) {
+    // The galaxy as the router reads it: the cell payloads, mapped where
+    // they lie. Opening it is reading the index file this already holds and
+    // nothing else — no places are copied and no grid is built, which is
+    // what a route used to wait 32 s and 13.7 GB for. A directory this
+    // process cannot map leaves it absent and nothing routes.
+    let sky = match galos_index::prelude::Sky::open(std::path::Path::new(dir)) {
+        Ok(sky) => Some(Arc::new(sky)),
+        Err(err) => {
+            warn!("{dir} cannot be mapped for routing: {err}");
+            None
+        }
+    };
+
+    // The political aggregation, rolled up here rather than fetched: every
+    // populated row contributes to each cell standing over it, so a cell
+    // carries the colonies in its whole subtree and a far political view needs
+    // nothing loaded. Built before the rows are folded into their map, which
+    // is the one place both the tree and the flat table are in hand.
+    let settled = Settled(Arc::new(Inhabitance::of(index, populated.iter())));
+
+    (sky, settled)
+}
+
 /// Work up what was read into what the map holds
 ///
 /// All of it together, since the tables are read against each other: a name
@@ -313,6 +363,8 @@ fn stood_up(
     reaches: names::Reaches,
     boosts: Option<Vec<SystemBoost>>,
     factions: Vec<Faction>,
+    sky: Option<Arc<galos_index::prelude::Sky>>,
+    settled: Settled,
 ) -> Loaded {
     info!(
         "index {dir} has {} cells, {} populated, {} names, {} reaches, \
@@ -354,26 +406,6 @@ fn stood_up(
              publish."
         );
     }
-
-    // The galaxy as the router reads it: the cell payloads, mapped where
-    // they lie. Opening it is reading the index file this already holds and
-    // nothing else — no places are copied and no grid is built, which is
-    // what a route used to wait 32 s and 13.7 GB for. A directory this
-    // process cannot map leaves it absent and nothing routes.
-    let sky = match galos_index::prelude::Sky::open(std::path::Path::new(dir)) {
-        Ok(sky) => Some(Arc::new(sky)),
-        Err(err) => {
-            warn!("{dir} cannot be mapped for routing: {err}");
-            None
-        }
-    };
-
-    // The political aggregation, rolled up here rather than fetched: every
-    // populated row contributes to each cell standing over it, so a cell
-    // carries the colonies in its whole subtree and a far political view needs
-    // nothing loaded. Built before the rows are folded into their map, which
-    // is the one place both the tree and the flat table are in hand.
-    let settled = Settled(Arc::new(Inhabitance::of(&index, populated.iter())));
 
     Loaded {
         held,

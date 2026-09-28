@@ -47,6 +47,7 @@ pub fn plugin(app: &mut App) {
 
     app.add_systems(Startup, cut_star_psf);
     app.init_resource::<PendingSpawns>();
+    app.init_resource::<SpawnBudget>();
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     // Turns a bounded number of queued systems into entities each frame, so a
     // frame's offers do not all become entities at once. After `spawn`, which
@@ -719,36 +720,59 @@ fn plotted_route(
 /// them at once is a visible hitch; spread over frames it streams in instead,
 /// which the map already reads as a sky drawing before it has fully loaded.
 ///
-/// **Low because a big budget buys a bigger map, not a sooner one.** Raising
-/// it was measured over one flight ([`crate::map::galaxy::flight`]):
-/// 4,096 cost 36% at the ninetieth percentile and 8,192 cost 63%, and both
-/// bought a *larger* map rather than a sooner one — 25,540 systems drawn at
-/// the peak against 41,684 and 51,449, and 402,071 despawns against 576,634
-/// and 584,884. The walk re-offers whatever is undrawn every frame, so while
-/// the plan is churning a system drawn sooner is mostly a system despawned
-/// sooner, and everything a frame does — the address map, the eviction scan,
-/// the keepers scan, the detaching — is over every drawn system.
-const SPAWN_BUDGET: usize = 2048;
-
-/// How many points one pass of the walk may offer
+/// A setting, under Performance, since where the trade sits is the machine's
+/// to say: a faster one fills a view in fewer frames for the same hitch.
 ///
-/// Four frames' worth of the spawn budget. A wide view resolves tens of
-/// thousands of points a pass and offering all of them was most of what the
-/// pass cost: the offers past this are re-made next frame, by which time the
-/// budget has drawn what it took from these. Deep enough that a frame the
-/// drain empties still has something left to take from, shallow enough that
-/// the offering is not the cost.
-const OFFER_BUDGET: usize = SPAWN_BUDGET * 4;
+/// **Low by default because a big budget buys a bigger map, not a sooner
+/// one.** Raising it was measured over one flight
+/// ([`crate::map::galaxy::flight`]): 4,096 cost 36% at the ninetieth
+/// percentile and 8,192 cost 63%, and both bought a *larger* map rather than
+/// a sooner one — 25,540 systems drawn at the peak against 41,684 and
+/// 51,449, and 402,071 despawns against 576,634 and 584,884. The walk
+/// re-offers whatever is undrawn every frame, so while the plan is churning
+/// a system drawn sooner is mostly a system despawned sooner, and everything
+/// a frame does — the address map, the eviction scan, the keepers scan, the
+/// detaching — is over every drawn system.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpawnBudget(pub usize);
 
-/// How deep the queue is allowed to get
-///
-/// Thirty-two frames' worth. What is offered past it is dropped unqueued,
-/// which costs nothing: the walk runs every frame and offers whatever is
-/// still wanted again, so the queue holds what the next half-second can
-/// draw rather than everything a view could ever want. Framing a route
-/// across the galaxy offered **two million** in one pass, against a picture
-/// that wanted a few thousand marks.
-const QUEUE_CEILING: usize = SPAWN_BUDGET * 32;
+impl SpawnBudget {
+    /// The least the setting goes to: a view of tens of thousands would take
+    /// seconds of frames to fill below it.
+    pub const FLOOR: usize = 256;
+    /// The most: past it one frame's spawning is a hitch of its own.
+    pub const CEILING: usize = 16_384;
+
+    /// How many points one pass of the walk may offer
+    ///
+    /// Four frames' worth. A wide view resolves tens of thousands of points
+    /// a pass and offering all of them was most of what the pass cost: the
+    /// offers past this are re-made next frame, by which time the budget has
+    /// drawn what it took from these. Deep enough that a frame the drain
+    /// empties still has something left to take from, shallow enough that
+    /// the offering is not the cost.
+    fn offers(self) -> usize {
+        self.0 * 4
+    }
+
+    /// How deep the queue is allowed to get
+    ///
+    /// Thirty-two frames' worth. What is offered past it is dropped unqueued,
+    /// which costs nothing: the walk runs every frame and offers whatever is
+    /// still wanted again, so the queue holds what the next half-second can
+    /// draw rather than everything a view could ever want. Framing a route
+    /// across the galaxy offered **two million** in one pass, against a
+    /// picture that wanted a few thousand marks.
+    fn ceiling(self) -> usize {
+        self.0 * 32
+    }
+}
+
+impl Default for SpawnBudget {
+    fn default() -> Self {
+        SpawnBudget(2048)
+    }
+}
 
 /// One system waiting to be drawn
 ///
@@ -816,7 +840,7 @@ struct Walked {
 /// The fetch tasks return a route's stops and the systems picked out by name,
 /// and the walk offers a prefix of every cell it holds; both queue here
 /// rather than spawning the lot in the frame they land. [`drain_spawns`]
-/// takes [`SPAWN_BUDGET`] of them a frame.
+/// takes [`SpawnBudget`] of them a frame.
 ///
 /// **Two queues, because a frame's offers are not equally wanted.** What the
 /// user asked for by name — the stops of a route just plotted, a system
@@ -842,7 +866,7 @@ struct Walked {
 /// **487,097 systems despawned** to draw at most 21,173.
 ///
 /// So [`Self::opening`] clears the walk's batch at the start of every pass and
-/// [`Self::offer`] fills it to [`OFFER_BUDGET`], and the walk offers what is
+/// [`Self::offer`] fills it to [`SpawnBudget::offers`], and the walk offers what is
 /// still wanted again next frame — which is what it does every frame anyway.
 #[derive(Resource, Default)]
 pub struct PendingSpawns {
@@ -852,6 +876,9 @@ pub struct PendingSpawns {
     /// What the walk offered this pass, in the order it walked the cells
     walked: Vec<Walked>,
     arrived_at: Option<Instant>,
+    /// What [`drain_spawns`] last took a frame, which the offer and the queue
+    /// are bounded in multiples of.
+    budget: SpawnBudget,
 }
 
 impl PendingSpawns {
@@ -885,7 +912,7 @@ impl PendingSpawns {
 
     /// Offer the `at`th point of `cell`, to be read when it is drawn
     ///
-    /// Answers whether there was room: past [`OFFER_BUDGET`] the pass has
+    /// Answers whether there was room: past [`SpawnBudget::offers`] the pass has
     /// offered more than the frame's budget can draw several times over, and
     /// the caller can stop looking for offers — it still has a wanted set to
     /// finish marking.
@@ -895,11 +922,16 @@ impl PendingSpawns {
         cell: galos_index::prelude::CellId,
         at: u32,
     ) -> bool {
-        if self.walked.len() >= OFFER_BUDGET {
+        if self.walked.len() >= self.budget.offers() {
             return false;
         }
         self.walked.push(Walked { address, cell, at });
         true
+    }
+
+    /// How many more the walk may offer this pass.
+    pub(crate) fn offers_left(&self) -> usize {
+        self.budget.offers().saturating_sub(self.walked.len())
     }
 
     /// Queue whichever of the two, under `address`.
@@ -907,7 +939,7 @@ impl PendingSpawns {
     /// `pinned` marks a system wanted whatever the queue's depth — one picked
     /// out and flown to, a route's own stop. A system queued
     /// again as pinned stays pinned, and one queued again as asked for moves
-    /// up. An offer past [`QUEUE_CEILING`] is dropped rather than held,
+    /// up. An offer past [`SpawnBudget::ceiling`] is dropped rather than held,
     /// unless it is pinned or asked for: the walk will offer it again next
     /// frame if it is still wanted, and nothing else will offer a route's
     /// own stops.
@@ -932,7 +964,10 @@ impl PendingSpawns {
                 }
             }
             None => {
-                if !pinned && !asked && self.order.len() >= QUEUE_CEILING {
+                if !pinned
+                    && !asked
+                    && self.order.len() >= self.budget.ceiling()
+                {
                     return;
                 }
                 self.rows.insert(address, Offered { what, pinned, asked });
@@ -1001,12 +1036,12 @@ impl PendingSpawns {
 
 /// Turn a budgeted number of queued systems into entities
 ///
-/// Hands [`SPAWN_BUDGET`] of what is queued to [`spawn_systems`], so the
+/// Hands [`SpawnBudget`] of what is queued to [`spawn_systems`], so the
 /// frame's structural work is bounded however much arrived at once.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_spawns(
     mut pending: ResMut<PendingSpawns>,
-    systems_query: Query<(Entity, &System)>,
+    addresses: Res<crate::map::galaxy::Addresses>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid>,
     filtering: Filtering,
@@ -1014,8 +1049,13 @@ pub(crate) fn drain_spawns(
     resident: Res<crate::map::galaxy::walk::ResidentCells>,
     populated: Res<Populated>,
     names: Res<Names>,
+    budget: Res<SpawnBudget>,
     mut commands: Commands,
 ) {
+    // Before anything waits on it: the walk's next pass offers against this.
+    if pending.budget != *budget {
+        pending.budget = *budget;
+    }
     if pending.is_empty() {
         return;
     }
@@ -1031,7 +1071,7 @@ pub(crate) fn drain_spawns(
     let batch = {
         let _zone =
             info_span!("build batch", queued = pending.queued()).entered();
-        pending.take(SPAWN_BUDGET, |address, what| match what {
+        pending.take(budget.0, |address, what| match what {
             Waiting::Built(system) => Some(*system),
             Waiting::Point { cell, at } => {
                 let held = resident.0.cell(cell)?;
@@ -1048,7 +1088,7 @@ pub(crate) fn drain_spawns(
     let _zone = info_span!("spawn batch", systems = batch.len()).entered();
     spawn_systems(
         batch,
-        &systems_query,
+        &addresses,
         &galaxy,
         grid,
         &filtering.filters,
@@ -1077,7 +1117,7 @@ pub(crate) fn drain_spawns(
 /// time the star has been drawn once at full strength.
 pub fn spawn_systems(
     new_systems: Vec<System>,
-    systems: &Query<(Entity, &System)>,
+    addresses: &crate::map::galaxy::Addresses,
     galaxy: &Res<Galaxy>,
     grid: &Grid,
     filters: &Filters,
@@ -1086,10 +1126,13 @@ pub fn spawn_systems(
     time: &Res<Time<Real>>,
     fetched_at: &Instant,
 ) {
-    let mut existing_systems: HashMap<i64, Entity> = systems
-        .iter()
-        .map(|(entity, system)| (system.address, entity))
-        .collect();
+    // What this batch has already answered, so an address twice in it is
+    // built once: what it spawns is not in [`Addresses`] until the commands
+    // land.
+    //
+    // [`Addresses`]: crate::map::galaxy::Addresses
+    let mut answered: rustc_hash::FxHashSet<i64> =
+        rustc_hash::FxHashSet::default();
 
     // One clock for the batch. `admit` weighs every row against the same
     // moment, and a row already built carries this same moment as its own
@@ -1116,7 +1159,10 @@ pub fn spawn_systems(
         if excluded && !excluded_are_drawn {
             continue;
         }
-        if let Some(entity) = existing_systems.remove(&system.address) {
+        if !answered.insert(system.address) {
+            continue;
+        }
+        if let Some(entity) = addresses.get(system.address) {
             debug!(
                 "updating {} @ {:?}",
                 system.address,
@@ -1293,7 +1339,7 @@ impl Hue {
     /// Off the reading rather than off a system, so that the aggregate field
     /// colors a cell's allegiance histogram through the same mapping a mark
     /// is painted by and the two cannot drift apart. See
-    /// [`galos_index::read::inhabited::allegiance_at`], which names the
+    /// [`Bucketed::at`](galos_index::read::inhabited::Bucketed::at), which names the
     /// reading a bucket counts.
     pub(crate) fn allegiance(allegiance: Option<Allegiance>) -> Hue {
         match allegiance {
@@ -1616,7 +1662,7 @@ mod tests {
     ///
     /// The reported slowness. A route's stops land behind everything the
     /// walk offered that frame — tens of thousands of marks, at
-    /// [`SPAWN_BUDGET`] a frame — so the line was drawn and then filled in
+    /// [`SpawnBudget`] a frame — so the line was drawn and then filled in
     /// over the seconds it took the queue to reach its stops. A stop is a
     /// system named by hand; the marks are a galaxy nobody asked about.
     #[test]
@@ -1714,21 +1760,27 @@ mod tests {
     ///
     /// A wide view resolves tens of thousands of points against a budget of
     /// two thousand, and offering all of them was most of what the pass cost.
-    /// Past [`OFFER_BUDGET`] the offer is refused and the caller is told, so
+    /// Past [`SpawnBudget::offers`] the offer is refused and the caller is told, so
     /// it can stop looking; what it refused is offered again next frame.
     #[test]
     fn a_pass_stops_offering_past_its_budget() {
-        let mut pending = PendingSpawns::default();
-        let cell = galos_index::prelude::CellId::ROOT;
-        pending.opening(Instant::now());
-        for address in 0..OFFER_BUDGET as i64 {
-            assert!(pending.offer(address, cell, address as u32));
+        // And the bound is the setting's, not a constant: four frames'
+        // worth of whatever the budget has been set to.
+        for budget in [SpawnBudget::default(), SpawnBudget(SpawnBudget::FLOOR)]
+        {
+            let mut pending = PendingSpawns { budget, ..default() };
+            let cell = galos_index::prelude::CellId::ROOT;
+            pending.opening(Instant::now());
+            for address in 0..budget.offers() as i64 {
+                assert!(pending.offer(address, cell, address as u32));
+            }
+            assert!(
+                !pending.offer(-1, cell, 0),
+                "the pass went on offering past a budget of {}",
+                budget.0
+            );
+            assert_eq!(pending.queued(), budget.offers());
         }
-        assert!(
-            !pending.offer(-1, cell, 0),
-            "the pass went on offering past its budget"
-        );
-        assert_eq!(pending.queued(), OFFER_BUDGET);
     }
 
     /// The queue is bounded, and what it turns away comes round again
@@ -1744,15 +1796,16 @@ mod tests {
     fn the_queue_turns_away_what_it_cannot_hold() {
         let mut pending = PendingSpawns::default();
         let now = Instant::now();
-        for address in 1..=(QUEUE_CEILING as i64 + 16) {
+        let ceiling = SpawnBudget::default().ceiling();
+        for address in 1..=(ceiling as i64 + 16) {
             pending.push(system(address), false, false, now);
         }
-        assert_eq!(pending.queued(), QUEUE_CEILING, "held past the ceiling");
+        assert_eq!(pending.queued(), ceiling, "held past the ceiling");
 
         pending.push(system(-1), true, false, now);
         assert_eq!(
             pending.queued(),
-            QUEUE_CEILING + 1,
+            ceiling + 1,
             "a pinned stop was turned away"
         );
     }

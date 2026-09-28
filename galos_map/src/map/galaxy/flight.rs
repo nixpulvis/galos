@@ -247,6 +247,8 @@ impl Flight {
         app.init_resource::<crate::map::galaxy::populated::PopulatedOrder>();
         app.init_resource::<crate::map::index::refresh::Stamps>();
         app.init_resource::<PendingSpawns>();
+        app.init_resource::<crate::map::galaxy::Addresses>();
+        app.init_resource::<crate::map::galaxy::spawn::SpawnBudget>();
         app.init_resource::<PendingEvictions>();
         app.init_resource::<crate::map::galaxy::Evictions>();
         app.init_resource::<crate::map::bodies::spawn::Entered>();
@@ -254,6 +256,8 @@ impl Flight {
         app.init_resource::<Filters>();
         app.init_resource::<DimTo>();
         app.init_resource::<Cut>();
+        // The sky's cut, which the plan reads for the photometric mode.
+        app.init_resource::<crate::map::galaxy::spawn::StarExposure>();
 
         let galaxy = app
             .world_mut()

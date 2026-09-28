@@ -37,18 +37,16 @@ use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
-use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
+use bevy::tasks::{IoTaskPool, Task, block_on};
 use chrono::{DateTime, Utc};
 use galos_index::prelude::{CellId, CellSystem, Part, Stamp};
 use galos_index::read::inhabited::Inhabited;
 use galos_index::read::resident::Resident;
-use galos_index::read::screen::{
-    Crowded, Empty, crowded_marks, frame_marks, share, wanted,
-};
+use galos_index::read::screen::{Crowded, Empty, Share};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -227,7 +225,7 @@ impl Keeping {
 /// known, and rebuilding a system the prefix does not reach would spend the
 /// spawn budget on something about to be evicted.
 #[derive(Resource, Default)]
-pub(crate) struct Republished(HashSet<CellId>);
+pub(crate) struct Republished(FxHashSet<CellId>);
 
 impl Republished {
     /// Whether this cell wants rebuilding rather than filling in
@@ -315,34 +313,143 @@ pub(crate) struct Worked<'w> {
     sampled: ResMut<'w, Sampled>,
     /// The merged marks the frame draws, which the merge above settles.
     blobs: ResMut<'w, Blobs>,
+    /// Which entity draws each system.
+    addresses: Res<'w, crate::map::galaxy::Addresses>,
 }
 
-/// The payload reads in flight, one per marks cell not yet resident or asked
+/// One cell's read as it lands: the payload and the [`Stamp`] it was read
+/// under.
+type Landed = (CellId, io::Result<(Vec<CellSystem>, Option<Stamp>)>);
+
+/// The payload reads the walk wants, queued and on the wire
 ///
-/// Each carries the payload and the [`Stamp`] the transport gave for it, so a
-/// refresh knows what it is holding and asks whether that has moved rather
-/// than reading every resident cell again. Stamped before the read, so a
-/// payload rewritten between the two is held under the older stamp and read
-/// again on the next poll — the safe way round.
+/// **Read in batches, a few at a time, most wanted first.** Opening a
+/// payload file is the whole cost of a read — measured over `.index/full`,
+/// some twelve microseconds an open against one and a half for a `stat`,
+/// and no faster on eighteen threads than on four — so a wide view of
+/// seventy thousand cells is most of a second however it is spread. What
+/// the spreading decides is what lands first and what else waits. One task
+/// a cell put tens of thousands on the compute pool at once, landed them in
+/// whatever order the walk named them, held every thread in the kernel and
+/// was polled one by one every frame. So the asks queue here instead, in
+/// the order [`fetch`] ranks them, and go out [`BATCH`] cells to a task and
+/// [`IN_FLIGHT`] tasks at a time on the IO pool; a queued cell the plan
+/// stops wanting is dropped unread.
+///
+/// Each read carries the payload and the [`Stamp`] the transport gave for
+/// it, so a refresh knows what it is holding and asks whether that has moved
+/// rather than reading every resident cell again. Stamped before the read,
+/// so a payload rewritten between the two is held under the older stamp and
+/// read again on the next poll — the safe way round.
 #[derive(Resource, Default)]
-pub(crate) struct BoundedTasks(
-    HashMap<CellId, Task<io::Result<(Vec<CellSystem>, Option<Stamp>)>>>,
-);
+pub(crate) struct BoundedTasks {
+    /// Asked and not yet sent, the most wanted last so the next batch pops
+    /// off the end.
+    queued: Vec<(CellId, usize)>,
+    /// The cells on the wire, so a plan asking again does not queue them
+    /// twice.
+    reading: FxHashSet<CellId>,
+    /// The batches on the wire.
+    batches: Vec<Task<Vec<Landed>>>,
+}
+
+/// How many cells one read task takes: some three quarters of a millisecond
+/// of opens, few enough that the most wanted cells are not held behind a
+/// long tail and many enough that a wide view is a thousand tasks and not
+/// seventy thousand.
+const BATCH: usize = 64;
+
+/// How many batches are on the wire at once. Past four threads the opens
+/// go no faster (see [`BoundedTasks`]); more would only take threads from
+/// whatever else is waiting on the pool.
+const IN_FLIGHT: usize = 4;
+
+impl BoundedTasks {
+    /// Queue `asking`, ranked most wanted first, in place of whatever was
+    /// queued before; what is already on the wire is left to land.
+    fn ask(&mut self, mut asking: Vec<(CellId, usize)>) {
+        asking.retain(|(id, _)| !self.reading.contains(id));
+        asking.reverse();
+        self.queued = asking;
+    }
+
+    /// Put batches on the wire until [`IN_FLIGHT`] are, or nothing is queued.
+    fn send(&mut self, transport: &Transport) {
+        let pool = IoTaskPool::get();
+        while self.batches.len() < IN_FLIGHT && !self.queued.is_empty() {
+            let from = self.queued.len().saturating_sub(BATCH);
+            let batch: Vec<(CellId, usize)> =
+                self.queued.drain(from..).rev().collect();
+            self.reading.extend(batch.iter().map(|&(id, _)| id));
+            let source = transport.0.clone();
+            let cells = batch.len();
+            self.batches.push(
+                pool.spawn(
+                    async move {
+                        let mut landed = Vec::with_capacity(batch.len());
+                        for (id, want) in batch {
+                            // The stamp first: a payload republished
+                            // between the two is then held under the older
+                            // stamp and re-read by the next refresh, where
+                            // the other order would hold a stamp for
+                            // contents the map does not have.
+                            let stamp = source
+                                .stamp(Part::Cell(id))
+                                .await
+                                .ok()
+                                .flatten();
+                            let read = source
+                                .payload_prefix(id, want)
+                                .await
+                                .map(|points| (points, stamp));
+                            landed.push((id, read));
+                        }
+                        landed
+                    }
+                    // One zone a batch. At info with the rest: the walk is
+                    // the map's live payload path, so a capture that left
+                    // these out would show every frame and none of the
+                    // reads the frames are waiting on.
+                    .instrument(info_span!("cell payloads", cells)),
+                ),
+            );
+        }
+    }
+
+    /// The batches that have landed, taken off the wire.
+    fn landed(&mut self) -> Vec<Landed> {
+        let mut landed = Vec::new();
+        self.batches.retain_mut(|task| {
+            let Some(batch) = block_on(future::poll_once(task)) else {
+                return true;
+            };
+            landed.extend(batch);
+            false
+        });
+        for (id, _) in &landed {
+            self.reading.remove(id);
+        }
+        landed
+    }
+}
 
 #[cfg(test)]
 impl BoundedTasks {
-    /// The cells with a read in flight, for a caller that wants to know what
-    /// a frame put to the transport
+    /// The cells asked and not yet landed, queued or on the wire, for a
+    /// caller that wants to know what a frame put to the transport
     ///
     /// Read by the flight guard ([`crate::map::galaxy::flight`]), which counts a cell read
     /// twice over one flight as work paid for twice.
     pub(crate) fn cells(&self) -> impl Iterator<Item = CellId> + '_ {
-        self.0.keys().copied()
+        self.queued
+            .iter()
+            .map(|&(id, _)| id)
+            .chain(self.reading.iter().copied())
     }
 
-    /// Whether nothing is on the wire
+    /// Whether nothing is queued or on the wire
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.queued.is_empty() && self.batches.is_empty()
     }
 }
 
@@ -419,13 +526,12 @@ pub(crate) fn fetch(
     let Some(view) = crate::map::galaxy::plan::view(orbit, camera) else {
         return;
     };
-    let pool = AsyncComputeTaskPool::get();
     let whole = filters.asking();
     // What the draw will spread over. Off the plan alone — a mark carries
     // its own slice — which is what lets the share be struck here as well
     // as in [`reconcile`] and lets the two agree without either of them
     // touching the index.
-    let share = share(population(&planned.0), frame_marks(&view));
+    let share = Share::of(population(&planned.0), view.marks());
     // Whether this is the photometric sky, whose reads are whole cells.
     let real =
         matches!(planned.0.mode, galos_index::prelude::Mode::Real { .. });
@@ -433,7 +539,7 @@ pub(crate) fn fetch(
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
     // what a capture has to be able to see.
-    let asking = {
+    let asking: Vec<(CellId, usize)> = {
         let _zone = info_span!("missing cells").entered();
         let mut asking = Vec::new();
         for mark in &planned.0.marks {
@@ -441,9 +547,6 @@ pub(crate) fn fetch(
             // clamped to the reach itself, so a cell it marks is a cell
             // the bubble touches. See [`galos_index::Reach`].
             let id = mark.id;
-            if tasks.0.contains_key(&id) {
-                continue;
-            }
             let slice = mark.slice as usize;
             // **The sky reads a cell whole.** Which of a cell draws is
             // decided per star against the exposure's floor
@@ -454,12 +557,11 @@ pub(crate) fn fetch(
             // rationed away, never read. The walk has already dropped every
             // subtree that cannot clear the floor, so the cells reaching
             // here are few and what they hold is what the sky is made of.
+            let drawn = share.wanted(slice, id);
             let want = if whole || real {
                 slice
             } else {
-                (wanted(share, slice, id) * READ_SLACK)
-                    .max(READ_LEAST)
-                    .min(slice)
+                (drawn * READ_SLACK).max(READ_LEAST).min(slice)
             };
             if want == 0 {
                 continue;
@@ -468,36 +570,81 @@ pub(crate) fn fetch(
             if held >= want {
                 continue;
             }
-            asking.push((id, want));
+            asking.push((rank(id, drawn > 0 || whole || real), id, want));
         }
-        asking
+        asking.sort_unstable_by_key(|&(rank, _, _)| rank);
+        asking.into_iter().map(|(_, id, want)| (id, want)).collect()
     };
     let _zone = info_span!("cell tasks", missing = asking.len()).entered();
-    for (id, want) in asking {
-        let source = transport.0.clone();
-        tasks.0.insert(
-            id,
-            pool.spawn(
-                async move {
-                    // The stamp first: a payload republished between the two is
-                    // then held under the older stamp and re-read by the next
-                    // refresh, where the other order would hold a stamp for
-                    // contents the map does not have.
-                    let stamp =
-                        source.stamp(Part::Cell(id)).await.ok().flatten();
-                    Ok((source.payload_prefix(id, want).await?, stamp))
-                }
-                // One zone per cell, named with it. At info with the rest: the
-                // walk is the map's live payload path, so a capture that left
-                // these out would show every frame and none of the reads the
-                // frames are waiting on. A view change asks for the cells it
-                // newly reaches and no more — the map holds the others and
-                // this loop skips what is already on the wire — so the count
-                // is a view's worth of zones, not a frame's.
-                .instrument(info_span!("cell payload", cell = ?id)),
-            ),
-        );
+    tasks.ask(asking);
+    tasks.send(&transport);
+}
+
+/// Where a cell stands in the queue, lowest first
+///
+/// **The cells that draw a mark this frame before the ones that do not.**
+/// Every marked cell in reach is read to [`READ_LEAST`] whatever its share,
+/// so [`Empty`] can light a dark patch of sky from it; at a wide zoom most
+/// of them draw nothing, and read in the walk's order they held the marks
+/// that do draw behind them.
+///
+/// Then coarse before fine, a coarse cell being the brightest of a wider
+/// patch of sky, and within a level scattered by address, so the frame
+/// fills in evenly all over rather than sweeping across it in the walk's
+/// order.
+fn rank(id: CellId, draws: bool) -> (bool, u8, u64) {
+    (!draws, id.level, id.morton().wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// A system a marked cell would draw and the map has not got, waiting its
+/// round
+///
+/// **Offered in rounds across the cells, not a cell at a time.** The pass
+/// used to offer each cell's undrawn systems as it reached the cell, in the
+/// plan's order, until the frame's offers ran out. Zooming in, every cell of
+/// the finer level coming into view wants dozens of marks, so the offers ran
+/// out a few cells into the plan and the view filled in a square at a time,
+/// one neighbourhood of the walk after the next. Zooming out, each cell wants
+/// a mark or two, the same offers reached across the whole frame, and the
+/// sky filled in evenly — which is why the two directions looked nothing
+/// alike.
+///
+/// So every cell's first undrawn system goes before any cell's second, and
+/// within a round coarse before fine and scattered by address, which is
+/// [`rank`] and the order the reads land in too. The frame fills in all over
+/// at once and gains density as it goes, whichever way the camera moved.
+struct Unspawned {
+    /// Its place among its cell's undrawn systems, brightest first.
+    round: u32,
+    rank: (bool, u8, u64),
+    address: i64,
+    cell: CellId,
+    /// Which point of the cell's payload it is.
+    index: u32,
+}
+
+/// Offer what the frame can take of `unspawned`, round by round
+///
+/// Only the offers the pass has room for are ordered, the rest being dropped
+/// unsorted: the pass runs again next frame and gathers whatever is still
+/// wanted. Answers whether there is room left.
+fn offer_in_rounds(
+    pending: &mut PendingSpawns,
+    mut unspawned: Vec<Unspawned>,
+) -> bool {
+    let key = |it: &Unspawned| (it.round, it.rank);
+    let room = pending.offers_left();
+    if unspawned.len() > room {
+        unspawned.select_nth_unstable_by_key(room, key);
+        unspawned.truncate(room);
     }
+    unspawned.sort_unstable_by_key(key);
+    for it in unspawned {
+        if !pending.offer(it.address, it.cell, it.index) {
+            return false;
+        }
+    }
+    pending.offers_left() > 0
 }
 
 /// How many systems the marked sky holds, off the index and not off what
@@ -530,21 +677,20 @@ fn population(planned: &galos_index::prelude::Needed) -> u64 {
 /// of reading every resident payload on every poll.
 pub(crate) fn collect(
     mut tasks: ResMut<BoundedTasks>,
+    transport: Res<Transport>,
     mut resident: ResMut<ResidentCells>,
     mut orders: ResMut<PointOrders>,
     mut republished: ResMut<Republished>,
     mut held: ResMut<crate::map::index::refresh::Stamps>,
 ) {
-    tasks.0.retain(|&id, task| {
-        let Some(result) = block_on(future::poll_once(task)) else {
-            return true;
-        };
-        if let Ok((points, stamp)) = result {
+    for (id, read) in tasks.landed() {
+        if let Ok((points, stamp)) = read {
             adopt(&mut resident, &mut orders, &mut republished, id, points);
             held.holding(id, stamp);
         }
-        false
-    });
+    }
+    // And the next batches, now there is room on the wire for them.
+    tasks.send(&transport);
 }
 
 /// How many payload points one frame may weigh against the filters
@@ -602,10 +748,10 @@ pub(crate) struct PointOrders {
     /// reaches its cell. What that shows is the map filtering in over a
     /// second or two rather than stopping dead, which is what every other
     /// bounded thing here already does — see
-    /// [`crate::map::galaxy::spawn::SPAWN_BUDGET`].
-    at: HashMap<CellId, u64>,
-    cells: HashMap<CellId, Vec<u32>>,
-    populated: HashMap<CellId, Vec<u32>>,
+    /// [`crate::map::galaxy::spawn::SpawnBudget`].
+    at: FxHashMap<CellId, u64>,
+    cells: FxHashMap<CellId, Vec<u32>>,
+    populated: FxHashMap<CellId, Vec<u32>>,
 }
 
 impl PointOrders {
@@ -835,6 +981,38 @@ pub(crate) struct Chosen {
     booked: Vec<(CellId, i64, [f64; 3])>,
 }
 
+/// What one pass of [`reconcile`] keeps for the next
+#[derive(Default)]
+pub(crate) struct Pass {
+    /// What the population scale settled on; see [`Chosen`].
+    chosen: Chosen,
+    /// Where the camera stood when the last pass found nothing left to do,
+    /// or [`None`] where it did not; see [`Settled`].
+    settled: Option<Settled>,
+}
+
+/// What a finished pass was worked out from, besides the resources it reads
+///
+/// **A pass that found nothing to do is not run again until something it
+/// reads moves.** The walk used to be worked through every frame, a still
+/// view included: measured over `.index/full` at a wide zoom, 8–10 ms of
+/// every settled frame re-deciding the tens of thousands of marks it had
+/// decided the frame before. What it reads is the resources it is handed,
+/// whose change marks say whether they moved, and the camera, which is
+/// written every frame whether it moves or not — so the camera's part is
+/// kept by value and compared.
+///
+/// Finished means it offered nothing, pushed nothing and had verdict budget
+/// to spare: a pass that is still filling a view in or bringing the filters'
+/// verdicts forward a budget at a time runs again next frame whatever moved.
+#[derive(PartialEq)]
+struct Settled {
+    view: galos_index::prelude::View,
+    center: DVec3,
+    eye: DVec3,
+    bubble: Option<f64>,
+}
+
 /// What the populated draw settles on: every mark it will make
 ///
 /// **Once a view, and not once a frame.** What this answers turns on
@@ -865,9 +1043,9 @@ fn choose_populated(
     // sky stands; see [`Crowded::about`].
     let mut crowded = Crowded::about(view, about.to_array());
     // And no more of them than the frame can carry and still be read;
-    // see [`crowded_marks`]. Spent busiest first, which is the order
+    // see [`View::crowded_marks`](galos_index::read::walk::View::crowded_marks). Spent busiest first, which is the order
     // the table is in.
-    let ceiling = crowded_marks(view) as usize;
+    let ceiling = view.crowded_marks() as usize;
 
     // **One pass over the galaxy's own order, busiest first.** Asked
     // cell by cell this walked the same systems once per cell on their
@@ -1094,7 +1272,7 @@ pub(crate) fn reconcile(
     mut evictions: ResMut<PendingEvictions>,
     // What the population scale settled on, and what it was settled
     // against; see [`choose_populated`].
-    mut choice: Local<Chosen>,
+    mut pass: Local<Pass>,
 ) {
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = crate::map::galaxy::plan::view(orbit, camera) else {
@@ -1110,7 +1288,37 @@ pub(crate) fn reconcile(
         ref mut drawn,
         ref mut sampled,
         ref mut blobs,
+        ref addresses,
     } = worked;
+    // Nothing to do where the last pass finished and nothing it reads has
+    // moved since; see [`Settled`]. Clearing, the spyglass clamps the drawn
+    // set to a bubble about the camera: the LOD is untouched inside it, only
+    // the far tail is shed.
+    let bubble = reach(&spyglass);
+    let here =
+        Settled { view, center: orbit.center(), eye: orbit.eye(), bubble };
+    let moved = resident.is_changed()
+        || populated.is_changed()
+        || names.is_changed()
+        || holding.is_changed()
+        || spyglass.is_changed()
+        || view_mode.is_changed()
+        || selection.is_changed()
+        || filtering.filters.is_changed()
+        || filtering.dim.is_changed()
+        || cut.is_changed()
+        || scale_population.is_changed()
+        || populated_order.is_changed()
+        || standing.is_changed()
+        || republished.is_changed()
+        || planned.is_changed()
+        || addresses.is_changed();
+    if !moved && pass.settled.as_ref() == Some(&here) {
+        return;
+    }
+    let choice = &mut pass.chosen;
+    // Whether this pass asked for anything to be built; see [`Settled`].
+    let mut wanting = false;
     // Afresh each pass. A cell that has stopped being marked, been evicted or
     // fallen outside the bubble accounts for nothing now, and an account left
     // standing would go on subtracting marks that are no longer drawn — a hole
@@ -1129,9 +1337,6 @@ pub(crate) fn reconcile(
         keeping.marks(&planned.0.marks);
     }
     let now = Instant::now();
-    // Clearing, the spyglass clamps the drawn set to a bubble about the camera:
-    // the LOD is untouched inside it, only the far tail is shed.
-    let bubble = reach(&spyglass);
 
     // The three phases of the pass, each its own zone: what it gathers about
     // what is already drawn, the walk of every resident cell, and the scan
@@ -1143,23 +1348,14 @@ pub(crate) fn reconcile(
     // couple of thousand entities, so the pass used to hash every resolved
     // *address* into a wanted set to answer a question only the drawn ones
     // could be asked — measured at 196 ms of a 512 ms flight
-    // ([`crate::map::galaxy::flight`]). Carrying the entity here means a resolved point
-    // that is already drawn marks its entity ([`EntityHashSet`], bevy's own
-    // numbering and a cheap hash) and one that is not goes to the queue,
-    // which is one lookup a point rather than two.
-    // Hashed quickly and not securely. This is asked once per point the
-    // pass draws — tens of thousands a frame — and the key is a system
-    // address, which is a bit-packed position. Measured over
-    // `.index/full`, SipHash over it was more than half of what the whole
-    // reconciliation pass cost: 1.31 ms a frame against 0.57 with the
-    // lookup taken out entirely.
-    let existing: rustc_hash::FxHashMap<i64, Entity> = {
-        let _zone = info_span!("reconcile setup").entered();
-        systems
-            .iter()
-            .map(|(entity, system, _)| (system.address, entity))
-            .collect()
-    };
+    // ([`crate::map::galaxy::flight`]). Looking the entity up here means a
+    // resolved point that is already drawn marks its entity
+    // ([`EntityHashSet`], bevy's own numbering and a cheap hash) and one that
+    // is not goes to the queue, which is one lookup a point rather than two.
+    // Out of the index the systems keep themselves
+    // ([`crate::map::galaxy::Addresses`]) rather than a map built here over
+    // every drawn system every frame.
+    let existing = &**addresses;
     let picked: HashSet<i64> = selection.addresses().into_iter().collect();
     // Every stop of every route being shown. A line is only a line if it has
     // both ends of each leg to draw between, so these are wanted whatever the
@@ -1222,7 +1418,7 @@ pub(crate) fn reconcile(
     // over the plan's own counts and touches neither the index nor a
     // payload.
     let population = population(&planned.0);
-    let share = share(population, frame_marks(&view));
+    let share = Share::of(population, view.marks());
     // Where this pass takes its systems from. Drawing by population draws
     // the systems anybody lives in, and every one of those is resident in
     // full — so the cell's own populated systems answer, exactly and the same however
@@ -1260,7 +1456,7 @@ pub(crate) fn reconcile(
             if !in_reach(mark.id, orbit, bubble) {
                 continue;
             }
-            match wanted(share, mark.slice as usize, mark.id) {
+            match share.wanted(mark.slice as usize, mark.id) {
                 0 => lighting.offered(
                     &view,
                     mark.at,
@@ -1275,7 +1471,8 @@ pub(crate) fn reconcile(
                 continue;
             }
             let offer = (planned.0.marks.len() + offer) as u32;
-            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+            match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
+            {
                 0 => lighting.offered(&view, blob.at, blob.count, offer),
                 _ => lighting.drew(&view, blob.at, 1),
             }
@@ -1306,15 +1503,14 @@ pub(crate) fn reconcile(
     // index it was named by. Taken rather than walked lazily, the order
     // it is taken in being the one thing the two draws of this pass
     // disagree about.
-    let mut taken: Vec<(i64, [f64; 3], Option<u32>)> = Vec::new();
+    let mut taken: Vec<(i64, [f64; 3], u32)> = Vec::new();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`crate::map::galaxy::spawn::PendingSpawns`].
     pending.opening(now);
-    // Whether the pass may still offer. Past the offer budget it goes on
-    // marking what is wanted — the eviction scan reads that — and stops
-    // looking for work the frame cannot do.
-    let mut offering = true;
+    // What every cell would have drawn and is not drawn yet, gathered over
+    // the whole plan before any of it is offered; see [`Unspawned`].
+    let mut unspawned: Vec<Unspawned> = Vec::new();
     // Over the plan's marks and not over everything the map holds. The
     // two differ by whatever [`KEEP`] is still holding onto and by
     // everything outside the bubble, and at a wide zoom that is twice the
@@ -1357,7 +1553,8 @@ pub(crate) fn reconcile(
         // (`node_visible`), so a cell reaching here holds at least one.
         let asked = match limit {
             Some(_) => mark.slice as usize,
-            None => wanted(share, mark.slice as usize, id)
+            None => share
+                .wanted(mark.slice as usize, id)
                 .max(usize::from(is_lit(offer as u32))),
         };
         if asked == 0 {
@@ -1435,11 +1632,7 @@ pub(crate) fn reconcile(
                 {
                     continue;
                 }
-                taken.push((
-                    point.id64 as i64,
-                    point.position,
-                    Some(index as u32),
-                ));
+                taken.push((point.id64 as i64, point.position, index as u32));
             }
         }
         // What this cell's marks account for, so [`crate::map::paint::glow`] can lay the
@@ -1448,6 +1641,7 @@ pub(crate) fn reconcile(
         // filters having promoted systems out of magnitude order, and it is
         // cut again per point by the bubble just below.
         let mut took = Accounted::default();
+        let mut round = 0u32;
         for &(address, pos, index) in &taken {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
@@ -1482,48 +1676,35 @@ pub(crate) fn reconcile(
             // has just been published again: then the system on the map was
             // built from the payload this one replaced, and what it says
             // about the moment, the magnitude and the politics is what the
-            // index said last time. Queued either way, and `spawn_systems`
+            // index said last time. Gathered either way, and `spawn_systems`
             // replaces it in place.
-            // Which point of which cell where a payload named it: most of
-            // what a walk offers is never drawn, and building it to queue
-            // it is a name and a political join thrown away. See
-            // [`crate::map::galaxy::spawn::Waiting`].
             //
-            // A system off the populated table has no payload point to
-            // name and is built here instead — the path a route's own
-            // stops take. It costs what it costs because the set is
-            // small: the whole galaxy holds 148,199 systems anybody lives
-            // in, and a frame in this mode draws tens.
-            //
-            // Built from the row and not through `System::find`, which
-            // refuses a system the names table has no row for. A name is
-            // one thing a system may be missing and being drawn is
-            // another: the payload path names an unnamed system by its
-            // address ([`System::build`]) and draws it, and a mode that
-            // silently dropped the same system would be a hole in the
-            // sky wherever the two tables disagree.
-            let queue = |pending: &mut PendingSpawns| match index {
-                Some(index) => pending.offer(address, id, index),
-                None => {
-                    // A moment is a payload's to carry; see
-                    // [`Filters::asking_a_span`].
-                    let system =
-                        System::build(address, pos, None, &populated, &names);
-                    pending.push(system, false, true, now);
-                    true
-                }
+            // Which point of which cell, and nothing built: most of what a
+            // walk gathers is never drawn, and building it to queue it is a
+            // name and a political join thrown away. See
+            // [`crate::map::galaxy::spawn::Waiting`]. Its place among this
+            // cell's own undrawn is the round it is offered in; see
+            // [`Unspawned`].
+            let unspawned_here = |unspawned: &mut Vec<Unspawned>, round| {
+                unspawned.push(Unspawned {
+                    round,
+                    rank: rank(id, true),
+                    address,
+                    cell: id,
+                    index,
+                });
             };
-            match existing.get(&address) {
-                Some(&entity) => {
+            match existing.get(address) {
+                Some(entity) => {
                     wanted_by.insert(entity);
-                    if refreshed && offering {
-                        offering = queue(&mut pending);
+                    if refreshed {
+                        unspawned_here(&mut unspawned, round);
+                        round += 1;
                     }
                 }
                 None => {
-                    if offering {
-                        offering = queue(&mut pending);
-                    }
+                    unspawned_here(&mut unspawned, round);
+                    round += 1;
                 }
             }
         }
@@ -1533,6 +1714,14 @@ pub(crate) fn reconcile(
         }
     }
     drop(prefixes);
+    // Whether there is room left to offer once they are in, for the
+    // populated pass below.
+    let offering = {
+        let _zone =
+            info_span!("offering", unspawned = unspawned.len()).entered();
+        wanting |= !unspawned.is_empty();
+        offer_in_rounds(&mut pending, unspawned)
+    };
 
     // And the systems the population scale draws, which come off the
     // resident table rather than out of any payload.
@@ -1585,8 +1774,8 @@ pub(crate) fn reconcile(
                     )
                 }),
             );
-            match existing.get(&address) {
-                Some(&entity) => {
+            match existing.get(address) {
+                Some(entity) => {
                     wanted_by.insert(entity);
                 }
                 None => {
@@ -1599,6 +1788,7 @@ pub(crate) fn reconcile(
                             address, at, None, &populated, &names,
                         );
                         pending.push(system, false, true, now);
+                        wanting = true;
                     }
                 }
             }
@@ -1625,9 +1815,9 @@ pub(crate) fn reconcile(
             1.,
             blob.count,
         ));
-        let drawn = wanted(share * blob.blend, stands_for as usize, blob.id)
-            > 0
-            || is_lit((planned.0.marks.len() + offer) as u32);
+        let drawn =
+            share.scaled(blob.blend).wanted(stands_for as usize, blob.id) > 0
+                || is_lit((planned.0.marks.len() + offer) as u32);
         if !drawn || stands_for == 0 {
             continue;
         }
@@ -1662,7 +1852,7 @@ pub(crate) fn reconcile(
 
     sampled.set_if_neq(Sampled {
         population,
-        share: share as f32,
+        share: share.fraction() as f32,
         drawn: took_all,
         blobs: blobs.0.len(),
         lit: lit.len(),
@@ -1686,14 +1876,15 @@ pub(crate) fn reconcile(
     // back to it by [`crate::map::route::trim`]; what this settles is
     // that the stop is there to be reached at all.
     for &address in &routed {
-        match existing.get(&address) {
-            Some(&entity) => {
+        match existing.get(address) {
+            Some(entity) => {
                 wanted_by.insert(entity);
             }
             None => {
                 if let Some(system) = System::find(address, &populated, &names)
                 {
                     pending.push(system, true, true, now);
+                    wanting = true;
                 }
             }
         }
@@ -1723,6 +1914,10 @@ pub(crate) fn reconcile(
         })
         .map(|(entity, ..)| entity)
         .collect();
+    drop(_zone);
+
+    // Finished, or not: see [`Settled`].
+    pass.settled = (!wanting && verdicts > 0).then_some(here);
 }
 
 /// Free the payloads the walk has stopped wanting, once it has stopped
@@ -1833,6 +2028,7 @@ mod tests {
     use super::*;
     use bevy::math::DVec3;
     use galos_route::graph::{Drive, Routing, Tuning};
+    use std::collections::HashMap;
 
     /// A payload point becomes a system placed exactly at its own position,
     /// named by its id where the resident tables hold nothing on it.
@@ -2231,6 +2427,7 @@ mod tests {
         );
         app.init_resource::<PendingEvictions>();
         app.init_resource::<PendingSpawns>();
+        app.init_resource::<crate::map::galaxy::Addresses>();
         app.init_resource::<ResidentCells>();
         app.init_resource::<Entered>();
         app.init_resource::<crate::map::selection::Selection>();
@@ -2915,5 +3112,46 @@ mod tests {
             dropping(&mut app).is_empty(),
             "the selection was carried off by a stale eviction"
         );
+    }
+
+    /// A pass that found nothing to do is not done again until something it
+    /// reads moves, and is done again the frame something does
+    ///
+    /// Stood still, the walk used to re-decide every mark it had decided the
+    /// frame before. What it may not do in its place is miss a move: the
+    /// eviction it would queue is the sign it ran. Cleared by hand between
+    /// frames, it comes back only from a pass that ran.
+    #[test]
+    fn a_settled_pass_waits_for_something_to_move() {
+        use crate::map::galaxy::tests::system;
+
+        let mut app = walking();
+        app.world_mut().spawn(system(1));
+        app.update();
+        assert_eq!(dropping(&mut app), vec![1], "the first pass never ran");
+
+        let cleared = |app: &mut App| {
+            app.world_mut().resource_mut::<PendingEvictions>().0.clear();
+        };
+        cleared(&mut app);
+        app.update();
+        assert!(dropping(&mut app).is_empty(), "a still frame was walked");
+
+        // A setting it reads.
+        app.world_mut().resource_mut::<crate::map::filter::DimTo>().0 = 0.5;
+        app.update();
+        assert_eq!(dropping(&mut app), vec![1], "a changed dim was missed");
+
+        // And the camera, which is written every frame whether it moves or
+        // not and so is compared rather than asked.
+        cleared(&mut app);
+        app.update();
+        assert!(dropping(&mut app).is_empty(), "a still frame was walked");
+        let mut cameras = app.world_mut().query::<&mut OrbitCamera>();
+        for mut camera in cameras.iter_mut(app.world_mut()) {
+            camera.stands_at(DVec3::new(10., 0., 0.));
+        }
+        app.update();
+        assert_eq!(dropping(&mut app), vec![1], "a moved camera was missed");
     }
 }

@@ -9,7 +9,7 @@
 //!
 //! **The frame's budget is the screen.** Marks on a grid of [`MERGE_PX`]
 //! fill the viewport, so the frame carries area over pitch squared of them
-//! — 57,600 on a 1280x720 frame — and [`share`] spreads that total over
+//! — 57,600 on a 1280x720 frame — and [`Share`] spreads that total over
 //! the population in reach. Nothing in here is a per-cell cap: where the
 //! sky is dense the marks land closer than the pitch and read as a brighter
 //! patch, which is what a dense sky looks like.
@@ -17,58 +17,84 @@
 use crate::core::geometry::CellId;
 use crate::read::resident::Quick;
 use crate::read::walk::{MERGE_PX, View};
+use glam::DVec3;
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
 
-/// How many marks the frame itself carries
-///
-/// A *total*, not a density: how those marks are spread over the frame is
-/// [`share`]'s to say.
-pub fn frame_marks(view: &View) -> f64 {
-    let [width, height] = frame(view);
-    width * height / (MERGE_PX * MERGE_PX)
-}
+impl View {
+    /// How many marks the frame itself carries
+    ///
+    /// A *total*, not a density: how those marks are spread over the frame
+    /// is [`Share`]'s to say.
+    pub fn marks(&self) -> f64 {
+        let [width, height] = self.frame_px();
+        width * height / (MERGE_PX * MERGE_PX)
+    }
 
-/// How many marks a crowded sky may fill the frame with
-///
-/// **A mark to a patch of sky keeps a picture honest; it does not keep
-/// it readable.** One mark to every [`MERGE_PX`] squared of frame is
-/// the most that can be drawn without marks landing on one another,
-/// and a view down the length of a populated bubble wants every one of
-/// them: measured over `.index/full` at a reach of five hundred light
-/// years, the populated sky asks for more marks than the frame has
-/// patches and fills solid, which is too dense to read.
-///
-/// So the densest views are given a share of the frame rather than the
-/// whole of it, and what fills that share is the busiest first, which
-/// is what the mode is *for*. Measured over `.index/full` on an
-/// 800×600 frame, whose whole is 30,000 marks:
-///
-/// | share | 100 ly, of 8,113 | 500 ly, of 116,511 |
-/// |---|---|---|
-/// | all | 8,016 | 30,000, the frame full |
-/// | a half | 8,016 | 15,000 |
-/// | **a third** | **8,016** | **10,000** |
-/// | a quarter | 7,500, clipped | 7,500 |
-///
-/// A third: it costs the sparse view nothing at all — a hundred light
-/// years wants 8,016 marks and is drawn whole — and halves the crowded
-/// one. A quarter starts clipping views that are not the problem,
-/// which is the line this must not cross: thinning is for the sky that
-/// is too full to read, and a sky that reads well is left alone.
-pub fn crowded_marks(view: &View) -> f64 {
-    frame_marks(view) / 3.0
-}
+    /// How many marks a crowded sky may fill the frame with
+    ///
+    /// **A mark to a patch of sky keeps a picture honest; it does not keep
+    /// it readable.** One mark to every [`MERGE_PX`] squared of frame is
+    /// the most that can be drawn without marks landing on one another,
+    /// and a view down the length of a populated bubble wants every one of
+    /// them: measured over `.index/full` at a reach of five hundred light
+    /// years, the populated sky asks for more marks than the frame has
+    /// patches and fills solid, which is too dense to read.
+    ///
+    /// So the densest views are given a share of the frame rather than the
+    /// whole of it, and what fills that share is the busiest first, which
+    /// is what the mode is *for*. Measured over `.index/full` on an
+    /// 800×600 frame, whose whole is 30,000 marks:
+    ///
+    /// | share | 100 ly, of 8,113 | 500 ly, of 116,511 |
+    /// |---|---|---|
+    /// | all | 8,016 | 30,000, the frame full |
+    /// | a half | 8,016 | 15,000 |
+    /// | **a third** | **8,016** | **10,000** |
+    /// | a quarter | 7,500, clipped | 7,500 |
+    ///
+    /// A third: it costs the sparse view nothing at all — a hundred light
+    /// years wants 8,016 marks and is drawn whole — and halves the crowded
+    /// one. A quarter starts clipping views that are not the problem,
+    /// which is the line this must not cross: thinning is for the sky that
+    /// is too full to read, and a sky that reads well is left alone.
+    pub fn crowded_marks(&self) -> f64 {
+        self.marks() / 3.0
+    }
 
-/// The frame in whole pixels
-///
-/// Rounded, because the aspect is a ratio of two pixel counts held as a
-/// `f32` and 1280 over 720 comes back as 1280.0000095: a frame a
-/// ten-thousandth of a pixel wider than it is has one more column of tiles
-/// than it has room for.
-fn frame(view: &View) -> [f64; 2] {
-    let height = f64::from(view.viewport_height);
-    [(height * f64::from(view.aspect)).round(), height]
+    /// The frame in whole pixels
+    ///
+    /// Rounded, because the aspect is a ratio of two pixel counts held as a
+    /// `f32` and 1280 over 720 comes back as 1280.0000095: a frame a
+    /// ten-thousandth of a pixel wider than it is has one more column of tiles
+    /// than it has room for.
+    fn frame_px(&self) -> [f64; 2] {
+        let height = f64::from(self.viewport_height);
+        [(height * f64::from(self.aspect)).round(), height]
+    }
+
+    /// Where a position lands on screen, in pixels from the top left, or
+    /// [`None`] where it is behind the eye.
+    ///
+    /// The map's own projection, read off the same [`View`] the walk is
+    /// given, so what this says a mark's place is and what the renderer
+    /// draws cannot come apart.
+    pub fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+        let forward = DVec3::from(self.forward).normalize_or_zero();
+        let right = forward.cross(DVec3::from(self.up)).normalize_or_zero();
+        let up = right.cross(forward);
+        let from = DVec3::from(at) - DVec3::from(self.eye);
+        let ahead = from.dot(forward);
+        if ahead <= 0.0 {
+            return None;
+        }
+        let focal = self.pixels_per_radian();
+        let [width, height] = self.frame_px();
+        Some([
+            width / 2.0 + from.dot(right) / ahead * focal,
+            height / 2.0 - from.dot(up) / ahead * focal,
+        ])
+    }
 }
 
 /// What share of the systems in reach the frame draws
@@ -89,42 +115,60 @@ fn frame(view: &View) -> [f64; 2] {
 /// hole exactly where the most systems are. Population is the only one of
 /// the three that is monotone in density.
 ///
-/// No clamp anywhere in it. A cell draws `share` of its own payload and can
-/// never be asked for more than it holds. Clamping a coarse cell's ask up to
-/// its whole payload while its neighbour serves a few per cent draws
+/// No clamp anywhere in it. A cell draws the share of its own payload and
+/// can never be asked for more than it holds. Clamping a coarse cell's ask
+/// up to its whole payload while its neighbour serves a few per cent draws
 /// hard-edged cubes.
-pub fn share(population: u64, capacity: f64) -> f64 {
-    if population == 0 {
-        return 1.;
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct Share(f64);
+
+impl Share {
+    /// The share of `population` systems a frame of `capacity` marks draws,
+    /// never more than all of them.
+    pub fn of(population: u64, capacity: f64) -> Share {
+        if population == 0 {
+            return Share(1.);
+        }
+        Share((capacity / population as f64).min(1.))
     }
-    (capacity / population as f64).min(1.)
+
+    /// This share taken again by `by`, as a merged mark's blend takes it.
+    pub fn scaled(self, by: f64) -> Share {
+        Share(self.0 * by)
+    }
+
+    /// The fraction itself, in `0..=1` for any share [`of`](Self::of) made.
+    pub fn fraction(self) -> f64 {
+        self.0
+    }
+
+    /// How many marks a cell of `held` systems draws at this share, without
+    /// a rounding cliff
+    ///
+    /// `share * held` is rarely a whole number, and rounding it down loses
+    /// every cell that wants less than one mark — which at a wide zoom is
+    /// most of them, and a whole sparse sky with them. Rounding up instead
+    /// hands every cell a mark it has not earned, and a wide view holds
+    /// hundreds of thousands of cells.
+    ///
+    /// So the fraction is dithered against the cell's own address: a cell
+    /// that wants a third of a mark draws one in a third of the places
+    /// rather than nowhere or everywhere. Off the address and not off a
+    /// clock, so the answer is the same for the same cell at the same zoom
+    /// and the set moves by marks arriving and leaving rather than by
+    /// flickering.
+    pub fn wanted(self, held: usize, id: CellId) -> usize {
+        ((self.0 * held as f64 + dither(id)) as usize).min(held)
+    }
 }
 
-/// How many marks a cell of `held` systems draws at `share`, without a
-/// rounding cliff
-///
-/// `share * held` is rarely a whole number, and rounding it down loses
-/// every cell that wants less than one mark — which at a wide zoom is most
-/// of them, and a whole sparse sky with them. Rounding up instead hands
-/// every cell a mark it has not earned, and a wide view holds hundreds of
-/// thousands of cells.
-///
-/// So the fraction is dithered against the cell's own address: a cell that
-/// wants a third of a mark draws one in a third of the places rather than
-/// nowhere or everywhere. Off the address and not off a clock, so the
-/// answer is the same for the same cell at the same zoom and the set moves
-/// by marks arriving and leaving rather than by flickering.
-pub fn wanted(share: f64, held: usize, id: CellId) -> usize {
-    ((share * held as f64 + dither(id)) as usize).min(held)
-}
-
-/// A cell's own place in `0..1`, for [`wanted`]'s rounding
+/// A cell's own place in `0..1`, for [`Share::wanted`]'s rounding
 ///
 /// SplitMix64's finalizer over the address, which is anything but uniform —
 /// a cell id is a level and three grid coordinates, so its low bits are
 /// position — and the top twenty-four bits of the mix, which is all that is
 /// wanted of it.
-pub(crate) fn dither(id: CellId) -> f64 {
+fn dither(id: CellId) -> f64 {
     let mut z = id.morton().wrapping_add(u64::from(id.level));
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -148,51 +192,8 @@ pub(crate) fn dither(id: CellId) -> f64 {
 ///
 /// It also bounds the cost. One mark a tile over a 1280x720 frame is 920
 /// marks at most, forty tiles by twenty-three, about a sixtieth of
-/// [`frame_marks`], whatever the tree holds.
+/// [`View::marks`], whatever the tree holds.
 pub const TILE_PX: f64 = 32.0;
-
-impl View {
-    /// Where a position lands on screen, in pixels from the top left, or
-    /// [`None`] where it is behind the eye.
-    ///
-    /// The map's own projection, read off the same [`View`] the walk is
-    /// given, so what this says a mark's place is and what the renderer
-    /// draws cannot come apart.
-    pub fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
-        let forward = unit(self.forward);
-        let right = unit(cross(forward, self.up));
-        let up = cross(right, forward);
-        let from =
-            [at[0] - self.eye[0], at[1] - self.eye[1], at[2] - self.eye[2]];
-        let ahead = dot(from, forward);
-        if ahead <= 0.0 {
-            return None;
-        }
-        let focal = self.pixels_per_radian();
-        let [width, height] = frame(self);
-        Some([
-            width / 2.0 + dot(from, right) / ahead * focal,
-            height / 2.0 - dot(from, up) / ahead * focal,
-        ])
-    }
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn unit(v: [f64; 3]) -> [f64; 3] {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len == 0.0 { v } else { [v[0] / len, v[1] / len, v[2] / len] }
-}
 
 /// One mark to a mark's worth of screen, for a draw whose marks are not
 /// thinned by the merge frontier
@@ -328,7 +329,7 @@ struct Tile {
 ///
 /// **A void and an empty patch of sky are different things, and the share
 /// alone cannot tell them apart.** The thinning is there because marks
-/// collide: the frame carries [`frame_marks`] of them and the sky in reach
+/// collide: the frame carries [`View::marks`] of them and the sky in reach
 /// holds millions, so a cell is cut to the fraction of the screen it can
 /// have. But a cell standing alone off the galactic plane collides with
 /// nothing — there is no second mark competing for its pixel — and cutting
@@ -366,7 +367,7 @@ pub struct Empty {
 impl Empty {
     /// A grid over `view`, one entry to [`TILE_PX`] squared.
     pub fn over(view: &View) -> Empty {
-        let [width, height] = frame(view);
+        let [width, height] = view.frame_px();
         let across = (width / TILE_PX).ceil().max(1.0) as usize;
         let down = (height / TILE_PX).ceil().max(1.0) as usize;
         Empty { tiles: vec![Tile::default(); across * down], across, down }
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn the_share_follows_the_population() {
         let view = framed(1280., 720.);
-        let capacity = frame_marks(&view);
+        let capacity = view.marks();
         assert!(
             (capacity - 57_600.).abs() < 1.,
             "a 1280x720 frame carries {capacity} marks at {MERGE_PX} px"
@@ -494,22 +495,30 @@ mod tests {
 
         // A tenth of the sky in reach can be drawn: a sparse cell of ten
         // draws one and a dense one of ten thousand draws a thousand.
-        let tenth = share(capacity as u64 * 10, capacity);
-        assert!((tenth - 0.1).abs() < 1e-9, "the share came out at {tenth}");
+        let tenth = Share::of(capacity as u64 * 10, capacity);
+        let fraction = tenth.fraction();
+        assert!(
+            (fraction - 0.1).abs() < 1e-9,
+            "the share came out at {fraction}"
+        );
         let sparse = CellId::of_point([0., 0., -100.], 8);
         let dense = CellId::of_point([0., 0., -200.], 8);
-        assert_eq!(wanted(tenth, 10_000, dense), 1_000);
+        assert_eq!(tenth.wanted(10_000, dense), 1_000);
         assert!(
-            wanted(tenth, 10, sparse) <= 2,
+            tenth.wanted(10, sparse) <= 2,
             "a cell of ten drew {} at a tenth",
-            wanted(tenth, 10, sparse)
+            tenth.wanted(10, sparse)
         );
 
         // Nothing is ever asked for more than it holds, and a frame with
         // room for everything draws everything.
-        let whole = share(100, capacity);
-        assert_eq!(whole, 1., "a sky the frame can hold was thinned");
-        assert_eq!(wanted(whole, 40, dense), 40, "a cell was over-asked");
+        let whole = Share::of(100, capacity);
+        assert_eq!(
+            whole.fraction(),
+            1.,
+            "a sky the frame can hold was thinned"
+        );
+        assert_eq!(whole.wanted(40, dense), 40, "a cell was over-asked");
     }
 
     /// A cell wanting less than one mark draws one in that fraction of the
@@ -533,7 +542,7 @@ mod tests {
             .collect();
         for share in [0.02_f64, 0.25, 0.7] {
             let drew: usize =
-                cells.iter().map(|&id| wanted(share, 1, id)).sum();
+                cells.iter().map(|&id| Share(share).wanted(1, id)).sum();
             let rate = drew as f64 / cells.len() as f64;
             assert!(
                 (rate / share - 1.).abs() < 0.1,
@@ -542,7 +551,7 @@ mod tests {
         }
         // And the same cell answers the same way twice.
         for &id in cells.iter().take(64) {
-            assert_eq!(wanted(0.3, 7, id), wanted(0.3, 7, id));
+            assert_eq!(Share(0.3).wanted(7, id), Share(0.3).wanted(7, id));
         }
     }
 
@@ -813,13 +822,13 @@ mod drawing {
             .map(|mark| u64::from(mark.slice))
             .chain(needed.blobs.iter().map(|blob| blob.count))
             .sum();
-        let share = share(population, frame_marks(view));
+        let share = Share::of(population, view.marks());
 
         // One pass to settle which patches of sky the frame leaves dark,
         // over both kinds of cell, and then the draw.
         let mut lighting = Empty::over(view);
         for (offer, mark) in needed.marks.iter().enumerate() {
-            match wanted(share, mark.slice as usize, mark.id) {
+            match share.wanted(mark.slice as usize, mark.id) {
                 0 => lighting.offered(
                     view,
                     mark.at,
@@ -831,7 +840,8 @@ mod drawing {
         }
         for (offer, blob) in needed.blobs.iter().enumerate() {
             let offer = (needed.marks.len() + offer) as u32;
-            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+            match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
+            {
                 0 => lighting.offered(view, blob.at, blob.count, offer),
                 _ => lighting.drew(view, blob.at, 1),
             }
@@ -840,12 +850,13 @@ mod drawing {
 
         let mut marks = Vec::new();
         for mark in &needed.marks {
-            for _ in 0..wanted(share, mark.slice as usize, mark.id) {
+            for _ in 0..share.wanted(mark.slice as usize, mark.id) {
                 marks.push(mark.at);
             }
         }
         for blob in &needed.blobs {
-            if wanted(share * blob.blend, blob.count as usize, blob.id) > 0 {
+            if share.scaled(blob.blend).wanted(blob.count as usize, blob.id) > 0
+            {
                 marks.push(blob.at);
             }
         }

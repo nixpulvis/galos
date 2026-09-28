@@ -90,9 +90,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::read::inhabited::{
-    Inhabited, allegiance_at, government_at, security_at,
-};
+use galos_index::read::inhabited::{Bucketed, Inhabited};
 use galos_index::tree::cell::UNIFORM_SPAN;
 
 pub fn plugin(app: &mut App) {
@@ -842,17 +840,17 @@ pub(crate) fn political(
     match color_by {
         ColorBy::Allegiance => {
             for (bucket, count) in held.allegiance().iter().enumerate() {
-                over(Hue::allegiance(allegiance_at(bucket)), *count);
+                over(Hue::allegiance(Bucketed::at(bucket)), *count);
             }
         }
         ColorBy::Government => {
             for (bucket, count) in held.government().iter().enumerate() {
-                over(Hue::government(government_at(bucket)), *count);
+                over(Hue::government(Bucketed::at(bucket)), *count);
             }
         }
         ColorBy::Security => {
             for (bucket, count) in held.security().iter().enumerate() {
-                over(Hue::security(security_at(bucket)), *count);
+                over(Hue::security(Bucketed::at(bucket)), *count);
             }
         }
     }

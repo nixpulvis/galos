@@ -39,134 +39,146 @@
 
 use crate::core::geometry::CellId;
 use crate::core::moments::Moments;
+use crate::read::resident::Quick;
 use crate::records::PopulatedSystem;
 use crate::tree::index::Index;
 use elite_journal::prelude::{Allegiance, Government, Security};
 use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
-/// Buckets the allegiance histogram counts in: one a variant, plus one for a
-/// system whose allegiance nothing has reported.
+/// A political reading a histogram counts in buckets: one a variant, plus
+/// bucket zero for a system nothing has reported it of.
 ///
-/// Bucket zero is that unknown, and it is not the same fact as
-/// [`Allegiance::None`], which is the game saying a populated system answers
-/// to nobody. Both draw grey and the two are kept apart anyway, for the same
-/// reason an absent `factions.bin` is not an empty one.
-pub(crate) const ALLEGIANCE_BUCKETS: usize = 11;
-
-/// Buckets the government histogram counts in, plus one unknown at zero.
-pub(crate) const GOVERNMENT_BUCKETS: usize = 18;
-
-/// Buckets the security histogram counts in, plus one unknown at zero.
-pub(crate) const SECURITY_BUCKETS: usize = 6;
-
-/// Which bucket a system's allegiance counts in.
+/// Zero is not the same fact as the variant `None`, which is the game saying
+/// a populated system has none: both draw grey and the two are kept apart
+/// anyway, for the same reason an absent `factions.bin` is not an empty one.
 ///
-/// A `match` and never a comparison: `Allegiance` carries a hand-written
-/// `PartialEq` under which `None != None`, so `==` answers falsely for the one
-/// variant a histogram most needs to place.
-pub fn allegiance_bucket(allegiance: Option<Allegiance>) -> usize {
-    match allegiance {
-        None => 0,
-        Some(Allegiance::Alliance) => 1,
-        Some(Allegiance::Empire) => 2,
-        Some(Allegiance::Federation) => 3,
-        Some(Allegiance::Guardian) => 4,
-        Some(Allegiance::Independent) => 5,
-        Some(Allegiance::PilotsFederation) => 6,
-        Some(Allegiance::PlayerPilots) => 7,
-        Some(Allegiance::Thargoid) => 8,
-        Some(Allegiance::FrontlineSolutions) => 9,
-        Some(Allegiance::None) => 10,
+/// A trait because the readings are `elite_journal`'s types, which take no
+/// inherent methods here. Each impl is a `match` and never a comparison:
+/// `Allegiance` carries a hand-written `PartialEq` under which
+/// `None != None`, so `==` answers falsely for the one variant a histogram
+/// most needs to place.
+pub trait Bucketed: Sized {
+    /// How many buckets, the unknown at zero included.
+    const BUCKETS: usize;
+
+    /// Which bucket a system's reading counts in.
+    fn bucket(of: Option<Self>) -> usize;
+
+    /// The reading a bucket counts: the inverse of [`bucket`](Self::bucket),
+    /// so a view can name the colour a bucket is drawn in.
+    fn at(bucket: usize) -> Option<Self>;
+}
+
+impl Bucketed for Allegiance {
+    const BUCKETS: usize = 11;
+
+    fn bucket(of: Option<Allegiance>) -> usize {
+        match of {
+            None => 0,
+            Some(Allegiance::Alliance) => 1,
+            Some(Allegiance::Empire) => 2,
+            Some(Allegiance::Federation) => 3,
+            Some(Allegiance::Guardian) => 4,
+            Some(Allegiance::Independent) => 5,
+            Some(Allegiance::PilotsFederation) => 6,
+            Some(Allegiance::PlayerPilots) => 7,
+            Some(Allegiance::Thargoid) => 8,
+            Some(Allegiance::FrontlineSolutions) => 9,
+            Some(Allegiance::None) => 10,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<Allegiance> {
+        match bucket {
+            1 => Some(Allegiance::Alliance),
+            2 => Some(Allegiance::Empire),
+            3 => Some(Allegiance::Federation),
+            4 => Some(Allegiance::Guardian),
+            5 => Some(Allegiance::Independent),
+            6 => Some(Allegiance::PilotsFederation),
+            7 => Some(Allegiance::PlayerPilots),
+            8 => Some(Allegiance::Thargoid),
+            9 => Some(Allegiance::FrontlineSolutions),
+            10 => Some(Allegiance::None),
+            _ => None,
+        }
     }
 }
 
-/// The allegiance a bucket counts: the inverse of [`allegiance_bucket`], so a
-/// view can name the colour a bucket is drawn in.
-pub fn allegiance_at(bucket: usize) -> Option<Allegiance> {
-    match bucket {
-        1 => Some(Allegiance::Alliance),
-        2 => Some(Allegiance::Empire),
-        3 => Some(Allegiance::Federation),
-        4 => Some(Allegiance::Guardian),
-        5 => Some(Allegiance::Independent),
-        6 => Some(Allegiance::PilotsFederation),
-        7 => Some(Allegiance::PlayerPilots),
-        8 => Some(Allegiance::Thargoid),
-        9 => Some(Allegiance::FrontlineSolutions),
-        10 => Some(Allegiance::None),
-        _ => None,
+impl Bucketed for Government {
+    const BUCKETS: usize = 18;
+
+    fn bucket(of: Option<Government>) -> usize {
+        match of {
+            None => 0,
+            Some(Government::Anarchy) => 1,
+            Some(Government::Communism) => 2,
+            Some(Government::Confederacy) => 3,
+            Some(Government::Cooperative) => 4,
+            Some(Government::Corporate) => 5,
+            Some(Government::Democracy) => 6,
+            Some(Government::Dictatorship) => 7,
+            Some(Government::Feudal) => 8,
+            Some(Government::Patronage) => 9,
+            Some(Government::Prison) => 10,
+            Some(Government::PrisonColony) => 11,
+            Some(Government::Theocracy) => 12,
+            Some(Government::Engineer) => 13,
+            Some(Government::Carrier) => 14,
+            Some(Government::Megaconstruction) => 15,
+            Some(Government::PrivateOwnership) => 16,
+            Some(Government::None) => 17,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<Government> {
+        match bucket {
+            1 => Some(Government::Anarchy),
+            2 => Some(Government::Communism),
+            3 => Some(Government::Confederacy),
+            4 => Some(Government::Cooperative),
+            5 => Some(Government::Corporate),
+            6 => Some(Government::Democracy),
+            7 => Some(Government::Dictatorship),
+            8 => Some(Government::Feudal),
+            9 => Some(Government::Patronage),
+            10 => Some(Government::Prison),
+            11 => Some(Government::PrisonColony),
+            12 => Some(Government::Theocracy),
+            13 => Some(Government::Engineer),
+            14 => Some(Government::Carrier),
+            15 => Some(Government::Megaconstruction),
+            16 => Some(Government::PrivateOwnership),
+            17 => Some(Government::None),
+            _ => None,
+        }
     }
 }
 
-/// Which bucket a system's government counts in.
-pub fn government_bucket(government: Option<Government>) -> usize {
-    match government {
-        None => 0,
-        Some(Government::Anarchy) => 1,
-        Some(Government::Communism) => 2,
-        Some(Government::Confederacy) => 3,
-        Some(Government::Cooperative) => 4,
-        Some(Government::Corporate) => 5,
-        Some(Government::Democracy) => 6,
-        Some(Government::Dictatorship) => 7,
-        Some(Government::Feudal) => 8,
-        Some(Government::Patronage) => 9,
-        Some(Government::Prison) => 10,
-        Some(Government::PrisonColony) => 11,
-        Some(Government::Theocracy) => 12,
-        Some(Government::Engineer) => 13,
-        Some(Government::Carrier) => 14,
-        Some(Government::Megaconstruction) => 15,
-        Some(Government::PrivateOwnership) => 16,
-        Some(Government::None) => 17,
-    }
-}
+impl Bucketed for Security {
+    const BUCKETS: usize = 6;
 
-/// The government a bucket counts: the inverse of [`government_bucket`].
-pub fn government_at(bucket: usize) -> Option<Government> {
-    match bucket {
-        1 => Some(Government::Anarchy),
-        2 => Some(Government::Communism),
-        3 => Some(Government::Confederacy),
-        4 => Some(Government::Cooperative),
-        5 => Some(Government::Corporate),
-        6 => Some(Government::Democracy),
-        7 => Some(Government::Dictatorship),
-        8 => Some(Government::Feudal),
-        9 => Some(Government::Patronage),
-        10 => Some(Government::Prison),
-        11 => Some(Government::PrisonColony),
-        12 => Some(Government::Theocracy),
-        13 => Some(Government::Engineer),
-        14 => Some(Government::Carrier),
-        15 => Some(Government::Megaconstruction),
-        16 => Some(Government::PrivateOwnership),
-        17 => Some(Government::None),
-        _ => None,
+    fn bucket(of: Option<Security>) -> usize {
+        match of {
+            None => 0,
+            Some(Security::High) => 1,
+            Some(Security::Medium) => 2,
+            Some(Security::Low) => 3,
+            Some(Security::Anarchy) => 4,
+            Some(Security::None) => 5,
+        }
     }
-}
 
-/// Which bucket a system's security rating counts in.
-pub fn security_bucket(security: Option<Security>) -> usize {
-    match security {
-        None => 0,
-        Some(Security::High) => 1,
-        Some(Security::Medium) => 2,
-        Some(Security::Low) => 3,
-        Some(Security::Anarchy) => 4,
-        Some(Security::None) => 5,
-    }
-}
-
-/// The security rating a bucket counts: the inverse of [`security_bucket`].
-pub fn security_at(bucket: usize) -> Option<Security> {
-    match bucket {
-        1 => Some(Security::High),
-        2 => Some(Security::Medium),
-        3 => Some(Security::Low),
-        4 => Some(Security::Anarchy),
-        5 => Some(Security::None),
-        _ => None,
+    fn at(bucket: usize) -> Option<Security> {
+        match bucket {
+            1 => Some(Security::High),
+            2 => Some(Security::Medium),
+            3 => Some(Security::Low),
+            4 => Some(Security::Anarchy),
+            5 => Some(Security::None),
+            _ => None,
+        }
     }
 }
 
@@ -193,11 +205,11 @@ pub struct Inhabited {
     /// political field splats from and the spread of its footprint.
     settled: Moments,
     /// Inhabited systems per allegiance bucket. Sums to `count`.
-    allegiance: [u32; ALLEGIANCE_BUCKETS],
+    allegiance: [u32; Allegiance::BUCKETS],
     /// Inhabited systems per government bucket. Sums to `count`.
-    government: [u32; GOVERNMENT_BUCKETS],
+    government: [u32; Government::BUCKETS],
     /// Inhabited systems per security bucket. Sums to `count`.
-    security: [u32; SECURITY_BUCKETS],
+    security: [u32; Security::BUCKETS],
 }
 
 impl Inhabited {
@@ -205,9 +217,9 @@ impl Inhabited {
     pub const ZERO: Inhabited = Inhabited {
         count: 0,
         settled: Moments::ZERO,
-        allegiance: [0; ALLEGIANCE_BUCKETS],
-        government: [0; GOVERNMENT_BUCKETS],
-        security: [0; SECURITY_BUCKETS],
+        allegiance: [0; Allegiance::BUCKETS],
+        government: [0; Government::BUCKETS],
+        security: [0; Security::BUCKETS],
     };
 
     /// One inhabited system's contribution: one unit of weight at its
@@ -223,12 +235,12 @@ impl Inhabited {
         government: Option<Government>,
         security: Option<Security>,
     ) -> Inhabited {
-        let mut a = [0; ALLEGIANCE_BUCKETS];
-        a[allegiance_bucket(allegiance)] = 1;
-        let mut g = [0; GOVERNMENT_BUCKETS];
-        g[government_bucket(government)] = 1;
-        let mut s = [0; SECURITY_BUCKETS];
-        s[security_bucket(security)] = 1;
+        let mut a = [0; Allegiance::BUCKETS];
+        a[Allegiance::bucket(allegiance)] = 1;
+        let mut g = [0; Government::BUCKETS];
+        g[Government::bucket(government)] = 1;
+        let mut s = [0; Security::BUCKETS];
+        s[Security::bucket(security)] = 1;
         Inhabited {
             count: 1,
             settled: Moments::point(1.0, position),
@@ -314,19 +326,19 @@ impl Inhabited {
     }
 
     /// Inhabited systems per allegiance bucket, which a political view resolves
-    /// its colour from. Index with [`allegiance_bucket`], name with
-    /// [`allegiance_at`].
-    pub fn allegiance(&self) -> &[u32; ALLEGIANCE_BUCKETS] {
+    /// its colour from. Index with [`Allegiance::bucket`](Bucketed::bucket), name with
+    /// [`Allegiance::at`](Bucketed::at).
+    pub fn allegiance(&self) -> &[u32; Allegiance::BUCKETS] {
         &self.allegiance
     }
 
     /// Inhabited systems per government bucket.
-    pub fn government(&self) -> &[u32; GOVERNMENT_BUCKETS] {
+    pub fn government(&self) -> &[u32; Government::BUCKETS] {
         &self.government
     }
 
     /// Inhabited systems per security bucket.
-    pub fn security(&self) -> &[u32; SECURITY_BUCKETS] {
+    pub fn security(&self) -> &[u32; Security::BUCKETS] {
         &self.security
     }
 }
@@ -348,7 +360,7 @@ impl FromIterator<Inhabited> for Inhabited {
 /// tens of thousands of a few hundred thousand — and a cell absent from here
 /// reads as [`Inhabited::ZERO`], which is what it is.
 #[derive(Clone, Debug, Default)]
-pub struct Inhabitance(HashMap<CellId, Inhabited>);
+pub struct Inhabitance(HashMap<CellId, Inhabited, BuildHasherDefault<Quick>>);
 
 impl Inhabitance {
     /// Roll every inhabited system in `rows` up the tree it falls in.
@@ -374,7 +386,8 @@ impl Inhabitance {
         index: &Index,
         rows: impl IntoIterator<Item = &'a PopulatedSystem>,
     ) -> Inhabitance {
-        let mut held: HashMap<CellId, Inhabited> = HashMap::new();
+        let mut held: HashMap<CellId, Inhabited, BuildHasherDefault<Quick>> =
+            HashMap::default();
         for row in rows {
             if row.population == 0 {
                 continue;
@@ -463,7 +476,7 @@ mod tests {
         assert!(close3(a.centroid().unwrap(), [1.0, 2.0, 3.0]));
         assert!(close(a.spread(), 0.0));
         assert_eq!(
-            a.allegiance()[allegiance_bucket(Some(Allegiance::Empire))],
+            a.allegiance()[Allegiance::bucket(Some(Allegiance::Empire))],
             1
         );
         assert_eq!(a.allegiance().iter().sum::<u32>(), 1);
@@ -475,15 +488,14 @@ mod tests {
     /// are tight: no variant shares a bucket and no bucket goes unused.
     #[test]
     fn the_buckets_round_trip() {
-        for bucket in 0..ALLEGIANCE_BUCKETS {
-            assert_eq!(allegiance_bucket(allegiance_at(bucket)), bucket);
+        fn round_trips<T: Bucketed>() {
+            for bucket in 0..T::BUCKETS {
+                assert_eq!(T::bucket(T::at(bucket)), bucket);
+            }
         }
-        for bucket in 0..GOVERNMENT_BUCKETS {
-            assert_eq!(government_bucket(government_at(bucket)), bucket);
-        }
-        for bucket in 0..SECURITY_BUCKETS {
-            assert_eq!(security_bucket(security_at(bucket)), bucket);
-        }
+        round_trips::<Allegiance>();
+        round_trips::<Government>();
+        round_trips::<Security>();
     }
 
     /// The game saying "no allegiance" is not the same fact as nothing having
@@ -492,8 +504,8 @@ mod tests {
     #[test]
     fn unreported_and_unaligned_are_different_buckets() {
         assert_ne!(
-            allegiance_bucket(None),
-            allegiance_bucket(Some(Allegiance::None))
+            Allegiance::bucket(None),
+            Allegiance::bucket(Some(Allegiance::None))
         );
         let unreported = of([0.0; 3], None);
         let unaligned = of([0.0; 3], Some(Allegiance::None));

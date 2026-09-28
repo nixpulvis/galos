@@ -38,9 +38,11 @@
 
 use crate::codec::cells::Payload;
 use crate::core::geometry::CellId;
+use crate::read::resident::Quick;
 use crate::tree::index::Index;
 use elite_journal::Boxel;
 use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -86,10 +88,14 @@ pub struct Sky {
 /// it fills, `young` becomes `old` and a fresh one starts. Anything a query
 /// is still reaching for is found in `old` and promoted, so the set a route
 /// actually uses survives, and the bound is twice [`MAPPED_CELLS`].
+/// Mapped payloads by cell, hashed quickly: a route asks this per expansion,
+/// half a million times, and a cell id needs no protection from anyone.
+type Held = HashMap<CellId, Option<Arc<Payload>>, BuildHasherDefault<Quick>>;
+
 #[derive(Default)]
 struct Mapped {
-    young: HashMap<CellId, Option<Arc<Payload>>>,
-    old: HashMap<CellId, Option<Arc<Payload>>>,
+    young: Held,
+    old: Held,
 }
 
 impl Sky {

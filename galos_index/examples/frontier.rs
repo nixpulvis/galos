@@ -32,10 +32,9 @@
 //! the finest cells — which is where the sky is densest.
 
 use galos_index::prelude::{CellId, Index, Mode, View};
-use galos_index::read::screen::{
-    Empty, frame_marks, share as share_of, wanted,
-};
+use galos_index::read::screen::{Empty, Share};
 use galos_index::read::walk::MERGE_PX;
+use glam::DVec3;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -65,66 +64,17 @@ fn looking(at: [f64; 3], back: f64, fov_y: f32) -> View {
     }
 }
 
-/// The camera's basis and focal length: what turns a light-year position
-/// into a pixel.
-struct Lens {
-    eye: [f64; 3],
-    right: [f64; 3],
-    up: [f64; 3],
-    forward: [f64; 3],
-    focal: f64,
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit(v: [f64; 3]) -> [f64; 3] {
-    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    [v[0] / len, v[1] / len, v[2] / len]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-impl Lens {
-    fn of(view: &View) -> Lens {
-        let forward = unit(view.forward);
-        let right = unit(cross(forward, view.up));
-        let up = cross(right, forward);
-        let focal = HIGH as f64 / 2.0 / (f64::from(view.fov_y) / 2.0).tan();
-        Lens { eye: view.eye, right, up, forward, focal }
-    }
-
-    /// Where a position lands, or [`None`] behind the camera.
-    fn at(&self, p: [f64; 3]) -> Option<(f64, f64)> {
-        let v = [p[0] - self.eye[0], p[1] - self.eye[1], p[2] - self.eye[2]];
-        let ahead = dot(v, self.forward);
-        if ahead <= 0.0 {
-            return None;
-        }
-        let x = dot(v, self.right) / ahead * self.focal;
-        let y = dot(v, self.up) / ahead * self.focal;
-        Some((WIDE as f64 / 2.0 + x, HIGH as f64 / 2.0 - y))
-    }
-
-    /// The same eye through a lens `times` as long, aimed at `at`: a
-    /// magnifier held over the picture, not a second picture. The drawn set
-    /// is whatever the walk answered for the eye this was built from.
-    fn magnified(self, at: [f64; 3], times: f64) -> Lens {
-        let forward = unit([
-            at[0] - self.eye[0],
-            at[1] - self.eye[1],
-            at[2] - self.eye[2],
-        ]);
-        let right = unit(cross(forward, [0.0, 1.0, 0.0]));
-        let up = cross(right, forward);
-        Lens { forward, right, up, focal: self.focal * times, ..self }
+/// The same eye through a lens `times` as long, aimed at `at`: a magnifier
+/// held over the picture, not a second picture. The drawn set is whatever
+/// the walk answered for the view this was built from.
+fn magnified(view: &View, at: [f64; 3], times: f64) -> View {
+    let forward = (DVec3::from(at) - DVec3::from(view.eye)).normalize();
+    let half = (f64::from(view.fov_y) / 2.0).tan() / times;
+    View {
+        forward: forward.to_array(),
+        up: [0.0, 1.0, 0.0],
+        fov_y: (2.0 * half.atan()) as f32,
+        ..*view
     }
 }
 
@@ -287,7 +237,7 @@ fn frame(
     dir: &Path,
     view: &View,
     reach: f64,
-    lenses: &[Lens],
+    lenses: &[View],
 ) -> Vec<Shot> {
     let mut tally = Tally::default();
     let at_ly = LOOK_AT;
@@ -310,7 +260,7 @@ fn frame(
             population += blob.count;
         }
     }
-    let share = share_of(population, frame_marks(view));
+    let share = Share::of(population, view.marks());
 
     // The patches of sky the frame leaves dark, settled over the whole
     // plan before anything is drawn: the map's own [`Empty`], and its
@@ -321,7 +271,7 @@ fn frame(
             if !inside(mark.id) {
                 continue;
             }
-            match wanted(share, mark.slice as usize, mark.id) {
+            match share.wanted(mark.slice as usize, mark.id) {
                 0 => lighting.offered(
                     view,
                     mark.at,
@@ -336,7 +286,8 @@ fn frame(
                 continue;
             }
             let offer = (needed.marks.len() + offer) as u32;
-            match wanted(share * blob.blend, blob.count as usize, blob.id) {
+            match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
+            {
                 0 => lighting.offered(view, blob.at, blob.count, offer),
                 _ => lighting.drew(view, blob.at, 1),
             }
@@ -352,7 +303,7 @@ fn frame(
         }
         let count = blob.count;
         let offered = (needed.marks.len() + offer) as u32;
-        if wanted(share * blob.blend, count as usize, blob.id) == 0
+        if share.scaled(blob.blend).wanted(count as usize, blob.id) == 0
             && !is_lit(offered)
         {
             continue;
@@ -370,7 +321,7 @@ fn frame(
         if !inside(id) {
             continue;
         }
-        let take = wanted(share, mark.slice as usize, id);
+        let take = share.wanted(mark.slice as usize, id);
         if take == 0 {
             continue;
         }
@@ -384,12 +335,8 @@ fn frame(
         tally.read += 1;
         tally.points += payload.len();
         for point in &payload {
-            let off = [
-                point.position[0] - at_ly[0],
-                point.position[1] - at_ly[1],
-                point.position[2] - at_ly[2],
-            ];
-            if dot(off, off) > reach * reach {
+            let off = DVec3::from(point.position) - DVec3::from(at_ly);
+            if off.length_squared() > reach * reach {
                 continue;
             }
             tally.drawn += 1;
@@ -412,9 +359,10 @@ fn frame(
     }
 
     println!(
-        "  walk {walked:>8.2?}  read {read:>8.2?}  share {share:.6}  \
+        "  walk {walked:>8.2?}  read {read:>8.2?}  share {:.6}  \
          over {population:>11}  cells read {:>7}  points {:>9}  \
          marks {:>7}  blobs {:>7} lit {:>5} over {:>11}  splats {:>7}",
+        share.fraction(),
         tally.read,
         tally.points,
         tally.drawn,
@@ -446,11 +394,12 @@ struct Shot {
 }
 
 /// Lay the marks down through one lens.
-fn paint(lens: &Lens, marks: &[Mark]) -> Shot {
+fn paint(lens: &View, marks: &[Mark]) -> Shot {
     let mut drawn = Canvas::new();
     let mut tinted = Canvas::new();
     for mark in marks {
-        let Some(at) = lens.at(mark.at) else { continue };
+        let Some([x, y]) = lens.project(mark.at) else { continue };
+        let at = (x, y);
         drawn.dot(at, 0.75, [1.0; 3]);
         let tint = if mark.merged { [0.0, 1.0, 1.0] } else { [1.0; 3] };
         tinted.dot(at, 0.75, tint);
@@ -502,7 +451,6 @@ fn main() {
         let view = looking(LOOK_AT, back, FOV_Y);
         let reach = reach_of(&view, back);
         println!("\n{back:.0} ly back, reach {reach:.0} ly:");
-        let wide = Lens::of(&view);
 
         // And the same drawn set through a lens eight times as long, aimed
         // at a corner of the frontier's own cells. The *walk* is the one
@@ -511,13 +459,13 @@ fn main() {
         // is what makes it a check on the cell face rather than on a
         // different level of detail.
         let level = frontier_level(&view, back);
-        let close = Lens::of(&view).magnified(face_at(level), 8.0);
+        let close = magnified(&view, face_at(level), 8.0);
         println!(
             "  close-up across a level-{level} face ({:.0} ly cells)",
             galos_index::prelude::CellId::edge_at(level),
         );
 
-        let shots = frame(&index, &dir, &view, reach, &[wide, close]);
+        let shots = frame(&index, &dir, &view, reach, &[view, close]);
         for (what, shot) in [("", &shots[0]), ("-face", &shots[1])] {
             write(&out, &format!("{back:.0}{what}"), &shot.marks);
             write(&out, &format!("{back:.0}{what}-tinted"), &shot.tinted);

@@ -54,7 +54,7 @@ use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
 use galos_index::records::{Faction, PopulatedSystem, SystemReach};
 use galos_route::{BoostTable, Boosts, SystemBoost};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -101,7 +101,7 @@ pub struct Stamps {
     delta: Option<Stamp>,
     /// The payloads held, by cell. Kept here rather than beside the payload so
     /// that [`ResidentCells`] stays the walk's set arithmetic and nothing else.
-    cells: HashMap<CellId, Option<Stamp>>,
+    cells: FxHashMap<CellId, Option<Stamp>>,
 }
 
 impl Stamps {
@@ -138,7 +138,7 @@ impl Stamps {
             factions: stamp(Part::Factions).await,
             names: stamp(Part::Names).await,
             delta: stamp(Part::NamesDelta).await,
-            cells: HashMap::new(),
+            cells: FxHashMap::default(),
         }
     }
 

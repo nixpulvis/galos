@@ -70,7 +70,7 @@ pub const SPLIT_FULL_PX: f64 = 1.0;
 /// fall inside one mark is drawn as one aggregate mark
 /// ([`BlobRef`]) instead of being read; a cell wider than that is
 /// descended into, and its own slice draws a share of the frame's one mark
-/// to every `MERGE_PX` squared ([`crate::read::screen::frame_marks`]). Both
+/// to every `MERGE_PX` squared ([`View::marks`]). Both
 /// halves come of the same statement — *marks that would overlap are drawn
 /// as one* — so the drawn count is set by the screen and never by how the
 /// tree happened to fall.
@@ -394,7 +394,7 @@ impl Index {
     /// The two meet: at the frontier a cell's contents fall inside one mark,
     /// which is the blob. How many of a marked cell's systems draw is not
     /// settled here: it is one share of population struck over the whole
-    /// frame ([`crate::read::screen::share`]), the same fraction for every
+    /// frame ([`crate::read::screen::Share`]), the same fraction for every
     /// cell, so two neighbours draw at their own densities and the index's
     /// own boxes do not show through. See [`Needed`].
     ///
@@ -476,7 +476,7 @@ impl Index {
     ///
     /// - **Marks.** `Index::frontier` at [`MERGE_PX`]: the cells whose
     ///   contents fall inside one mark draw as one, and every cell above them
-    ///   draws a share of its own slice ([`crate::read::screen::share`]).
+    ///   draws a share of its own slice ([`crate::read::screen::Share`]).
     /// - **Glow.** A cell splats as one aggregate until its contents' spread
     ///   subtends more than [`SPLIT_PX`]; then it splits into its children,
     ///   cross-faded across the band up to [`SPLIT_FULL_PX`] so neither level
