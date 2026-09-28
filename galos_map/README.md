@@ -148,8 +148,9 @@ The map is quit by closing its window.
 system, per schedule and per render pass, and a frame mark per present — plus
 the map's, which are the work that happens off the main thread and would
 otherwise be unexplained gaps on the pool threads: `index read` (opening),
-`refresh poll`, `cell payload` (one per cell a view change asks for, named
-with it), `region cells` (one per worker of the legacy region fetch, named
+`refresh poll`, `cell payloads` (one per batch of cells a worker reads, named
+with how many), `build batch` (the systems a frame spawns, named and
+coloured on the pool), `region cells` (one per worker of the legacy region fetch, named
 with its share), `route search`, `name search`, `stop lookup` and `bodies
 read`. Those are compiled into every build and go wherever the subscriber
 sends them, which without the feature is nowhere.
@@ -172,6 +173,38 @@ The map first, then the profiler. Until something connects the client holds
 everything it is told, which is what bevy warns about on startup — memory
 grows until it is read — and a profiler already listening when the map starts
 can lose the handshake and exit rather than wait through it.
+
+### Scripted
+
+`profile.py` does the above with nobody at the window: it builds with
+`--features tracy`, flies each scenario through the shot driver
+(`src/dev/shot.rs`) — standing still, zooming out, zooming in, panning,
+turning — captures each with `tracy-capture`, and reads the traces back
+with `tracy-csvexport`. For each it prints the frame times and what the
+slowest tenth of frames spent, by thread and by zone. Traces stay in
+`--out` to be read again or compared.
+
+```sh
+galos_map/profile.py                              # every scenario, 360 frames
+galos_map/profile.py out pan --frames 240 --zone build_glow
+galos_map/profile.py --out /tmp/before && ...     # change something
+galos_map/profile.py --out /tmp/after
+galos_map/profile.py --compare /tmp/before /tmp/after
+```
+
+What to know before reading one:
+
+- A frame is the time between two runs of the shot driver. Rendering runs
+  on the main thread in this build, so it is in the frame with everything
+  else; the pool threads' zones are summed over threads and hold a frame up
+  only through what waits on them.
+- Zones nest, so a zone's time includes the zones inside it.
+- Read a still view's numbers from its end, not its mean: the first seconds
+  are the view loading.
+- A map left over from an earlier run holds Tracy's port, and the capture
+  never connects to the next one; the script kills any before it flies.
+- With the display asleep the frames still run and the trace is good, but
+  the screenshots the driver takes come out black.
 
 `RUST_LOG` replaces bevy's filter whole, and a filter that drops a span drops
 it from the capture as well as from the log, so a run with `RUST_LOG=warn`

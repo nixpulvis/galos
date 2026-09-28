@@ -1,5 +1,8 @@
-//! Throwaway: a scripted capture, so a view can be looked at without a human
-//! at the window.
+//! A scripted camera and a capture, so a view can be looked at, and a flight
+//! profiled, without a human at the window.
+//!
+//! `galos_map/profile.py` flies its scenarios through this; see the README's
+//! Profiling.
 //!
 //! ```sh
 //! GALOS_SHOT=/tmp/shot.png GALOS_SHOT_BACK=30000 \
