@@ -590,10 +590,18 @@ const EVICT_BUDGET: usize = 4096;
 /// follow 68 ns apiece, and despawning without detaching first 7.2 µs apiece —
 /// which is the quadratic. `replace_children_with_difference`, which bevy
 /// documents as the efficient one and which this has exactly the slices for,
-/// measured **45 ms** on the same batch. What would make it cheap is not a
-/// better call but a shallower parent: hang the stars off a grid a cell at a
-/// time rather than all of them off the galaxy, and a detach is a cell's worth
-/// of children instead of the sky's.
+/// measured **45 ms** on the same batch.
+///
+/// **A shallower parent was tried and is worse.** Hanging each index cell's
+/// stars off a grid of its own, at the galaxy's origin with the galaxy's
+/// cells, made every detach a cell's worth — and cost more than it saved
+/// twice over. Over one flight ([`flight`]) the drop went from 1.01 ms a
+/// frame to 1.19 ms, the grids' own spawning and despawning and a detach per
+/// cell outweighing the one long detach. In the running map it was ruinous:
+/// big_space walks every grid's siblings to carry the floating origin
+/// through them, and at the 13,651 grids of a zoom out to sixty thousand
+/// light years that walk was **283 ms a frame** against 0.002 ms with the
+/// galaxy's one.
 ///
 /// Waiting for the queue to be worth a pass was tried and measured: over one
 /// flight ([`flight`]) the pass already fired on 128 frames of
