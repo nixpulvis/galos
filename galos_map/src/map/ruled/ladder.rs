@@ -188,9 +188,18 @@ pub fn numbering(across: f64) -> f64 {
 /// in wherever scales are read. Always a whole multiple of the fine plane's
 /// cell, so that every number written falls on a line rather than between two.
 pub fn tick_step(across: f64) -> f64 {
-    let wanted = (across / TICKS_ACROSS).max(f64::MIN_POSITIVE);
-    let decade = 10f64.powf(wanted.log10().floor());
-    let rung = wanted / decade;
+    roundest((across / TICKS_ACROSS).max(f64::MIN_POSITIVE))
+}
+
+/// The largest of one, two or five times a power of ten that is no more than
+/// `most`
+///
+/// The rung of the ladder under a length, for whatever wants a round length
+/// that fits in a room. Two rungs are never more than two and a half apart,
+/// so what comes back is always more than two fifths of what was asked.
+pub fn roundest(most: f64) -> f64 {
+    let decade = 10f64.powf(most.log10().floor());
+    let rung = most / decade;
     decade
         * if rung >= 5. {
             5.

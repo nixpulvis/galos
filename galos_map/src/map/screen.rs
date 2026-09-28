@@ -93,22 +93,24 @@ pub(crate) fn world_per_pixel(
 ///
 /// One background layer for the readouts, the rings, the names, their grounds
 /// and the leaders alike: a single painter list, filled in the order the
-/// systems writing into it run. There are four of them, and that run order is
+/// systems writing into it run. There are six of them, and that run order is
 /// the stacking — [`crate::map::grid::draw_readouts`] first and under everything,
 /// being the ruling the map is read against rather than anything picked out
-/// on it; then [`crate::map::pointing::ring`], and
+/// on it, with [`crate::map::rose::draw_rose`] straight over it for the same
+/// reason; then [`crate::map::pointing::ring`], and
 /// [`crate::map::selection::ring`] over that, a selection being the
-/// standing mark and a hover the passing one; then [`draw_names`] over the
-/// top, so that no ring or readout row crosses the words. All four are pinned
+/// standing mark and a hover the passing one, with
+/// [`crate::map::galaxy::blobs`]'s ring among them; then [`draw_names`] over the
+/// top, so that no ring or readout row crosses the words. All six are pinned
 /// against one another where they are registered, so none of the stacking is
 /// left to how egui happens to order separate layers or to which painter the
 /// executor happens to reach first.
 ///
 /// A pair left unordered is not a matter of taste: two rings that overlap at
 /// close zoom would stack one way this frame and the other way the next. So a
-/// fifth painter added to this list needs a constraint against all four, not
+/// seventh painter added to this list needs a constraint against all six, not
 /// only against the names it was written to sit under. `crate::ui`'s own
-/// `lettering` and `chrome` follow the four, chained there.
+/// `lettering` and `chrome` follow the six, chained there.
 ///
 /// `Background`, so the whole of it sits under the chrome and over the map.
 /// Which takes the chrome being somewhere else: a layer that is not an area —

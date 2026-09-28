@@ -17,6 +17,7 @@ pub(crate) mod keys;
 pub(crate) mod labels;
 pub(crate) mod paint;
 pub(crate) mod pointing;
+pub(crate) mod rose;
 pub(crate) mod route;
 pub(crate) mod ruled;
 pub(crate) mod schedule;
@@ -52,6 +53,9 @@ pub fn plugin(app: &mut App) {
     // After the bodies, whose descent into a star is what carries the ruled
     // plane from light years to light seconds.
     app.add_plugins(grid::plugin);
+    // After the grid, whose readouts it is painted over and whose unit it is
+    // measured in.
+    app.add_plugins(rose::plugin);
     app.add_plugins(search::plugin);
     app.add_plugins(keys::plugin);
 }

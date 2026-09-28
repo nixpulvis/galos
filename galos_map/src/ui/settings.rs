@@ -17,6 +17,7 @@ use crate::map::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
 use crate::map::paint::glow::FieldExposure;
 use crate::map::paint::sizing::{ScalePopulation, View};
+use crate::map::rose::ShowRose;
 use crate::ui::widgets::{VALUE_WIDTH, check, fill_width, value_box};
 use crate::ui::{ClockControl, FIELD_GAP, GEAR_ROOM, MARGIN, ShowClock, zone};
 use bevy::ecs::system::SystemParam;
@@ -138,6 +139,7 @@ pub(crate) struct Settings<'w> {
     unit: ResMut<'w, RulerUnit>,
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
+    show_rose: ResMut<'w, ShowRose>,
     bright: ResMut<'w, Bright>,
     spawn_budget: ResMut<'w, SpawnBudget>,
 }
@@ -460,6 +462,20 @@ pub(super) fn settings_body(
             );
         });
     }
+    // Its own switch rather than one under the grid's: the rose is as much
+    // use over a sky with the grid hidden.
+    edited(
+        &mut settings.show_rose,
+        |x| &mut x.0,
+        |on| {
+            check(
+                ui,
+                on,
+                "Compass Rose",
+                "Show which way the galaxy lies, and the scale, in the corner",
+            )
+        },
+    );
 
     // Which of the two ways the sky itself is drawn, and what each of
     // them offers. What is named over it went up to General, a name being
@@ -961,6 +977,7 @@ mod tests {
         world.insert_resource(RulerUnit::default());
         world.insert_resource(ShowMiddle(false));
         world.insert_resource(ShowPicked(false));
+        world.insert_resource(ShowRose(false));
         world.insert_resource(Bright(1.));
         world.insert_resource(DimTo(0.3));
         world.insert_resource(SpawnBudget::default());
@@ -1037,6 +1054,7 @@ mod tests {
                 ("RulerUnit", touched::<RulerUnit>(&world)),
                 ("ShowMiddle", touched::<ShowMiddle>(&world)),
                 ("ShowPicked", touched::<ShowPicked>(&world)),
+                ("ShowRose", touched::<ShowRose>(&world)),
                 ("Bright", touched::<Bright>(&world)),
                 ("DimTo", touched::<DimTo>(&world)),
                 ("SpawnBudget", touched::<SpawnBudget>(&world)),

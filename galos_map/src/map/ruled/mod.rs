@@ -49,7 +49,9 @@ pub(crate) mod read;
 // asks for a plane rather than for the pixels between two numbers.
 pub use cut::Face;
 pub use label::{DistanceUnit, off_plane, ticked, told};
-pub use ladder::{Decade, FIGURES_ACROSS, numbering, ruling, snapped_to};
+pub use ladder::{
+    Decade, FIGURES_ACROSS, numbering, roundest, ruling, snapped_to,
+};
 pub use read::{EDGE_ON, Located, Reading, drawn_at, faded};
 
 use bevy::asset::{AssetServer, Handle, embedded_asset, load_embedded_asset};

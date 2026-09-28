@@ -200,7 +200,7 @@ const FADE_BEYOND: f64 = 6.;
 ///
 /// Cold and unsaturated, so that it reads as chrome laid over the sky rather
 /// than as more of the sky. Every star on the map is warmer than this.
-const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
+pub(crate) const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
 
 /// How tall a readout's numbers are drawn, in logical pixels
 ///
@@ -208,7 +208,7 @@ const LINE: Color = Color::srgb(0.55, 0.66, 0.82);
 /// chrome's smallest lettering, so a coordinate sits nearer the size of the
 /// numbers painted along the grid it is read against rather than standing over
 /// them.
-const READS: f32 = 10.5;
+pub(crate) const READS: f32 = 10.5;
 
 /// How far below a mark its three numbers hang, in pixels
 ///
@@ -338,6 +338,17 @@ fn unit_for(own: DistanceUnit, asked: RulerUnit) -> DistanceUnit {
         RulerUnit::LightSeconds => LIGHT_SECONDS,
         RulerUnit::Automatic => own,
     }
+}
+
+/// The unit the map is measuring in at this moment, drawn or not
+///
+/// Whichever space holds the sky by the [`Handover`], said in [`unit_for`]:
+/// the same answer the ruling's numbers are written in, for whatever reads a
+/// length off the map with the grid hidden. The tie goes to the galaxy, as it
+/// does in [`handover`].
+pub(crate) fn said_in(changing: &Handover, asked: RulerUnit) -> DistanceUnit {
+    let own = if changing.0 >= 0.5 { LIGHT_YEARS } else { LIGHT_SECONDS };
+    unit_for(own, asked)
 }
 
 /// How much of the galaxy's ruling is drawn, and how much of a system's, as

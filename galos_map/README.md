@@ -77,6 +77,25 @@ and the ruled plane's readouts — is projected to a pixel on the processor in
 [`src/map/screen.rs`](./src/map/screen.rs), and the cameras and the
 order they draw in [`src/map/camera.rs`](./src/map/camera.rs).
 
+A compass rose stands in the bottom right corner, turned with the camera. Its
+card lies in the galactic plane, foreshortened the way the ruled plane under
+the middle of the view is, and its four points are that plane's axes, `+X`
+`-X` `+Z` `-Z`, the ones the grid's numbers count along. Coreward, rimward,
+spinward and trailing are left alone: they are relative to where they are
+said, and `+Z` is coreward only on Sol's side of the core. The rose's north
+has left the card: it is the needle standing up out of it along `+Y`, and
+seen end on the hub shows a dot where `+Y` comes at the eye and a cross
+where it goes away.
+
+A dashed ring on the card is as wide as the roundest length that fits across
+it, and a scale bar under the rose spans exactly that width, with the length
+written under it. The solid marks standing up at the bar's ends carry on up
+to the ring as dashed lines, in the ring's own dash — in whatever
+the grid is measured in, light years or light
+seconds, whether or not the grid is shown. It has its own switch in the
+settings pane, under General beside the grid's. The rose is
+[`src/map/rose.rs`](./src/map/rose.rs).
+
 ## Mouse
 
 | Gesture | What it does |
