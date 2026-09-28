@@ -351,6 +351,7 @@ pub(crate) fn chrome(
                 &mut camera,
                 &mut bar.search,
                 &mut filter,
+                settings.reach(),
             )
         });
     gear(ctx, edge, asked.middle, &mut open.0);

@@ -144,6 +144,16 @@ pub(crate) struct Settings<'w> {
     spawn_budget: ResMut<'w, SpawnBudget>,
 }
 
+impl Settings<'_> {
+    /// How far the spyglass reaches, in light years, where it bounds anything
+    ///
+    /// Asked here because the pane holds the spyglass for writing, and the
+    /// bar drawn in the same pass cannot hold it as well.
+    pub(crate) fn reach(&self) -> Option<f32> {
+        self.spyglass.clear.then_some(self.spyglass.radius)
+    }
+}
+
 /// What the settings pane holds, section by section
 ///
 /// Drawn into the pane [`settings_pane`] slides out. Everything it sets is

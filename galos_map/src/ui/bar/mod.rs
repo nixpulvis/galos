@@ -552,6 +552,7 @@ pub(super) fn state_bar(
     camera: &mut MessageWriter<MoveCamera>,
     searched: &mut MessageWriter<Search>,
     filter: &mut FilterBar,
+    reach: Option<f32>,
 ) -> (egui::Rect, bool) {
     // What the filter rows were asked, carried out of the closure they are
     // drawn in: acting on either inside it would want the bar's own state
@@ -634,6 +635,7 @@ pub(super) fn state_bar(
                     reaching(
                         ui,
                         &filter.in_reach,
+                        reach,
                         dimming,
                         filter.spawning.queued() > 0,
                         filter.evicting.queued() > 0,

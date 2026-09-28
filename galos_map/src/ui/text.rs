@@ -286,14 +286,13 @@ mod tests {
     ///
     /// Both numbers grow with what has been synced, and the line has to hold
     /// them on one row: wrapped, it is a line that moves the rows under it
-    /// about as the user flies. Seven digits either side comes to 235 of the
-    /// 325 the bar is wide, so the sky can grow well past millions of systems
-    /// before the line has nowhere left to grow into.
+    /// about as the user flies. Seven digits either side, and the spyglass's
+    /// radius at its widest, is the longest the line gets.
     #[test]
     fn the_count_fits_the_bar_at_millions() {
         let ctx = crate::testing::context();
         let said = format!(
-            "{} of {} in spyglass",
+            "{} of {} systems in 1.1e5 Ly",
             thousands(1_234_567),
             thousands(7_654_321)
         );

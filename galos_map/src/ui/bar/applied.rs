@@ -873,12 +873,14 @@ fn section_rows(
 /// is more sky behind it that can also be seen, faintly, and only then is the
 /// larger number worth putting beside it:
 ///
-/// - Nothing asked of the map, so the two are the same number: `324 in
-///   spyglass`
-/// - Filters, and what they exclude drawn faintly behind: `8 of 324 in
-///   spyglass`
-/// - Filters, and what they exclude drawn not at all: `8 in spyglass`, the
-///   rest being neither on screen nor fetched
+/// - Nothing asked of the map, so the two are the same number: `324 systems`
+/// - Filters, and what they exclude drawn faintly behind: `8 of 324 systems`
+/// - Filters, and what they exclude drawn not at all: `8 systems`, the rest
+///   being neither on screen nor fetched
+///
+/// And the radius they were counted in after it, `324 systems in 21
+/// Ly`, where the spyglass bounds anything: `reach` is [`None`] where it
+/// does not, and then the count is of everything loaded.
 ///
 /// Nothing at all for a sky of one system or none. A count of one is not a
 /// reading anybody wants: it says less than the system's own name beside it
@@ -892,6 +894,7 @@ fn section_rows(
 pub(super) fn reaching(
     ui: &mut Ui,
     in_reach: &InReach,
+    reach: Option<f32>,
     dimming: bool,
     spawning: bool,
     evicting: bool,
@@ -905,14 +908,27 @@ pub(super) fn reaching(
         return;
     }
 
-    let said = if dimming {
+    let counted = if dimming {
         format!(
-            "{} of {} in spyglass",
+            "{} of {} systems",
             thousands(admitted as u64),
             thousands(total as u64)
         )
     } else {
-        format!("{} in spyglass", thousands(admitted as u64))
+        format!("{} systems", thousands(admitted as u64))
+    };
+    // To two figures or so, a reach that follows the camera being no round
+    // number; by the ruler's own rule, so it reads as the grid's numbers do.
+    let said = match reach {
+        Some(radius) => {
+            let radius = f64::from(radius);
+            let said = crate::map::ruled::ticked(
+                radius,
+                crate::map::ruled::roundest(radius) / 10.,
+            );
+            format!("{counted} in {said} Ly")
+        }
+        None => counted,
     };
     // To the right of the count: a green dot while systems are still being
     // turned into stars, a red one while they are being taken back off. Drawn
@@ -2393,13 +2409,32 @@ mod tests {
             reaching(
                 ui,
                 &InReach { admitted: 324, total: 324 },
+                None,
                 false,
                 false,
                 false,
             )
         });
 
-        assert!(said.contains(&"324 in spyglass".to_owned()), "{said:?}");
+        assert!(said.contains(&"324 systems".to_owned()), "{said:?}");
+    }
+
+    /// And how far it reaches after the count, to two figures or so, where it
+    /// bounds anything
+    #[test]
+    fn the_reach_says_its_radius() {
+        let said = words(|ui| {
+            reaching(
+                ui,
+                &InReach { admitted: 324, total: 324 },
+                Some(21.37),
+                false,
+                false,
+                false,
+            )
+        });
+
+        assert!(said.contains(&"324 systems in 21 Ly".to_owned()), "{said:?}");
     }
 
     /// With something excluded and drawn faintly, both numbers are said
@@ -2412,13 +2447,14 @@ mod tests {
             reaching(
                 ui,
                 &InReach { admitted: 8, total: 324 },
+                None,
                 true,
                 false,
                 false,
             )
         });
 
-        assert!(said.contains(&"8 of 324 in spyglass".to_owned()), "{said:?}");
+        assert!(said.contains(&"8 of 324 systems".to_owned()), "{said:?}");
     }
 
     /// With it not drawn at all, only what can be seen is said
@@ -2432,13 +2468,14 @@ mod tests {
             reaching(
                 ui,
                 &InReach { admitted: 8, total: 324 },
+                None,
                 false,
                 false,
                 false,
             )
         });
 
-        assert!(said.contains(&"8 in spyglass".to_owned()), "{said:?}");
+        assert!(said.contains(&"8 systems".to_owned()), "{said:?}");
         assert!(!said.iter().any(|line| line.contains("324")), "{said:?}");
     }
 
@@ -2452,19 +2489,20 @@ mod tests {
             reaching(
                 ui,
                 &InReach { admitted: 0, total: 0 },
+                None,
                 false,
                 false,
                 false,
             )
         });
 
-        assert!(!said.iter().any(|line| line.contains("spyglass")), "{said:?}");
+        assert!(!said.iter().any(|line| line.contains("systems")), "{said:?}");
     }
 
     /// And so does a sky of one, however it comes to be one
     ///
     /// Which is every descent: the camera inside a system holds that system
-    /// and nothing else, and `1 in spyglass` beside the system's own name is
+    /// and nothing else, and `1 systems` beside the system's own name is
     /// a number saying less than the word next to it.
     #[test]
     fn a_reach_of_one_system_says_nothing() {
@@ -2473,10 +2511,11 @@ mod tests {
             InReach { admitted: 0, total: 1 },
         ] {
             let dimming = reach.admitted != reach.total;
-            let said = words(|ui| reaching(ui, &reach, dimming, false, false));
+            let said =
+                words(|ui| reaching(ui, &reach, None, dimming, false, false));
 
             assert!(
-                !said.iter().any(|line| line.contains("spyglass")),
+                !said.iter().any(|line| line.contains("systems")),
                 "{said:?}"
             );
         }
