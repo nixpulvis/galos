@@ -37,12 +37,9 @@
 //! as a query moves on.
 
 use crate::codec::cells::Payload;
-use crate::core::geometry::CellId;
-use crate::read::resident::Quick;
+use crate::core::geometry::{CellId, CellMap};
 use crate::tree::index::Index;
 use elite_journal::Boxel;
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -90,7 +87,7 @@ pub struct Sky {
 /// actually uses survives, and the bound is twice [`MAPPED_CELLS`].
 /// Mapped payloads by cell, hashed quickly: a route asks this per expansion,
 /// half a million times, and a cell id needs no protection from anyone.
-type Held = HashMap<CellId, Option<Arc<Payload>>, BuildHasherDefault<Quick>>;
+type Held = CellMap<Option<Arc<Payload>>>;
 
 #[derive(Default)]
 struct Mapped {

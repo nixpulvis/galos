@@ -19,6 +19,7 @@
 //! order and bound the systems, but a system is drawn where it sits, however
 //! coarse the cell that owns it.
 
+use std::hash::Hasher;
 /// The edge of the root cube, in light years: `2^17`, the smallest power of two
 /// that holds the galaxy's extent.
 pub(crate) const ROOT_EDGE_LY: f64 = 131072.0;
@@ -225,6 +226,56 @@ fn morton_encode(x: u32, y: u32, z: u32) -> u64 {
 /// [`morton_encode`].
 fn morton_decode(m: u64) -> (u32, u32, u32) {
     (compact3(m), compact3(m >> 1), compact3(m >> 2))
+}
+
+/// A multiply-shift hash over an address, for the maps a frame or a route
+/// asks tens of thousands of times
+///
+/// **SipHash is most of what a lookup costs here.** An address is a level
+/// and three grid coordinates, thirteen bytes of integer that are already
+/// well spread, and the draw asks this map once per marked cell per pass:
+/// measured over `.index/full` at a wide zoom, 77,773 of them a frame.
+/// Over the same addresses SipHash is 15 ns against 3 for a
+/// multiply-shift, which at that count is four milliseconds a frame against
+/// under one.
+///
+/// Fine to be weak. Nothing adversarial reaches this — the keys are the
+/// map's own tree addresses — and the finish below is SplitMix64's
+/// finaliser, the same one `screen::dither` rounds a cell's share of marks
+/// with.
+#[derive(Default)]
+pub(crate) struct Quick(u64);
+
+/// A map keyed by [`CellId`], hashed with [`Quick`].
+pub(crate) type CellMap<V> =
+    std::collections::HashMap<CellId, V, std::hash::BuildHasherDefault<Quick>>;
+
+impl Hasher for Quick {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u8(byte);
+        }
+    }
+
+    fn write_u8(&mut self, byte: u8) {
+        self.write_u64(u64::from(byte));
+    }
+
+    fn write_u32(&mut self, word: u32) {
+        self.write_u64(u64::from(word));
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        let mixed = (self.0 ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = mixed.rotate_left(29);
+    }
+
+    fn finish(&self) -> u64 {
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
 }
 
 #[cfg(test)]

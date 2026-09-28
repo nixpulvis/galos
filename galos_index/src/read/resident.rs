@@ -12,62 +12,14 @@
 //! into, are the reader's work; this holds the payload and the bookkeeping
 //! the loop turns on.
 
-use crate::core::geometry::CellId;
+use crate::core::geometry::{CellId, CellMap};
 use crate::read::walk::Needed;
 use crate::tree::cell::CellSystem;
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
 
 /// A cell whose payload has loaded, and the systems it holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResidentCell {
     pub points: Box<[CellSystem]>,
-}
-
-/// A multiply-shift hash over an address, for the one map a frame asks
-/// tens of thousands of times
-///
-/// **SipHash is most of what a lookup costs here.** An address is a level
-/// and three grid coordinates, thirteen bytes of integer that are already
-/// well spread, and the draw asks this map once per marked cell per pass:
-/// measured over `.index/full` at a wide zoom, 77,773 of them a frame.
-/// Over the same addresses SipHash is 15 ns against 3 for a
-/// multiply-shift, which at that count is four milliseconds a frame against
-/// under one.
-///
-/// Fine to be weak. Nothing adversarial reaches this — the keys are the
-/// map's own tree addresses — and the finish below is SplitMix64's
-/// finaliser, the same one `screen::dither` rounds a cell's share of marks
-/// with.
-#[derive(Default)]
-pub(crate) struct Quick(u64);
-
-impl Hasher for Quick {
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.write_u8(byte);
-        }
-    }
-
-    fn write_u8(&mut self, byte: u8) {
-        self.write_u64(u64::from(byte));
-    }
-
-    fn write_u32(&mut self, word: u32) {
-        self.write_u64(u64::from(word));
-    }
-
-    fn write_u64(&mut self, word: u64) {
-        let mixed = (self.0 ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        self.0 = mixed.rotate_left(29);
-    }
-
-    fn finish(&self) -> u64 {
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
 }
 
 /// The payloads a reader holds, keyed by cell.
@@ -76,7 +28,7 @@ impl Hasher for Quick {
 /// holds is the per-system payloads, which come and go as the view moves.
 #[derive(Clone, Debug, Default)]
 pub struct Resident {
-    cells: HashMap<CellId, ResidentCell, BuildHasherDefault<Quick>>,
+    cells: CellMap<ResidentCell>,
 }
 
 impl Resident {

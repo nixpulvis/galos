@@ -90,6 +90,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
+use bevy::tasks::ComputeTaskPool;
 use galos_index::read::inhabited::{Bucketed, Inhabited};
 use galos_index::tree::cell::UNIFORM_SPAN;
 
@@ -856,11 +857,29 @@ pub(crate) fn political(
     }
 }
 
+/// What [`build_glow`] writes, and where the camera stood when it last did:
+/// one parameter, a system taking sixteen at most.
+type Written<'w, 's> = (
+    ResMut<'w, Laid>,
+    Query<'w, 's, &'static mut Mesh3d, With<GlowMark>>,
+    ResMut<'w, Assets<Mesh>>,
+    Local<'s, Option<(galos_index::read::walk::View, DVec3)>>,
+);
+
 /// Rebuild the field from the cells the walk said to splat
 ///
-/// Every frame, off a plan re-walked only when the eye moves: what a splat is
-/// drawn *from* is a pure function of position, and where it is drawn *to*
-/// turns with the camera. The same split [`crate::map::paint::field::build_field`] makes.
+/// Off a plan re-walked only when the eye moves: what a splat is drawn
+/// *from* is a pure function of position, and where it is drawn *to* turns
+/// with the camera. The same split [`crate::map::paint::field::build_field`]
+/// makes.
+///
+/// **Not at all where nothing it reads has moved.** Measured over
+/// `.index/full`, a still view at thirty thousand light years spent 15 ms
+/// of every frame laying down the field it laid the frame before, and the
+/// renderer another 4 taking in the fresh mesh. What it reads is the
+/// resources it is handed, whose change marks say whether they moved, and
+/// the camera, which is written every frame whether it moves or not and so
+/// is kept by value and compared.
 #[expect(
     clippy::too_many_arguments,
     reason = "the plan, the two aggregations it reads, the palette, the gains \
@@ -880,11 +899,32 @@ fn build_glow(
     view: Res<View>,
     scale_population: Res<crate::map::paint::sizing::ScalePopulation>,
     spyglass: Res<crate::map::galaxy::Spyglass>,
-    mut laid: ResMut<Laid>,
-    mut glow: Query<&mut Mesh3d, With<GlowMark>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    (mut laid, mut glow, mut meshes, mut last): Written<'_, '_>,
 ) {
     let Ok(mut mesh3d) = glow.single_mut() else { return };
+    // Where the camera stands and how it sees, which is all of it the field
+    // is laid from; see the doc above.
+    let seen = camera.single().ok().and_then(|(orbit, lens)| {
+        crate::map::galaxy::plan::view(orbit, lens)
+            .map(|seen| (seen, orbit.center()))
+    });
+    let moved = planned.is_changed()
+        || drawn.is_changed()
+        || index.is_changed()
+        || settled.is_changed()
+        || named.is_changed()
+        || filtering.filters.is_changed()
+        || filtering.dim.is_changed()
+        || color_by.is_changed()
+        || gains.is_changed()
+        || exposure.is_changed()
+        || view.is_changed()
+        || scale_population.is_changed()
+        || spyglass.is_changed();
+    if !moved && last.is_some() && *last == seen {
+        return;
+    }
+    *last = seen;
     // The dial, as a linear gain on everything the field lays. Read once:
     // it says nothing about where a splat goes, only how bright it lands.
     //
@@ -994,183 +1034,213 @@ fn build_glow(
             })
         };
 
-        for splat in &planned.0.splats {
-            let Some(cell) = index.0.get(splat.id) else { continue };
-            let count = cell.aggregate.count();
-            if count == 0 {
-                continue;
-            }
-            // What the marks have already taken out of this cell. A cell can
-            // be marked and splatted by the same walk, so without this its
-            // systems are drawn twice: once as themselves and again inside the
-            // field behind them. Absent for a cell with nothing drawn out of
-            // it, which is the ordinary far case and leaves the total standing.
-            let taken = drawn.0.get(&splat.id).copied().unwrap_or_default();
-            // The share of this cell's own content the splat carries: one where
-            // it stands for its whole subtree, less where it is part way into a
-            // cross-fade with its children.
-            let carried = splat.blend as f32 * total / count as f32;
+        // One chunk of the splats laid down on its own, curve and dial and
+        // all: each splat is its own quads and the field is additive, so
+        // the chunks are laid on their own threads and joined in any
+        // order. Measured over `.index/full` at a wide zoom, 152,199 splats
+        // laid one after another were 12 ms of every frame.
+        let lay = |chunk: &[galos_index::read::walk::SplatRef]| {
+            let mut quads = Quads::default();
+            let mut counted = Laid::default();
+            for splat in chunk {
+                let Some(cell) = index.0.get(splat.id) else { continue };
+                let count = cell.aggregate.count();
+                if count == 0 {
+                    continue;
+                }
+                // What the marks have already taken out of this cell. A cell can
+                // be marked and splatted by the same walk, so without this its
+                // systems are drawn twice: once as themselves and again inside the
+                // field behind them. Absent for a cell with nothing drawn out of
+                // it, which is the ordinary far case and leaves the total standing.
+                let taken = drawn.0.get(&splat.id).copied().unwrap_or_default();
+                // The share of this cell's own content the splat carries: one where
+                // it stands for its whole subtree, less where it is part way into a
+                // cross-fade with its children.
+                let carried = splat.blend as f32 * total / count as f32;
 
-            // The systems nobody lives in, at the stellar moments: one
-            // uncolored channel, because a backdrop is a density question and
-            // not a composition one.
-            //
-            // Neutral, and held down as a crowd alone. Painting it in the
-            // palette's own grey discounted it twice — that colour is `0.15` in
-            // sRGB, a fiftieth in the linear light this adds in, so the channel
-            // came out four ten-thousandths of its weight and the galaxy behind
-            // the shells went black. [`Hue::light`] is neutral for the same
-            // reason, which is what leaves this channel and a mark of the same
-            // system agreeing.
-            //
-            // The residual's own moments, not the total's: a cell half drawn
-            // has its drawn half subtracted out of the geometry as well as out
-            // of the weight, so the light that is left sits where the systems
-            // that are left sit. The backdrop's weight counts only the systems
-            // nobody lives in while its moments count every system in the cell,
-            // which is a fiftieth of a difference at one populated system in
-            // forty-four and not worth a fourth weighting to carry.
-            let peopled = settled.0.get(splat.id).map_or(0, Inhabited::count);
-            let empty = count.saturating_sub(peopled).saturating_sub(
-                taken.count.saturating_sub(taken.inhabited.count()),
-            );
-            // The finest either channel may claim of this cell, in light
-            // years, and the same rule for both ([`COVERAGE`]) — but never
-            // wider than the contents themselves reach.
-            //
-            // **The floor is an admission of ignorance, and it has to stop
-            // where the ignorance does.** Half a cell is what sums flat
-            // over a lattice of *filled* cells, where the map knows a
-            // cell's systems only to its own edge; for a cell holding one
-            // system the map knows exactly where that system is, and
-            // spreading it over half a cell invents a region of sky that
-            // is not there. Measured over `.index/full`: `HIP 58832` is
-            // the one inhabited system more than two thousand light years
-            // off the galactic plane, it sits alone in a level 5 cell, and
-            // the floor drew it as a ball of colony light 2,048 light
-            // years in radius reaching seven thousand light years up — a
-            // bright political region over sky holding, in the whole
-            // galaxy, seven systems. Every other colony splat in that
-            // frame reached 820.
-            //
-            // Capped by the support of what is held — the RMS radius read
-            // as the span of an even spread, [`UNIFORM_SPAN`], which is
-            // the same figure the walk's own merge rule measures a cell's
-            // contents by. A cell whose systems fill it has a support of
-            // about its whole edge and keeps the floor it had; a cell
-            // holding a knot keeps the knot; a cell holding one system
-            // floors at nothing and is laid at half a pixel
-            // ([`FINEST`]), which is what one system looks like.
-            let covered = |spread: f64| {
-                (cell.id.edge_ly() * COVERAGE).min(spread * UNIFORM_SPAN)
-            };
-            // What the filters leave of each channel. The same share a
-            // merged mark is drawn at ([`crate::map::galaxy::blobs`]) and spent the
-            // same way: the admitted part of a cell at full and the rest
-            // at the dim, which is what its systems' own marks would come
-            // to if every one of them were drawn. Nothing asked is a share
-            // of one and leaves the field exactly as it was.
-            //
-            // Per channel, because the two stand for different halves of a
-            // cell: a faction names none but populated systems, so the
-            // colonies keep their share of the light while the grey
-            // backdrop — which holds no member of it at all — falls to the
-            // dim. One figure for both would keep the backdrop lit for
-            // systems the filter could never admit.
-            //
-            // **The field has to answer the filters or the picture changes
-            // as it resolves.** [`mark_light`] is one figure for a mark and
-            // for the light laid down in its place, so a filter that
-            // reached the marks and not the field would appear to take
-            // effect only where the camera had come in far enough to draw
-            // the systems themselves.
-            let held_named = named.admitted(splat.id);
-            let aged = cell.aggregate.aged();
-            let backdrop_share = filtering.filters.admitted_share(
-                aged,
-                held_named.alone,
-                count.saturating_sub(peopled),
-            );
-            let colony_share = filtering.filters.admitted_share(
-                aged,
-                held_named.populated,
-                peopled,
-            );
-            let spent =
-                |share: f32| share + (1. - share) * filtering.dim.opacity();
+                // The systems nobody lives in, at the stellar moments: one
+                // uncolored channel, because a backdrop is a density question and
+                // not a composition one.
+                //
+                // Neutral, and held down as a crowd alone. Painting it in the
+                // palette's own grey discounted it twice — that colour is `0.15` in
+                // sRGB, a fiftieth in the linear light this adds in, so the channel
+                // came out four ten-thousandths of its weight and the galaxy behind
+                // the shells went black. [`Hue::light`] is neutral for the same
+                // reason, which is what leaves this channel and a mark of the same
+                // system agreeing.
+                //
+                // The residual's own moments, not the total's: a cell half drawn
+                // has its drawn half subtracted out of the geometry as well as out
+                // of the weight, so the light that is left sits where the systems
+                // that are left sit. The backdrop's weight counts only the systems
+                // nobody lives in while its moments count every system in the cell,
+                // which is a fiftieth of a difference at one populated system in
+                // forty-four and not worth a fourth weighting to carry.
+                let peopled =
+                    settled.0.get(splat.id).map_or(0, Inhabited::count);
+                let empty = count.saturating_sub(peopled).saturating_sub(
+                    taken.count.saturating_sub(taken.inhabited.count()),
+                );
+                // The finest either channel may claim of this cell, in light
+                // years, and the same rule for both ([`COVERAGE`]) — but never
+                // wider than the contents themselves reach.
+                //
+                // **The floor is an admission of ignorance, and it has to stop
+                // where the ignorance does.** Half a cell is what sums flat
+                // over a lattice of *filled* cells, where the map knows a
+                // cell's systems only to its own edge; for a cell holding one
+                // system the map knows exactly where that system is, and
+                // spreading it over half a cell invents a region of sky that
+                // is not there. Measured over `.index/full`: `HIP 58832` is
+                // the one inhabited system more than two thousand light years
+                // off the galactic plane, it sits alone in a level 5 cell, and
+                // the floor drew it as a ball of colony light 2,048 light
+                // years in radius reaching seven thousand light years up — a
+                // bright political region over sky holding, in the whole
+                // galaxy, seven systems. Every other colony splat in that
+                // frame reached 820.
+                //
+                // Capped by the support of what is held — the RMS radius read
+                // as the span of an even spread, [`UNIFORM_SPAN`], which is
+                // the same figure the walk's own merge rule measures a cell's
+                // contents by. A cell whose systems fill it has a support of
+                // about its whole edge and keeps the floor it had; a cell
+                // holding a knot keeps the knot; a cell holding one system
+                // floors at nothing and is laid at half a pixel
+                // ([`FINEST`]), which is what one system looks like.
+                let covered = |spread: f64| {
+                    (cell.id.edge_ly() * COVERAGE).min(spread * UNIFORM_SPAN)
+                };
+                // What the filters leave of each channel. The same share a
+                // merged mark is drawn at ([`crate::map::galaxy::blobs`]) and spent the
+                // same way: the admitted part of a cell at full and the rest
+                // at the dim, which is what its systems' own marks would come
+                // to if every one of them were drawn. Nothing asked is a share
+                // of one and leaves the field exactly as it was.
+                //
+                // Per channel, because the two stand for different halves of a
+                // cell: a faction names none but populated systems, so the
+                // colonies keep their share of the light while the grey
+                // backdrop — which holds no member of it at all — falls to the
+                // dim. One figure for both would keep the backdrop lit for
+                // systems the filter could never admit.
+                //
+                // **The field has to answer the filters or the picture changes
+                // as it resolves.** [`mark_light`] is one figure for a mark and
+                // for the light laid down in its place, so a filter that
+                // reached the marks and not the field would appear to take
+                // effect only where the camera had come in far enough to draw
+                // the systems themselves.
+                let held_named = named.admitted(splat.id);
+                let aged = cell.aggregate.aged();
+                let backdrop_share = filtering.filters.admitted_share(
+                    aged,
+                    held_named.alone,
+                    count.saturating_sub(peopled),
+                );
+                let colony_share = filtering.filters.admitted_share(
+                    aged,
+                    held_named.populated,
+                    peopled,
+                );
+                let spent =
+                    |share: f32| share + (1. - share) * filtering.dim.opacity();
 
-            let mass = cell.aggregate.mass().remove(taken.mass);
-            if empty > 0
-                && !populated_only
-                && let Some(at) = mass.centroid()
-                && in_reach(at)
-            {
-                let systems = empty as f32 * carried;
-                let light =
-                    Vec3::splat(systems * gains.faint * gains.mark * MARK_AREA);
-                if let Some(lit) = quads.deposit(
-                    orbit,
-                    cot_half_fov,
-                    viewport,
-                    half,
-                    at,
-                    (mass.rms_radius() * FLATTENED)
-                        .max(covered(mass.rms_radius())),
-                    light,
-                    systems * MARK_AREA,
-                    gains.crowd * gains.backdrop,
-                    PIVOT,
-                    spent(backdrop_share),
-                    room(at),
-                ) {
-                    counted.backdrop += 1;
-                    counted.took(lit);
+                let mass = cell.aggregate.mass().remove(taken.mass);
+                if empty > 0
+                    && !populated_only
+                    && let Some(at) = mass.centroid()
+                    && in_reach(at)
+                {
+                    let systems = empty as f32 * carried;
+                    let light = Vec3::splat(
+                        systems * gains.faint * gains.mark * MARK_AREA,
+                    );
+                    if let Some(lit) = quads.deposit(
+                        orbit,
+                        cot_half_fov,
+                        viewport,
+                        half,
+                        at,
+                        (mass.rms_radius() * FLATTENED)
+                            .max(covered(mass.rms_radius())),
+                        light,
+                        systems * MARK_AREA,
+                        gains.crowd * gains.backdrop,
+                        PIVOT,
+                        spent(backdrop_share),
+                        room(at),
+                    ) {
+                        counted.backdrop += 1;
+                        counted.took(lit);
+                    }
+                }
+
+                // And the colonies, at their own. Absent where there are none,
+                // and never stood in for by the stellar centroid: that is how a
+                // colony is drawn where there is not one.
+                let colonies = settled.0.get(splat.id).map(|held| {
+                    if taken.inhabited.count() < held.count() {
+                        held.remove(taken.inhabited)
+                    } else {
+                        // Every colony under the cell is on the map as itself.
+                        Inhabited::ZERO
+                    }
+                });
+                if let Some(held) = colonies
+                    && let Some(at) = held.centroid()
+                    && in_reach(at)
+                {
+                    let (mix, _) =
+                        composition(&held, *color_by, gains.unaligned);
+                    let systems = held.count() as f32 * carried;
+                    if let Some(lit) = quads.deposit(
+                        orbit,
+                        cot_half_fov,
+                        viewport,
+                        half,
+                        at,
+                        (held.spread() * FLATTENED).max(covered(held.spread())),
+                        mix * carried * gains.mark * MARK_AREA,
+                        systems * MARK_AREA,
+                        gains.crowd,
+                        COLONY_PIVOT,
+                        spent(colony_share),
+                        room(at),
+                    ) {
+                        counted.colonies += 1;
+                        counted.took(lit);
+                    }
                 }
             }
-
-            // And the colonies, at their own. Absent where there are none,
-            // and never stood in for by the stellar centroid: that is how a
-            // colony is drawn where there is not one.
-            let colonies = settled.0.get(splat.id).map(|held| {
-                if taken.inhabited.count() < held.count() {
-                    held.remove(taken.inhabited)
-                } else {
-                    // Every colony under the cell is on the map as itself.
-                    Inhabited::ZERO
+            quads.expose(opened * tilted);
+            (quads, counted)
+        };
+        let splats = &planned.0.splats[..];
+        let laid_down: Vec<(Quads, Laid)> = if splats.len() < CHUNK * 2 {
+            vec![lay(splats)]
+        } else {
+            let lay = &lay;
+            ComputeTaskPool::get().scope(|scope| {
+                for chunk in splats.chunks(CHUNK) {
+                    scope.spawn(async move { lay(chunk) });
                 }
-            });
-            if let Some(held) = colonies
-                && let Some(at) = held.centroid()
-                && in_reach(at)
-            {
-                let (mix, _) = composition(&held, *color_by, gains.unaligned);
-                let systems = held.count() as f32 * carried;
-                if let Some(lit) = quads.deposit(
-                    orbit,
-                    cot_half_fov,
-                    viewport,
-                    half,
-                    at,
-                    (held.spread() * FLATTENED).max(covered(held.spread())),
-                    mix * carried * gains.mark * MARK_AREA,
-                    systems * MARK_AREA,
-                    gains.crowd,
-                    COLONY_PIVOT,
-                    spent(colony_share),
-                    room(at),
-                ) {
-                    counted.colonies += 1;
-                    counted.took(lit);
-                }
-            }
+            })
+        };
+        for (laid_here, counted_here) in laid_down {
+            quads.join(laid_here);
+            counted.backdrop += counted_here.backdrop;
+            counted.colonies += counted_here.colonies;
+            counted.separated += counted_here.separated;
         }
     }
 
     // What the frame carries, which is not what the cells deposited: the
     // range the field lays over is four orders of magnitude and a display
-    // holds two, so it goes through the curve ([`LIFT`], [`PRESS`]) and
-    // dial. See `Quads::expose`.
-    quads.expose(opened * tilted);
+    // holds two, so each chunk went through the curve ([`LIFT`], [`PRESS`])
+    // and dial as it was laid. See `Quads::expose`.
     counted.light = 0.;
 
     for radius in &quads.radii {
@@ -1179,12 +1249,9 @@ fn build_glow(
         counted.floored += u32::from(*radius <= FINEST * REACH + 1e-3);
     }
     if !quads.radii.is_empty() {
-        quads.radii.sort_unstable_by(f32::total_cmp);
-        let at =
-            |f: f32| quads.radii[((quads.radii.len() - 1) as f32 * f) as usize];
-        counted.median = at(0.5);
-        counted.tenth = at(0.1);
-        counted.quarter = at(0.25);
+        counted.median = percentile(&mut quads.radii, 0.5);
+        counted.tenth = percentile(&mut quads.radii, 0.1);
+        counted.quarter = percentile(&mut quads.radii, 0.25);
     }
     if !quads.peaks.is_empty() {
         // The peaks as the frame carries them, through the same curve and
@@ -1198,10 +1265,9 @@ fn build_glow(
             })
             .collect();
         counted.light = levels.iter().sum();
-        levels.sort_unstable_by(f32::total_cmp);
-        counted.faintest = levels[0];
-        counted.typical = levels[(levels.len() - 1) / 2];
-        counted.peak = levels[levels.len() - 1];
+        counted.faintest = levels.iter().copied().fold(f32::INFINITY, f32::min);
+        counted.peak = levels.iter().copied().fold(0., f32::max);
+        counted.typical = percentile(&mut levels, 0.5);
         counted.clipped =
             levels.iter().filter(|level| **level >= CEILING).count() as u32;
     }
@@ -1395,6 +1461,33 @@ impl Quads {
             separated: covered < std::f32::consts::TAU * spread_px * spread_px,
         })
     }
+}
+
+/// How many splats one thread lays: enough that a frame is a few dozen
+/// chunks at a wide zoom and none of them is mostly overhead.
+const CHUNK: usize = 4096;
+
+impl Quads {
+    /// Take `other`'s quads in after these.
+    fn join(&mut self, mut other: Quads) {
+        let base = self.positions.len() as u32;
+        self.radii.append(&mut other.radii);
+        self.pivots.append(&mut other.pivots);
+        self.fades.append(&mut other.fades);
+        self.peaks.append(&mut other.peaks);
+        self.positions.append(&mut other.positions);
+        self.uvs.append(&mut other.uvs);
+        self.colors.append(&mut other.colors);
+        self.indices.extend(other.indices.iter().map(|at| at + base));
+    }
+}
+
+/// The value `f` of the way up `values`, by selection rather than a sort:
+/// three of these over a frame's hundred thousand radii are a third of what
+/// sorting them was.
+fn percentile(values: &mut [f32], f: f32) -> f32 {
+    let at = ((values.len() - 1) as f32 * f) as usize;
+    *values.select_nth_unstable_by(at, f32::total_cmp).1
 }
 
 /// Build the field's mesh from the frame's quads, as a fresh asset each frame
@@ -1976,6 +2069,8 @@ mod exposure {
         // what they name — empty here, so a filter that names systems
         // names none of these.
         app.init_resource::<crate::map::galaxy::blobs::Named>();
+        // The sky's cut, which the plan reads for the photometric mode.
+        app.init_resource::<crate::map::galaxy::spawn::StarExposure>();
         app.init_resource::<crate::map::filter::DimTo>();
         let mut filters = crate::map::filter::Filters::default();
         if let Some(asked) = set.asked.clone() {

@@ -37,14 +37,11 @@
 //! Publishing it would give it a file, and a file's bytes are
 //! [`crate::codec`]'s.
 
-use crate::core::geometry::CellId;
+use crate::core::geometry::{CellId, CellMap};
 use crate::core::moments::Moments;
-use crate::read::resident::Quick;
 use crate::records::PopulatedSystem;
 use crate::tree::index::Index;
 use elite_journal::prelude::{Allegiance, Government, Security};
-use std::collections::HashMap;
-use std::hash::BuildHasherDefault;
 
 /// A political reading a histogram counts in buckets: one a variant, plus
 /// bucket zero for a system nothing has reported it of.
@@ -360,7 +357,7 @@ impl FromIterator<Inhabited> for Inhabited {
 /// tens of thousands of a few hundred thousand — and a cell absent from here
 /// reads as [`Inhabited::ZERO`], which is what it is.
 #[derive(Clone, Debug, Default)]
-pub struct Inhabitance(HashMap<CellId, Inhabited, BuildHasherDefault<Quick>>);
+pub struct Inhabitance(CellMap<Inhabited>);
 
 impl Inhabitance {
     /// Roll every inhabited system in `rows` up the tree it falls in.
@@ -386,8 +383,7 @@ impl Inhabitance {
         index: &Index,
         rows: impl IntoIterator<Item = &'a PopulatedSystem>,
     ) -> Inhabitance {
-        let mut held: HashMap<CellId, Inhabited, BuildHasherDefault<Quick>> =
-            HashMap::default();
+        let mut held: CellMap<Inhabited> = CellMap::default();
         for row in rows {
             if row.population == 0 {
                 continue;

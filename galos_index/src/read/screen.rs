@@ -15,7 +15,7 @@
 //! patch, which is what a dense sky looks like.
 
 use crate::core::geometry::CellId;
-use crate::read::resident::Quick;
+use crate::core::geometry::Quick;
 use crate::read::walk::{MERGE_PX, View};
 use glam::DVec3;
 use std::collections::HashSet;

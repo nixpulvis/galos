@@ -12,9 +12,8 @@
 
 use crate::core::aggregate::AGE_BUCKETS;
 
-use crate::core::geometry::CellId;
+use crate::core::geometry::{CellId, CellMap};
 use crate::tree::cell::Cell;
-use std::collections::HashMap;
 
 /// The resident tree of cell aggregates, keyed by address, and the same tree
 /// flattened for the walks.
@@ -38,7 +37,9 @@ use std::collections::HashMap;
 /// makes one derivation enough.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Index {
-    pub(crate) cells: HashMap<CellId, Cell>,
+    /// Hashed with [`Quick`](crate::core::geometry::Quick): the router and
+    /// the field look a cell up here per expansion and per splat.
+    pub(crate) cells: CellMap<Cell>,
     pub(crate) nodes: Vec<Node>,
 }
 
@@ -117,7 +118,7 @@ impl Node {
 /// a cell no walk ever visited, so it is in the map and not in the nodes.
 /// `u32` for the child link — a galaxy is a few hundred thousand cells, and
 /// four billion is a tree no machine holds resident.
-fn flatten(cells: &HashMap<CellId, Cell>) -> Vec<Node> {
+fn flatten(cells: &CellMap<Cell>) -> Vec<Node> {
     let mut nodes: Vec<Node> = Vec::with_capacity(cells.len());
     let Some(root) = cells.get(&CellId::ROOT) else { return nodes };
     nodes.push(Node::of(root));
@@ -184,7 +185,7 @@ fn widen(nodes: &mut [Node]) {
 impl Index {
     /// Build an index from a set of cells.
     pub fn from_cells(cells: impl IntoIterator<Item = Cell>) -> Index {
-        let cells: HashMap<CellId, Cell> =
+        let cells: CellMap<Cell> =
             cells.into_iter().map(|c| (c.id, c)).collect();
         let nodes = flatten(&cells);
         Index { cells, nodes }
