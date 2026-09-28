@@ -176,31 +176,35 @@ can lose the handshake and exit rather than wait through it.
 
 ### Scripted
 
-`profile.py` does the above with nobody at the window: it builds with
+`profile.sh` does the above with nobody at the window: it builds with
 `--features tracy`, flies each scenario through the shot driver
 (`src/dev/shot.rs`) — standing still, zooming out, zooming in, panning,
 turning — captures each with `tracy-capture`, and reads the traces back
-with `tracy-csvexport`. For each it prints the frame times and what the
-slowest tenth of frames spent, by thread and by zone. Traces stay in
-`--out` to be read again or compared.
+with `tracy-csvexport` and `awk`. For each it prints the frame times and
+what the slowest tenth of frames spent, by zone. Traces stay in `-o` to be
+read again or compared.
 
 ```sh
-galos_map/profile.py                              # every scenario, 360 frames
-galos_map/profile.py out pan --frames 240 --zone build_glow
-galos_map/profile.py --out /tmp/before && ...     # change something
-galos_map/profile.py --out /tmp/after
-galos_map/profile.py --compare /tmp/before /tmp/after
+galos_map/profile.sh                              # every scenario, 360 frames
+galos_map/profile.sh -f 240 -z build_glow out pan
+galos_map/profile.sh -o /tmp/before && ...        # change something
+galos_map/profile.sh -o /tmp/after
+galos_map/profile.sh -c /tmp/before /tmp/after    # the two, scenario by scenario
+galos_map/profile.sh -r out                       # read what -o holds, fly nothing
 ```
 
 What to know before reading one:
 
-- A frame is the time between two runs of the shot driver. Rendering runs
-  on the main thread in this build, so it is in the frame with everything
-  else; the pool threads' zones are summed over threads and hold a frame up
-  only through what waits on them.
+- A frame is the time between two runs of the shot driver, loading
+  included. Bevy runs systems on whichever thread is free, so zones are not
+  told apart by thread: the map's own background tasks (`cell payloads`,
+  `build batch`, ...) are reported apart, summed over the threads they ran
+  on, and hold a frame up only through what waits on them.
 - Zones nest, so a zone's time includes the zones inside it.
 - Read a still view's numbers from its end, not its mean: the first seconds
   are the view loading.
+- Reading a trace takes some fifteen seconds: macOS's `awk` is slow over a
+  million events.
 - A map left over from an earlier run holds Tracy's port, and the capture
   never connects to the next one; the script kills any before it flies.
 - With the display asleep the frames still run and the trace is good, but

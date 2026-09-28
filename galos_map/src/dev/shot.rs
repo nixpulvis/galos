@@ -1,7 +1,7 @@
 //! A scripted camera and a capture, so a view can be looked at, and a flight
 //! profiled, without a human at the window.
 //!
-//! `galos_map/profile.py` flies its scenarios through this; see the README's
+//! `galos_map/profile.sh` flies its scenarios through this; see the README's
 //! Profiling.
 //!
 //! ```sh
