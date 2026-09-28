@@ -81,6 +81,12 @@ Measured over `.index/full`; see the commit that queued the payload reads.
 - `reaches.bin` as mapped fixed-width columns, as the names table is. It is
   1.1 GB of MessagePack and ~1.3 s of the map's opening, and holds ~2 GB at
   peak while it decodes. `boosts.bin` the same.
+- Every marked cell is read, to 16 points whatever its share, so that
+  `screen::Empty` can light a dark patch of sky with the brightest system
+  of a cell there. Measured at 60,000 ly, a still view opened 77,418 cells
+  with it and 22,015 without, and finished reading at 3.68 s against 1.09 s,
+  for 15 more stars drawn. Working the dark patches out from the index first
+  and reading only the cells chosen would keep the stars and drop the opens.
 - The map holds about twice the payload points it draws (260k against 154k
   at the flight's stop). Memory, not time.
 

@@ -234,7 +234,7 @@ pub(crate) const WORTH_HIDING: f32 = 0.05;
 /// may drag a system off the map while the camera is still standing in it.
 /// This is the entity, for whoever has to reach the system itself rather than
 /// its rows, and it names the one system whose mark may go out.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, PartialEq)]
 pub struct Entered(Option<Entity>);
 
 impl Entered {
@@ -763,7 +763,9 @@ fn draw(
     let Ok((eye_entity, eye, across)) =
         camera.single().map(|(e, c, lens)| (e, c.eye(), seen_across(c, lens)))
     else {
-        holding.0 = None;
+        // Only where it moves: the walk reads this and runs again for
+        // anything marked changed. See `crate::map::galaxy::walk::Settled`.
+        holding.set_if_neq(Entered(None));
         return;
     };
 
@@ -798,7 +800,7 @@ fn draw(
     // what it stands for is drawn, so whichever system is named here is the
     // one drawn below.
     if !holding_over {
-        holding.0 = apparent.map(|(_, entity, _)| entity);
+        holding.set_if_neq(Entered(apparent.map(|(_, entity, _)| entity)));
     }
 
     // Nothing here waits on the mark standing for what is drawn. The plane

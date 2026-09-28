@@ -36,8 +36,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use bevy::tasks::futures_lite::future;
-use bevy::tasks::{IoTaskPool, Task, block_on};
+use bevy::tasks::{IoTaskPool, Task};
 use chrono::{DateTime, Utc};
 use galos_index::prelude::{CellId, CellSystem, Part, Stamp};
 use galos_index::read::inhabited::Inhabited;
@@ -48,6 +47,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
@@ -323,18 +323,23 @@ type Landed = (CellId, io::Result<(Vec<CellSystem>, Option<Stamp>)>);
 
 /// The payload reads the walk wants, queued and on the wire
 ///
-/// **Read in batches, a few at a time, most wanted first.** Opening a
-/// payload file is the whole cost of a read — measured over `.index/full`,
-/// some twelve microseconds an open against one and a half for a `stat`,
-/// and no faster on eighteen threads than on four — so a wide view of
-/// seventy thousand cells is most of a second however it is spread. What
-/// the spreading decides is what lands first and what else waits. One task
-/// a cell put tens of thousands on the compute pool at once, landed them in
-/// whatever order the walk named them, held every thread in the kernel and
-/// was polled one by one every frame. So the asks queue here instead, in
-/// the order [`fetch`] ranks them, and go out [`BATCH`] cells to a task and
-/// [`IN_FLIGHT`] tasks at a time on the IO pool; a queued cell the plan
-/// stops wanting is dropped unread.
+/// **Read by a few workers, most wanted first, between frames as well as
+/// during them.** Opening a payload file is the whole cost of a read —
+/// measured over `.index/full`, some twelve microseconds an open against one
+/// and a half for a `stat`, and no faster on eighteen threads than on four —
+/// so a wide view of seventy thousand cells is most of a second however it
+/// is spread. What the spreading decides is what lands first and what else
+/// waits. One task a cell put tens of thousands on the compute pool at once,
+/// landed them in whatever order the walk named them, held every thread in
+/// the kernel and was polled one by one every frame.
+///
+/// So the asks queue here, in the order [`fetch`] ranks them, and
+/// [`IN_FLIGHT`] workers on the IO pool take [`BATCH`] cells at a time off
+/// it until it is empty. **The workers pull; the frame does not push.** A
+/// batch handed out once a frame per worker tied the reads to the frame
+/// rate: 256 cells a frame, which over a wide view at the map's own frame
+/// times was ten seconds to fill what the disk reads in under one. A queued
+/// cell the plan stops wanting is dropped unread.
 ///
 /// Each read carries the payload and the [`Stamp`] the transport gave for
 /// it, so a refresh knows what it is holding and asks whether that has moved
@@ -343,56 +348,81 @@ type Landed = (CellId, io::Result<(Vec<CellSystem>, Option<Stamp>)>);
 /// read again on the next poll — the safe way round.
 #[derive(Resource, Default)]
 pub(crate) struct BoundedTasks {
-    /// Asked and not yet sent, the most wanted last so the next batch pops
-    /// off the end.
-    queued: Vec<(CellId, usize)>,
-    /// The cells on the wire, so a plan asking again does not queue them
-    /// twice.
-    reading: FxHashSet<CellId>,
-    /// The batches on the wire.
-    batches: Vec<Task<Vec<Landed>>>,
+    /// What the workers and the frame share.
+    shared: Arc<Mutex<Reads>>,
+    /// The workers, each running until the queue is empty.
+    workers: Vec<Task<()>>,
 }
 
-/// How many cells one read task takes: some three quarters of a millisecond
-/// of opens, few enough that the most wanted cells are not held behind a
-/// long tail and many enough that a wide view is a thousand tasks and not
-/// seventy thousand.
+/// The queue and what has come off it; see [`BoundedTasks`].
+#[derive(Default)]
+struct Reads {
+    /// Asked and not yet taken, the most wanted last so a batch pops off the
+    /// end.
+    queued: Vec<(CellId, usize)>,
+    /// Taken by a worker and not yet landed, so a plan asking again does not
+    /// queue them twice.
+    reading: FxHashSet<CellId>,
+    /// Read and waiting for the frame to take them in.
+    landed: Vec<Landed>,
+}
+
+/// How many cells a worker takes off the queue at once: some three quarters
+/// of a millisecond of opens, few enough that what the frame asks for next
+/// is not long behind them.
 const BATCH: usize = 64;
 
-/// How many batches are on the wire at once. Past four threads the opens
-/// go no faster (see [`BoundedTasks`]); more would only take threads from
-/// whatever else is waiting on the pool.
+/// How many workers read at once. Past four threads the opens go no faster
+/// (see [`BoundedTasks`]); more would only take threads from whatever else is
+/// waiting on the pool.
 const IN_FLIGHT: usize = 4;
 
 impl BoundedTasks {
     /// Queue `asking`, ranked most wanted first, in place of whatever was
     /// queued before; what is already on the wire is left to land.
     fn ask(&mut self, mut asking: Vec<(CellId, usize)>) {
-        asking.retain(|(id, _)| !self.reading.contains(id));
+        let mut reads = self.shared.lock().expect("the reads lock");
+        asking.retain(|(id, _)| !reads.reading.contains(id));
         asking.reverse();
-        self.queued = asking;
+        reads.queued = asking;
     }
 
-    /// Put batches on the wire until [`IN_FLIGHT`] are, or nothing is queued.
+    /// Keep [`IN_FLIGHT`] workers reading while anything is queued.
     fn send(&mut self, transport: &Transport) {
+        self.workers.retain(|worker| !worker.is_finished());
+        if self.shared.lock().expect("the reads lock").queued.is_empty() {
+            return;
+        }
         let pool = IoTaskPool::get();
-        while self.batches.len() < IN_FLIGHT && !self.queued.is_empty() {
-            let from = self.queued.len().saturating_sub(BATCH);
-            let batch: Vec<(CellId, usize)> =
-                self.queued.drain(from..).rev().collect();
-            self.reading.extend(batch.iter().map(|&(id, _)| id));
+        while self.workers.len() < IN_FLIGHT {
+            let shared = Arc::clone(&self.shared);
             let source = transport.0.clone();
-            let cells = batch.len();
-            self.batches.push(
-                pool.spawn(
-                    async move {
+            self.workers.push(pool.spawn(async move {
+                loop {
+                    let batch: Vec<(CellId, usize)> = {
+                        let mut reads = shared.lock().expect("the reads lock");
+                        let from = reads.queued.len().saturating_sub(BATCH);
+                        let batch: Vec<_> =
+                            reads.queued.drain(from..).rev().collect();
+                        reads.reading.extend(batch.iter().map(|&(id, _)| id));
+                        batch
+                    };
+                    if batch.is_empty() {
+                        return;
+                    }
+                    // One zone a batch. At info with the rest: the walk is
+                    // the map's live payload path, so a capture that left
+                    // these out would show every frame and none of the
+                    // reads the frames are waiting on.
+                    let cells = batch.len();
+                    let landed = async {
                         let mut landed = Vec::with_capacity(batch.len());
                         for (id, want) in batch {
-                            // The stamp first: a payload republished
-                            // between the two is then held under the older
-                            // stamp and re-read by the next refresh, where
-                            // the other order would hold a stamp for
-                            // contents the map does not have.
+                            // The stamp first: a payload republished between
+                            // the two is then held under the older stamp and
+                            // re-read by the next refresh, where the other
+                            // order would hold a stamp for contents the map
+                            // does not have.
                             let stamp = source
                                 .stamp(Part::Cell(id))
                                 .await
@@ -406,28 +436,24 @@ impl BoundedTasks {
                         }
                         landed
                     }
-                    // One zone a batch. At info with the rest: the walk is
-                    // the map's live payload path, so a capture that left
-                    // these out would show every frame and none of the
-                    // reads the frames are waiting on.
-                    .instrument(info_span!("cell payloads", cells)),
-                ),
-            );
+                    .instrument(info_span!("cell payloads", cells))
+                    .await;
+                    shared
+                        .lock()
+                        .expect("the reads lock")
+                        .landed
+                        .extend(landed);
+                }
+            }));
         }
     }
 
-    /// The batches that have landed, taken off the wire.
+    /// What has landed since the last frame took it.
     fn landed(&mut self) -> Vec<Landed> {
-        let mut landed = Vec::new();
-        self.batches.retain_mut(|task| {
-            let Some(batch) = block_on(future::poll_once(task)) else {
-                return true;
-            };
-            landed.extend(batch);
-            false
-        });
+        let mut reads = self.shared.lock().expect("the reads lock");
+        let landed = std::mem::take(&mut reads.landed);
         for (id, _) in &landed {
-            self.reading.remove(id);
+            reads.reading.remove(id);
         }
         landed
     }
@@ -440,16 +466,22 @@ impl BoundedTasks {
     ///
     /// Read by the flight guard ([`crate::map::galaxy::flight`]), which counts a cell read
     /// twice over one flight as work paid for twice.
-    pub(crate) fn cells(&self) -> impl Iterator<Item = CellId> + '_ {
-        self.queued
+    pub(crate) fn cells(&self) -> Vec<CellId> {
+        let reads = self.shared.lock().expect("the reads lock");
+        reads
+            .queued
             .iter()
             .map(|&(id, _)| id)
-            .chain(self.reading.iter().copied())
+            .chain(reads.reading.iter().copied())
+            .collect()
     }
 
-    /// Whether nothing is queued or on the wire
+    /// Whether nothing is queued, on the wire or waiting to be taken in
     pub(crate) fn is_empty(&self) -> bool {
-        self.queued.is_empty() && self.batches.is_empty()
+        let reads = self.shared.lock().expect("the reads lock");
+        reads.queued.is_empty()
+            && reads.reading.is_empty()
+            && reads.landed.is_empty()
     }
 }
 

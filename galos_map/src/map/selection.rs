@@ -201,6 +201,30 @@ impl Picked {
 #[derive(Resource, Default)]
 pub struct Selection(Vec<Picked>);
 
+/// Hand `selection` to `edit`, which takes it as a plain `&mut`, and mark it
+/// changed only where `edit` changed which things are picked out
+///
+/// A `ResMut` handed out as a `&mut` reads as written whether or not
+/// anything was, and the bar is handed the selection every frame it draws.
+/// What reads the mark does the work again: the walk
+/// ([`crate::map::galaxy::walk::reconcile`]) reconciles the whole sky on a
+/// selection said to have moved, and with the bar open that was every
+/// frame of a still view.
+pub(crate) fn edited<R>(
+    selection: &mut ResMut<Selection>,
+    edit: impl FnOnce(&mut Selection) -> R,
+) -> R {
+    let named = |selection: &Selection| -> Vec<(i64, Option<i16>)> {
+        selection.0.iter().map(|one| (one.address(), one.id())).collect()
+    };
+    let before = named(selection);
+    let answer = edit(selection.bypass_change_detection());
+    if named(selection) != before {
+        selection.set_changed();
+    }
+    answer
+}
+
 impl Selection {
     /// Pick `picked` out, alongside the rest or in place of them
     ///

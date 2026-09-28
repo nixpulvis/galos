@@ -375,7 +375,7 @@ impl Flight {
             if name == "fetch" {
                 let world = self.app.world();
                 let asking: Vec<CellId> =
-                    world.resource::<BoundedTasks>().cells().collect();
+                    world.resource::<BoundedTasks>().cells();
                 frame.asked = asking.len();
                 for id in asking {
                     if !self.asked.insert(id) {

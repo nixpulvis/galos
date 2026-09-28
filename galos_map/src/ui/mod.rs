@@ -313,39 +313,46 @@ pub(crate) fn chrome(
     // The bar next, in the room the gear is not standing in. Then the rows
     // under where it reached, and the gear last of the three: it stands level
     // with the field, which is not known until the bar has drawn it.
-    let asked = ask_bar(
-        ctx,
-        left,
-        // Whether the search box's answer is late enough to say so. Settled
-        // where the clock is, which is the system that put the question; the
-        // bar draws during egui's own pass and has no clock of its own.
-        bar.pending.waiting(),
-        &mut search,
-        &mut bar.search,
-        &mut bar.note,
-        &mut bar.results,
-        &mut selection,
-        center,
-        &mut panels,
-        &mut camera,
-        &mut bar.plot,
-        &mut bar.route,
-        &bar.router,
-        &bar.searching,
-        &mut filter,
-    );
-    let (rows, routing) = state_bar(
-        ctx,
-        left,
-        asked.foot,
-        &mut selection,
-        &contents,
-        center,
-        &mut panels,
-        &mut camera,
-        &mut bar.search,
-        &mut filter,
-    );
+    // Handed through [`crate::map::selection::edited`], which marks the
+    // selection changed only where the bar changed it; see there.
+    let asked = crate::map::selection::edited(&mut selection, |selection| {
+        ask_bar(
+            ctx,
+            left,
+            // Whether the search box's answer is late enough to say so. Settled
+            // where the clock is, which is the system that put the question; the
+            // bar draws during egui's own pass and has no clock of its own.
+            bar.pending.waiting(),
+            &mut search,
+            &mut bar.search,
+            &mut bar.note,
+            &mut bar.results,
+            selection,
+            center,
+            &mut panels,
+            &mut camera,
+            &mut bar.plot,
+            &mut bar.route,
+            &bar.router,
+            &bar.searching,
+            &mut filter,
+        )
+    });
+    let (rows, routing) =
+        crate::map::selection::edited(&mut selection, |selection| {
+            state_bar(
+                ctx,
+                left,
+                asked.foot,
+                selection,
+                &contents,
+                center,
+                &mut panels,
+                &mut camera,
+                &mut bar.search,
+                &mut filter,
+            )
+        });
     gear(ctx, edge, asked.middle, &mut open.0);
 
     // A press that landed on neither of the bar's two zones. Never spent: the
