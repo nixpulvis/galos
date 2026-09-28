@@ -19,18 +19,20 @@ use crate::map::{
 use bevy::asset::RenderAssetUsages;
 use bevy::diagnostic::FrameCount;
 use bevy::image::{Image, ImageSampler};
+use bevy::log::tracing::Instrument;
 use bevy::math::DVec3;
 use bevy::picking::pointer::PointerMap;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use bevy::tasks::block_on;
 use bevy::tasks::futures_lite::future;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use big_space::prelude::*;
 use chrono::Utc;
 use elite_journal::{Allegiance, Government, system::Security};
 use galos_index::core::aggregate::TempBucket;
+use galos_index::prelude::CellSystem;
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
 use galos_route::graph::{Drive, Routing, Tuning};
@@ -48,6 +50,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Startup, cut_star_psf);
     app.init_resource::<PendingSpawns>();
     app.init_resource::<SpawnBudget>();
+    app.init_resource::<Building>();
     app.add_systems(Update, spawn.in_set(MapSet::Populate));
     // Turns a bounded number of queued systems into entities each frame, so a
     // frame's offers do not all become entities at once. After `spawn`, which
@@ -1001,11 +1004,11 @@ impl PendingSpawns {
     /// no longer holds that system — a cell freed or republished while the
     /// offer waited — and the offer is then dropped unread. The walk offers
     /// it again next frame if it is still wanted.
-    fn take(
+    fn take<T>(
         &mut self,
         budget: usize,
-        mut built: impl FnMut(i64, Waiting) -> Option<System>,
-    ) -> Vec<System> {
+        mut built: impl FnMut(i64, Waiting) -> Option<T>,
+    ) -> Vec<T> {
         let mut batch = Vec::with_capacity(budget.min(self.queued()));
         while batch.len() < budget {
             let next =
@@ -1034,13 +1037,53 @@ impl PendingSpawns {
     }
 }
 
+/// A queued system on its way to being built off the main thread
+enum Job {
+    /// Already built, by a path that had the whole row in hand.
+    Built(System),
+    /// A payload point, still to be named and coloured.
+    Point(CellSystem),
+}
+
+/// The systems being built off the main thread, a chunk a task
+///
+/// **Naming a system is a page fault, and a page fault is not the frame's to
+/// wait on.** What building a payload point costs is its name and its reach,
+/// two binary searches over tables the map maps rather than holds — the
+/// names table's 1.6 GB of addresses, the reaches' 76 million rows — and
+/// the pages they land on are mostly cold. Measured over `.index/full`,
+/// 40,000 points off a wide view: 88 µs a system the first time through
+/// and 1.8 µs the second. A frame's worth built on the main thread was
+/// 20 ms of every frame that stuttered while zooming, against 0.08 ms for
+/// the spawning itself.
+///
+/// So [`drain_spawns`] hands each frame's worth to the compute pool in
+/// chunks of [`BUILD_CHUNK`], which fault in parallel, and spawns what has
+/// come back on a later frame. A system arrives a frame or so after it was
+/// taken, which the walk already allows for: it offers whatever is still
+/// wanted and not drawn every pass.
+#[derive(Resource, Default)]
+pub(crate) struct Building {
+    tasks: Vec<Task<Vec<System>>>,
+    /// The addresses on their way, so the walk's next offer of one it has
+    /// not seen drawn yet is not built a second time.
+    addresses: rustc_hash::FxHashSet<i64>,
+}
+
+/// How many systems one building task takes: small enough that a frame's
+/// worth faults on several threads at once.
+const BUILD_CHUNK: usize = 256;
+
 /// Turn a budgeted number of queued systems into entities
 ///
-/// Hands [`SpawnBudget`] of what is queued to [`spawn_systems`], so the
-/// frame's structural work is bounded however much arrived at once.
+/// Hands [`SpawnBudget`] of what is queued to be built ([`Building`]), and
+/// what has been built to [`spawn_systems`], so the frame's structural work
+/// is bounded however much arrived at once and none of the building is
+/// done on this thread.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_spawns(
     mut pending: ResMut<PendingSpawns>,
+    mut building: ResMut<Building>,
     addresses: Res<crate::map::galaxy::Addresses>,
     galaxy: Res<Galaxy>,
     grids: Query<&Grid>,
@@ -1056,38 +1099,79 @@ pub(crate) fn drain_spawns(
     if pending.budget != *budget {
         pending.budget = *budget;
     }
-    if pending.is_empty() {
+    // What has been built since the last frame.
+    let mut ready: Vec<System> = Vec::new();
+    let Building { tasks, addresses: on_the_way } = &mut *building;
+    tasks.retain_mut(|task| match block_on(future::poll_once(task)) {
+        Some(built) => {
+            for system in &built {
+                on_the_way.remove(&system.address);
+            }
+            ready.extend(built);
+            false
+        }
+        None => true,
+    });
+    // And the next frame's worth handed out, with at most one more frame's
+    // worth still building: one at a time spawned on every other frame
+    // wherever a frame is quicker than the building. The payload points are copied out of the resident cells here,
+    // where the cells are: which point of which cell an offer named is
+    // cheap to answer, and a cell republished since renumbers its members,
+    // so a point that is no longer the system offered is dropped and the
+    // walk offers whatever is there now next frame. See [`Waiting`].
+    if tasks.len() * BUILD_CHUNK <= budget.0 && !pending.is_empty() {
+        let _zone =
+            info_span!("take batch", queued = pending.queued()).entered();
+        let jobs = pending.take(budget.0, |address, what| {
+            if on_the_way.contains(&address) {
+                return None;
+            }
+            let job = match what {
+                Waiting::Built(system) => Job::Built(*system),
+                Waiting::Point { cell, at } => {
+                    let held = resident.0.cell(cell)?;
+                    let point = held.points.get(at as usize)?;
+                    if point.id64 as i64 != address {
+                        return None;
+                    }
+                    Job::Point(*point)
+                }
+            };
+            on_the_way.insert(address);
+            Some(job)
+        });
+        let pool = AsyncComputeTaskPool::get();
+        let mut jobs = jobs.into_iter().peekable();
+        while jobs.peek().is_some() {
+            let chunk: Vec<Job> = jobs.by_ref().take(BUILD_CHUNK).collect();
+            let populated = populated.clone();
+            let names = names.clone();
+            tasks.push(
+                pool.spawn(
+                    async move {
+                        chunk
+                            .into_iter()
+                            .map(|job| match job {
+                                Job::Built(system) => system,
+                                Job::Point(point) => {
+                                    System::of(&point, &populated, &names)
+                                }
+                            })
+                            .collect()
+                    }
+                    .instrument(info_span!("build batch")),
+                ),
+            );
+        }
+    }
+    if ready.is_empty() {
         return;
     }
     let Ok(grid) = grids.get(galaxy.0) else { return };
     let arrived_at = pending.arrived_at.unwrap_or_else(|| time.startup());
-    // The frame's worth, built here and not when it was offered: a queued
-    // system is mostly one that never gets drawn, and the name and the
-    // political columns are a join apiece. See [`Waiting`].
-    //
-    // The building and the spawning are a zone apiece: one is a name and a
-    // political join per system off the resident tables, the other is bevy
-    // structural work, and a batch that spikes is one or the other.
-    let batch = {
-        let _zone =
-            info_span!("build batch", queued = pending.queued()).entered();
-        pending.take(budget.0, |address, what| match what {
-            Waiting::Built(system) => Some(*system),
-            Waiting::Point { cell, at } => {
-                let held = resident.0.cell(cell)?;
-                let point = held.points.get(at as usize)?;
-                // The cell may have been published again while the offer
-                // waited, which renumbers its members: a point that is no
-                // longer the system that was offered is not this offer's, and
-                // the walk offers whatever is there now next frame.
-                (point.id64 as i64 == address)
-                    .then(|| System::of(point, &populated, &names))
-            }
-        })
-    };
-    let _zone = info_span!("spawn batch", systems = batch.len()).entered();
+    let _zone = info_span!("spawn batch", systems = ready.len()).entered();
     spawn_systems(
-        batch,
+        ready,
         &addresses,
         &galaxy,
         grid,

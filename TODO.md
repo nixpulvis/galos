@@ -96,11 +96,35 @@ Measured over `.index/full`; see the commit that queued the payload reads.
   is back at its default on every launch.
 - `galaxy::spawn::update` asks every drawn system every frame whether its row
   changed; a `Changed<System>` query would skip the rest.
-- The flight harness (`galaxy/flight.rs`) awaits every read each frame, so
-  it measures per-frame cost but cannot see fill-in order or timing. Those
-  were checked with `dev/shot.rs` captures instead.
+- The flight harness (`galaxy/flight.rs`) awaits every read each frame and
+  runs frames back to back, so it measures per-frame cost but not fill-in
+  order or timing: with systems now built off the main thread its "fill-in
+  frames" reads 28 where the running map fills a frame's budget every frame.
+  Fill-in was checked with `dev/shot.rs` captures; how long it takes in the
+  running map after the camera stops has not been measured end to end.
 - 71 clippy warnings in galos_map, most of them the argument counts above
   and complex types; a few collapsible `if`s.
+
+## Smoother while moving
+
+Measured with Tracy over `.index/full` in the running map, after systems
+were built off the main thread. Still, the map is idle; these are what the
+slowest tenth of frames spend while zooming out.
+
+- `walk::reconcile`, ~15 ms. The per-cell prefix pass is O(marks) and runs
+  every frame the plan moves. Its per-cell work could run across threads
+  with a serial merge, or the pass could run every other frame while the
+  camera moves.
+- The render thread, ~16 ms, 7 of it `allocate_and_free_meshes`: the glow
+  (up to ~150k quads, ~600k vertices) and the marks field are fresh meshes
+  every frame the camera moves. Many glow quads are laid at peaks far
+  under a display level; dropping those would shrink the upload, and is a
+  change to how the glow looks.
+- `paint::glow::build_glow`, ~6 ms, already across threads.
+- The worst single frames (100–140 ms) were not looked into.
+- `galaxy::System::build` names a system through `Names::get`, which builds
+  a whole `NameEntry` to take its name; `name_of` is the cheaper answer.
+  Off the main thread now, so it costs fill-in time rather than frames.
 
 ## Broken
 

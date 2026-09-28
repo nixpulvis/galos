@@ -249,6 +249,7 @@ impl Flight {
         app.init_resource::<PendingSpawns>();
         app.init_resource::<crate::map::galaxy::Addresses>();
         app.init_resource::<crate::map::galaxy::spawn::SpawnBudget>();
+        app.init_resource::<crate::map::galaxy::spawn::Building>();
         app.init_resource::<PendingEvictions>();
         app.init_resource::<crate::map::galaxy::Evictions>();
         app.init_resource::<crate::map::bodies::spawn::Entered>();

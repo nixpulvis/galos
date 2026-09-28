@@ -43,6 +43,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::ecs::system::SystemParam;
 use bevy::image::{Image, ImageSampler};
 use bevy::math::DVec3;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -338,6 +339,39 @@ fn tune_field(
     }
 }
 
+/// What [`build_field`] reads besides its resources: whether any shell has
+/// changed, come or gone since it last ran, and where the camera stood
+///
+/// **A still frame lays nothing down.** The field used to be rebuilt every
+/// frame whatever moved: measured over `.index/full`, a still view at thirty
+/// thousand light years spent 1.7 ms a frame laying down the field it laid
+/// the frame before, and the renderer another 4 taking in the fresh mesh.
+/// Every writer of a shell's components writes only where the value moved,
+/// so their change marks say whether one did; the camera is written every
+/// frame whether it moves or not, so it is kept by value and compared.
+#[derive(SystemParam)]
+pub(crate) struct ShellsMoved<'w, 's> {
+    changed: Query<'w, 's, (), ShellChanged>,
+    gone: RemovedComponents<'w, 's, Shell>,
+    unfiltered: RemovedComponents<'w, 's, Filtered>,
+    unthinned: RemovedComponents<'w, 's, crate::map::route::Thinned>,
+    last: Local<'s, Option<(galos_index::read::walk::View, f32)>>,
+}
+
+/// A shell any of whose drawn components has changed since the field last
+/// read it; see [`ShellsMoved`].
+type ShellChanged = (
+    With<Shell>,
+    Or<(
+        Changed<System>,
+        Changed<Drawn>,
+        Changed<Visibility>,
+        Changed<Strength>,
+        Added<Filtered>,
+        Changed<crate::map::route::Thinned>,
+    )>,
+);
+
 /// Rebuild the field mesh from where every visible system falls on screen
 #[expect(
     clippy::too_many_arguments,
@@ -367,11 +401,35 @@ pub(crate) fn build_field(
     blobs: Res<crate::map::galaxy::walk::Blobs>,
     mut field: Query<&mut Mesh3d, With<FieldMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut moved: ShellsMoved,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
     let Some(viewport) = camera.logical_viewport_size() else { return };
     let cot_half_fov = camera.clip_from_view().y_axis.y;
     let Ok(mut mesh3d) = field.single_mut() else { return };
+
+    // Nothing to lay where nothing has moved; see [`ShellsMoved`]. Every
+    // reader is drained whether or not this goes on, so a removal read now
+    // is not read again next frame.
+    let removed = moved.gone.read().count()
+        + moved.unfiltered.read().count()
+        + moved.unthinned.read().count();
+    let seen = crate::map::galaxy::plan::view(orbit, camera)
+        .map(|seen| (seen, camera.target_scaling_factor().unwrap_or(1.)));
+    let changed = removed > 0
+        || !moved.changed.is_empty()
+        || view.is_changed()
+        || scale_population.is_changed()
+        || exposure.is_changed()
+        || profile.is_changed()
+        || color_by.is_changed()
+        || dim.is_changed()
+        || gains.is_changed()
+        || blobs.is_changed();
+    if !changed && moved.last.is_some() && *moved.last == seen {
+        return;
+    }
+    *moved.last = seen;
 
     let mut positions: Vec<[f32; 3]> = Vec::new();
     let mut uvs: Vec<[f32; 2]> = Vec::new();
