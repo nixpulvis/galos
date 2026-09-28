@@ -418,7 +418,11 @@ fn place(
     // stands in, and that cell is where everything drawn is measured from. So
     // this is where the camera is, in the space the shader works in.
     let eye = camera.translation.as_dvec3();
-    let sideways = camera.rotation * Vec3::X;
+    // The view's own right, as the renderer builds it: the camera's turn
+    // taken through its scale, which is where the map's mirror is carried
+    // (`crate::map::camera::MIRROR`). So a number is laid to read left to
+    // right across the picture actually drawn, mirrored or not.
+    let sideways = camera.rotation * (Vec3::X * camera.scale.signum());
 
     for (entity, mut plane, cell, transform, global) in &mut planes {
         // The grid a plane hangs from is the one that places it.

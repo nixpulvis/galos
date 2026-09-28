@@ -98,6 +98,28 @@ fn tune_bloom(
 /// the camera passes over the point it is orbiting.
 pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 
+/// How the camera is scaled: across its own `x`, mirrored
+///
+/// The game's coordinates are left handed. Seen from the galactic north pole
+/// with the core at the top, `+x` is on the right: Alpha Centauri, at
+/// galactic longitude 316°, is `(3.0, -0.1, 3.2)` from Sol. Bevy is right
+/// handed, and a galaxy laid into it as the numbers stand is drawn with `+x`
+/// on the left — the game's map in a mirror.
+///
+/// So the camera is mirrored rather than the galaxy. Every position stays as
+/// the game says it, and so does every number the map prints; only the
+/// picture turns over. The renderer takes the mirror from the camera's scale,
+/// which [`orbit_camera`] writes, and Bevy's own passes already allow for a
+/// camera scaled so; the ruled plane's lettering reads the same scale, to lay
+/// its numbers along the view the renderer draws. Everything the map projects
+/// for itself takes it from [`OrbitCamera::right`], and the controls from
+/// [`OrbitCamera::swing`]. Nothing else asks which way the screen runs, and
+/// `rotation * Vec3::X` is not an answer to it.
+///
+/// A mirror turns every triangle over, so a mesh culled by its back faces
+/// shows its inside; see where the bodies' materials are made.
+pub(crate) const MIRROR: Vec3 = Vec3::new(-1., 1., 1.);
+
 /// Where the camera stands when the map opens, as a share of a quarter turn
 ///
 /// A third of one in each of the two angles. Level with the galactic plane the
@@ -705,6 +727,10 @@ pub(crate) struct OrbitCamera {
     /// having to undo the cell split to ask where the camera is.
     eye: DVec3,
     /// Which way the camera faces, for anything that wants to line up with it
+    ///
+    /// A turn and nothing else, so its own `x` is not the screen's right: the
+    /// map is drawn mirrored across it ([`MIRROR`]). Ask [`Self::right`],
+    /// [`Self::up`] and [`Self::forward`] for the screen's axes in the galaxy.
     pub(crate) rotation: Quat,
     pub(crate) radius: f32,
     pub(crate) target_radius: f32,
@@ -795,6 +821,45 @@ impl OrbitCamera {
     /// Where the camera stands, in absolute galactic light years
     pub(crate) fn eye(&self) -> DVec3 {
         self.origin + self.eye
+    }
+
+    /// Which way the screen's right runs, in the galaxy
+    ///
+    /// The one answer to it: the camera's own `x` taken through [`MIRROR`],
+    /// as the renderer takes it by the camera's scale. Everything the map
+    /// projects for itself asks this, so what it paints and what the renderer
+    /// draws cannot come to disagree about which side is which.
+    pub(crate) fn right(&self) -> Vec3 {
+        self.rotation * (Vec3::X * MIRROR)
+    }
+
+    /// And the screen's up, which the mirror leaves alone
+    pub(crate) fn up(&self) -> Vec3 {
+        self.rotation * Vec3::Y
+    }
+
+    /// And the way into the screen, which the mirror leaves alone too
+    pub(crate) fn forward(&self) -> Vec3 {
+        self.rotation * Vec3::NEG_Z
+    }
+
+    /// The way the camera faces, laid flat on the galactic plane
+    ///
+    /// Off the yaw alone, so it is there to answer looking straight down,
+    /// where the way into the screen has nothing left in the plane.
+    pub(crate) fn heading(&self) -> Vec3 {
+        Quat::from_rotation_y(self.yaw) * Vec3::NEG_Z
+    }
+
+    /// Swing the camera round what it looks at by `rightward` radians, the
+    /// way a drag of the pointer to the right swings it
+    ///
+    /// Through [`MIRROR`], since a yaw that turns the galaxy one way across a
+    /// right handed screen turns it the other way across the mirrored one: a
+    /// drag and a key both ask this, and neither has to know which the screen
+    /// is.
+    pub(crate) fn swing(&mut self, rightward: f32) {
+        self.target_yaw -= rightward * MIRROR.x;
     }
 
     /// Where the camera looks, in light years from `from`
@@ -1210,7 +1275,7 @@ pub(crate) fn orbit_camera(
     // it rather than to what the pointer is over from one frame to the next.
     if gesture.dragging_map() {
         if gesture.pressed(MouseButton::Left) {
-            orbit.target_yaw -= motion.delta.x * ORBIT_RATE;
+            orbit.swing(motion.delta.x * ORBIT_RATE);
             orbit.target_pitch = (orbit.target_pitch
                 - motion.delta.y * ORBIT_RATE)
                 .clamp(-PITCH_LIMIT, PITCH_LIMIT);
@@ -1218,8 +1283,8 @@ pub(crate) fn orbit_camera(
 
         if gesture.pressed(MouseButton::Right) {
             let rate = PAN_RATE * orbit.radius;
-            let across = orbit.rotation * Vec3::X * -motion.delta.x * rate;
-            let up = orbit.rotation * Vec3::Y * motion.delta.y * rate;
+            let across = orbit.right() * -motion.delta.x * rate;
+            let up = orbit.up() * motion.delta.y * rate;
             orbit.pan((across + up).as_dvec3());
         }
     }
@@ -1366,6 +1431,8 @@ pub(crate) fn orbit_camera(
     let mut placed = *transform;
     placed.translation = eye_translation;
     placed.rotation = rotation;
+    // Mirrored, as the game draws its galaxy; see [`MIRROR`].
+    placed.scale = MIRROR;
     transform.set_if_neq(placed);
 }
 

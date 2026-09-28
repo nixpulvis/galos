@@ -677,6 +677,15 @@ fn lumens(radius: f32, temperature: f32) -> f32 {
     (watts * EFFICACY) as f32
 }
 
+/// Which faces of a star or a body are culled: neither
+///
+/// The camera is mirrored ([`crate::map::camera::MIRROR`]), which turns every
+/// triangle's winding over on screen, and a sphere culled by its back faces
+/// then shows the inside of its far side. Culling the front faces instead
+/// would be right only for as long as the mirror is; culling nothing is right
+/// either way, the near side standing in front of the far one by depth.
+const SIDES: Option<bevy::render::render_resource::Face> = None;
+
 fn init_materials(
     mut assets: ResMut<Assets<StandardMaterial>>,
     mut commands: Commands,
@@ -689,6 +698,8 @@ fn init_materials(
                     base_color: glow.color(),
                     // A star is the light rather than a thing lit by it.
                     emissive: LinearRgba::from(glow.color()) * 4000.,
+                    // Both faces, the camera being mirrored; see `SIDES`.
+                    cull_mode: SIDES,
                     ..default()
                 })
             })
@@ -705,6 +716,7 @@ fn init_materials(
                     // A trace of its own, so that a body whose star is not on
                     // record is dim rather than invisible.
                     emissive: LinearRgba::from(surface.color()) * 0.02,
+                    cull_mode: SIDES,
                     ..default()
                 })
             })

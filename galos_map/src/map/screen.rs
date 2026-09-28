@@ -51,7 +51,7 @@ pub(crate) fn depth(camera: &OrbitCamera, point: DVec3) -> f32 {
 ///
 /// Answers in whatever unit `offset` is given in.
 pub(crate) fn depth_of(camera: &OrbitCamera, offset: DVec3) -> f32 {
-    let forward = (camera.rotation * Vec3::NEG_Z).as_dvec3();
+    let forward = camera.forward().as_dvec3();
     offset.dot(forward) as f32
 }
 
@@ -157,13 +157,13 @@ pub(crate) fn screen_offset(
     viewport: Vec2,
     offset: DVec3,
 ) -> Option<Vec2> {
-    let depth = offset.dot((camera.rotation * Vec3::NEG_Z).as_dvec3()) as f32;
+    let depth = offset.dot(camera.forward().as_dvec3()) as f32;
     if depth <= 0. {
         return None;
     }
 
-    let right = offset.dot((camera.rotation * Vec3::X).as_dvec3()) as f32;
-    let up = offset.dot((camera.rotation * Vec3::Y).as_dvec3()) as f32;
+    let right = offset.dot(camera.right().as_dvec3()) as f32;
+    let up = offset.dot(camera.up().as_dvec3()) as f32;
     let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
 
     Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
@@ -297,7 +297,7 @@ pub(crate) fn outline(
     radius: f32,
 ) -> Option<Silhouette> {
     let away = crate::map::space::metres(offset);
-    let depth = away.dot((camera.rotation * Vec3::NEG_Z).as_dvec3());
+    let depth = away.dot(camera.forward().as_dvec3());
     if depth <= 0. {
         return None;
     }
@@ -310,8 +310,8 @@ pub(crate) fn outline(
     // lens: a point `aside` of its depth to one side lands `focal * aside`
     // pixels from the middle of the view.
     let focal = cot_half_fov as f64 * viewport.y as f64 / 2.;
-    let right = away.dot((camera.rotation * Vec3::X).as_dvec3());
-    let up = away.dot((camera.rotation * Vec3::Y).as_dvec3());
+    let right = away.dot(camera.right().as_dvec3());
+    let up = away.dot(camera.up().as_dvec3());
     // Where the ball's own middle projects, in pixels from the middle of the
     // view, which is what [`screen_offset`] answers and all this corrects.
     let projected = DVec2::new(right, -up) * focal / depth;
@@ -483,7 +483,12 @@ mod tests {
         let rotation = Quat::from_euler(EulerRot::YXZ, 0.7, -0.3, 0.);
         let mut camera = OrbitCamera::default();
         camera.rotation = rotation;
-        let eye = GlobalTransform::from(Transform::from_rotation(rotation));
+        // Scaled as the map's camera is, the mirror being half of what the
+        // renderer draws with; see [`crate::map::camera::MIRROR`].
+        let eye = GlobalTransform::from(
+            Transform::from_rotation(rotation)
+                .with_scale(crate::map::camera::MIRROR),
+        );
         let viewport = Vec2::new(width, height);
         let cot_half_fov = clip_from_view.y_axis.y;
 

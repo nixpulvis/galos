@@ -77,6 +77,14 @@ and the ruled plane's readouts — is projected to a pixel on the processor in
 [`src/map/screen.rs`](./src/map/screen.rs), and the cameras and the
 order they draw in [`src/map/camera.rs`](./src/map/camera.rs).
 
+The galaxy is drawn the way round the game draws it. Its coordinates are
+left handed — seen from galactic north with the core at the top, `+X` is on
+the right — and the renderer is right handed, so the camera is mirrored
+across its own x rather than any position being changed. Every coordinate the
+map prints is the game's own. The mirror is `MIRROR` in
+[`src/map/camera.rs`](./src/map/camera.rs), and the screen's axes are asked
+of the camera there rather than worked out from its rotation.
+
 A compass rose stands in the bottom right corner, turned with the camera. Its
 card lies in the galactic plane, foreshortened the way the ruled plane under
 the middle of the view is, and its four points are that plane's axes, `+X`

@@ -344,9 +344,9 @@ pub(crate) fn draw_rose(
     // The camera's own axes, which turn a way in the galaxy into a way on the
     // screen. No perspective: the rose is the plane at the middle of the view,
     // where a small enough piece of it is drawn as this.
-    let right = orbit.rotation * Vec3::X;
-    let up = orbit.rotation * Vec3::Y;
-    let toward = orbit.rotation * Vec3::Z;
+    let right = orbit.right();
+    let up = orbit.up();
+    let toward = -orbit.forward();
     let hub = viewport - HUB_FROM;
     let flat = |v: Vec3| Vec2::new(v.dot(right), -v.dot(up));
     let at = |v: Vec3| {

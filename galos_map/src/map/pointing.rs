@@ -924,8 +924,8 @@ pub fn ring(
 
     // The camera's own axes, for turning which way a stop lies into which way
     // its stub runs across the view.
-    let right = orbit.rotation * Vec3::X;
-    let up = orbit.rotation * Vec3::Y;
+    let right = orbit.right();
+    let up = orbit.up();
 
     let ctx = contexts.ctx_mut()?;
     let painter = ctx.layer_painter(crate::map::screen::annotations_layer());

@@ -112,14 +112,12 @@ fn pan(
     }
     let Ok(mut orbit) = cameras.single_mut() else { return };
 
-    // The camera's own right, which lies in the plane whatever the pitch. The
-    // orbit is a yaw about the plane's normal and then a pitch about the line
-    // that yaw left, so the pitch turns the camera over this line rather than
-    // taking it off the plane, and there is no roll to tip it out.
-    let across = orbit.rotation * Vec3::X;
-    // And the way the camera faces, laid flat: the perpendicular of that line
-    // in the plane, `Vec3::Y` being the plane's normal.
-    let along = Vec3::Y.cross(across);
+    // The screen's right, which lies in the plane whatever the pitch: the
+    // orbit is a yaw about the plane's normal and then a pitch about that
+    // line, and there is no roll to tip it out.
+    let across = orbit.right();
+    // And the way the camera faces, laid flat.
+    let along = orbit.heading();
 
     let mut asked = Vec3::ZERO;
     for (key, way) in [
@@ -187,7 +185,8 @@ fn swing(
     }
 
     let rate = ORBIT_PER_SECOND * time.delta_secs();
-    orbit.target_yaw += round * rate;
+    // Z swings the way a drag to the left does, X the way one to the right.
+    orbit.swing(-round * rate);
     orbit.target_pitch =
         (orbit.target_pitch + over * rate).clamp(-PITCH_LIMIT, PITCH_LIMIT);
 }
@@ -677,7 +676,10 @@ mod tests {
             .sin()
     }
 
-    /// `Z` and `X` carry the camera round
+    /// `Z` and `X` carry the camera round, one each way
+    ///
+    /// Which way the angle runs for either is the mirror's business
+    /// ([`OrbitCamera::swing`]) and not asked here.
     #[test]
     fn the_camera_swings_both_ways_round() {
         let mut one = swung();
@@ -687,9 +689,10 @@ mod tests {
         frame(&mut one, &[KeyCode::KeyZ]);
         frame(&mut other, &[KeyCode::KeyX]);
 
-        let (one, other) = (facing(&mut one), facing(&mut other));
-        assert!(one > opened_at, "stayed at {one}");
-        assert!(other < opened_at, "stayed at {other}");
+        let (one, other) =
+            (facing(&mut one) - opened_at, facing(&mut other) - opened_at);
+        assert!(one != 0. && other != 0., "stayed at {one} and {other}");
+        assert!(one.signum() != other.signum(), "both went {one} and {other}");
     }
 
     /// `V` raises it over the plane and `C` lowers it toward one
@@ -780,7 +783,7 @@ mod tests {
 
         let round = std::f32::consts::TAU;
         assert!(
-            facing(&mut app) > opened_at + round,
+            (facing(&mut app) - opened_at).abs() > round,
             "only reached {}",
             facing(&mut app)
         );
