@@ -17,7 +17,7 @@
 //! and there is no incremental parser over the array itself. The buffer is
 //! reused and grows to the longest line seen.
 //!
-//! Were a dump ever to arrive as one long line, [`Lines`] would read the
+//! Were a dump ever to arrive as one long line, `Lines` would read the
 //! whole file into memory.
 //!
 //! **One system, however much of it a given file carries.** Spansh
@@ -42,9 +42,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Seek};
 use std::path::Path;
 
-/// Translating the dump's prose for a star class into the game's own.
 pub mod star;
-/// One system as a dump gives it, and the scans it stands for.
 pub mod system;
 
 pub use star::class_of;

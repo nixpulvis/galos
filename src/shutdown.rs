@@ -68,10 +68,8 @@ pub fn on_interrupt(shutdown: Shutdown) {
             std::process::exit(130);
         }
         shutdown.ask();
-        say(
-            "stopping: the last publish and the resume point still have to \
-             be written, so this takes a moment. Interrupt again to stop now.",
-        );
+        say("stopping: the last publish and the resume point still have to \
+             be written, so this takes a moment. Interrupt again to stop now.");
     });
     if let Err(err) = installed {
         tracing::warn!(

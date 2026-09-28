@@ -1,6 +1,11 @@
+// TODO: reorganize. This measures a local `GALOS_PERF_DIR` and passes
+// silently without one, so it is not an integration test of anything a user
+// runs. Revisit alongside `examples/names_bench.rs` when setting up proper
+// criterion benchmarks.
+
 //! What a whole galaxy's names say about deriving them.
 //!
-//! `galos_index::procedural` spells a system's name from its address, and
+//! `galos_index::core::procedural` spells a system's name from its address, and
 //! the names table stores only the ones that disagree. The unit tests pin
 //! the arithmetic against known systems; this pins it against **every name
 //! a real directory holds**, because the thing that matters is a rate: a
@@ -13,7 +18,7 @@
 //! GALOS_PERF_DIR=.index/full cargo test -p galos_index --test procedural -- --nocapture
 //! ```
 //!
-//! ## Measured 2026-09-17 over `.index/full`
+//! ## Over `.index/full`
 //!
 //! 200,071,629 names, the dictionary `galos index sectors` learned from the
 //! same directory:
@@ -23,14 +28,14 @@
 //! | derived exactly | 194,667,563 | **97.2989 %** |
 //! | names people gave | 151,463 | stored |
 //! | hand-authored regions | 5,252,594 | stored |
-//! | **the tail wrong where the sector was right** | **0** | the bug this is for |
+//! | **the tail wrong where the sector was right** | **0** | asserted |
 //!
 //! The last row is the assertion. The first is a floor, because a
 //! dictionary regenerated against a larger galaxy can only cover more.
 
 use elite_journal::Boxel;
-use galos_index::names::Table;
-use galos_index::procedural;
+use galos_index::codec::names::Table;
+use galos_index::core::procedural;
 use std::path::PathBuf;
 use std::time::Instant;
 

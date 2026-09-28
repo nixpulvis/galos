@@ -42,7 +42,7 @@
 use crate::{Database, Result};
 use galos_catalog::compare::{compare, Comparison, Reference};
 use galos_catalog::Star;
-use galos_index::SystemName;
+use galos_index::prelude::SystemName;
 use sqlx::Row;
 
 /// Look up every named catalog star in the Elite dataset and compare them.
@@ -58,7 +58,7 @@ pub async fn compare_to_catalog(
     // Folded once, through the one type that folds names, so this asks the
     // `systems_name` index rather than `upper(name)` — which is a function
     // of the column and so cannot be indexed by it. Every stored name is
-    // upper case; see `galos_index::SystemName`.
+    // upper case; see `galos_index::prelude::SystemName`.
     let names: Vec<String> = catalog
         .iter()
         .filter_map(|s| s.name.clone())

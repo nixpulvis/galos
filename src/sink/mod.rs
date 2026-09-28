@@ -162,14 +162,14 @@ pub trait Clock: Send + Sync {
 /// other side of the program held a struct of its own with the same columns
 /// spelled differently. Both are gone: one shape, in `galos_index`, where
 /// the rule for merging two of them lives as well.
-pub use galos_index::SystemReport;
+pub use galos_index::prelude::SystemReport;
 
 /// A system's name, in the one spelling everything here uses.
 ///
 /// Upper case by construction, so a source folds case once as it builds a
 /// report and nothing downstream folds it again. See
-/// [`galos_index::name`] for what that saved.
-pub use galos_index::SystemName;
+/// [`galos_index::core::name`] for what that saved.
+pub use galos_index::prelude::SystemName;
 
 /// Who a source says wrote what it is handing over.
 ///

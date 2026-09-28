@@ -49,10 +49,7 @@
 use crate::image::{Image, Mark, Segment};
 use galos_catalog::Star;
 use galos_catalog::asterism::Figures;
-use galos_photometry::psf::{
-    AUREOLE_BETA, AUREOLE_WEIGHT, AUREOLE_WIDTH, Kernel, Layer, ProfileKind,
-    Psf,
-};
+use galos_photometry::psf::{ProfileKind, Psf};
 use galos_photometry::{Distance, Magnitude, Temperature};
 use std::collections::HashMap;
 
@@ -116,35 +113,10 @@ pub const MIN_SEEING_PX: f64 = 0.3;
 /// view into a plate scale in [`Camera::seeing_pixels`].
 const ARCMINUTES_PER_DEGREE: f64 = 60.0;
 
-/// A halo laid behind the seeing core: one broad, faint layer of the point
-/// spread.
-///
-/// A bright star is not a disc but a disc with a glow around it — light the air
-/// and the optics scatter into a wide aureole that falls off far more slowly
-/// than the seeing core. This is one such layer; a [`Camera`] carries a list of
-/// them and lays each behind the core, so a halo can be tuned or stacked
-/// without touching the core that sets the faint stars. See
-/// [`galos_photometry::psf::Psf`] for how the layers combine.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Aureole {
-    /// The share of a star's light in this halo rather than the core, `0..1`.
-    pub weight: f64,
-    /// How much broader than the seeing core the halo is, as a multiple of the
-    /// core width.
-    pub width: f64,
-    /// The halo's Moffat wing index: smaller is heavier and reaches further.
-    pub beta: f64,
-}
-
-impl Aureole {
-    /// The halo measured from the reference photograph, and the one a camera
-    /// wears unless told otherwise.
-    pub const DEFAULT: Aureole = Aureole {
-        weight: AUREOLE_WEIGHT,
-        width: AUREOLE_WIDTH,
-        beta: AUREOLE_BETA,
-    };
-}
+/// A halo laid behind the seeing core. The instrument's, and so
+/// `galos_photometry`'s; named here too because a camera carries a list of
+/// them.
+pub use galos_photometry::psf::Aureole;
 
 /// One layer of a star's point spread beyond the seeing core: an optical or
 /// atmospheric effect the instrument adds around a star.
@@ -287,40 +259,20 @@ impl Camera {
     /// The point spread this camera draws with: the seeing core, with every
     /// aureole [`Effect`] laid behind it.
     ///
-    /// Each halo's [`weight`](Aureole::weight) is its share of the whole star's
-    /// light; the core takes the rest. The share is turned into the relative
-    /// weight a [`Psf`] layer wants — `share / (1 − total halo share)` against a
-    /// base of one — so however many halos are stacked, each ends up with the
-    /// fraction it asked for and the core with what is left.
+    /// The instrument is `galos_photometry`'s ([`Psf::instrument`]), the
+    /// same one the map draws through; what the camera says is how wide its
+    /// core is and which halos it wears.
     pub fn psf(&self) -> Psf {
-        let core = self.seeing_pixels();
         // The aureole effects lay a radial halo behind the core; other effect
-        // kinds draw elsewhere and add no layer here. Their shares sum to the
-        // halo's, and the core takes the rest.
-        let aureoles: Vec<&Aureole> = self
+        // kinds draw elsewhere and add no layer here.
+        let aureoles: Vec<Aureole> = self
             .effects
             .iter()
-            .filter_map(|effect| match effect {
-                Effect::Aureole(aureole) => Some(aureole),
+            .map(|effect| match effect {
+                Effect::Aureole(aureole) => *aureole,
             })
             .collect();
-        let halo_share =
-            aureoles.iter().map(|a| a.weight).sum::<f64>().min(0.95);
-        let mut psf = Psf::new(self.profile, core);
-        for aureole in aureoles {
-            let relative = aureole.weight / (1.0 - halo_share);
-            // The halo wears the same profile the core does, so a Gaussian
-            // point spread stays a Gaussian to its edge rather than growing
-            // Moffat wings; the aureole's [`beta`](Aureole::beta) shapes only a
-            // Moffat halo, where a Gaussian one has no wing index to set.
-            let width = core * aureole.width;
-            let halo = match self.profile {
-                ProfileKind::Moffat => Kernel::moffat(width, aureole.beta),
-                ProfileKind::Gaussian => Kernel::gaussian(width),
-            };
-            psf = psf.with_layer(Layer::new(halo, relative));
-        }
-        psf
+        Psf::instrument(self.profile, self.seeing_pixels(), &aureoles)
     }
 
     /// Where a point in space lands on the image, and how far away it is.

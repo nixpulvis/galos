@@ -22,7 +22,7 @@
 //! Events are the live input to both. A database is what an index is
 //! rebuilt *from*, not what it is maintained from, so a run following a
 //! publisher never reads the database to keep a directory current — see
-//! [`derive`] for the two paths that do: `--from database`, and the
+//! [`mod@derive`] for the two paths that do: `--from database`, and the
 //! handoff a run naming both sinks starts with.
 //!
 //! The sinks are not interchangeable and are not meant to be. A database
@@ -399,7 +399,8 @@ mod tests {
         };
         assert!(
             said.contains("galaxy.json") && said.contains("not there"),
-            "should name the path and what is wrong: {said}",
+            "should name the path and what is wrong: {}",
+            said,
         );
 
         // The feed and the API name no file, so neither is checked for
@@ -412,7 +413,8 @@ mod tests {
         ] {
             assert!(
                 reading(&sources).refused().is_ok(),
-                "{sources:?} names nothing missing",
+                "{:?} names nothing missing",
+                sources,
             );
         }
     }
@@ -429,7 +431,7 @@ mod tests {
         let Err(said) = reading(&twice).refused() else {
             panic!("one feed named twice was accepted")
         };
-        assert!(said.contains("twice"), "should say why: {said}");
+        assert!(said.contains("twice"), "should say why: {}", said);
 
         let two = [journal(), Source::Journal(PathBuf::from("src"))];
         assert!(
@@ -450,7 +452,7 @@ mod tests {
         for source in [dump(), journal(), Source::Eddb(PathBuf::from("src"))] {
             let sources = [source.clone()];
             let it = Qualifiers { shard: share, ..reading(&sources) };
-            assert!(it.refused().is_ok(), "{source:?} reads a file");
+            assert!(it.refused().is_ok(), "{:?} reads a file", source);
         }
 
         // The four that do not divide, each of whose reader would
@@ -469,9 +471,9 @@ mod tests {
             let sources = [source.clone()];
             let it = Qualifiers { shard: share, ..reading(&sources) };
             let Err(said) = it.refused() else {
-                panic!("a sharded {source:?} was accepted")
+                panic!("a sharded {:?} was accepted", source)
             };
-            assert!(said.contains("--shard"), "should say why: {said}");
+            assert!(said.contains("--shard"), "should say why: {}", said);
         }
 
         // A followed journal is not a file either: the share is of what is
@@ -495,11 +497,15 @@ mod tests {
         else {
             panic!("a watched dump was accepted")
         };
-        assert!(said.contains("--watch"), "should say why: {said}");
+        assert!(said.contains("--watch"), "should say why: {}", said);
 
         for sources in [vec![journal()], vec![Source::Eddn]] {
             let it = Qualifiers { watch: Some(1), ..reading(&sources) };
-            assert!(it.refused().is_ok(), "{sources:?} is still being written");
+            assert!(
+                it.refused().is_ok(),
+                "{:?} is still being written",
+                sources
+            );
         }
     }
 
@@ -513,7 +519,7 @@ mod tests {
         else {
             panic!("an address for a feed nothing reads was accepted")
         };
-        assert!(said.contains("--remote"), "should say why: {said}");
+        assert!(said.contains("--remote"), "should say why: {}", said);
 
         let sources = [journal()];
         let Err(said) =
@@ -521,7 +527,7 @@ mod tests {
         else {
             panic!("a stall window for a feed nothing reads was accepted")
         };
-        assert!(said.contains("--stall"), "should say why: {said}");
+        assert!(said.contains("--stall"), "should say why: {}", said);
 
         let sources = [Source::Eddn];
         let both = Qualifiers {
@@ -542,7 +548,7 @@ mod tests {
         else {
             panic!("a cube of a dump was accepted")
         };
-        assert!(said.contains("--cube"), "should say why: {said}");
+        assert!(said.contains("--cube"), "should say why: {}", said);
 
         let sources = [Source::Eddn];
         assert!(
@@ -567,7 +573,7 @@ mod tests {
         else {
             panic!("a commander named over the feed was accepted")
         };
-        assert!(said.contains("--user"), "should say why: {said}");
+        assert!(said.contains("--user"), "should say why: {}", said);
 
         let sources = [journal()];
         assert!(Qualifiers { user: Some("HRC-2"), ..reading(&sources) }

@@ -201,8 +201,9 @@ pub struct Cli {
         value_delimiter = ',',
         num_args = 1..,
         help_heading = ROWS,
+        value_parser = parts(),
     )]
-    only: Vec<Part>,
+    only: Vec<String>,
 
     /// Keep following what was named rather than exiting, SECS apart. A
     /// second where SECS is left off.
@@ -296,50 +297,43 @@ pub struct Cli {
     force_lock: bool,
 }
 
-/// One part of what a built index directory holds
-///
-/// Named on `--only` to rebuild that part alone. What each is derived from
-/// differs: `cells` and `names` come out of one read of every positioned
-/// system, `reaches` and `bodies` out of one read of every scanned thing,
-/// and `populated` and `factions` out of a query apiece. Asking for one
-/// reads only what that one needs.
+/// What `--only` can name: the index's own parts, and each table the
+/// program contributes ([`galos::tables`]) by the name it is written under,
+/// read like the rest off the scanned things.
 #[cfg(feature = "db")]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Part {
-    /// The cell tree and its payloads, which the map draws the galaxy from.
-    Cells,
-    /// Every system's name and place: the search index and the routing graph.
-    Names,
-    /// The populated systems the map colors and filters by.
-    Populated,
-    /// How far each scanned system reaches, which every shell is sized by.
-    Reaches,
-    /// Which systems can supercharge a drive, which the router plots by.
-    Boosts,
-    /// The faction id-to-name table.
-    Factions,
-    /// One file per system of the stars, bodies and barycenters in it.
-    Bodies,
+fn parts() -> clap::builder::PossibleValuesParser {
+    use clap::builder::PossibleValue;
+    use galos_index::codec::parts::CorePart;
+    let own =
+        CorePart::ALL.map(|it| PossibleValue::new(it.name()).help(it.about()));
+    let contributed: Vec<PossibleValue> = galos::tables()
+        .iter()
+        .map(|it| PossibleValue::new(it.name()).help(it.about()))
+        .collect();
+    IntoIterator::into_iter(own).chain(contributed).collect::<Vec<_>>().into()
 }
 
 /// The parts `named` comes to, which is every part where nothing was named
 #[cfg(feature = "db")]
-fn parts_of(named: &[Part]) -> galos_db::index::Parts {
+fn parts_of(named: &[String]) -> galos_db::index::Parts {
     use galos_db::index::Parts;
+    let tables = galos::tables();
     if named.is_empty() {
-        return Parts::ALL;
+        return Parts::all(&tables);
     }
 
     let mut parts = Parts::NONE;
     for part in named {
-        match part {
-            Part::Cells => parts.cells = true,
-            Part::Names => parts.names = true,
-            Part::Populated => parts.populated = true,
-            Part::Reaches => parts.reaches = true,
-            Part::Boosts => parts.boosts = true,
-            Part::Factions => parts.factions = true,
-            Part::Bodies => parts.bodies = true,
+        match part.as_str() {
+            "cells" => parts.cells = true,
+            "names" => parts.names = true,
+            "populated" => parts.populated = true,
+            "reaches" => parts.reaches = true,
+            "factions" => parts.factions = true,
+            "bodies" => parts.bodies = true,
+            // Past the parser, so a name that is no part of ours is one of
+            // the contributed tables.
+            name => parts.tables.extend(tables.get(name).map(|it| it.name())),
         }
     }
     parts
@@ -457,8 +451,8 @@ pub async fn run(cli: Cli) -> Result<bool, String> {
     let _lock = match &cli.index {
         Some(dir) => Some(
             match cli.force_lock {
-                true => galos_index::Lock::force(dir),
-                false => galos_index::Lock::take(dir),
+                true => galos_index::prelude::Lock::force(dir),
+                false => galos_index::prelude::Lock::take(dir),
             }
             .map_err(|err| format!("{}: {err}", dir.display()))?,
         ),
@@ -780,7 +774,7 @@ mod tests {
         let Err(said) = refused(&ingesting(&["--from", "eddn"])) else {
             panic!("a run with no sink was accepted")
         };
-        assert!(said.contains("--db"), "should say what to name: {said}");
+        assert!(said.contains("--db"), "should say what to name: {}", said);
 
         assert!(refused(&ingesting(&["--from", "eddn", "--db"])).is_ok());
         assert!(
@@ -840,7 +834,7 @@ mod tests {
         let Err(said) = refused(&into_itself) else {
             panic!("the rows read into themselves were accepted")
         };
-        assert!(said.contains("themselves"), "should say why: {said}");
+        assert!(said.contains("themselves"), "should say why: {}", said);
 
         let nowhere = ingesting(&["--from", "database", "--db"]);
         assert!(
@@ -880,7 +874,8 @@ mod tests {
         ] {
             assert!(
                 refused(&ingesting(said)).is_err(),
-                "{said:?} cannot honour --only",
+                "{:?} cannot honour --only",
+                said,
             );
         }
     }
@@ -899,7 +894,7 @@ mod tests {
         let Err(said) = refused(&import) else {
             panic!("an import on a beat was accepted")
         };
-        assert!(said.contains("--publish"), "should say why: {said}");
+        assert!(said.contains("--publish"), "should say why: {}", said);
 
         let no_index = ingesting(&["--from", "eddn", "--db", "--publish", "2"]);
         assert!(
@@ -932,7 +927,7 @@ mod tests {
         let Err(said) = refused(&named) else {
             panic!("a commander named over the feed was accepted")
         };
-        assert!(said.contains("--user"), "should say why: {said}");
+        assert!(said.contains("--user"), "should say why: {}", said);
 
         let sharded = ingesting(&["--from", "eddn", "--db", "--shard", "0/8"]);
         assert!(refused(&sharded).is_err(), "a sharded feed was accepted");

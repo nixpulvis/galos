@@ -16,6 +16,9 @@ testing = ["dep:libc"]
 # other caller does and see only what a feature turns on. A test target has
 # no other way to ask for a feature of the crate it tests.
 galos_db = { path = ".", features = ["testing"] }
+# A contributed table to hold open and write: the router's, which is the
+# one the program publishes.
+galos_route = { path = "../galos_route" }
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

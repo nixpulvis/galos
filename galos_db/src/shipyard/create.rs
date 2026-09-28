@@ -3,7 +3,7 @@ use crate::markets::Market;
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::market::Shipyard as JournalShipyard;
-use galos_index::SystemName;
+use galos_index::prelude::SystemName;
 
 impl Shipyard {
     /// Record everything a station's shipyard sells

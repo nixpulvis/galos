@@ -48,8 +48,7 @@ use elite_journal::body::{
 };
 use elite_journal::entry::market::{Commodity, Market as JournalMarket};
 use elite_journal::prelude::{
-    Allegiance, FactionInfo, Government, Happiness, Security, State,
-    StateTrend,
+    Allegiance, FactionInfo, Government, Happiness, Security, State, StateTrend,
 };
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
@@ -63,7 +62,7 @@ use galos_db::stations::Station;
 use galos_db::systems::System;
 use galos_db::testing::Scratch;
 use galos_db::Database;
-use galos_index::SystemName;
+use galos_index::prelude::SystemName;
 
 /// A database of this test's own, or nothing and the test stands down
 macro_rules! db {
@@ -130,12 +129,7 @@ enum Saw {
     /// either order. That is the `COALESCE` half of the rule -- an older
     /// full description is not erased by a newer bare mention -- which a
     /// merge has to reach from both sides.
-    Dock {
-        address: i64,
-        station: &'static str,
-        market: i64,
-        told: bool,
-    },
+    Dock { address: i64, station: &'static str, market: i64, told: bool },
     /// A market message: the whole of what a station trades.
     Trade {
         market: i64,
@@ -182,10 +176,7 @@ async fn tell(db: &Database, when: DateTime<Utc>, saw: &Saw) {
                 allegiance: Allegiance::Independent,
                 happiness: Some(Happiness::Happy),
                 pending_states: vec![],
-                active_states: vec![StateTrend {
-                    state: *state,
-                    trend: None,
-                }],
+                active_states: vec![StateTrend { state: *state, trend: None }],
                 recovering_states: vec![],
                 reputation: None,
                 squadron_faction: false,
@@ -219,11 +210,7 @@ async fn tell(db: &Database, when: DateTime<Utc>, saw: &Saw) {
                 surface: Some(Surface {
                     atmosphere_type: AtmosphereType::SulphurDioxide,
                     pressure: 101325.,
-                    composition: Composition {
-                        ice: 0.,
-                        rock: 70.,
-                        metal: 30.,
-                    },
+                    composition: Composition { ice: 0., rock: 70., metal: 30. },
                     landable: true,
                     atmosphere: Some("thin sulphur dioxide".into()),
                     volcanism: None,
@@ -271,8 +258,7 @@ async fn tell(db: &Database, when: DateTime<Utc>, saw: &Saw) {
                 faction: None,
                 government: told.then_some(Government::Democracy),
                 allegiance: told.then_some(Allegiance::Federation),
-                services: told
-                    .then(|| vec![Service::Dock, Service::Refuel]),
+                services: told.then(|| vec![Service::Dock, Service::Refuel]),
                 economies: None,
                 wanted: None,
             };
@@ -313,97 +299,133 @@ async fn tell(db: &Database, when: DateTime<Utc>, saw: &Saw) {
 fn mine() -> Vec<(i64, Saw)> {
     vec![
         // The system both sides saw, A's reading the older of the two.
-        (2, Saw::System {
-            address: SHARED,
-            name: "Test Merge Shared",
-            population: 100,
-            allegiance: Allegiance::Federation,
-        }),
-        (4, Saw::Politics {
-            address: SHARED,
-            faction: "Test Merge Alpha",
-            influence: 0.50,
-            state: State::Boom,
-        }),
-        (6, Saw::Politics {
-            address: SHARED,
-            faction: "Test Merge Beta",
-            influence: 0.30,
-            state: State::Expansion,
-        }),
+        (
+            2,
+            Saw::System {
+                address: SHARED,
+                name: "Test Merge Shared",
+                population: 100,
+                allegiance: Allegiance::Federation,
+            },
+        ),
+        (
+            4,
+            Saw::Politics {
+                address: SHARED,
+                faction: "Test Merge Alpha",
+                influence: 0.50,
+                state: State::Boom,
+            },
+        ),
+        (
+            6,
+            Saw::Politics {
+                address: SHARED,
+                faction: "Test Merge Beta",
+                influence: 0.30,
+                state: State::Expansion,
+            },
+        ),
         // A second reading of Alpha, which is a transition A witnessed and
         // the influence journal holds.
-        (8, Saw::Politics {
-            address: SHARED,
-            faction: "Test Merge Alpha",
-            influence: 0.55,
-            state: State::Election,
-        }),
+        (
+            8,
+            Saw::Politics {
+                address: SHARED,
+                faction: "Test Merge Alpha",
+                influence: 0.55,
+                state: State::Election,
+            },
+        ),
         // The body both scanned, A's scan the older of the two.
-        (12, Saw::Scan {
-            address: SHARED,
-            body: 1,
-            name: "Test Merge Shared 1",
-            material: "iron",
-            percent: 22.0,
-            mapped: false,
-        }),
+        (
+            12,
+            Saw::Scan {
+                address: SHARED,
+                body: 1,
+                name: "Test Merge Shared 1",
+                material: "iron",
+                percent: 22.0,
+                mapped: false,
+            },
+        ),
         // The station both sides docked at, A's the fuller description
         // and the older one: the merge has to keep what B's bare mention
         // does not repeat.
-        (10, Saw::Dock {
-            address: SHARED,
-            station: "Test Merge Dock",
-            market: CARGO,
-            told: true,
-        }),
+        (
+            10,
+            Saw::Dock {
+                address: SHARED,
+                station: "Test Merge Dock",
+                market: CARGO,
+                told: true,
+            },
+        ),
         // The other station, the other way round: A names it in passing,
         // later than B described it.
-        (24, Saw::Dock {
-            address: SHARED,
-            station: "Test Merge Store",
-            market: STORE,
-            told: false,
-        }),
+        (
+            24,
+            Saw::Dock {
+                address: SHARED,
+                station: "Test Merge Store",
+                market: STORE,
+                told: false,
+            },
+        ),
         // The system only A knows.
-        (28, Saw::System {
-            address: OURS,
-            name: "Test Merge Ours",
-            population: 7,
-            allegiance: Allegiance::Independent,
-        }),
+        (
+            28,
+            Saw::System {
+                address: OURS,
+                name: "Test Merge Ours",
+                population: 7,
+                allegiance: Allegiance::Independent,
+            },
+        ),
         // The system both saw, A's reading the newer this time.
-        (30, Saw::System {
-            address: LATE,
-            name: "Test Merge Late",
-            population: 900,
-            allegiance: Allegiance::Independent,
-        }),
+        (
+            30,
+            Saw::System {
+                address: LATE,
+                name: "Test Merge Late",
+                population: 900,
+                allegiance: Allegiance::Independent,
+            },
+        ),
         // The market both saw, A's list the older of the two.
-        (40, Saw::Trade {
-            market: CARGO,
-            system: "Test Merge Shared",
-            station: "Test Merge Dock",
-            commodity: "gold",
-            price: 100,
-        }),
+        (
+            40,
+            Saw::Trade {
+                market: CARGO,
+                system: "Test Merge Shared",
+                station: "Test Merge Dock",
+                commodity: "gold",
+                price: 100,
+            },
+        ),
         // The body both scanned, A's scan the newer this time.
-        (45, Saw::Scan {
-            address: SHARED,
-            body: 2,
-            name: "Test Merge Shared 2",
-            material: "carbon",
-            percent: 11.0,
-            mapped: true,
-        }),
+        (
+            45,
+            Saw::Scan {
+                address: SHARED,
+                body: 2,
+                name: "Test Merge Shared 2",
+                material: "carbon",
+                percent: 11.0,
+                mapped: true,
+            },
+        ),
         // The market both saw, A's list the newer this time.
-        (60, Saw::Trade {
-            market: STORE,
-            system: "Test Merge Shared",
-            station: "Test Merge Store",
-            commodity: "silver",
-            price: 20,
-        }),
+        (
+            60,
+            Saw::Trade {
+                market: STORE,
+                system: "Test Merge Shared",
+                station: "Test Merge Store",
+                commodity: "silver",
+                price: 20,
+            },
+        ),
     ]
 }
 
@@ -413,86 +435,122 @@ fn theirs() -> Vec<(i64, Saw)> {
         // The system only B knows, and the faction only B knows, minted
         // before A has minted anything -- so the interleaved database
         // numbers its factions in an order the merged one cannot.
-        (1, Saw::System {
-            address: OTHERS,
-            name: "Test Merge Theirs",
-            population: 3,
-            allegiance: Allegiance::Empire,
-        }),
-        (3, Saw::Politics {
-            address: OTHERS,
-            faction: "Test Merge Gamma",
-            influence: 0.90,
-            state: State::Investment,
-        }),
-        (5, Saw::System {
-            address: SHARED,
-            name: "Test Merge Shared",
-            population: 150,
-            allegiance: Allegiance::Federation,
-        }),
-        (7, Saw::Politics {
-            address: SHARED,
-            faction: "Test Merge Beta",
-            influence: 0.32,
-            state: State::Expansion,
-        }),
-        (11, Saw::Politics {
-            address: SHARED,
-            faction: "Test Merge Alpha",
-            influence: 0.60,
-            state: State::War,
-        }),
+        (
+            1,
+            Saw::System {
+                address: OTHERS,
+                name: "Test Merge Theirs",
+                population: 3,
+                allegiance: Allegiance::Empire,
+            },
+        ),
+        (
+            3,
+            Saw::Politics {
+                address: OTHERS,
+                faction: "Test Merge Gamma",
+                influence: 0.90,
+                state: State::Investment,
+            },
+        ),
+        (
+            5,
+            Saw::System {
+                address: SHARED,
+                name: "Test Merge Shared",
+                population: 150,
+                allegiance: Allegiance::Federation,
+            },
+        ),
+        (
+            7,
+            Saw::Politics {
+                address: SHARED,
+                faction: "Test Merge Beta",
+                influence: 0.32,
+                state: State::Expansion,
+            },
+        ),
+        (
+            11,
+            Saw::Politics {
+                address: SHARED,
+                faction: "Test Merge Alpha",
+                influence: 0.60,
+                state: State::War,
+            },
+        ),
         // B described this one fully, and earlier than A named it.
-        (14, Saw::Dock {
-            address: SHARED,
-            station: "Test Merge Store",
-            market: STORE,
-            told: true,
-        }),
-        (15, Saw::Scan {
-            address: SHARED,
-            body: 2,
-            name: "Test Merge Shared 2",
-            material: "sulphur",
-            percent: 4.0,
-            mapped: false,
-        }),
-        (20, Saw::System {
-            address: LATE,
-            name: "Test Merge Late",
-            population: 400,
-            allegiance: Allegiance::Empire,
-        }),
+        (
+            14,
+            Saw::Dock {
+                address: SHARED,
+                station: "Test Merge Store",
+                market: STORE,
+                told: true,
+            },
+        ),
+        (
+            15,
+            Saw::Scan {
+                address: SHARED,
+                body: 2,
+                name: "Test Merge Shared 2",
+                material: "sulphur",
+                percent: 4.0,
+                mapped: false,
+            },
+        ),
+        (
+            20,
+            Saw::System {
+                address: LATE,
+                name: "Test Merge Late",
+                population: 400,
+                allegiance: Allegiance::Empire,
+            },
+        ),
         // And named this one in passing, later than A described it.
-        (22, Saw::Dock {
-            address: SHARED,
-            station: "Test Merge Dock",
-            market: CARGO,
-            told: false,
-        }),
-        (25, Saw::Scan {
-            address: SHARED,
-            body: 1,
-            name: "Test Merge Shared 1",
-            material: "nickel",
-            percent: 18.0,
-            mapped: true,
-        }),
-        (35, Saw::Trade {
-            market: STORE,
-            system: "Test Merge Shared",
-            station: "Test Merge Store",
-            commodity: "tritium",
-            price: 50,
-        }),
-        (50, Saw::Trade {
-            market: CARGO,
-            system: "Test Merge Shared",
-            station: "Test Merge Dock",
-            commodity: "platinum",
-            price: 300,
-        }),
+        (
+            22,
+            Saw::Dock {
+                address: SHARED,
+                station: "Test Merge Dock",
+                market: CARGO,
+                told: false,
+            },
+        ),
+        (
+            25,
+            Saw::Scan {
+                address: SHARED,
+                body: 1,
+                name: "Test Merge Shared 1",
+                material: "nickel",
+                percent: 18.0,
+                mapped: true,
+            },
+        ),
+        (
+            35,
+            Saw::Trade {
+                market: STORE,
+                system: "Test Merge Shared",
+                station: "Test Merge Store",
+                commodity: "tritium",
+                price: 50,
+            },
+        ),
+        (
+            50,
+            Saw::Trade {
+                market: CARGO,
+                system: "Test Merge Shared",
+                station: "Test Merge Dock",
+                commodity: "platinum",
+                price: 300,
+            },
+        ),
     ]
 }
 
@@ -656,7 +714,8 @@ async fn a_merge_run_twice_does_what_it_did_once() {
     // either older than what A has or identical to it.
     let made: u64 = again.tables.iter().map(|t| t.inserted).sum();
     assert_eq!(
-        made, 0,
+        made,
+        0,
         "a second merge inserted rows: {}",
         again
             .tables
@@ -690,11 +749,10 @@ async fn a_dry_run_counts_what_a_real_run_does_and_writes_nothing() {
     feed(&c, mine()).await;
 
     let mut said: Vec<String> = Vec::new();
-    let dry = merge(&a, &b, None, true, &mut |t: &Table| {
-        said.push(t.to_string())
-    })
-    .await
-    .expect("the dry run should run");
+    let dry =
+        merge(&a, &b, None, true, &mut |t: &Table| said.push(t.to_string()))
+            .await
+            .expect("the dry run should run");
 
     assert!(
         said.iter().any(|line| line.starts_with("systems:")),
@@ -724,9 +782,7 @@ fn counted(merged: &Merged) -> Vec<(String, u64, u64, u64, u64)> {
     merged
         .tables
         .iter()
-        .map(|t| {
-            (t.name.clone(), t.read, t.inserted, t.updated, t.refused)
-        })
+        .map(|t| (t.name.clone(), t.read, t.inserted, t.updated, t.refused))
         .collect()
 }
 
@@ -759,13 +815,12 @@ async fn since_carries_what_came_after_it_and_no_more() {
 
     // B read this system at t5 and A at t2, so an unbounded merge would
     // have taken B's figure.
-    let population: Option<i64> = sqlx::query_scalar(
-        "SELECT population FROM systems WHERE address = $1",
-    )
-    .bind(SHARED)
-    .fetch_one(&mut *conn)
-    .await
-    .expect("the system should be there");
+    let population: Option<i64> =
+        sqlx::query_scalar("SELECT population FROM systems WHERE address = $1")
+            .bind(SHARED)
+            .fetch_one(&mut *conn)
+            .await
+            .expect("the system should be there");
     assert_eq!(
         population,
         Some(100),

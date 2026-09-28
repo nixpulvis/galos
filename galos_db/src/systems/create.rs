@@ -3,7 +3,8 @@ use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::Error;
 use chrono::{DateTime, Utc};
 use elite_journal::{prelude::*, system::System as JournalSystem};
-use galos_index::{procedural, SystemName, SystemReport};
+use galos_index::core::procedural;
+use galos_index::prelude::{SystemName, SystemReport};
 use geozero::wkb;
 
 impl System {
@@ -216,10 +217,11 @@ impl System {
     /// Write what a report says about a system.
     ///
     /// The one way in for everything above body level. `galos ingest --db`
-    /// hands this whatever [`SystemReport::of`](galos_index::SystemReport::of)
-    /// made of an event and whatever a published dump gave it, so the
-    /// fifteen events that name a system reach Postgres through one call
-    /// rather than through a call apiece.
+    /// hands this whatever
+    /// [`SystemReport::of`](galos_index::prelude::SystemReport::of) made of an
+    /// event and whatever a published dump gave it, so the fifteen events that
+    /// name a system reach Postgres through one call rather than through a call
+    /// apiece.
     ///
     /// A report is written for what it says, part by part, and no field is
     /// read as evidence about another:

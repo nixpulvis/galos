@@ -1,10 +1,11 @@
-//! Read a built index directory back through `FsSource`, the way the client
+//! Read a built index directory back through `FsSource`, the way the map
 //! does, and report what came off disk. Proves the reader round-trips real
 //! builder output, bodies with untagged enums included.
 //!
 //! `cargo run -p galos_index --example smoke -- <dir> [sample]`
 
-use galos_index::Source;
+use galos_index::codec::Directory;
+use galos_index::prelude::Source;
 use pollster::block_on;
 use std::path::Path;
 
@@ -26,7 +27,7 @@ async fn run() {
         .nth(2)
         .map(|it| it.parse().expect("a sample size"))
         .unwrap_or(SAMPLE);
-    let source = galos_index::FsSource::new(&dir);
+    let source = galos_index::prelude::FsSource::new(&dir);
 
     let index = source.index().await.expect("index");
     let populated = source.populated().await.expect("populated");
@@ -72,7 +73,8 @@ async fn run() {
     // that put an offset wrong is a decode failure here and nowhere else,
     // so a directory swept by `galos index sweep --bodies` is checked by
     // running this over it.
-    let held = galos_index::pack::addresses(Path::new(&dir))
+    let held = Directory::at(Path::new(&dir))
+        .body_addresses()
         .expect("the pack lists its systems");
     let step = (held.len() / sample.max(1)).max(1);
     let mut packed = Read::default();
@@ -97,7 +99,7 @@ struct Read {
 
 impl Read {
     /// One system's insides, decoded.
-    fn took(&mut self, system: &galos_index::SystemBodies) {
+    fn took(&mut self, system: &galos_index::records::SystemBodies) {
         self.files += 1;
         self.stars += system.stars.len();
         self.bodies += system.bodies.len();

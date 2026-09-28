@@ -160,13 +160,13 @@ impl Cli {
 /// name whether it was stored or is spelled from the address, answers a
 /// prefix in microseconds and a word held anywhere in a name — `A*` for
 /// `SAGITTARIUS A*` — in a few milliseconds. See
-/// `galos_index::names::Table::matching`.
+/// `galos_index::codec::names::Table::matching`.
 ///
 /// A percent sign is what the old SQL pattern wanted and this does not, so
 /// it is trimmed rather than searched for: nobody typing `LHS%` means a
 /// system with a percent in its name.
 fn matched(dir: &str, query: &str) -> Result<Vec<i64>, String> {
-    let names = galos_index::Names::open(std::path::Path::new(dir))
+    let names = galos_index::prelude::Names::open(std::path::Path::new(dir))
         .map_err(|err| format!("reading the names table at {dir}: {err}"))?;
     if names.is_empty() {
         return Err(format!(
@@ -174,7 +174,7 @@ fn matched(dir: &str, query: &str) -> Result<Vec<i64>, String> {
              `galos ingest --from database -i {dir}`"
         ));
     }
-    let query = galos_index::SystemName::new(query.trim_matches('%'));
+    let query = galos_index::prelude::SystemName::new(query.trim_matches('%'));
     Ok(names
         .matching(&query, RESULTS)
         .into_iter()

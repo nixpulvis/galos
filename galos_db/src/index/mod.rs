@@ -6,21 +6,25 @@
 //! The metadata beside the tree is `metadata`.
 //!
 //! The queries are unchecked `sqlx::query`; the columns are read back by
-//! name. A pass reads in chunks of [`CHANGED_CHUNK`] addresses, and the
+//! name. A pass reads in chunks of `CHANGED_CHUNK` addresses, and the
 //! three tables written whole are written once for the pass.
 
 use crate::{Database, Result};
 use async_std::stream::StreamExt;
-use futures_core::stream::BoxStream;
-use galos_index::{
-    derive, Abandoned, Build, BuildParams, Built, By, Checkpoint, ColdReport,
-    Ending, Index, Pending, Start, System, Taking, Tree,
+use galos_index::build::cold::{
+    Abandoned, Build, Built, OnStop, Start, Summary,
 };
+use galos_index::codec::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::codec::parts::CorePart;
+use galos_index::codec::tables::OpenTable;
+use galos_index::prelude::{BuildParams, Index, System, TableSet, Tree};
+use galos_index::records::derive::{self, NearestStar};
 use galos_photometry::{Magnitude, Temperature};
-use metadata::{Metadata, Moved};
+use metadata::Metadata;
 use sqlx::Row;
 use std::collections::HashMap;
 use std::fmt;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -34,28 +38,45 @@ pub use metadata::MetaReport;
 /// that part is derived wants. Each names a file or a set of them, and
 /// asking for one reads only what it needs. A part left out is left as it
 /// stands; nothing here removes a file.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+///
+/// The index's own parts stand without any other: a directory holding them
+/// and nothing contributed is one the map opens and draws, missing only
+/// what the contributions add. Each contributed table is a part of its own,
+/// named as it is written, so one is added to a built directory the way
+/// any part is repaired.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Parts {
     pub cells: bool,
     pub names: bool,
     pub populated: bool,
     pub reaches: bool,
-    pub boosts: bool,
     pub factions: bool,
     pub bodies: bool,
+    /// The contributed tables, by [`galos_index::prelude::Table::NAME`].
+    pub tables: Vec<&'static str>,
 }
 
 impl Parts {
-    /// Every part, which is what a build with nothing named writes
-    pub const ALL: Parts = Parts {
-        cells: true,
-        names: true,
-        populated: true,
-        reaches: true,
-        boosts: true,
-        factions: true,
-        bodies: true,
-    };
+    /// Every part, the index's own and each of `tables`: what a build with
+    /// nothing named writes
+    pub fn all(tables: &TableSet) -> Parts {
+        let own = IntoIterator::into_iter(CorePart::ALL)
+            .fold(Parts::NONE, Parts::with);
+        Parts { tables: tables.names().collect(), ..own }
+    }
+
+    /// And `part`.
+    pub fn with(mut self, part: CorePart) -> Parts {
+        match part {
+            CorePart::Cells => self.cells = true,
+            CorePart::Names => self.names = true,
+            CorePart::Populated => self.populated = true,
+            CorePart::Reaches => self.reaches = true,
+            CorePart::Factions => self.factions = true,
+            CorePart::Bodies => self.bodies = true,
+        }
+        self
+    }
 
     /// No part at all, to name them onto
     pub const NONE: Parts = Parts {
@@ -63,22 +84,14 @@ impl Parts {
         names: false,
         populated: false,
         reaches: false,
-        boosts: false,
         factions: false,
         bodies: false,
+        tables: Vec::new(),
     };
 
     /// Whether anything at all was asked for
     pub fn any(&self) -> bool {
         *self != Parts::NONE
-    }
-
-    /// Whether a read of every scanned thing is wanted
-    ///
-    /// One read serves all three: the body files are written from those rows,
-    /// the reaches measured over them, the arrival star picked out of them.
-    fn wants_bodies(&self) -> bool {
-        self.reaches || self.bodies || self.boosts
     }
 }
 
@@ -114,6 +127,39 @@ fn star_light(row: &sqlx::postgres::PgRow) -> Result<Option<(i64, f64, f64)>> {
     Ok(Some((address, Magnitude(m as f64).visual(Temperature(t)).0, t)))
 }
 
+/// The columns a star is read by: [`star_light`]'s, and the arrival star's.
+const STAR_COLUMNS: &str = "system_address, id, distance_from_arrival_ls, \
+     star_class, absolute_magnitude, temperature";
+
+/// What one system's scanned stars say to the build: the light of each, and
+/// which of them a ship arrives at.
+#[derive(Default)]
+struct Scanned {
+    light: Vec<(f64, f64)>,
+    arrival: NearestStar,
+}
+
+impl Scanned {
+    /// Forget the system before, for the next one.
+    fn clear(&mut self) {
+        self.light.clear();
+        self.arrival.clear();
+    }
+
+    /// One star of the system, as read by [`STAR_COLUMNS`].
+    fn take(&mut self, row: &sqlx::postgres::PgRow) -> Result<()> {
+        if let Some((_, magnitude, temperature)) = star_light(row)? {
+            self.light.push((magnitude, temperature));
+        }
+        self.arrival.offer(
+            row.try_get("distance_from_arrival_ls")?,
+            row.try_get("id")?,
+            row.try_get::<&str, _>("star_class")?,
+        );
+        Ok(())
+    }
+}
+
 /// Every scanned star of `addresses`, grouped under its system.
 ///
 /// The paged path's read, bounded by [`CHANGED_CHUNK`]. A cold build goes
@@ -121,19 +167,17 @@ fn star_light(row: &sqlx::postgres::PgRow) -> Result<Option<(i64, f64, f64)>> {
 async fn stars_by_system(
     db: &Database,
     addresses: &[i64],
-) -> Result<HashMap<i64, Vec<(f64, f64)>>> {
-    let rows = sqlx::query(
-        "SELECT system_address, absolute_magnitude, temperature \
-         FROM stars WHERE system_address = ANY($1)",
-    )
+) -> Result<HashMap<i64, Scanned>> {
+    let rows = sqlx::query(&format!(
+        "SELECT {STAR_COLUMNS} FROM stars WHERE system_address = ANY($1)"
+    ))
     .bind(addresses)
     .fetch_all(&db.pool)
     .await?;
-    let mut stars: HashMap<i64, Vec<(f64, f64)>> = HashMap::new();
+    let mut stars: HashMap<i64, Scanned> = HashMap::new();
     for row in rows {
-        if let Some((address, magnitude, temperature)) = star_light(&row)? {
-            stars.entry(address).or_default().push((magnitude, temperature));
-        }
+        let address: i64 = row.try_get("system_address")?;
+        stars.entry(address).or_default().take(&row)?;
     }
     Ok(stars)
 }
@@ -144,11 +188,11 @@ async fn stars_by_system(
 /// `primary_star_class` and `updated_at`; `now` dates the Recency reading
 /// and `scanned` is this system's stars.
 ///
-/// Both derived facts are [`galos_index::derive`]'s, so a system built from
-/// a row and one built from a journal entry land in the same place.
+/// Both derived facts are [`galos_index::records::derive`]'s, so a system built
+/// from a row and one built from a journal entry land in the same place.
 fn input_from_row(
     row: &sqlx::postgres::PgRow,
-    scanned: &[(f64, f64)],
+    scanned: &Scanned,
     now: chrono::NaiveDateTime,
 ) -> Result<System> {
     let address: i64 = row.try_get("address")?;
@@ -157,8 +201,10 @@ fn input_from_row(
     let z: f64 = row.try_get("z")?;
     let class: Option<String> = row.try_get("primary_star_class")?;
     let at: chrono::NaiveDateTime = row.try_get("updated_at")?;
-    let (absolute_magnitude, temperature) =
-        derive::lit(scanned.iter().copied(), class.as_deref().unwrap_or(""));
+    let (absolute_magnitude, temperature) = derive::lit(
+        scanned.light.iter().copied(),
+        class.as_deref().unwrap_or(""),
+    );
     let (age_bucket, updated_at) = derive::updated(at, now);
     Ok(System {
         id64: address as u64,
@@ -167,13 +213,11 @@ fn input_from_row(
         temperature,
         age_bucket,
         updated_at,
-        // The arrival star's own class, off the same column the photometry
-        // fallback reads. A row with none reads as nothing having been
-        // said, which is what most of the galaxy is: see
-        // [`galos_index::StarKind`].
-        kind: class
-            .as_deref()
-            .map_or(galos_index::StarKind::Unknown, galos_index::StarKind::of),
+        // The scanned arrival star, else the class a route named, as the
+        // journal side reads it. Neither reads as nothing having been said,
+        // which is what most of the galaxy is: see
+        // [`galos_index::prelude::StarKind`].
+        kind: derive::arrival_kind(scanned.arrival.class(), class.as_deref()),
     })
 }
 
@@ -228,11 +272,16 @@ async fn changed_addresses(
 /// inside [`Build::finish`]. A build that was stopped published nothing:
 /// see [`Built`].
 ///
-/// Always [`Start::Fresh`] and [`Ending::Abandon`]: the directory this
+/// Always [`Start::Fresh`] and [`OnStop::Abandon`]: the directory this
 /// publishes stands for every row Postgres has, so a read cut short must
 /// not replace it with the prefix it reached — and a read taken up again
 /// is a re-read of the cursors, which is minutes over a database where it
 /// is hours over a 610 GB dump.
+///
+/// `contributed` is handed each record as the build takes it, so a cold
+/// build derives its contributed tables from the very records it publishes,
+/// in the one read.
+#[allow(clippy::too_many_arguments)]
 async fn build_cells(
     db: &Database,
     dir: &Path,
@@ -240,25 +289,50 @@ async fn build_cells(
     params: BuildParams,
     budget: u64,
     now: chrono::NaiveDateTime,
+    contributed: &mut [Box<dyn OpenTable>],
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Built> {
+    let asked = || stop();
+    let mut build =
+        Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
+    each_system(db, now, told, |row, system| {
+        for table in contributed.iter_mut() {
+            table.contribute(&system);
+        }
+        Ok(build.push(system, metadata::name_from_row(row)?)?)
+    })
+    .await?;
+    Ok(build.finish(Provenance::Database, Some(now), OnStop::Abandon)?)
+}
+
+/// Every positioned system's record, in address order, as a cold build
+/// takes it: each `systems` row with its scanned stars merged in, through
+/// [`input_from_row`].
+///
+/// Two ordered cursors merged, so what is held at any moment is one row of
+/// each. `each` is handed the row beside the record, for what else is read
+/// off it, and stops the read by answering [`ControlFlow::Break`].
+async fn each_system<F>(
+    db: &Database,
+    now: chrono::NaiveDateTime,
+    told: &Told<'_>,
+    mut each: F,
+) -> Result<()>
+where
+    F: FnMut(&sqlx::postgres::PgRow, System) -> Result<ControlFlow<()>>,
+{
     // Before the read rather than during it: what a bar is drawn against
     // has to be there when the first row arrives, and this is one index
     // scan of `pg_class`.
     let of = estimated(db, "systems").await;
-    let asked = || stop();
-    let mut build =
-        Build::begin(dir, checkpoint, params, budget, Start::Fresh, &asked)?;
 
-    let mut stars = sqlx::query(
-        "SELECT system_address, absolute_magnitude, temperature \
-         FROM stars ORDER BY system_address",
-    )
-    .fetch(&db.pool);
+    let read_stars =
+        format!("SELECT {STAR_COLUMNS} FROM stars ORDER BY system_address");
+    let mut stars = sqlx::query(&read_stars).fetch(&db.pool);
     // The one star read past the system it belongs to, which is what
     // merging two cursors costs in memory.
-    let mut ahead = next_star(&mut stars).await?;
+    let mut ahead = stars.next().await.transpose()?;
 
     let mut rows = sqlx::query(
         "SELECT address, name, \
@@ -269,7 +343,7 @@ async fn build_cells(
     )
     .fetch(&db.pool);
 
-    let mut scanned: Vec<(f64, f64)> = Vec::new();
+    let mut scanned = Scanned::default();
     let mut read = 0u64;
     while let Some(row) = rows.next().await {
         let row = row?;
@@ -279,49 +353,35 @@ async fn build_cells(
             told(Progress { step: step::SYSTEMS, done: read, of });
         }
         scanned.clear();
-        while let Some((at, magnitude, temperature)) = ahead {
+        while let Some(star) = &ahead {
+            let at: i64 = star.try_get("system_address")?;
             // A star of a system this read will never reach: one whose
             // system has no position, or none at all.
             if at > address {
                 break;
             }
             if at == address {
-                scanned.push((magnitude, temperature));
+                scanned.take(star)?;
             }
-            ahead = next_star(&mut stars).await?;
+            ahead = stars.next().await.transpose()?;
         }
-        if build.push(
-            input_from_row(&row, &scanned, now)?,
-            metadata::name_from_row(&row)?,
-        )? == Taking::Stopped
-        {
+        let system = input_from_row(&row, &scanned, now)?;
+        if each(&row, system)? == ControlFlow::Break(()) {
             break;
         }
     }
     told(Progress { step: step::SYSTEMS, done: read, of: Some(read) });
-    Ok(build.finish(By::Database, Some(now), Ending::Abandon)?)
+    Ok(())
 }
 
-/// The next star of the ordered read, as [`star_light`] reads one, skipping
-/// those with nothing to light a system by.
-async fn next_star(
-    stars: &mut BoxStream<'_, sqlx::Result<sqlx::postgres::PgRow>>,
-) -> Result<Option<(i64, f64, f64)>> {
-    while let Some(row) = stars.next().await {
-        if let Some(star) = star_light(&row?)? {
-            return Ok(Some(star));
-        }
-    }
-    Ok(None)
-}
-
-/// Say what [`galos_index::migrate`] moved in `dir`, on this side's log.
+/// Say what [`galos_index::ops::migrate::migrate`] moved in `dir`, on this
+/// side's log.
 ///
 /// The migration itself is shared with the sink's own open, which says the
 /// same lines; what is here is the saying of them.
-fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
+fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
     let asked = || stop();
-    let done = galos_index::migrate(dir, &asked)?;
+    let done = galos_index::ops::migrate::migrate(dir, tables, &asked)?;
     // Nothing was moved and nothing can be until the payloads are brought
     // forward, which is not something an open does: said at `warn` rather
     // than `info` because every read after this one fails, and the message
@@ -329,7 +389,7 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
     if let Some(found) = done.upgrade {
         tracing::warn!(
             found,
-            reads = galos_index::INDEX_VERSION,
+            reads = galos_index::prelude::INDEX_VERSION,
             dir = %dir.display(),
             "the directory's payloads are of another layout; run \
              `galos index migrate` over it",
@@ -375,6 +435,9 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
             "folded the names chunks into a mapped base"
         );
     }
+    for (table, rows) in done.tables {
+        info!(table, rows, dir = %dir.display(), "brought a table forward");
+    }
     Ok(())
 }
 
@@ -382,7 +445,7 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
 /// cell tree the map draws from and the records a click reads, in one
 /// directory so a single transport serves both.
 ///
-/// [`Parts::ALL`] is a full build; anything narrower reads only what those
+/// [`Parts::all`] is a full build; anything narrower reads only what those
 /// parts need and leaves every other file as it stands.
 ///
 /// A build that read the whole galaxy writes `checkpoint` beside it and says
@@ -390,11 +453,11 @@ fn migrate(dir: &Path, stop: &Stop<'_>) -> Result<()> {
 /// and a bucketed temperature, so the full-precision inputs are here or
 /// nowhere. A narrowed build writes none.
 ///
-/// A cold build is regional: [`build_cells`] pushes every row into [`Build`]
-/// under [`galos_index::region_budget`]. Nothing here holds a [`Tree`] — a
-/// watch gets one by resuming from the resume point it leaves.
+/// A cold build is regional: `build_cells` pushes every row into [`Build`]
+/// under [`galos_index::build::cold::region_budget`]. Nothing here holds a
+/// [`Tree`] — a watch gets one by resuming from the resume point it leaves.
 ///
-/// `stop` reaches every step: [`migrate`], which leaves what it has not
+/// `stop` reaches every step: `migrate`, which leaves what it has not
 /// moved for a later open, and the build, which is asked per row and per
 /// region — see [`Build`].
 ///
@@ -420,21 +483,49 @@ pub async fn build_to_dir(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    tables: &TableSet,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<BuildReport>> {
-    migrate(dir, stop)?;
+    migrate(dir, tables, stop)?;
     let since = db.now().await?.naive_utc();
     let params = BuildParams::default();
 
     // The cells and the names come out of one read of every positioned
     // system, so asking for either reads it; asking for neither skips it.
+    // The contributed tables asked for, derived from each system's record:
+    // out of the cold build's own read where there is one, and out of the
+    // same read on its own where only the tables are asked for.
+    let mut contributed: Vec<Box<dyn OpenTable>> = tables
+        .iter()
+        .filter(|it| parts.tables.contains(&it.name()))
+        .map(|it| it.empty())
+        .collect();
     let cells = match parts.cells {
-        false => None,
+        false => {
+            if !contributed.is_empty() {
+                each_system(db, since, told, |_, system| {
+                    for table in &mut contributed {
+                        table.contribute(&system);
+                    }
+                    Ok(ControlFlow::Continue(()))
+                })
+                .await?;
+            }
+            None
+        }
         true => {
-            let budget = galos_index::region_budget();
+            let budget = galos_index::build::cold::region_budget();
             let built = build_cells(
-                db, dir, checkpoint, params, budget, since, stop, told,
+                db,
+                dir,
+                checkpoint,
+                params,
+                budget,
+                since,
+                &mut contributed,
+                stop,
+                told,
             )
             .await?;
             let report = match built {
@@ -459,7 +550,7 @@ pub async fn build_to_dir(
         write_names(db, dir, told).await?;
     }
 
-    let meta = metadata::write_parts(db, dir, parts, told).await?;
+    let meta = metadata::write_parts(db, dir, parts, contributed, told).await?;
     Ok(Reached::End(BuildReport { cells, meta }))
 }
 
@@ -476,7 +567,7 @@ async fn write_names(
     told: &Told<'_>,
 ) -> Result<usize> {
     let of = estimated(db, "systems").await;
-    let mut names = galos_index::names::Writer::writing(dir)?;
+    let mut names = galos_index::codec::names::Writer::writing(dir)?;
     let query = format!(
         "{} WHERE position IS NOT NULL ORDER BY address",
         metadata::NAMES_SELECT
@@ -517,8 +608,8 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
     rows.iter()
         .map(|row| {
             let address: i64 = row.try_get("address")?;
-            let scanned = stars.get(&address).map_or(&[][..], Vec::as_slice);
-            input_from_row(row, scanned, now)
+            let none = Scanned::default();
+            input_from_row(row, stars.get(&address).unwrap_or(&none), now)
         })
         .collect()
 }
@@ -532,16 +623,16 @@ async fn inputs_for(db: &Database, addresses: &[i64]) -> Result<Vec<System>> {
 /// The clock is read before each pass reads what changed, never after, so a
 /// write racing a pass's read is asked for again by whoever follows the
 /// cursor rather than missed by everyone. Each pass reads back a further
-/// [`CURSOR_OVERLAP`]; applying a system twice is idempotent.
+/// `CURSOR_OVERLAP`; applying a system twice is idempotent.
 ///
 /// A pass ends the catch-up when what it found is smaller than one
-/// [`CHANGED_CHUNK`]: the caller is usually the process writing to the
+/// `CHANGED_CHUNK`: the caller is usually the process writing to the
 /// database, and the residue is already in that process's handoff buffer.
 ///
 /// It leaves a whole resume point standing for exactly the systems the
 /// directory serves; one short of what is served cannot be opened at all.
 ///
-/// `parts` narrower than [`Parts::ALL`] is the repair case: a one-shot
+/// `parts` narrower than [`Parts::all`] is the repair case: a one-shot
 /// [`build_to_dir`] of those parts, and the cursor answered is the clock
 /// read before the build read anything. It is a *repair*, so it is refused
 /// where there is nothing to repair — a directory serving nothing, written
@@ -558,11 +649,12 @@ pub async fn catch_up(
     dir: &Path,
     checkpoint: &Path,
     parts: Parts,
+    tables: &TableSet,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<chrono::NaiveDateTime>> {
-    if parts != Parts::ALL {
+    if parts != Parts::all(tables) {
         // Before the clock and before any read: what this costs otherwise
         // is the whole galaxy, and what it leaves cannot be opened.
         if serving(dir).is_none() {
@@ -577,14 +669,16 @@ pub async fn catch_up(
             .into());
         }
         let since = db.now().await?.naive_utc();
-        return Ok(build_to_dir(db, dir, checkpoint, parts, stop, told)
-            .await?
-            .map(|report| {
-                info!(dir = %dir.display(), %report, "index parts derived");
-                since
-            }));
+        return Ok(build_to_dir(
+            db, dir, checkpoint, parts, tables, stop, told,
+        )
+        .await?
+        .map(|report| {
+            info!(dir = %dir.display(), %report, "index parts derived");
+            since
+        }));
     }
-    Ok(bring_level(db, dir, checkpoint, rebuild, stop, told)
+    Ok(bring_level(db, dir, checkpoint, tables, rebuild, stop, told)
         .await?
         .map(|it| it.cursor))
 }
@@ -737,13 +831,14 @@ pub async fn watch(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     interval: Duration,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<()> {
     let Reached::End(mut level) =
-        bring_level(db, dir, checkpoint, rebuild, stop, told).await?
+        bring_level(db, dir, checkpoint, tables, rebuild, stop, told).await?
     else {
         info!(
             dir = %dir.display(),
@@ -808,6 +903,7 @@ async fn bring_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     rebuild: bool,
     stop: &Stop<'_>,
     told: &Told<'_>,
@@ -820,9 +916,9 @@ async fn bring_level(
             return Err(std::io::Error::other(said).into());
         }
     }
-    migrate(dir, stop)?;
+    migrate(dir, tables, stop)?;
     let params = BuildParams::default();
-    let mut level = match resume(dir, checkpoint, &params) {
+    let mut level = match resume(dir, checkpoint, tables, &params) {
         Resume::Level(tree, meta, cursor) => {
             info!(
                 systems = tree.len(),
@@ -848,7 +944,7 @@ async fn bring_level(
             if stop() {
                 return Ok(Reached::Stopped(Abandoned::unstarted()));
             }
-            match build_level(db, dir, checkpoint, stop, told).await? {
+            match build_level(db, dir, checkpoint, tables, stop, told).await? {
                 Reached::End(level) => level,
                 Reached::Stopped(abandoned) => {
                     return Ok(Reached::Stopped(abandoned));
@@ -872,6 +968,7 @@ async fn build_level(
     db: &Database,
     dir: &Path,
     checkpoint: &Path,
+    tables: &TableSet,
     stop: &Stop<'_>,
     told: &Told<'_>,
 ) -> Result<Reached<Level>> {
@@ -881,8 +978,16 @@ async fn build_level(
     // directory and the resume point. A watch needs a tree, so it
     // gets one the way a restart would: by resuming from what the
     // build just left.
-    let report = match build_to_dir(db, dir, checkpoint, Parts::ALL, stop, told)
-        .await?
+    let report = match build_to_dir(
+        db,
+        dir,
+        checkpoint,
+        Parts::all(tables),
+        tables,
+        stop,
+        told,
+    )
+    .await?
     {
         Reached::End(report) => report,
         Reached::Stopped(abandoned) => {
@@ -890,7 +995,7 @@ async fn build_level(
         }
     };
     info!(%report, elapsed = ?start.elapsed(), "initial index built");
-    match resume(dir, checkpoint, &BuildParams::default()) {
+    match resume(dir, checkpoint, tables, &BuildParams::default()) {
         Resume::Level(tree, meta, cursor) => {
             Ok(Reached::End(Level { tree, meta, cursor }))
         }
@@ -909,7 +1014,7 @@ async fn build_level(
 ///
 /// The whole write, and so the expensive one: a pass appends what it moved
 /// and asks for this only when the log has grown against the base — see
-/// [`Pending::append`] — or when there is no base at all.
+/// [`pending::append`] — or when there is no base at all.
 ///
 /// The base is written before the log is dropped, so a kill between the two
 /// replays systems the base already holds rather than losing them.
@@ -918,7 +1023,12 @@ fn record(
     cursor: chrono::NaiveDateTime,
     systems: impl IntoIterator<Item = System>,
 ) -> Result<()> {
-    Checkpoint::compact(checkpoint, Some(cursor), By::Database, systems)?;
+    Checkpoint::compact(
+        checkpoint,
+        Some(cursor),
+        Provenance::Database,
+        systems,
+    )?;
     Ok(())
 }
 
@@ -954,9 +1064,8 @@ async fn pass(
     }
 
     let start = Instant::now();
-    let mut moved = Moved::default();
-    // The tables written whole are or-ed across a pass's chunks; the body
-    // files are one per system, so that one is summed.
+    // The tables written whole remember what moved until they are written;
+    // the body files are one per system, so those are summed.
     let mut body_files = 0;
     let mut applied: Vec<System> = Vec::new();
     // A catch-up's first passes are the week the directory was behind by,
@@ -968,20 +1077,18 @@ async fn pass(
     for chunk in touched.chunks(CHANGED_CHUNK) {
         let inputs = inputs_for(db, chunk).await?;
         level.tree.apply(&inputs);
-        let (chunk_moved, wrote) = level.meta.patch(db, dir, chunk).await?;
-        moved.absorb(chunk_moved);
-        body_files += wrote;
+        body_files += level.meta.patch(db, dir, chunk, &inputs).await?;
         applied.extend(inputs);
         asked += chunk.len() as u64;
         told(Progress { step: step::CHANGED, done: asked, of });
     }
     level.tree.publish(dir)?;
-    let report = level.meta.publish_pass(db, dir, moved, body_files).await?;
+    let report = level.meta.publish_pass(db, dir, body_files).await?;
 
     // What the directory now serves and the cursor it is current as of, in
     // one frame. The answer is whether the log has grown far enough against
     // the base to be worth folding in.
-    let folding = Pending::append(checkpoint, Some(now), &applied)?;
+    let folding = pending::append(checkpoint, Some(now), &applied)?;
     if folding {
         record(checkpoint, now, level.tree.inputs())?;
     }
@@ -1024,7 +1131,7 @@ enum Resume {
 /// count, and replacing it unasked is the thing being prevented. So it
 /// answers "some", loudly, rather than zero.
 fn serving(dir: &Path) -> Option<u64> {
-    if !dir.join(galos_index::store::INDEX_FILE).exists() {
+    if !dir.join(galos_index::codec::layout::INDEX_FILE).exists() {
         return None;
     }
     match Index::read(dir) {
@@ -1077,7 +1184,7 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
             ));
         }
     };
-    if checkpoint.by != By::Database {
+    if checkpoint.by != Provenance::Database {
         return Some(format!(
             "{} serves {}, derived from {:?}, and this run would replace \
              them with what the database holds. Nothing has been written.\
@@ -1119,7 +1226,12 @@ fn refusal(dir: &Path, path: &Path) -> Option<String> {
 /// [`Resume::Refuse`], which is the whole of the fix — the escalation from
 /// "cannot resume" to "replace the galaxy" was silent, and is now a
 /// sentence with `--rebuild` in it.
-fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
+fn resume(
+    dir: &Path,
+    path: &Path,
+    tables: &TableSet,
+    params: &BuildParams,
+) -> Resume {
     let served = serving(dir).unwrap_or(0);
     let refuse = |why: String| match served {
         0 => Resume::Build,
@@ -1131,7 +1243,7 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
     let Ok(checkpoint) = Checkpoint::read(path) else {
         return Resume::Build;
     };
-    if checkpoint.by != By::Database {
+    if checkpoint.by != Provenance::Database {
         info!(
             by = ?checkpoint.by,
             checkpoint = %path.display(),
@@ -1149,7 +1261,8 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
     };
     let mut tree = Tree::build(checkpoint.base(), params);
     tree.apply(checkpoint.deltas());
-    let (Ok(index), Ok(meta)) = (Index::read(dir), Metadata::resume(dir))
+    let (Ok(index), Ok(meta)) =
+        (Index::read(dir), Metadata::resume(dir, tables))
     else {
         return refuse(format!(
             "{} serves {} and its tables will not read back, so this run \
@@ -1177,10 +1290,10 @@ fn resume(dir: &Path, path: &Path, params: &BuildParams) -> Resume {
 ///
 /// Each part is what this build wrote rather than what stands in the
 /// directory, so a part it was not asked for says so.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct BuildReport {
     /// The cell tree, where this build wrote one.
-    pub cells: Option<ColdReport>,
+    pub cells: Option<Summary>,
     /// The metadata sidecars written beside the tree.
     pub meta: MetaReport,
 }
@@ -1208,6 +1321,13 @@ impl fmt::Display for BuildReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use galos_index::codec::Directory;
+
+    /// The tables the program contributes, which a directory built here
+    /// holds beside the index's own.
+    fn tables() -> TableSet {
+        TableSet::new().with::<galos_route::BoostTable>()
+    }
     use crate::testing::Scratch;
 
     /// The address the write below writes
@@ -1234,7 +1354,7 @@ mod tests {
             temperature,
             age_bucket: 0,
             updated_at: 0,
-            kind: galos_index::StarKind::G,
+            kind: galos_index::prelude::StarKind::G,
         }
     }
 
@@ -1315,11 +1435,11 @@ mod tests {
             .collect();
         let mut tree = Tree::build(&inputs, &params);
         tree.write(&dir).expect("the tree should write");
-        let mut names = galos_index::names::Writer::writing(&dir)
+        let mut names = galos_index::codec::names::Writer::writing(&dir)
             .expect("the names writer should open");
         for system in &inputs {
             names
-                .push(galos_index::meta::NameEntry {
+                .push(galos_index::records::NameEntry {
                     address: system.id64 as i64,
                     name: format!("TEST {}", system.id64).into(),
                     position: [system.position[0] as f32, 0.0, 0.0],
@@ -1329,11 +1449,11 @@ mod tests {
         names.finish().expect("the names should publish");
         let empty: Vec<u8> = Vec::new();
         for table in [
-            galos_index::source::populated_path(&dir),
-            galos_index::source::reaches_path(&dir),
-            galos_index::source::factions_path(&dir),
+            galos_index::codec::layout::populated_path(&dir),
+            galos_index::codec::layout::reaches_path(&dir),
+            galos_index::codec::layout::factions_path(&dir),
         ] {
-            galos_index::source::write_meta(&table, &empty)
+            galos_index::codec::tables::msgpack::write_meta(&table, &empty)
                 .expect("a table should write");
         }
 
@@ -1343,12 +1463,15 @@ mod tests {
         Checkpoint::compact(
             &path,
             Some(cursor),
-            By::Database,
+            Provenance::Database,
             inputs.iter().copied(),
         )
         .expect("a resume point should write");
         assert!(
-            matches!(resume(&dir, &path, &params), Resume::Level(..)),
+            matches!(
+                resume(&dir, &path, &tables(), &params),
+                Resume::Level(..)
+            ),
             "a directory the database derived, matching its own resume point, \
              was refused",
         );
@@ -1361,7 +1484,7 @@ mod tests {
         Checkpoint::compact(
             &path,
             Some(cursor),
-            By::Events,
+            Provenance::Events,
             inputs.iter().copied(),
         )
         .expect("a resume point should write");
@@ -1370,7 +1493,8 @@ mod tests {
         // systems is neither resumed nor silently rebuilt over. Before this
         // the answer here was "build the galaxy afresh", and what it
         // replaced was every system the directory published.
-        let Resume::Refuse(said) = resume(&dir, &path, &params) else {
+        let Resume::Refuse(said) = resume(&dir, &path, &tables(), &params)
+        else {
             panic!("a resume point the event feed wrote was rebuilt over")
         };
         assert!(
@@ -1393,7 +1517,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&empty);
         std::fs::create_dir_all(&empty).expect("a scratch directory");
         assert_eq!(refusal(&empty, &path), None);
-        assert!(matches!(resume(&empty, &path, &params), Resume::Build));
+        assert!(matches!(
+            resume(&empty, &path, &tables(), &params),
+            Resume::Build
+        ));
         let _ = std::fs::remove_dir_all(&empty);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1474,7 +1601,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             never(),
             untold(),
@@ -1501,7 +1629,7 @@ mod tests {
         // Past the look-back, so a pass has nothing to ask for rather than the
         // overlap's worth of what it just read.
         let published =
-            std::fs::metadata(galos_index::source::populated_path(&dir))
+            std::fs::metadata(galos_index::codec::layout::populated_path(&dir))
                 .expect("the populated table should stand")
                 .modified()
                 .expect("a modification time");
@@ -1511,7 +1639,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             never(),
             untold(),
@@ -1522,7 +1651,7 @@ mod tests {
         .expect("nothing asked it to stop");
         assert!(again >= cursor, "the cursor went backwards");
         let after =
-            std::fs::metadata(galos_index::source::populated_path(&dir))
+            std::fs::metadata(galos_index::codec::layout::populated_path(&dir))
                 .expect("the populated table should stand")
                 .modified()
                 .expect("a modification time");
@@ -1564,9 +1693,17 @@ mod tests {
         let _ = std::fs::remove_file(&checkpoint);
 
         let one = Parts { reaches: true, ..Parts::NONE };
-        let refused =
-            catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
-                .await;
+        let refused = catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            one.clone(),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await;
         let Err(said) = refused else {
             panic!("a part alone was derived into a directory with no tree")
         };
@@ -1577,7 +1714,7 @@ mod tests {
             said,
         );
         assert!(
-            !galos_index::source::reaches_path(&dir).exists(),
+            !galos_index::codec::layout::reaches_path(&dir).exists(),
             "the refusal came after the read it was there to save",
         );
 
@@ -1600,17 +1737,35 @@ mod tests {
         )
         .await
         .expect("the system should write");
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the build should run")
-            .end()
-            .expect("nothing asked it to stop");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the build should run")
+        .end()
+        .expect("nothing asked it to stop");
 
-        catch_up(&db, &dir, &checkpoint, one, false, never(), untold())
-            .await
-            .expect("a built directory is the repair case")
-            .end()
-            .expect("nothing asked it to stop");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            one,
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("a built directory is the repair case")
+        .end()
+        .expect("nothing asked it to stop");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&checkpoint);
@@ -1650,7 +1805,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("a scratch directory");
         let checkpoint = dir.with_extension("checkpoint");
         let _ = std::fs::remove_file(&checkpoint);
-        let _ = Pending::clear(&checkpoint);
+        let _ = pending::clear(&checkpoint);
 
         // Something for the first build to publish: a build over no systems
         // writes a directory nothing can resume from, and what this test is
@@ -1676,9 +1831,18 @@ mod tests {
         // A directory brought level, and then a system written after it
         // was: the pass that publishes this one is what has to leave the
         // resume point standing for it.
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the first catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the first catch-up should run");
         let system = elite_journal::system::System {
             pos: Some(elite_journal::system::Coordinate {
                 x: 7.0,
@@ -1699,9 +1863,18 @@ mod tests {
         .await
         .expect("the system should write");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the second catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the second catch-up should run");
 
         // The same system reported again, which the pass below publishes
         // and logs a second frame for, behind the frame the pass above
@@ -1717,9 +1890,18 @@ mod tests {
         .await
         .expect("the system should be reported again");
 
-        catch_up(&db, &dir, &checkpoint, Parts::ALL, false, never(), untold())
-            .await
-            .expect("the third catch-up should run");
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&tables()),
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the third catch-up should run");
 
         let served = Index::read(&dir)
             .expect("the index should read")
@@ -1753,7 +1935,10 @@ mod tests {
         );
         assert!(written.cursor.is_some(), "a resume point with no cursor");
         assert!(
-            matches!(resume(&dir, &checkpoint, &params), Resume::Level(..)),
+            matches!(
+                resume(&dir, &checkpoint, &tables(), &params),
+                Resume::Level(..)
+            ),
             "the resume point a catch-up left was refused by the resume it \
              was written for",
         );
@@ -1790,7 +1975,8 @@ mod tests {
             &db,
             &dir,
             &checkpoint,
-            Parts::ALL,
+            Parts::all(&tables()),
+            &tables(),
             false,
             &|| true,
             untold(),
@@ -1801,7 +1987,7 @@ mod tests {
             Reached::Stopped(Abandoned::unstarted()),
         );
         assert!(
-            !dir.join(galos_index::store::INDEX_FILE).exists(),
+            !dir.join(galos_index::codec::layout::INDEX_FILE).exists(),
             "a build ran anyway",
         );
         assert!(!checkpoint.exists(), "a resume point was written");
@@ -1813,6 +1999,209 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
 
+        db.done().await;
+    }
+
+    /// A payload's star kind is the scanned arrival star, as the journal
+    /// side reads it, and not only the class a route named
+    ///
+    /// `systems.primary_star_class` is written only by a plotted route, so
+    /// a scanned neutron star has `N` in `stars` and a null column. Built
+    /// off the column alone, its payload said nothing about it while the
+    /// supercharge table said it was a neutron star, and a directory built
+    /// from a journal said so in both. Both reads are asked: the cold
+    /// build's merged cursors and a watch pass's paged read.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_payload_kind_is_the_scanned_arrival_star() {
+        let Some(db) = Scratch::new().await else { return };
+
+        let scanned = 0x0B00_5700_0000_0011_u64 as i64;
+        let routed = 0x0B00_5700_0000_0012_u64 as i64;
+        for (address, name, class) in [
+            (scanned, "KIND SCANNED", None),
+            (routed, "KIND ROUTED", Some("DA")),
+        ] {
+            sqlx::query(
+                "INSERT INTO systems (address, name, position, updated_at, \
+                                      updated_by, primary_star_class) \
+                 VALUES ($1, $2, ST_MakePoint(1, 2, 3)::geometry, now(), \
+                         'test', $3)",
+            )
+            .bind(address)
+            .bind(name)
+            .bind(class)
+            .execute(&db.pool)
+            .await
+            .expect("the system should write");
+        }
+        // A neutron star at the drop point and a G star further out, the G
+        // star written first and with the lower id.
+        for (id, class, distance) in [(0i16, "G", 900.0f32), (1i16, "N", 0.0)] {
+            sqlx::query(
+                "INSERT INTO stars (system_address, id, name, updated_at, \
+                     updated_by, absolute_magnitude, age_my, \
+                     distance_from_arrival_ls, luminosity, star_class, \
+                     stellar_mass, subclass, axial_tilt, radius, \
+                     rotation_period, temperature, was_mapped) \
+                 VALUES ($1, $2, $3, now(), 'test', 4.8, 100, $4, 'V', $5, \
+                         1.0, 2, 0, 1.0, 0, 5000, false)",
+            )
+            .bind(scanned)
+            .bind(id)
+            .bind(format!("KIND SCANNED {id}"))
+            .bind(distance)
+            .bind(class)
+            .execute(&db.pool)
+            .await
+            .expect("the star should write");
+        }
+
+        let paged: HashMap<i64, galos_index::prelude::StarKind> =
+            inputs_for(&db, &[scanned, routed])
+                .await
+                .expect("the paged read")
+                .into_iter()
+                .map(|it| (it.id64 as i64, it.kind))
+                .collect();
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_kind_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let now = db.now().await.expect("the clock should read").naive_utc();
+        build_cells(
+            &db,
+            &dir,
+            &checkpoint,
+            BuildParams::default(),
+            galos_index::build::cold::region_budget(),
+            now,
+            &mut [],
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the cold build should run");
+        let sky =
+            galos_index::prelude::Sky::open(&dir).expect("the built galaxy");
+        let built = |address: i64| {
+            let node =
+                sky.node_of(address, [1., 2., 3.]).expect("a built system");
+            sky.payload(node.cell).expect("its cell").kind_at(node.at as usize)
+        };
+
+        for (address, want) in [
+            (scanned, galos_index::prelude::StarKind::Neutron),
+            (routed, galos_index::prelude::StarKind::WhiteDwarf),
+        ] {
+            assert_eq!(built(address), want, "the cold build, {address}");
+            assert_eq!(paged.get(&address), Some(&want), "the paged read");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
+        db.done().await;
+    }
+
+    /// The index's own parts stand alone, and a contributed table is a part
+    /// added to them like any other
+    ///
+    /// Built with nothing contributed, a directory holds every part of its
+    /// own and no contributed table — absent, which a reader tells apart
+    /// from empty — and it resumes as a whole directory. Asked for that
+    /// table by name afterwards, the repair adds it and nothing else: the
+    /// cells it stood beside are the files the first build wrote.
+    ///
+    /// Needs a server to reach, named by `TEST_DATABASE_URL`, and stands
+    /// down without one.
+    #[async_std::test]
+    async fn a_contributed_table_is_added_to_a_directory_built_without_it() {
+        use galos_route::{BoostTable, SystemBoost};
+
+        let Some(db) = Scratch::new().await else { return };
+        let address = 0x0B00_5700_0000_0021_u64 as i64;
+        sqlx::query(
+            "INSERT INTO systems (address, name, position, updated_at, \
+                                  updated_by, primary_star_class) \
+             VALUES ($1, 'ADDED', ST_MakePoint(1, 2, 3)::geometry, now(), \
+                     'test', 'N')",
+        )
+        .bind(address)
+        .execute(&db.pool)
+        .await
+        .expect("the system should write");
+
+        let dir = std::env::temp_dir()
+            .join(format!("galos_db_additive_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let checkpoint = dir.with_extension("checkpoint");
+        let _ = std::fs::remove_file(&checkpoint);
+
+        let none = TableSet::new();
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            Parts::all(&none),
+            &none,
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the core build should run");
+        let boosts = Directory::at(&dir).table_path("boosts");
+        assert!(!boosts.exists(), "a table nothing contributed was written");
+        assert!(
+            matches!(
+                resume(&dir, &checkpoint, &none, &BuildParams::default()),
+                Resume::Level(..)
+            ),
+            "the index's own parts did not stand alone",
+        );
+        let cells =
+            std::fs::metadata(dir.join(galos_index::codec::layout::INDEX_FILE))
+                .and_then(|it| it.modified())
+                .expect("the cells stand");
+
+        let only = Parts { tables: vec!["boosts"], ..Parts::NONE };
+        catch_up(
+            &db,
+            &dir,
+            &checkpoint,
+            only,
+            &tables(),
+            false,
+            never(),
+            untold(),
+        )
+        .await
+        .expect("the table should be added");
+        assert_eq!(
+            Directory::at(&dir)
+                .table::<BoostTable>()
+                .expect("the added table reads"),
+            Some(vec![SystemBoost {
+                address,
+                boost: galos_route::Boost::Neutron,
+                position: [1.0, 2.0, 3.0],
+            }]),
+        );
+        assert_eq!(
+            std::fs::metadata(dir.join(galos_index::codec::layout::INDEX_FILE))
+                .and_then(|it| it.modified())
+                .expect("the cells stand"),
+            cells,
+            "adding a table rewrote the cells",
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&checkpoint);
         db.done().await;
     }
 }

@@ -103,6 +103,35 @@ pub const AUREOLE_WIDTH: f64 = 4.5;
 /// stays a bare point. Fitted to the reference photograph's brightest stars.
 pub const AUREOLE_WEIGHT: f64 = 0.25;
 
+/// A halo laid behind the seeing core: one broad, faint layer of the point
+/// spread.
+///
+/// A bright star is not a disc but a disc with a glow around it — light the air
+/// and the optics scatter into a wide aureole that falls off far more slowly
+/// than the seeing core. This is one such layer; [`Psf::instrument`] lays any
+/// number of them behind the core, so a halo can be tuned or stacked without
+/// touching the core that sets the faint stars.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Aureole {
+    /// The share of a star's light in this halo rather than the core, `0..1`.
+    pub weight: f64,
+    /// How much broader than the seeing core the halo is, as a multiple of the
+    /// core width.
+    pub width: f64,
+    /// The halo's Moffat wing index: smaller is heavier and reaches further.
+    pub beta: f64,
+}
+
+impl Aureole {
+    /// The halo measured from the reference photograph, and the one both
+    /// renderers wear unless told otherwise.
+    pub const DEFAULT: Aureole = Aureole {
+        weight: AUREOLE_WEIGHT,
+        width: AUREOLE_WIDTH,
+        beta: AUREOLE_BETA,
+    };
+}
+
 /// The smallest a core width may be, in the PSF's own units. A floor that keeps
 /// a zero or negative width — a degenerate seeing dial — from driving the peak
 /// to infinity or dividing by zero; a thousandth of a pixel is a spike no
@@ -398,6 +427,46 @@ impl Psf {
     /// still holds.
     pub fn new(kind: ProfileKind, width: f64) -> Psf {
         Psf::of(Kernel::new(kind, width))
+    }
+
+    /// The instrument: a seeing core `core` wide in `kind`'s profile, with
+    /// each of `aureoles` laid behind it.
+    ///
+    /// **The one stack both renderers draw through.** The map's shader and
+    /// the CPU sky each used to lay the reference aureole behind the core
+    /// themselves, which is two instruments that agreed only while nobody
+    /// changed either; a comparison between their pictures would then be
+    /// measuring the gap between the copies.
+    ///
+    /// Each halo's [`weight`](Aureole::weight) is its share of the whole
+    /// star's light, and the core takes the rest. The share is turned into the
+    /// relative weight a [`Layer`] wants — `share / (1 − total halo share)`
+    /// against a base of one — so however many halos are stacked, each ends
+    /// up with the fraction it asked for. The halos together are held under
+    /// 95% of the light, so a core is always there to be drawn.
+    ///
+    /// A halo wears the profile the core does, so a Gaussian point spread stays
+    /// a Gaussian to its edge rather than growing Moffat wings; an aureole's
+    /// [`beta`](Aureole::beta) shapes only a Moffat halo, a Gaussian having no
+    /// wing index to set.
+    pub fn instrument(
+        kind: ProfileKind,
+        core: f64,
+        aureoles: &[Aureole],
+    ) -> Psf {
+        let halo_share =
+            aureoles.iter().map(|a| a.weight).sum::<f64>().min(0.95);
+        let mut psf = Psf::new(kind, core);
+        for aureole in aureoles {
+            let width = core * aureole.width;
+            let halo = match kind {
+                ProfileKind::Moffat => Kernel::moffat(width, aureole.beta),
+                ProfileKind::Gaussian => Kernel::gaussian(width),
+            };
+            let relative = aureole.weight / (1.0 - halo_share);
+            psf = psf.with_layer(Layer::new(halo, relative));
+        }
+        psf
     }
 
     /// A single-layer PSF around an explicit profile.
@@ -738,6 +807,43 @@ mod tests {
         for &d in &[0.0, 2.5, 9.0, 25.0] {
             let expected = psf.peak(10.0) * psf.shape(d);
             assert!((psf.at(10.0, d) - expected).abs() < 1e-9, "at {d}");
+        }
+    }
+
+    /// Each halo carries the share of the light it asked for
+    ///
+    /// The weight an aureole names is its share of the whole star, not a
+    /// weight relative to the core, so the reference halo holds a quarter of
+    /// the light however it is stacked and the core the rest.
+    #[test]
+    fn an_aureole_carries_the_share_it_names() {
+        let psf =
+            Psf::instrument(ProfileKind::Moffat, 1.5, &[Aureole::DEFAULT]);
+        assert_eq!(psf.layers.len(), 2);
+        let share = psf.layers[1].weight / psf.total_weight();
+        assert!((share - AUREOLE_WEIGHT).abs() < 1e-12, "{share}");
+
+        let thin = Aureole { weight: 0.1, ..Aureole::DEFAULT };
+        let stacked = Psf::instrument(
+            ProfileKind::Moffat,
+            1.5,
+            &[Aureole::DEFAULT, thin],
+        );
+        let total = stacked.total_weight();
+        let shares: Vec<f64> =
+            stacked.layers.iter().map(|l| l.weight / total).collect();
+        assert!((shares[1] - AUREOLE_WEIGHT).abs() < 1e-12, "{shares:?}");
+        assert!((shares[2] - 0.1).abs() < 1e-12, "{shares:?}");
+        assert!((shares[0] - 0.65).abs() < 1e-12, "the core takes the rest");
+    }
+
+    /// With no halo the instrument is the bare seeing disc
+    #[test]
+    fn an_instrument_with_no_aureole_is_its_core() {
+        let bare = Psf::instrument(ProfileKind::Gaussian, 2.0, &[]);
+        let core = Psf::new(ProfileKind::Gaussian, 2.0);
+        for r in [0.0, 0.5, 1.0, 3.0, 8.0] {
+            assert_eq!(bare.at(10.0, r), core.at(10.0, r));
         }
     }
 }

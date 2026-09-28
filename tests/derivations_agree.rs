@@ -8,7 +8,7 @@
 //! builds the directory from the rows (`sink::Db`, then
 //! `galos_db::index::catch_up`) — which is `galos ingest --from database
 //! --index DIR`, and the first half of what a run naming `--db --index`
-//! does; the other accumulates the events into `galos_index::Galaxy`
+//! does; the other accumulates the events into `galos_index::prelude::Galaxy`
 //! and publishes the directory from that (`sink::Index`) — which is
 //! `galos ingest --index DIR` off a feed, and the regional build for a
 //! dump too big to hold. Both take the same [`Sink`] trait, so this hands
@@ -30,20 +30,20 @@
 //!   else, so what either directory is compared over is named rather than
 //!   taken wholesale only because a body file is read per system.
 //! - **The names table's row order.** Address-sorted now, both derivations
-//!   publishing it through `galos_index::names::Writer` — so the order *is*
-//!   an invariant of the format, and what keeps it out of the comparison is
-//!   the comparison's own shape: each side is cut down to the systems this
+//!   publishing it through `galos_index::codec::names::Writer` — so the order
+//!   *is* an invariant of the format, and what keeps it out of the comparison
+//!   is the comparison's own shape: each side is cut down to the systems this
 //!   test owns, a handful out of a mapped table, so what is checked is the
-//!   content keyed by address. The order *inside* a system is compared:
-//!   both derivations write a body file in `id` order, so a system's stars,
-//!   bodies and barycentres are compared as lists.
+//!   content keyed by address. The order *inside* a system is compared: both
+//!   derivations write a body file in `id` order, so a system's stars, bodies
+//!   and barycentres are compared as lists.
 //! - **The cell payloads.** A payload's magnitude and temperature come from
-//!   `galos_index::derive::lit` over exactly the stars compared here, and
-//!   that function is one copy with tests of its own. What the comparison
+//!   `galos_index::records::derive::lit` over exactly the stars compared here,
+//!   and that function is one copy with tests of its own. What the comparison
 //!   would add is the tree's arithmetic, not the derivations' agreement.
 //! - **Faction ids.** A journal names factions and numbers none of them; the
 //!   ids are `galos_db`'s, minted on write. Argued in
-//!   `galos_index::galaxy`'s header and not going away.
+//!   `galos_index::accumulate::galaxy`'s header and not going away.
 //!
 //! Needs a server to reach, named by `TEST_DATABASE_URL` as `galos_db`'s
 //! write-path tests have it -- a server and not a database, the database
@@ -54,8 +54,9 @@ use galos::sink::{Db, Index, Reporter, Sink};
 use galos_db::index::{never, Parts};
 use galos_db::testing::Scratch;
 use galos_db::Database;
-use galos_index::meta::{Boost, PopulatedSystem, SystemBodies};
-use galos_index::{FsSource, Source as _};
+use galos_index::prelude::{FsSource, Source as _};
+use galos_index::records::{PopulatedSystem, SystemBodies};
+use galos_route::{Boost, BoostTable};
 use spansh::System;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -87,12 +88,12 @@ const CMDR: &str = "cmdr";
 /// Whoever both sides file [`dumped`]'s readings under.
 ///
 /// Nobody flew a dump: the file it was read out of is the whole of its
-/// provenance, and this is the name a `spansh=PATH` read hands a sink for
-/// one — `galos::read::from::published`, publisher and file name. A sink
-/// that took an uploader for nobody and filed these under
-/// `galos_index::galaxy::UNKNOWN` would publish a different `updated_by`
-/// from the rows, which is the whole of what makes that column worth
-/// comparing.
+/// provenance, and this is the name a `spansh=PATH` read hands a sink for one —
+/// `galos::read::from::published`, publisher and file name. A sink that took an
+/// uploader for nobody and filed these under
+/// `galos_index::accumulate::galaxy::UNKNOWN` would publish a different
+/// `updated_by` from the rows, which is the whole of what makes that column
+/// worth comparing.
 const DUMP: &str = "Spansh galaxy_agreed.json";
 
 /// A scratch directory of this test's own, emptied first.
@@ -330,8 +331,7 @@ impl Published {
             .filter(|it| ours(&it.address))
             .map(|it| (it.address, it.reach))
             .collect();
-        let boosts = source
-            .boosts()
+        let boosts = galos_index::read::source::table::<BoostTable>(&source)
             .await
             .expect("the boosts table")
             .expect("a published boosts table")
@@ -367,7 +367,8 @@ async fn from_the_database(db: &Database, dir: &Path, checkpoint: &Path) {
         db,
         dir,
         checkpoint,
-        Parts::ALL,
+        Parts::all(&galos::tables()),
+        &galos::tables(),
         false,
         &stop,
         told,

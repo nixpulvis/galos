@@ -8,7 +8,7 @@
 //! Three things held together:
 //!
 //! - [`Galaxy`] — the events, accumulated into the index's vocabulary,
-//!   shared with `galos_index::galaxy`.
+//!   shared with `galos_index::accumulate::galaxy`.
 //! - [`Tree`] — the cell tree, held open and edited. `Tree::upsert` touches
 //!   the handful of cells on one system's path, so a scan costs the depth of
 //!   the tree rather than its size. Nothing here rebuilds: this takes EDDN
@@ -23,34 +23,36 @@
 //! temperature, so the editable tree cannot be rebuilt from the directory it
 //! published.
 //!
-//! What differs is the cursor, which is what [`By`] records. With a database
-//! under the run the cursor is a database clock, sampled *before* the batch
-//! it stands for is applied — sound because the database sink wrote those
+//! What differs is the cursor, which is what [`Provenance`] records. With a
+//! database under the run the cursor is a database clock, sampled *before* the
+//! batch it stands for is applied — sound because the database sink wrote those
 //! entries before this sink was handed them — so a restart's catch-up covers
-//! exactly what the index missed. Without one the checkpoint carries `None`
-//! and says [`By::Events`] wrote it. The two derivations refuse to resume
+//! exactly what the index missed. Without one the checkpoint carries `None` and
+//! says [`Provenance::Events`] wrote it. The two derivations refuse to resume
 //! onto each other's work; see `one_hand`.
 //!
 //! ## Where the scanned bodies live
 //!
-//! In `bodies/<address>.bin`, not in memory: a reach is the far edge over
-//! every body of a system together and the file is written whole, so holding
-//! them would mean [`Galaxy`] keeping every body the feed ever carried. See
-//! `galos_index::bodies`. What is held is what has been scanned and not
-//! yet written, which [`Sink::flush`] clears as it publishes.
+//! In `bodies/<address>.bin`, not in memory: a reach is the far edge over every
+//! body of a system together and the file is written whole, so holding them
+//! would mean [`Galaxy`] keeping every body the feed ever carried. See
+//! `galos_index::accumulate::bodies`. What is held is what has been scanned and
+//! not yet written, which [`Sink::flush`] clears as it publishes.
 
-use crate::sink::tables::{Tables, Wrote};
+use crate::sink::tables::Tables;
 use crate::sink::{Clock, Stop};
 use crate::sink::{Landed, Reporter, Sink, SystemReport};
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use elite_journal::entry::market::{BlackMarket, Market, Outfitting, Shipyard};
 use elite_journal::entry::{Entry, Event};
-use galos_index::galaxy::UNKNOWN;
-use galos_index::{
-    BuildParams, By, Checkpoint, Index as ServedIndex, Pending, System, Tree,
+use galos_index::accumulate::bodies::OnDisk;
+use galos_index::accumulate::galaxy::UNKNOWN;
+use galos_index::codec::checkpoint::{pending, Checkpoint, Provenance};
+use galos_index::codec::layout::pending_path;
+use galos_index::prelude::{
+    BuildParams, Galaxy, Index as ServedIndex, StarKind, System, Tree,
 };
-use galos_index::{Galaxy, Published};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -66,11 +68,11 @@ pub const INDEX_DIR: &str = ".galos_index";
 /// *that* directory; beside it rather than inside it, holding every system
 /// at full precision, which no client should be served.
 ///
-/// The string itself is [`galos_index::checkpoint::SUFFIX`] and is
-/// re-exported rather than spelled again: the log, the mark and the copy
-/// that carries all three hang off the same suffix, and two spellings of
-/// it is a backup that silently leaves one of them behind.
-pub use galos_index::checkpoint::SUFFIX as CHECKPOINT_SUFFIX;
+/// The string itself is [`galos_index::codec::layout::CHECKPOINT_SUFFIX`] and
+/// is re-exported rather than spelled again: the log, the mark and the copy
+/// that carries all three hang off the same suffix, and two spellings of it is
+/// a backup that silently leaves one of them behind.
+pub use galos_index::codec::layout::CHECKPOINT_SUFFIX;
 
 /// Whether there is anything to edit a published directory from.
 ///
@@ -114,15 +116,15 @@ fn one_hand(
     dir: &Path,
     checkpoint: &Path,
     served: u64,
-    wrote: By,
-    ours: By,
+    wrote: Provenance,
+    ours: Provenance,
 ) -> Result<(), String> {
     if served == 0 || wrote == ours {
         return Ok(());
     }
     let (held, wanted) = match ours {
-        By::Events => ("a database", "--db, to resume it as one"),
-        By::Database => (
+        Provenance::Events => ("a database", "--db, to resume it as one"),
+        Provenance::Database => (
             "a feed",
             "--index DIR on a directory of its own, or delete both to \
              build from the database",
@@ -207,7 +209,8 @@ impl Index {
         // directory published before `bodies/` and `cells/` were sharded
         // still holds the flat files.
         let asked = || stop();
-        match galos_index::migrate(dir, &asked) {
+        match galos_index::ops::migrate::migrate(dir, &crate::tables(), &asked)
+        {
             Ok(done) => {
                 if done.bodies.moved > 0 {
                     info!(
@@ -251,6 +254,14 @@ impl Index {
                         named = named,
                         dir = %dir.display(),
                         "folded the names chunks into a mapped table"
+                    );
+                }
+                for (table, rows) in done.tables {
+                    info!(
+                        table,
+                        rows,
+                        dir = %dir.display(),
+                        "brought a table forward"
                     );
                 }
             }
@@ -341,7 +352,7 @@ impl Index {
             tree.write(dir)
                 .map_err(failed("the cell tree could not be repaired"))?;
             tables
-                .write(dir, Wrote::EVERYTHING)
+                .write_everything(dir)
                 .map_err(failed("the metadata could not be repaired"))?;
             Checkpoint::compact(checkpoint, resumed_at, ours, tree.inputs())
                 .map_err(failed("the resume point could not be repaired"))?;
@@ -364,10 +375,10 @@ impl Index {
             dir: dir.to_owned(),
             checkpoint: checkpoint.to_owned(),
             // The published body files are the store, not a second copy in
-            // memory beside them; see `galos_index::bodies`.
+            // memory beside them; see `galos_index::accumulate::bodies`.
             galaxy: Galaxy::keeping(
                 chrono::Utc::now(),
-                Box::new(Published::new(dir)),
+                Box::new(OnDisk::new(dir)),
             ),
             tree,
             tables,
@@ -465,15 +476,15 @@ impl Index {
     ///
     /// A frame on the log, which costs what moved — and the whole base
     /// behind it where the log has outgrown it, which is what
-    /// [`Pending::append`] answers. Without the frame a restart rebuilds the
+    /// [`pending::append`] answers. Without the frame a restart rebuilds the
     /// tree short of what the directory serves and publishes the shortfall
     /// over it. Not fatal: the directory is published regardless.
     fn record(&mut self, cursor: Option<NaiveDateTime>, moved: &[System]) {
-        let folding = match Pending::append(&self.checkpoint, cursor, moved) {
+        let folding = match pending::append(&self.checkpoint, cursor, moved) {
             Ok(folding) => folding,
             Err(err) => {
                 warn!(
-                    file = %Pending::path(&self.checkpoint).display(),
+                    file = %pending_path(&self.checkpoint).display(),
                     error = %err,
                     "what this publish wrote could not be logged; a \
                      restart would not see it",
@@ -504,10 +515,10 @@ impl Index {
 ///
 /// With a database, a resume point carries a cursor and may be resumed by a
 /// catch-up; without one it carries nothing and may not.
-fn by(clock: &Option<Box<dyn Clock>>) -> By {
+fn by(clock: &Option<Box<dyn Clock>>) -> Provenance {
     match clock {
-        Some(_) => By::Database,
-        None => By::Events,
+        Some(_) => Provenance::Database,
+        None => Provenance::Events,
     }
 }
 
@@ -633,10 +644,10 @@ impl Sink for Index {
     /// publish and the second rides along with it — [`Tables::write`]
     /// writes whatever the directory has no file for. A run that has
     /// published nothing owes the whole of it; see
-    /// [`publish_whole`](Index::publish_whole).
+    /// `publish_whole`.
     ///
     /// The cursor is sampled in the same order [`Sink::flush`] samples one,
-    /// and either road leaves the [`Pending`] log superseded and dropped.
+    /// and either road leaves the [`pending`] log superseded and dropped.
     ///
     /// Not interruptible, and the one thing a stopping run waits for: the
     /// cells, the tables and the resume point are three writes that stand
@@ -693,12 +704,37 @@ impl Index {
     /// [`Sink::finish`] onto a directory this run has published into owes
     /// it: the index file whole, the cells whose payloads differ, the body
     /// files the pass scanned, the tables it patched together with any the
-    /// directory has no file for, and a [`Pending`] frame carrying what
+    /// directory has no file for, and a [`pending`] frame carrying what
     /// went in at full precision.
     ///
     /// `touched` is what [`Self::nameable`] took, `cursor` what a resume
     /// point written now would resume from, and `extent` what the line at
     /// the end calls this publish.
+    /// The record this run publishes for a system the galaxy has placed; see
+    /// [`Self::over_record`].
+    fn record_of(&self, address: i64) -> Option<System> {
+        self.galaxy.system_of(address).map(|system| self.over_record(system))
+    }
+
+    /// What the galaxy says of a system, over the record the directory holds.
+    ///
+    /// The event wins where it says something and what stands is kept where
+    /// it does not, which is the rule the database's own write path keeps: a
+    /// jump into a system writes no class, and `systems.primary_star_class`
+    /// keeps the one a route named. The galaxy knows only the classes this
+    /// run has read, so a system it has no kind for keeps the kind the tree
+    /// holds. The payload and every contributed table are derived from this
+    /// one record, so the directory says what a rebuild from the database
+    /// would.
+    fn over_record(&self, mut system: System) -> System {
+        if system.kind == StarKind::Unknown {
+            if let Some(held) = self.tree.record(system.id64 as i64) {
+                system.kind = held.kind;
+            }
+        }
+        system
+    }
+
     fn publish_delta(
         &mut self,
         touched: HashSet<i64>,
@@ -714,7 +750,7 @@ impl Index {
         // carried no `StarPos` joins the tree when something places it.
         let mut moving = Vec::with_capacity(touched.len());
         for &address in &touched {
-            if let Some(system) = self.galaxy.system_of(address) {
+            if let Some(system) = self.record_of(address) {
                 self.tree.upsert(system);
                 moving.push(system);
             }
@@ -730,18 +766,15 @@ impl Index {
             .galaxy
             .settle_bodies()
             .map_err(failed("the body files could not be written"))?;
-        let moved = self
-            .tables
-            .patch(&self.galaxy, &touched)
-            .map_err(failed("the metadata could not be published"))?;
+        self.tables.patch(&self.galaxy, &touched, &moving);
         let wrote = self
             .tables
-            .write(&self.dir, moved)
+            .write(&self.dir)
             .map_err(failed("the metadata could not be published"))?;
 
         // What this publish put in the directory, at full precision, on the
         // log beside the resume point — and the whole base behind it where
-        // the log has outgrown one. See [`Pending`].
+        // the log has outgrown one. See [`pending`].
         self.record(cursor, &moving);
 
         // One message for every extent, `wrote` saying which: a pass of a
@@ -794,10 +827,11 @@ impl Index {
             .systems()
             .into_iter()
             .filter(|system| self.galaxy.name_of(system.id64 as i64).is_some())
+            .map(|system| self.over_record(system))
             .collect();
         let all: HashSet<i64> =
             placed.iter().map(|system| system.id64 as i64).collect();
-        for system in placed {
+        for &system in &placed {
             self.tree.upsert(system);
         }
         self.touched.clear();
@@ -810,13 +844,10 @@ impl Index {
         self.tree
             .write(&self.dir)
             .map_err(failed("the cell tree could not be written"))?;
-        let _ = self
-            .tables
-            .patch(&self.galaxy, &all)
-            .map_err(failed("the metadata could not be written"))?;
+        self.tables.patch(&self.galaxy, &all, &placed);
         let wrote = self
             .tables
-            .write(&self.dir, Wrote::EVERYTHING)
+            .write_everything(&self.dir)
             .map_err(failed("the metadata could not be written"))?;
         self.published_once = true;
 
@@ -851,7 +882,8 @@ mod tests {
     use super::*;
     use elite_journal::entry::Entry;
     use elite_journal::system::Coordinate;
-    use galos_index::{FsSource, Source as _, SystemName};
+    use galos_index::codec::Directory;
+    use galos_index::prelude::{FsSource, Source as _, SystemName};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::time::SystemTime;
@@ -936,7 +968,7 @@ mod tests {
     fn politics(
         dir: &Path,
         address: i64,
-    ) -> Option<galos_index::meta::PopulatedSystem> {
+    ) -> Option<galos_index::records::PopulatedSystem> {
         let read = FsSource::new(dir);
         pollster::block_on(read.populated())
             .expect("the populated table reads")
@@ -980,6 +1012,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
     }
 
+    /// A jump into a system keeps the star a route named for it
+    ///
+    /// A jump writes no class, and the database keeps the one a route wrote
+    /// into `systems.primary_star_class`. A run that did not read the route
+    /// itself has no kind for the system, so it takes the one the directory
+    /// holds: otherwise the payload would forget the neutron star and the
+    /// supercharge table would drop its row, where a rebuild from the
+    /// database keeps both.
+    #[test]
+    fn a_jump_keeps_the_star_a_route_named() {
+        let (dir, checkpoint) = scratch("kept_kind");
+        let address = 10477373803;
+        let mut sink = opened(&dir, &checkpoint).expect("it opens");
+        let route = format!(
+            r#"{{"timestamp":"2026-08-08T12:05:00Z","event":"NavRoute",
+                "Route":[{{"StarSystem":"Sol","SystemAddress":{address},
+                "StarPos":[0,0,0],"StarClass":"N"}}]}}"#,
+        );
+        pollster::block_on(sink.entry(
+            Arc::new(serde_json::from_str(&route).expect("the route parses")),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.entry(
+            jump("Sol", address, [0.0; 3]),
+            Reporter::Commander("cmdr"),
+        ));
+        sink.publish_whole(None).expect("the first run writes");
+        drop(sink);
+
+        // A second run, which reads only the jump.
+        let mut sink = opened(&dir, &checkpoint).expect("resumed");
+        pollster::block_on(sink.entry(
+            jump("Sol", address, [0.0; 3]),
+            Reporter::Commander("cmdr"),
+        ));
+        pollster::block_on(sink.flush()).expect("the publish lands");
+        drop(sink);
+
+        let sky = galos_index::prelude::Sky::open(&dir)
+            .expect("the published galaxy");
+        let node = sky.node_at(address).expect("Sol is drawn");
+        assert_eq!(
+            sky.payload(node.cell).expect("its cell").kind_at(node.at as usize),
+            galos_index::prelude::StarKind::Neutron,
+            "the jump took the kind off the payload",
+        );
+        let boosts = pollster::block_on(galos_index::read::source::table::<
+            galos_route::BoostTable,
+        >(&FsSource::new(&dir)))
+        .expect("the table reads")
+        .expect("the table is published");
+        assert!(
+            boosts.iter().any(|row| row.address == address),
+            "the jump took the supercharge row out",
+        );
+
+        let _ = std::fs::remove_dir_all(dir.parent().expect("a scratch root"));
+    }
+
     /// An arrival keeps the faction ids a build gave the system
     ///
     /// A journal names factions and numbers none of them, so the event path
@@ -1003,8 +1094,8 @@ mod tests {
             .expect("the populated table reads");
         table[0].factions = vec![968, 1047];
         table[0].body_count = Some(9);
-        galos_index::source::write_meta(
-            &galos_index::source::populated_path(&dir),
+        galos_index::codec::tables::msgpack::write_meta(
+            &galos_index::codec::layout::populated_path(&dir),
             &table,
         )
         .expect("the richer table writes");
@@ -1115,7 +1206,10 @@ mod tests {
 
         let read = FsSource::new(&dir);
         assert_eq!(
-            pollster::block_on(read.boosts()).expect("the table reads"),
+            pollster::block_on(galos_index::read::source::table::<
+                galos_route::BoostTable,
+            >(&read))
+            .expect("the table reads"),
             Some(Vec::new()),
             "a published empty table is an answer; a missing one is not",
         );
@@ -1515,24 +1609,46 @@ mod tests {
     fn neither_derivation_resumes_onto_the_other() {
         let (dir, checkpoint) = (Path::new("d"), Path::new("c"));
         assert!(
-            one_hand(dir, checkpoint, 100, By::Database, By::Database).is_ok(),
+            one_hand(
+                dir,
+                checkpoint,
+                100,
+                Provenance::Database,
+                Provenance::Database
+            )
+            .is_ok(),
             "a catch-up should resume what a catch-up wrote",
         );
         assert!(
-            one_hand(dir, checkpoint, 0, By::Database, By::Events).is_ok(),
+            one_hand(
+                dir,
+                checkpoint,
+                0,
+                Provenance::Database,
+                Provenance::Events
+            )
+            .is_ok(),
             "an empty directory has nothing to resume wrongly",
         );
 
-        let Err(said) =
-            one_hand(dir, checkpoint, 100, By::Database, By::Events)
-        else {
+        let Err(said) = one_hand(
+            dir,
+            checkpoint,
+            100,
+            Provenance::Database,
+            Provenance::Events,
+        ) else {
             panic!("a database-derived directory was opened by the feed")
         };
         assert!(said.contains("--db"), "should say what to pass: {}", said);
 
-        let Err(said) =
-            one_hand(dir, checkpoint, 100, By::Events, By::Database)
-        else {
+        let Err(said) = one_hand(
+            dir,
+            checkpoint,
+            100,
+            Provenance::Events,
+            Provenance::Database,
+        ) else {
             panic!("an event-derived directory was opened for a catch-up")
         };
         assert!(said.contains("--index"), "should say what to pass: {}", said,);
@@ -1543,7 +1659,7 @@ mod tests {
     /// A publish appends a log frame rather than rewriting the base, so a
     /// restart that read the base alone would bring the tree back short of
     /// the names table beside it, write the shortfall over the directory,
-    /// and leave nothing able to open it again. [`Pending`] is what closes
+    /// and leave nothing able to open it again. [`pending`] is what closes
     /// that.
     #[test]
     fn a_publish_after_the_last_checkpoint_is_not_lost() {
@@ -1556,7 +1672,7 @@ mod tests {
             Reporter::Commander("cmdr"),
         ));
         pollster::block_on(sink.flush()).expect("the first publish lands");
-        assert!(!Pending::path(&checkpoint).exists(), "a whole one clears it");
+        assert!(!pending_path(&checkpoint).exists(), "a whole one clears it");
 
         // The second appends to the log rather than folding the base, so
         // what it publishes lives there until the next whole checkpoint.
@@ -1566,7 +1682,7 @@ mod tests {
         ));
         pollster::block_on(sink.flush()).expect("the second publish lands");
         assert_eq!(sink.tree.len(), 2, "both systems are in the tree");
-        assert!(Pending::path(&checkpoint).exists(), "the log has the second");
+        assert!(pending_path(&checkpoint).exists(), "the log has the second");
         drop(sink);
 
         let reopened = opened(&dir, &checkpoint).expect("it reopens");
@@ -1613,9 +1729,7 @@ mod tests {
         // what drops its row.
         let mut tables = Tables::resume(&dir).expect("the tables resume");
         assert_eq!(tables.forget_names(|address| address != 10477373803), 1);
-        tables
-            .write(&dir, Wrote::EVERYTHING)
-            .expect("the damaged tables are written");
+        tables.write_everything(&dir).expect("the damaged tables are written");
 
         let reopened = opened(&dir, &checkpoint).expect("it reopens");
         assert_eq!(
@@ -1714,7 +1828,7 @@ mod tests {
     /// When each cell payload a directory publishes was last written, by
     /// path.
     fn payloads(dir: &Path) -> BTreeMap<PathBuf, SystemTime> {
-        let cells = dir.join(galos_index::store::PAYLOAD_DIR);
+        let cells = dir.join(galos_index::codec::layout::PAYLOAD_DIR);
         let mut found = BTreeMap::new();
         for shard in std::fs::read_dir(&cells).expect("a cells directory") {
             let shard = shard.expect("a shard").path();
@@ -1732,10 +1846,10 @@ mod tests {
     }
 
     /// The payload file of the cell holding `at` at `level`, named as
-    /// `galos_index::store` names one.
+    /// `galos_index::codec::cells` names one.
     fn payload_of(dir: &Path, at: [f64; 3], level: u8) -> PathBuf {
-        let morton = galos_index::CellId::of_point(at, level).morton();
-        dir.join(galos_index::store::PAYLOAD_DIR)
+        let morton = galos_index::prelude::CellId::of_point(at, level).morton();
+        dir.join(galos_index::codec::layout::PAYLOAD_DIR)
             .join(format!("{:03x}", morton & 0xfff))
             .join(format!("{:02}-{:016x}.bin", level, morton))
     }
@@ -1759,7 +1873,7 @@ mod tests {
 
         // More systems than one leaf holds, spread over a cube so the tree
         // splits: a directory of a single cell has nothing to leave alone.
-        let filling = galos_index::tree::LEAF_CAP as i64 + 200;
+        let filling = galos_index::build::snapshot::LEAF_CAP as i64 + 200;
         pollster::block_on(async {
             for id in 0..filling {
                 let at = [
@@ -1800,7 +1914,8 @@ mod tests {
             .collect();
         // The cells the moved system was in and is in, at every level the
         // tree can reach.
-        let mine: HashSet<PathBuf> = (0..=galos_index::geometry::MAX_LEVEL)
+        let mine: HashSet<PathBuf> = (0
+            ..=galos_index::core::geometry::MAX_LEVEL)
             .flat_map(|level| {
                 [payload_of(&dir, was, level), payload_of(&dir, now, level)]
             })
@@ -1823,7 +1938,7 @@ mod tests {
         // left beside it.
         drop(sink);
         assert!(
-            !Pending::path(&checkpoint).exists(),
+            !pending_path(&checkpoint).exists(),
             "the log outlived the compaction the finish ends with",
         );
         assert_eq!(published(&dir), filling as u64);
@@ -1866,12 +1981,12 @@ mod tests {
         // log and not a base: a run of the feed appends the rows it named
         // and never writes a generation, which is what the fold is for.
         for path in [
-            galos_index::source::populated_path(&dir),
-            galos_index::source::reaches_path(&dir),
-            galos_index::source::boosts_path(&dir),
-            galos_index::source::factions_path(&dir),
-            galos_index::source::names_delta_path(&dir),
-            dir.join(galos_index::store::INDEX_FILE),
+            galos_index::codec::layout::populated_path(&dir),
+            galos_index::codec::layout::reaches_path(&dir),
+            Directory::at(&dir).table_path("boosts"),
+            galos_index::codec::layout::factions_path(&dir),
+            galos_index::codec::layout::names_delta_path(&dir),
+            dir.join(galos_index::codec::layout::INDEX_FILE),
             checkpoint.clone(),
         ] {
             assert!(
@@ -1882,7 +1997,7 @@ mod tests {
         }
         assert!(!payloads(&dir).is_empty(), "no cell payload was published");
         assert!(
-            !Pending::path(&checkpoint).exists(),
+            !pending_path(&checkpoint).exists(),
             "the resume point was not compacted; the log stands beside it",
         );
 

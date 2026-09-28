@@ -28,7 +28,7 @@ without a database.
 
 The **near field** — a system's own stars and planets at real geometry, and
 reaching them — is the code under
-[`src/systems/bodies`](./src/systems/bodies).
+[`src/map/bodies`](./src/map/bodies).
 
 What it draws is a moment rather than a pile of scans. A system's rows arrive
 from as many commanders as have ever flown there, so each orbit carries how
@@ -62,7 +62,7 @@ and the grid. Hiding it puts the map back to the present: the reading is the
 only place a run-on is shown and the only way back from one.
 
 The two meet in two places only: the sizing law's context scalar in
-[`src/systems/scale.rs`](./src/systems/scale.rs), and the photometric scale
+[`src/map/paint/sizing.rs`](./src/map/paint/sizing.rs), and the photometric scale
 the local star is lit by.
 
 Everything reaches the screen flat. A single float resolves one part in
@@ -72,9 +72,10 @@ the `f32` clip transform. So every mark and every note — the star field, the
 names and their leaders, the rings around what is pointed at and picked out,
 and the ruled plane's readouts — is projected to a pixel on the processor in
 `f64` and painted flat with egui. The star field is
-[`src/systems/field.rs`](./src/systems/field.rs), the names and leaders
-[`src/systems/labels.rs`](./src/systems/labels.rs), and the cameras and the
-order they draw in [`src/camera.rs`](./src/camera.rs).
+[`src/map/paint/field.rs`](./src/map/paint/field.rs), the names and leaders
+[`src/map/labels.rs`](./src/map/labels.rs), the projection they all share
+[`src/map/screen.rs`](./src/map/screen.rs), and the cameras and the
+order they draw in [`src/map/camera.rs`](./src/map/camera.rs).
 
 ## Mouse
 
@@ -147,8 +148,9 @@ The map is quit by closing its window.
 system, per schedule and per render pass, and a frame mark per present — plus
 the map's, which are the work that happens off the main thread and would
 otherwise be unexplained gaps on the pool threads: `index read` (opening),
-`refresh poll`, `cell payload` (one per cell a view change asks for, named
-with it), `region cells` (one per worker of the legacy region fetch, named
+`refresh poll`, `cell payloads` (one per batch of cells a worker reads, named
+with how many), `build batch` (the systems a frame spawns, named and
+coloured on the pool), `region cells` (one per worker of the legacy region fetch, named
 with its share), `route search`, `name search`, `stop lookup` and `bodies
 read`. Those are compiled into every build and go wherever the subscriber
 sends them, which without the feature is nowhere.
@@ -171,6 +173,42 @@ The map first, then the profiler. Until something connects the client holds
 everything it is told, which is what bevy warns about on startup — memory
 grows until it is read — and a profiler already listening when the map starts
 can lose the handshake and exit rather than wait through it.
+
+### Scripted
+
+`profile.sh` does the above with nobody at the window: it builds with
+`--features tracy`, flies each scenario through the shot driver
+(`src/dev/shot.rs`) — standing still, zooming out, zooming in, panning,
+turning — captures each with `tracy-capture`, and reads the traces back
+with `tracy-csvexport` and `awk`. For each it prints the frame times and
+what the slowest tenth of frames spent, by zone. Traces stay in `-o` to be
+read again or compared.
+
+```sh
+galos_map/profile.sh                              # every scenario, 360 frames
+galos_map/profile.sh -f 240 -z build_glow out pan
+galos_map/profile.sh -o /tmp/before && ...        # change something
+galos_map/profile.sh -o /tmp/after
+galos_map/profile.sh -c /tmp/before /tmp/after    # the two, scenario by scenario
+galos_map/profile.sh -r out                       # read what -o holds, fly nothing
+```
+
+What to know before reading one:
+
+- A frame is the time between two runs of the shot driver, loading
+  included. Bevy runs systems on whichever thread is free, so zones are not
+  told apart by thread: the map's own background tasks (`cell payloads`,
+  `build batch`, ...) are reported apart, summed over the threads they ran
+  on, and hold a frame up only through what waits on them.
+- Zones nest, so a zone's time includes the zones inside it.
+- Read a still view's numbers from its end, not its mean: the first seconds
+  are the view loading.
+- Reading a trace takes some fifteen seconds: macOS's `awk` is slow over a
+  million events.
+- A map left over from an earlier run holds Tracy's port, and the capture
+  never connects to the next one; the script kills any before it flies.
+- With the display asleep the frames still run and the trace is good, but
+  the screenshots the driver takes come out black.
 
 `RUST_LOG` replaces bevy's filter whole, and a filter that drops a span drops
 it from the capture as well as from the log, so a run with `RUST_LOG=warn`

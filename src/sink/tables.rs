@@ -5,8 +5,8 @@
 //! is the half that cannot be shared: where a row comes from, and what an
 //! absence means.
 //!
-//! A row comes from [`galos_index::Galaxy`], which has already turned the
-//! events into records. And an absence means nothing at all — which is the
+//! A row comes from [`galos_index::prelude::Galaxy`], which has already turned
+//! the events into records. And an absence means nothing at all — which is the
 //! whole difference between this and the database's side:
 //!
 //! - **Nothing is withdrawn.** This cannot tell a system that has emptied
@@ -25,11 +25,11 @@
 //! Factions are the one table that is written and never derived. A journal
 //! names factions and numbers nothing — the ids are `galos_db`'s, minted on
 //! write — so what is published stands untouched for the life of the run.
-//! See `galos_index::galaxy`.
+//! See `galos_index::accumulate::galaxy`.
 
-use galos_index::meta::PopulatedSystem;
-use galos_index::sidecars::{Counts, Moved, Sidecars};
-use galos_index::Galaxy;
+use galos_index::accumulate::merge;
+use galos_index::codec::tables::sidecars::{Counts, Sidecars};
+use galos_index::prelude::{Galaxy, System};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -47,61 +47,54 @@ pub struct Wrote {
     pub name_rows: usize,
     /// Whether this publish folded the log into a fresh base.
     ///
-    /// A fold rewrites every row the table names — minutes at 200 M
-    /// systems — and happens about monthly on the live feed, so it is
-    /// reported rather than left silent. See `galos_index::names::compact`.
+    /// A fold rewrites every row the table names — minutes at 200 M systems —
+    /// and happens about monthly on the live feed, so it is reported rather
+    /// than left silent. See `galos_index::codec::Directory::compact_names`.
     pub folded: bool,
-    /// Which of the whole-file tables were rewritten.
-    pub tables: Moved,
 }
 
-impl Wrote {
-    /// Every table, whatever has changed.
-    pub const EVERYTHING: Wrote =
-        Wrote { name_rows: 0, folded: false, tables: Moved::EVERYTHING };
-}
-
-/// The metadata sidecars as this side of the program keeps them.
+/// The metadata sidecars as this side of the program keeps them, with the
+/// tables the program contributes ([`crate::tables`]) beside them.
 pub struct Tables {
-    held: Sidecars,
-    /// Which whole-file tables the directory has no file for at all.
-    ///
-    /// A table nothing in a run happened to move is a table never written,
-    /// and a directory a follower has been filling for an hour can be
-    /// missing one that way. To a client that absence is not "nothing to
-    /// report": `galos_map` reads a missing supercharge table as "this
-    /// index cannot say where a jet cone is" and refuses to plot a route
-    /// for a drive that takes one. So the first write of a run writes
-    /// whatever the directory lacks, empty if that is what it comes to.
-    absent: Moved,
+    sidecars: Sidecars,
 }
 
 impl Tables {
     /// What `dir` already publishes, or empty tables where it publishes
     /// nothing.
+    ///
+    /// A table the directory has no file for at all is written by the
+    /// first write of the run, empty if that is what it comes to. A table
+    /// nothing in a run happened to move is a table never written, and a
+    /// directory a follower has been filling for an hour can be missing one
+    /// that way. To a client that absence is not "nothing to report":
+    /// `galos_map` reads a missing supercharge table as "this index cannot
+    /// say where a jet cone is" and refuses to plot a route for a drive
+    /// that takes one.
     pub fn resume(dir: &Path) -> io::Result<Tables> {
-        let (held, absent) = Sidecars::resume(dir)?;
-        let counts = held.counts();
+        let mut sidecars = Sidecars::resume(dir, &crate::tables())?;
+        sidecars.claim_absent();
+        let counts = sidecars.counts();
         debug!(
             names = counts.names,
             populated = counts.populated,
             reaches = counts.reaches,
-            boosts = counts.boosts,
+            tables = ?counts.contributed,
             factions = counts.factions,
             dir = %dir.display(),
             "resumed the metadata tables",
         );
-        Ok(Tables { held, absent })
+        Ok(Tables { sidecars })
     }
 
     /// How many systems the names table holds.
     pub fn names(&self) -> usize {
-        self.held.counts().names
+        self.sidecars.counts().names
     }
 
     /// How many rows each table holds.
     pub fn counts(&self) -> Counts {
-        self.held.counts()
+        self.sidecars.counts()
     }
 
     /// Whether the names table holds a row for `address`.
@@ -110,7 +103,7 @@ impl Tables {
     /// address the table held — 5–8 GB transient at 200 M, on a path that
     /// runs at the end of every run — to answer the same question.
     pub fn names_hold(&self, address: i64) -> bool {
-        self.held.names_hold(address)
+        self.sidecars.names_hold(address)
     }
 
     /// Drop the names of systems `drawn` says the cell tree does not hold,
@@ -123,128 +116,101 @@ impl Tables {
     /// turned back into one.
     ///
     /// `drawn` is asked rather than handed over: the tree can answer for one
-    /// address ([`galos_index::Tree::holds`]), and collecting every address
-    /// it holds in order to ask is the galaxy in a hash set. What is
+    /// address ([`galos_index::prelude::Tree::holds`]), and collecting every
+    /// address it holds in order to ask is the galaxy in a hash set. What is
     /// collected here is the orphans, which is what the repair is about and
     /// is nothing on a directory that does not need one.
     pub fn forget_names(&mut self, drawn: impl Fn(i64) -> bool) -> usize {
         let orphans: Vec<i64> =
-            self.held.named().filter(|address| !drawn(*address)).collect();
+            self.sidecars.named().filter(|address| !drawn(*address)).collect();
         for address in &orphans {
-            self.held.unname(*address);
+            self.sidecars.unname(*address);
         }
         orphans.len()
     }
 
-    /// Take what `galaxy` now says about `touched`, answering what moved.
+    /// Take what `galaxy` now says about `touched`.
     ///
     /// In memory. The tables that are single files are left for
-    /// [`Self::write`], which is what decides between "what moved" and "all
-    /// of it", and the per-system body files belong to the galaxy's own store
-    /// (`galos_index::bodies`), which is what writes them.
+    /// [`Self::write`], and the per-system body files belong to the galaxy's
+    /// own store (`galos_index::accumulate::bodies`), which is what writes
+    /// them.
     ///
     /// A system the galaxy has nothing to say about is left exactly as the
-    /// directory has it; see the module header.
+    /// directory has it; see the module header. The contributed tables are
+    /// derived from `records`, the records this publish writes into the
+    /// tree, so a table and a payload never say two things about a system.
     pub fn patch(
         &mut self,
         galaxy: &Galaxy,
         touched: &HashSet<i64>,
-    ) -> io::Result<Wrote> {
+        records: &[System],
+    ) {
         for &address in touched {
             if let Some(entry) = galaxy.name_of(address) {
-                self.held.name(entry);
+                self.sidecars.name(entry);
             }
         }
-        let tables = self.patch_tables(galaxy, touched);
-        Ok(Wrote { name_rows: 0, folded: false, tables })
+        self.patch_tables(galaxy, touched);
+        for system in records {
+            self.sidecars.contribute(system);
+        }
     }
 
-    /// Take what `galaxy` says about `touched` into the tables written
-    /// whole, leaving the names table alone, and answer what moved.
-    ///
-    /// What a cold build patches through. That build writes its own names
-    /// table straight to disk as it reads — sorted and swapped in at the
-    /// end, `galos_index::names::Writer` — so a second copy held here
-    /// would be a kilobyte a system over the galaxy, the one thing that
-    /// route exists not to hold, and would then be published over the
-    /// base the build had just put in place.
-    pub fn patch_tables(
-        &mut self,
-        galaxy: &Galaxy,
-        touched: &HashSet<i64>,
-    ) -> Moved {
-        let mut moved = Moved::default();
+    /// Take what `galaxy` says about `touched` into the populated and reach
+    /// tables.
+    fn patch_tables(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
         for &address in touched {
             if let Some(said) = galaxy.populated_of(address) {
-                let row = over(self.held.published(address), said);
-                moved.populated |= self.held.populate(row);
+                // What an event says about a system, over what the directory
+                // publishes.
+                //
+                // A row derived from events is thinner than one derived from
+                // the database and always will be: a journal names factions and
+                // numbers none of them, so `Galaxy` publishes an empty faction
+                // list by construction, and the body counts arrive in their own
+                // events rather than with the arrival. Writing such a row
+                // straight over a published one took the faction ids off every
+                // populated system a feed happened to mention — a thousand of
+                // them in the directory this was found in — and the map colours
+                // and filters by exactly those.
+                //
+                // So the event wins where it says something and what stands is
+                // kept where it does not, which is the rule the database's own
+                // write path states column by column. `merge::populated_over`
+                // with `newer` set is that rule, stated once in `galos_index`
+                // for this and for a merge of two directories.
+                let row = match self.sidecars.published(address) {
+                    Some(stood) => merge::populated_over(stood, said, true),
+                    None => said,
+                };
+                self.sidecars.populate(row);
             }
 
             if let Some(reach) = galaxy.reach_of(address) {
-                moved.reaches |= self.held.reach(address, reach);
-            }
-
-            if let Some(row) = galaxy.boost_of(address) {
-                moved.boosts |= self.held.boost(row);
+                self.sidecars.reach(address, reach);
             }
         }
-        moved
     }
 
-    /// Write the tables `moved` names, the ones the directory has no file
-    /// for at all, and whatever the names table has taken.
+    /// Write the tables that moved, the ones the directory has no file for
+    /// at all, and whatever the names table has taken.
     ///
     /// The names go to the delta log, which is an append of the changed
     /// rows rather than a rewrite of the table. The rewrite that does fold
     /// them into the base is asked for afterwards — never before, the fold
     /// reading the directory — and comes back in [`Wrote::folded`] because
     /// it is the one part of a publish that costs minutes.
-    ///
-    /// [`Wrote::EVERYTHING`] writes the lot, which is what a directory being
-    /// published from nothing wants.
-    pub fn write(&mut self, dir: &Path, moved: Wrote) -> io::Result<Wrote> {
-        let mut tables = moved.tables;
-        tables.absorb(self.absent);
-        let name_rows = self.held.write(dir, tables)?;
-        let folded = self.held.compact_names(dir)?;
-        self.absent = Moved::default();
-        Ok(Wrote { name_rows, folded, tables })
+    pub fn write(&mut self, dir: &Path) -> io::Result<Wrote> {
+        let name_rows = self.sidecars.write(dir)?;
+        let folded = self.sidecars.compact_names(dir)?;
+        Ok(Wrote { name_rows, folded })
     }
-}
 
-/// What an event says about a system, over what the directory publishes.
-///
-/// A row derived from events is thinner than one derived from the database
-/// and always will be: a journal names factions and numbers none of them,
-/// so [`galos_index::Galaxy`] publishes an empty faction list by
-/// construction, and the body counts arrive in their own events rather than
-/// with the arrival. Writing such a row straight over a published one took
-/// the faction ids off every populated system a feed happened to mention —
-/// a thousand of them in the directory this was found in — and the map
-/// colours and filters by exactly those.
-///
-/// So the event wins where it says something and what stands is kept where
-/// it does not, which is the rule the database's own write path states
-/// column by column and the rule this side already follows for a scan
-/// arriving after an arrival.
-fn over(
-    published: Option<&PopulatedSystem>,
-    said: PopulatedSystem,
-) -> PopulatedSystem {
-    let Some(stood) = published else { return said };
-    PopulatedSystem {
-        security: said.security.or(stood.security),
-        government: said.government.or(stood.government),
-        allegiance: said.allegiance.or(stood.allegiance),
-        primary_economy: said.primary_economy.or(stood.primary_economy),
-        secondary_economy: said.secondary_economy.or(stood.secondary_economy),
-        // Never stated by an event, so never taken away by one.
-        factions: match said.factions.is_empty() {
-            true => stood.factions.clone(),
-            false => said.factions,
-        },
-        body_count: said.body_count.or(stood.body_count),
-        non_body_count: said.non_body_count.or(stood.non_body_count),
-        ..said
+    /// [`Self::write`], every table whether it moved or not: what a
+    /// directory being published from nothing wants.
+    pub fn write_everything(&mut self, dir: &Path) -> io::Result<Wrote> {
+        self.sidecars.touch_all();
+        self.write(dir)
     }
 }

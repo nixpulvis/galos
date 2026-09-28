@@ -74,7 +74,7 @@
 //! statement.
 //!
 //! **Foreign keys fix the order.** Derived rather than written down: the
-//! `contype = 'f'` rows of `pg_constraint` are a graph and [`ordered`]
+//! `contype = 'f'` rows of `pg_constraint` are a graph and `ordered`
 //! topologically sorts it, parents first. A cycle is [`Error::Cyclic`] and
 //! a table with no rule and no usable key is [`Error::Unruled`] or
 //! [`Error::Keyless`] — reported, never quietly dropped. Running with the
@@ -85,7 +85,7 @@
 //! `outfitting` and `shipyard` are replaced as a set by their writer, and
 //! so are `body_materials` and `system_faction_states`. Merging those row
 //! by row unions two market snapshots and invents a station stocking both.
-//! The newer list wins entire; see [`Rule::List`].
+//! The newer list wins entire; see `Rule::List`.
 //!
 //! **Nothing is withdrawn.** An absence on the incoming side says "I have
 //! not heard", never "it is gone". This is where the merge deliberately
@@ -184,7 +184,7 @@ pub struct Merged {
     pub factions: usize,
 
     /// Tables this merge will not carry, by name. Empty is the ordinary
-    /// case for a schema nothing has been added to; see [`Rule::Skipped`]
+    /// case for a schema nothing has been added to; see `Rule::Skipped`
     /// for why any name is here.
     pub skipped: Vec<String>,
 
@@ -275,10 +275,7 @@ enum Listed {
 
     /// The parent row's, for a list that carries no clock. `on` maps the
     /// child's key columns to the parent's, child first.
-    Parent {
-        table: &'static str,
-        on: &'static [(&'static str, &'static str)],
-    },
+    Parent { table: &'static str, on: &'static [(&'static str, &'static str)] },
 }
 
 /// What is not an ordinary guarded upsert, and why.
@@ -521,8 +518,7 @@ pub async fn merge(
                 continue;
             }
             Some(Rule::Remap) => {
-                let (did, mapped) =
-                    remap(&mut source, &mut tx, shape).await?;
+                let (did, mapped) = remap(&mut source, &mut tx, shape).await?;
                 factions = mapped;
                 did
             }
@@ -607,8 +603,7 @@ SELECT t.relname::text AS \"child\", p.relname::text AS \"parent\" \
 async fn shapes(db: &Database) -> Result<HashMap<String, Shape>, Error> {
     let names: Vec<String> =
         sqlx::query_scalar(TABLES).fetch_all(&db.pool).await?;
-    let wanted: BTreeSet<&str> =
-        names.iter().map(|n| n.as_str()).collect();
+    let wanted: BTreeSet<&str> = names.iter().map(|n| n.as_str()).collect();
 
     let mut columns: HashMap<String, Vec<String>> = HashMap::new();
     for row in sqlx::query(COLUMNS).fetch_all(&db.pool).await? {
@@ -631,10 +626,9 @@ async fn shapes(db: &Database) -> Result<HashMap<String, Shape>, Error> {
             (true, _) => {
                 keys.insert(table, parts);
             }
-            (false, true) => unique
-                .entry(table)
-                .or_default()
-                .push(Unique::Columns(parts)),
+            (false, true) => {
+                unique.entry(table).or_default().push(Unique::Columns(parts))
+            }
             (false, false) => unique
                 .entry(table)
                 .or_default()
@@ -874,17 +868,14 @@ async fn remap(
     )
     .execute(&mut *into)
     .await?;
-    sqlx::query(
-        "CREATE UNIQUE INDEX ON \"_merge_faction_map\" (\"from_id\")",
-    )
-    .execute(&mut *into)
-    .await?;
+    sqlx::query("CREATE UNIQUE INDEX ON \"_merge_faction_map\" (\"from_id\")")
+        .execute(&mut *into)
+        .await?;
 
-    let mapped: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM \"_merge_faction_map\"",
-    )
-    .fetch_one(&mut *into)
-    .await?;
+    let mapped: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM \"_merge_faction_map\"")
+            .fetch_one(&mut *into)
+            .await?;
 
     // Nothing is ever refused here. A faction is a name, and a name that
     // the target already holds is the same faction rather than a reading
@@ -1180,9 +1171,8 @@ async fn list(
     // The old list goes before the new one lands, which is what makes this
     // a replacement rather than a union. Inside one transaction, so
     // nothing ever reads a station that stocks nothing.
-    let statement = format!(
-        "DELETE FROM {table} AS t USING {won} AS w WHERE {held}"
-    );
+    let statement =
+        format!("DELETE FROM {table} AS t USING {won} AS w WHERE {held}");
     debug!(statement = %statement, "clearing the lists being replaced");
     sqlx::query(&statement).execute(&mut *into).await?;
 
@@ -1251,10 +1241,8 @@ async fn journal(
     );
     debug!(statement = %statement, "carrying a journal across");
 
-    let wrote = sqlx::query(&statement)
-        .execute(&mut *into)
-        .await?
-        .rows_affected();
+    let wrote =
+        sqlx::query(&statement).execute(&mut *into).await?.rows_affected();
 
     Ok(counted_up(&shape.name, read, wrote, 0))
 }

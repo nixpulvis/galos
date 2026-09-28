@@ -372,7 +372,7 @@ const SAID_EVERY: Duration = Duration::from_secs(30);
 ///
 /// Where there is no terminal — a service manager, a redirected run —
 /// there is no bar and the step says where it has got to in the log
-/// instead, [`SAID_EVERY`] apart. The alternative on such a run is what it
+/// instead, `SAID_EVERY` apart. The alternative on such a run is what it
 /// was: an hour of nothing at all, and a report at the end.
 pub struct Steps {
     at: Mutex<Option<Step>>,
