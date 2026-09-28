@@ -66,3 +66,40 @@ and `--only` names them and each contributed table one to one. What is left:
 `galos_index/tests/{procedural,zooming}.rs` and `galos_route`'s `perf` module
 measure a local `GALOS_PERF_DIR` and pass silently without one. Reorganize
 them, with `galos_index/examples/names_bench.rs`, into criterion benchmarks.
+
+## Reading the index faster
+
+Measured over `.index/full`; see the commit that queued the payload reads.
+
+- Pack the cell payloads into shards, as `codec/bodies` packs the bodies.
+  Opening a payload file costs ~12 µs on macOS and does not go faster past
+  four threads, so a wide view of 70k cells spends 0.6–0.9 s on `open` alone.
+  A shard kept mapped reads a cell with no syscall. Needs a per-cell
+  generation in place of the file's mtime (`read::source::Stamp`), a
+  republish that stays atomic for a router holding a mapping, and a
+  `galos index migrate` step.
+- `reaches.bin` as mapped fixed-width columns, as the names table is. It is
+  1.1 GB of MessagePack and ~1.3 s of the map's opening, and holds ~2 GB at
+  peak while it decodes. `boosts.bin` the same.
+- The map holds about twice the payload points it draws (260k against 154k
+  at the flight's stop). Memory, not time.
+
+## The map
+
+- Settings are not persisted: the spawn budget, like every other setting,
+  is back at its default on every launch.
+- `galaxy::spawn::update` asks every drawn system every frame whether its row
+  changed; a `Changed<System>` query would skip the rest.
+- The flight harness (`galaxy/flight.rs`) awaits every read each frame, so
+  it measures per-frame cost but cannot see fill-in order or timing. Those
+  were checked with `dev/shot.rs` captures instead.
+- 71 clippy warnings in galos_map, most of them the argument counts above
+  and complex types; a few collapsible `if`s.
+
+## Broken
+
+- `cargo test --release -p galos_map` does not compile: `ui/bar/search.rs`
+  and `ui/bar/selection.rs` import `ui::testing::draw_selected`, which the
+  release test build does not have.
+- `.index/7day` is at index format 2 and refuses to open until
+  `galos index migrate` is run over it.
