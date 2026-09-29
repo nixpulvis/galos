@@ -124,11 +124,6 @@ const TIP: f32 = 1.18;
 /// divide the quarters, and the eye goes to the long points first.
 const SHORT: f32 = 0.62;
 
-/// How wide a long point and a short one are at their shoulders, as a
-/// multiple of [`CARD`]
-const SHOULDER: f32 = 0.17;
-const SHORT_SHOULDER: f32 = 0.11;
-
 /// How far the needle stands over the card, and hangs under it, as a
 /// multiple of [`CARD`]
 ///
@@ -190,13 +185,6 @@ const FAR: f32 = 0.4;
 /// nearer, and a name has to be read wherever it is.
 const FAR_NAME: f32 = 0.7;
 
-/// How much of the ink the lit half of a point is filled with
-///
-/// The other half is filled with the ground the names are read against, as a
-/// chart's rose shades one side of each point, and it is what hides the
-/// needle where the card passes in front of it.
-const LIT: f32 = 0.5;
-
 /// How much a name on the needle is ranked against one on the card
 ///
 /// Under it. The needle's head already says which way `+y` is, and the
@@ -227,18 +215,6 @@ fn ring(per_pixel: f64) -> (f64, f32) {
 fn smoothstep(from: f32, to: f32, x: f32) -> f32 {
     let t = ((x - from) / (to - from)).clamp(0., 1.);
     t * t * (3. - 2. * t)
-}
-
-/// A triangle filled flat, without feathering its edges
-///
-/// See where the points are painted for why not a polygon.
-fn triangle(corners: [egui::Pos2; 3], fill: egui::Color32) -> egui::Shape {
-    let mut mesh = egui::Mesh::default();
-    for corner in corners {
-        mesh.colored_vertex(corner, fill);
-    }
-    mesh.add_triangle(0, 1, 2);
-    egui::Shape::mesh(mesh)
 }
 
 /// Where a name `size` wide and tall stands off a tip at `tip`, pointing
@@ -477,37 +453,10 @@ pub(crate) fn draw_rose(
         ));
     }
 
-    // The points, the short ones under the long ones as on a chart, and the
-    // further of each under the nearer. Each is split down its length into a
-    // lit half and a shaded one, the lit half clockwise of the way it names.
-    //
-    // Filled as bare triangles and edged as separate segments, not as egui's
-    // stroked polygons. Those push each corner out by the secant of half its
-    // angle to feather and join it, a point's tip is a few degrees even seen
-    // face on, and with the card turned edge on every angle goes to nothing:
-    // the corners were thrown clean across the screen. A bare triangle is not
-    // feathered and a lone segment has no join, so neither has a corner to
-    // throw, and the segments over the fill's edges stand in for the
-    // feathering it went without.
-    let point = |way: Vec3, reach: f32, shoulder: f32| {
-        let beside = Vec3::Y.cross(way);
-        let middle = at(Vec3::ZERO);
-        let tip = at(way * CARD * reach);
-        let lit = at((way + beside).normalize() * CARD * shoulder);
-        let shaded = at((way - beside).normalize() * CARD * shoulder);
-        let share = depth(way);
-        painter.add(triangle([middle, tip, lit], inked(LIT * share)));
-        painter.add(triangle([middle, tip, shaded], grounded(1.)));
-        let edge = egui::Stroke::new(STROKE, inked(share));
-        for side in [
-            [middle, tip],
-            [tip, lit],
-            [lit, middle],
-            [tip, shaded],
-            [shaded, middle],
-        ] {
-            painter.line_segment(side, edge);
-        }
+    // The points, each a bare line from the hub out to its tip, the short
+    // ones under the long ones and the further of each under the nearer.
+    let point = |way: Vec3, reach: f32| {
+        seg(Vec3::ZERO, way * CARD * reach, STROKE, depth(way));
     };
     let by_depth = |mut ways: [Vec3; 4]| {
         ways.sort_by(|a, b| a.dot(toward).total_cmp(&b.dot(toward)));
@@ -516,10 +465,10 @@ pub(crate) fn draw_rose(
     let ways = WAYS.map(|(way, _)| way);
     for way in by_depth(ways.map(|way| (way + Vec3::Y.cross(way)).normalize()))
     {
-        point(way, SHORT, SHORT_SHOULDER);
+        point(way, SHORT);
     }
     for way in by_depth(ways) {
-        point(way, TIP, SHOULDER);
+        point(way, TIP);
     }
 
     // The hub, and what it says of the needle seen end on: a dot where north
