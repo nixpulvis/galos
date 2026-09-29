@@ -117,16 +117,17 @@ const CARD: f32 = 48.;
 /// How far past the ring the four ways reach, as a multiple of [`CARD`]
 const TIP: f32 = 1.18;
 
-/// How far the four points between them reach, as a multiple of [`CARD`]
+/// How far the four short points between them reach, as a multiple of
+/// [`CARD`]
 ///
 /// Half the way out and a little more, as on a chart: they are there to
 /// divide the quarters, and the eye goes to the long points first.
-const WIND: f32 = 0.62;
+const SHORT: f32 = 0.62;
 
 /// How wide a long point and a short one are at their shoulders, as a
 /// multiple of [`CARD`]
 const SHOULDER: f32 = 0.17;
-const WIND_SHOULDER: f32 = 0.11;
+const SHORT_SHOULDER: f32 = 0.11;
 
 /// How far the needle stands over the card, and hangs under it, as a
 /// multiple of [`CARD`]
@@ -515,7 +516,7 @@ pub(crate) fn draw_rose(
     let ways = WAYS.map(|(way, _)| way);
     for way in by_depth(ways.map(|way| (way + Vec3::Y.cross(way)).normalize()))
     {
-        point(way, WIND, WIND_SHOULDER);
+        point(way, SHORT, SHORT_SHOULDER);
     }
     for way in by_depth(ways) {
         point(way, TIP, SHOULDER);
