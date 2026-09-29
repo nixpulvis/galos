@@ -31,9 +31,10 @@
 //! the hub says which end is coming at the eye the way a drawing of a field
 //! does: a dot for the head of an arrow, a cross for its tail.
 //!
-//! Which half of the card is nearer the eye is drawn stronger, and the needle
-//! is painted over the card or under it by the same test, so the rose reads
-//! as a solid thing rather than as a flat drawing that could be either way up.
+//! Which half of the card is nearer the eye is drawn stronger, and so is
+//! whichever end of the needle is, painted over the hub where the other is
+//! painted under it, so the rose reads as a solid thing rather than as a flat
+//! drawing that could be either way up.
 //!
 //! # The scale
 //!
@@ -64,6 +65,7 @@ use crate::map::screen::{annotations_layer, world_per_pixel};
 use crate::map::space;
 use crate::style::color32;
 use bevy::prelude::*;
+use bevy_egui::egui::emath::GuiRounding;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn plugin(app: &mut App) {
@@ -324,7 +326,14 @@ pub(crate) fn draw_rose(
     let right = orbit.right();
     let up = orbit.up();
     let toward = -orbit.forward();
-    let hub = viewport - HUB_FROM;
+    // On a pixel's middle, so the lines that run straight across or down the
+    // screen — the needle, the bar, its end marks and extension lines — lie
+    // on one row of pixels rather than smeared over two. Nothing a display
+    // two pixels to the point shows, and the whole of how thin a line looks
+    // on one of one.
+    let pixel = painter.pixels_per_point();
+    let centered = |x: f32| x.round_to_pixel_center(pixel);
+    let hub = (viewport - HUB_FROM).map(centered);
     let flat = |v: Vec3| Vec2::new(v.dot(right), -v.dot(up));
     let at = |v: Vec3| {
         let it = hub + flat(v);
@@ -379,7 +388,7 @@ pub(crate) fn draw_rose(
     };
 
     // The needle: north standing over the card, south hanging under it. Which
-    // end is nearer the eye is painted over the card and the other under it.
+    // end is nearer the eye is painted over the hub and the other under it.
     let north = Vec3::Y * CARD * NEEDLE;
     let south = Vec3::NEG_Y * CARD * NEEDLE;
     let north_near = toward.y >= 0.;
@@ -440,11 +449,11 @@ pub(crate) fn draw_rose(
 
     // Its extension lines, from the tops of the scale bar's end marks up to
     // the two ends of its widest reach, in the ring's own dash: one stroke,
-    // turning the corner. Under the card, which stands over them as it stands
-    // over the far end of the needle.
-    let bar = hub.y + BAR_BELOW;
+    // turning the corner.
+    let bar = centered(hub.y + BAR_BELOW);
+    let ends = [hub.x - across, hub.x + across].map(centered);
     let dash = std::f32::consts::TAU * across / DASHES as f32;
-    for x in [hub.x - across, hub.x + across] {
+    for x in ends {
         painter.extend(egui::Shape::dashed_line(
             &[egui::pos2(x, bar - END), egui::pos2(x, hub.y + CLEAR)],
             egui::Stroke::new(STROKE, inked(EXTENDED)),
@@ -453,22 +462,13 @@ pub(crate) fn draw_rose(
         ));
     }
 
-    // The points, each a bare line from the hub out to its tip, the short
-    // ones under the long ones and the further of each under the nearer.
+    // The points, each a bare line from the hub out to its tip.
     let point = |way: Vec3, reach: f32| {
         seg(Vec3::ZERO, way * CARD * reach, STROKE, depth(way));
     };
-    let by_depth = |mut ways: [Vec3; 4]| {
-        ways.sort_by(|a, b| a.dot(toward).total_cmp(&b.dot(toward)));
-        ways
-    };
-    let ways = WAYS.map(|(way, _)| way);
-    for way in by_depth(ways.map(|way| (way + Vec3::Y.cross(way)).normalize()))
-    {
-        point(way, SHORT);
-    }
-    for way in by_depth(ways) {
+    for (way, _) in WAYS {
         point(way, TIP);
+        point((way + Vec3::Y.cross(way)).normalize(), SHORT);
     }
 
     // The hub, and what it says of the needle seen end on: a dot where north
@@ -524,8 +524,7 @@ pub(crate) fn draw_rose(
     // it measures. The length it spans is written under its middle, which is
     // under the hub, and so stands still however the ring grows.
     let stroke = egui::Stroke::new(BOLD, inked(1.));
-    let (from, to) =
-        (egui::pos2(hub.x - across, bar), egui::pos2(hub.x + across, bar));
+    let (from, to) = (egui::pos2(ends[0], bar), egui::pos2(ends[1], bar));
     painter.line_segment([from, to], stroke);
     for end in [from, to] {
         painter.line_segment([end, end - egui::vec2(0., END)], stroke);
