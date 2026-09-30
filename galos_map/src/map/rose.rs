@@ -59,13 +59,19 @@
 //! # Bearings
 //!
 //! Whatever is picked out is marked on the ring by a head pointing in at the
-//! hub, in the color it is ringed in on the map: the way it lies from the
+//! hub, in the color its star is painted in: the way it lies from the
 //! middle of the view, laid flat onto the plane, as a chart marks the bearing
 //! to a light. On the card, so it turns and foreshortens with it, and a
 //! bearing on something ahead or behind lands on the near or far side of the
 //! ring and is drawn as strongly as that side is. Most use where the thing is
 //! off the screen, which is where nothing else on the map says which way it
 //! went.
+//!
+//! The star's color rather than the selection's, since every bearing is on
+//! something selected and the selection's blue would say only that. The
+//! star's says which of them each one is, in the terms the map is already
+//! colored in: the key's hue on the map, the star's own heat in the
+//! realistic view. A body takes the color of the star of its system.
 //!
 //! # Pointing at it
 //!
@@ -87,19 +93,23 @@
 
 use crate::map::bodies::spawn::Entered;
 use crate::map::camera::{OPENS_AT, OrbitCamera, PITCH_LIMIT, framed};
+use crate::map::galaxy::Addresses;
 use crate::map::galaxy::System;
+use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::grid::{Handover, LINE, READS, RulerUnit, said_in};
 use crate::map::labels::GROUND;
+use crate::map::paint::sizing::View;
 use crate::map::ruled::{DistanceUnit, INK, numbering, roundest, ticked, told};
 use crate::map::schedule::PaintSet;
 use crate::map::screen::{annotations_layer, world_per_pixel};
-use crate::map::selection::{SELECTION, Selection, going};
+use crate::map::selection::{Picked, Selection, going};
 use crate::map::space;
 use crate::style::color32;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy_egui::egui::emath::GuiRounding;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use galos_photometry::Temperature;
 use std::f32::consts::{PI, TAU};
 
 pub fn plugin(app: &mut App) {
@@ -378,6 +388,30 @@ fn aimed(pieces: &[(Aim, egui::Rect)], at: egui::Pos2) -> Option<Aim> {
     pieces.iter().find(|(_, rect)| rect.contains(at)).map(|(aim, _)| *aim)
 }
 
+/// What a bearing on `system` is painted in: what its star is painted in
+///
+/// The key's hue on the map, as the key's own swatch fills it, so a bearing
+/// and the key read the same; the blackbody tint of the star's heat in the
+/// realistic view, brought to full brightness for the display, the star's
+/// own brightness being its flux and nothing a mark on the rose should say.
+/// Grey where there is no system to ask, a body whose system the map has put
+/// away, which is what the map paints a system it knows nothing of in.
+fn star_color(system: Option<&System>, view: View, color_by: ColorBy) -> Srgba {
+    let Some(system) = system else { return Hue::Grey.swatch() };
+    match view {
+        View::Map => color_by.hue(system).swatch(),
+        View::Realistic => {
+            let tint = Temperature(system.temp_bucket().temperature()).color();
+            let top = tint.0.into_iter().fold(f32::MIN_POSITIVE, f32::max);
+            Srgba::from(LinearRgba::rgb(
+                tint[0] / top,
+                tint[1] / top,
+                tint[2] / top,
+            ))
+        }
+    }
+}
+
 /// Which piece of the rose is lit, and which was clicked, with the pointer
 /// over `under` this frame
 ///
@@ -518,6 +552,10 @@ pub(crate) fn draw_rose(
     selection: Res<Selection>,
     holding: Res<Entered>,
     systems: Query<&System>,
+    // What a body picked out is looked up by, to be colored as its star.
+    addresses: Res<Addresses>,
+    view: Res<View>,
+    color_by: Res<ColorBy>,
     // The piece a press went down on, which is the one it has to come up on
     // to be a click on it.
     mut held: Local<Option<Aim>>,
@@ -663,14 +701,24 @@ pub(crate) fn draw_rose(
     // said to lie off the middle by, so a mark does not spin round the card
     // as the view passes over what it points at.
     let center = orbit.center();
-    let bearings: Vec<Option<(Vec3, f32)>> = (0..selection.len())
+    let bearings: Vec<Option<(Vec3, f32, Srgba)>> = (0..selection.len())
         .map(|index| {
-            let off = selection.position(index)? - center;
+            let picked = selection.get(index)?;
+            let off = picked.position() - center;
             let level = Vec2::new(off.x as f32, off.z as f32);
             let pixels = f64::from(level.length()) / per_light_year;
             let there = smoothstep(1., 4., pixels as f32);
             let way = level.try_normalize()?;
-            (there > 0.).then_some((Vec3::new(way.x, 0., way.y), there))
+            // The system itself, or the one a body is in, where the map
+            // has it; see [`star_color`].
+            let system = match picked {
+                Picked::System(system) => Some(system),
+                Picked::Body(_) => addresses
+                    .get(picked.address())
+                    .and_then(|entity| systems.get(entity).ok()),
+            };
+            let color = star_color(system, *view, *color_by);
+            (there > 0.).then_some((Vec3::new(way.x, 0., way.y), there, color))
         })
         .collect();
     // The three corners of the mark bearing on `way`: a point on the ring,
@@ -699,7 +747,7 @@ pub(crate) fn draw_rose(
         egui::Rect::from_center_size(at(Vec3::ZERO), egui::Vec2::splat(REACH)),
     )];
     for (index, bearing) in bearings.iter().enumerate() {
-        if let Some((way, there)) = bearing
+        if let Some((way, there, _)) = bearing
             && *there >= PICKABLE
         {
             let rect = egui::Rect::from_points(&bearing_mark(*way).map(at));
@@ -842,14 +890,14 @@ pub(crate) fn draw_rose(
         ));
     }
 
-    // The bearings, over the ring they stand on and under the points, in
-    // the color the things they bear on are ringed in on the map.
+    // The bearings, over the ring they stand on and under the points, each
+    // in the color its star is painted in.
     for (index, bearing) in bearings.iter().enumerate() {
-        let Some((way, there)) = *bearing else { continue };
+        let Some((way, there, color)) = *bearing else { continue };
         let share = if is_lit(Aim::Bearing(index)) { 1. } else { depth(way) };
         painter.add(egui::Shape::convex_polygon(
             bearing_mark(way).map(at).to_vec(),
-            color32(going(SELECTION, share * there)),
+            color32(going(color, share * there)),
             egui::Stroke::NONE,
         ));
     }
@@ -961,7 +1009,7 @@ pub(crate) fn draw_rose(
     if let Some(aim) = clicked {
         let ways: Vec<Option<Vec3>> = bearings
             .iter()
-            .map(|bearing| bearing.map(|(way, _)| way))
+            .map(|bearing| bearing.map(|(way, ..)| way))
             .collect();
         act(aim, &mut orbit, &mut before, &ways);
     }
@@ -1195,5 +1243,24 @@ mod tests {
         assert_eq!(said(1234., years), "1.23e3 Ly");
         assert_eq!(said(12.34, years), "12.3 Ly");
         assert_eq!(said(0.5, years), "0.500 Ly");
+    }
+
+    /// A bearing is painted in the key's color of the star it bears on, and
+    /// in grey where there is no star to ask
+    #[test]
+    fn a_bearing_wears_its_star_s_color() {
+        use crate::map::galaxy::tests::{politics, system};
+        use elite_journal::Allegiance;
+
+        let mut federal = system(1);
+        politics(&mut federal).allegiance = Some(Allegiance::Federation);
+        assert_eq!(
+            star_color(Some(&federal), View::Map, ColorBy::Allegiance),
+            Hue::Red.swatch(),
+        );
+        assert_eq!(
+            star_color(None, View::Map, ColorBy::Allegiance),
+            Hue::Grey.swatch(),
+        );
     }
 }
