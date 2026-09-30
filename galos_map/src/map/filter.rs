@@ -91,18 +91,26 @@ pub fn plugin(app: &mut App) {
 /// mask's too, so a color hidden along government stops hiding anything the
 /// moment the map is colored by security. The realistic view colors a star
 /// by its own light, so there is no color on screen for the key to name:
-/// the mask is ignored there and kept for when the map view comes back.
+/// the mask is ignored there and kept for when the map view comes back. And
+/// reading the sky as populations draws no system nobody lives in, so the
+/// uninhabited flag is ignored and kept the same way.
 /// Through [`Filters::edit_mask`], so the change is counted as one to what
 /// the filters admit and every pass holding a verdict asks again.
 pub(crate) fn follow_color_by(
     color_by: Res<crate::map::galaxy::spawn::ColorBy>,
     view: Res<crate::map::paint::sizing::View>,
+    population: Res<crate::map::paint::sizing::ScalePopulation>,
     mut filters: ResMut<Filters>,
 ) {
     let drawn =
         (*view == crate::map::paint::sizing::View::Map).then_some(*color_by);
-    if filters.mask().drawn() != drawn {
-        filters.edit_mask(|mask| mask.draw(drawn));
+    let empty = !crate::map::paint::sizing::by_population(&view, &population);
+    let mask = filters.mask();
+    if mask.drawn() != drawn || mask.draws_uninhabited() != empty {
+        filters.edit_mask(|mask| {
+            mask.draw(drawn);
+            mask.draw_uninhabited(empty);
+        });
     }
 }
 

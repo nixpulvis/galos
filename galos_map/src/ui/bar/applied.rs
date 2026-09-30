@@ -98,9 +98,13 @@ pub(super) fn color_row(
                 asked = Some(Keyed::clicked(ui, tier.buckets()));
             }
         }
-        ui.add_space(ui.spacing().item_spacing.x);
-        if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
-            asked = Some(Keyed::Uninhabited);
+        // Not where the map draws no system nobody lives in: the sky read as
+        // populations. The chip would toggle nothing.
+        if mask.draws_uninhabited() {
+            ui.add_space(ui.spacing().item_spacing.x);
+            if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
+                asked = Some(Keyed::Uninhabited);
+            }
         }
         let (said, hiding) = color_summary(axis, mask, held);
         // The mark that shows everything again, where anything is hidden:
@@ -163,8 +167,8 @@ pub(super) fn color_summary(
     mask: &Mask,
     held: Option<&galos_index::read::inhabited::Inhabited>,
 ) -> (String, bool) {
-    let here =
-        hidden_values(axis, mask, held) + usize::from(mask.hides_uninhabited());
+    let empty = mask.draws_uninhabited() && mask.hides_uninhabited();
+    let here = hidden_values(axis, mask, held) + usize::from(empty);
     match here {
         0 => ("all".to_owned(), false),
         here => (format!("{here} hidden"), true),

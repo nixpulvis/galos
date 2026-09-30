@@ -158,6 +158,13 @@ pub struct Mask {
     /// One flag shared by every axis: an uninhabited system has no reading on
     /// any of them, so there is nothing to tell apart.
     uninhabited: bool,
+    /// Whether the map draws the systems nobody lives in at all
+    ///
+    /// Not while the sky is read as populations, which draws only colonies:
+    /// there is nothing for the uninhabited flag to hide, so it is ignored
+    /// and kept, as the whole mask is in the realistic view. Followed from
+    /// the settings by [`crate::map::filter::follow_color_by`].
+    empty_drawn: bool,
 }
 
 impl Default for Mask {
@@ -167,6 +174,7 @@ impl Default for Mask {
             hidden: [0; ColorBy::ALL.len()],
             drawn: Some(ColorBy::Allegiance),
             uninhabited: false,
+            empty_drawn: true,
         }
     }
 }
@@ -177,17 +185,34 @@ impl Mask {
         self.hidden[axis.slot()] & (1 << bucket) != 0
     }
 
-    /// Whether the systems nobody lives in are hidden
+    /// Whether the systems nobody lives in are set to be hidden, drawn or
+    /// not
     pub fn hides_uninhabited(&self) -> bool {
         self.uninhabited
     }
 
+    /// Whether the map draws the systems nobody lives in, which is when
+    /// hiding them means anything
+    pub fn draws_uninhabited(&self) -> bool {
+        self.empty_drawn
+    }
+
+    /// Draw the systems nobody lives in from here on, or not
+    pub(crate) fn draw_uninhabited(&mut self, drawn: bool) {
+        self.empty_drawn = drawn;
+    }
+
+    /// Whether the uninhabited flag is cutting anything off the map
+    fn hides_empty(&self) -> bool {
+        self.uninhabited && self.empty_drawn
+    }
+
     /// Whether the mask is cutting anything off the map: anything hidden
-    /// along the axis drawn, or the systems nobody lives in, while the map
-    /// is colored at all
+    /// along the axis drawn, or the systems nobody lives in where they are
+    /// drawn, while the map is colored at all
     pub(crate) fn narrows(&self) -> bool {
         self.drawn.is_some_and(|drawn| {
-            self.uninhabited || self.hidden[drawn.slot()] != 0
+            self.hides_empty() || self.hidden[drawn.slot()] != 0
         })
     }
 
@@ -209,7 +234,7 @@ impl Mask {
     pub(crate) fn admits(&self, politics: Option<Buckets>) -> bool {
         let Some(drawn) = self.drawn else { return true };
         match politics {
-            None => !self.uninhabited,
+            None => !self.hides_empty(),
             Some(buckets) => !self.hides(drawn, buckets.on(drawn)),
         }
     }
@@ -229,7 +254,7 @@ impl Mask {
     /// The share of the systems nobody lives in that is let through: all of
     /// them or none
     pub(crate) fn keeps_uninhabited(&self) -> f32 {
-        match self.narrows() && self.uninhabited {
+        match self.narrows() && self.hides_empty() {
             true => 0.,
             false => 1.,
         }
@@ -492,5 +517,28 @@ mod tests {
 
         mask.draw(Some(ColorBy::Government));
         assert!(!mask.admits(Some(prison)) && !mask.admits(None));
+    }
+
+    /// A map drawing no uninhabited system ignores the flag hiding them, and
+    /// keeps it for when it draws them again; the colors still apply
+    #[test]
+    fn uninhabited_is_ignored_where_none_is_drawn() {
+        let mut mask = Mask::default();
+        mask.set_uninhabited(true);
+        mask.draw_uninhabited(false);
+        assert!(!mask.narrows());
+        assert!(mask.admits(None));
+        assert_eq!(mask.keeps_uninhabited(), 1.);
+        assert!(mask.hides_uninhabited(), "the flag was forgotten");
+
+        mask.set(
+            ColorBy::Allegiance,
+            [bucket_of(Allegiance::Federation)],
+            true,
+        );
+        assert!(mask.narrows(), "a hidden color stopped hiding");
+
+        mask.draw_uninhabited(true);
+        assert!(!mask.admits(None));
     }
 }

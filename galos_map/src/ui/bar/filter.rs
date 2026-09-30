@@ -460,27 +460,44 @@ pub(super) fn key(
     // Under a hairline, being no value of the axis: the same systems whichever
     // axis is out.
     ui.separator();
-    let (row, _) = key_line(
-        ui,
-        "key-uninhabited",
-        gutter,
-        &Swatch::uninhabited(mask),
-        named(
-            "Uninhabited",
-            if mask.hides_uninhabited() { Hidden::All } else { Hidden::None },
-        ),
-        None,
-        held.map(|_| thousands(empty)),
-    );
-    // Said on the row, beside the gray value of every axis it could be
-    // taken for: those are colonies with nothing on record, and these are
-    // systems nobody lives in at all.
-    let row = row.on_hover_text(
-        "Systems nobody lives in. Colonies with no allegiance, government \
-         or security on record are the gray row above.",
-    );
-    if row.clicked() {
-        asked = Some(Keyed::Uninhabited);
+    if mask.draws_uninhabited() {
+        let (row, _) = key_line(
+            ui,
+            "key-uninhabited",
+            gutter,
+            &Swatch::uninhabited(mask),
+            named(
+                "Uninhabited",
+                if mask.hides_uninhabited() {
+                    Hidden::All
+                } else {
+                    Hidden::None
+                },
+            ),
+            None,
+            held.map(|_| thousands(empty)),
+        );
+        // Said on the row, beside the gray value of every axis it could be
+        // taken for: those are colonies with nothing on record, and these
+        // are systems nobody lives in at all.
+        let row = row.on_hover_text(
+            "Systems nobody lives in. Colonies with no allegiance, government \
+             or security on record are the gray row above.",
+        );
+        if row.clicked() {
+            asked = Some(Keyed::Uninhabited);
+        }
+    } else {
+        // Said rather than left out without a word: a row that was there
+        // and is gone reads as the key having lost it.
+        ui.label(
+            egui::RichText::new(
+                "Uninhabited systems are not drawn while scaling with \
+                 population",
+            )
+            .small()
+            .weak(),
+        );
     }
 
     ui.horizontal(|ui| {

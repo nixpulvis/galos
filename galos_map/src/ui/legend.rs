@@ -240,15 +240,17 @@ pub(crate) fn legend(
             }
         });
     }
-    ui.horizontal(|ui| {
-        Swatch::uninhabited(mask).paint(ui, LEGEND_SWATCH);
-        let text = egui::RichText::new("Uninhabited");
-        ui.label(match mask.hides_uninhabited() {
-            true => text.strikethrough().color(muted),
-            false => text,
+    if mask.draws_uninhabited() {
+        ui.horizontal(|ui| {
+            Swatch::uninhabited(mask).paint(ui, LEGEND_SWATCH);
+            let text = egui::RichText::new("Uninhabited");
+            ui.label(match mask.hides_uninhabited() {
+                true => text.strikethrough().color(muted),
+                false => text,
+            });
         });
-    });
+    }
     if hint {
-        ui.label(egui::RichText::new("click a chip to toggle").weak().small());
+        ui.label(egui::RichText::new("click to toggle").weak().small());
     }
 }
