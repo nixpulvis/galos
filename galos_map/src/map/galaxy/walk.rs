@@ -1263,6 +1263,17 @@ fn stratified_first<'a>(
 /// nothing this pass, and the pass runs again. The cells are weighed in
 /// `weighing`'s order, so the budget reaches them all over the view at once
 /// ([`weighing`]).
+///
+/// **What the map draws already claims first, while the view holds still.**
+/// `held` says whether a system is on the map, and answers only while the
+/// lattice, the bubble and the filters are what they were the pass before
+/// ([`ClaimedUnder`]). A view filling in has more cells weighed each pass
+/// than the last, and ranked afresh a colony on the map lost its patch to
+/// whichever newly weighed one fell due before it — measured over
+/// `.index/full` at nine thousand light years back, 5,590 colonies built
+/// and dropped again on the way to 6,431. Held across a change of view it
+/// kept the last view's picks standing in the next, the zoom that moved
+/// them never reaching the screen; so a view that moves claims afresh.
 fn claim_admitted(
     marks: &[galos_index::read::walk::MarkRef],
     weighing: &[u32],
@@ -1270,9 +1281,10 @@ fn claim_admitted(
     orders: &mut PointOrders,
     mut weigh: impl FnMut(&mut PointOrders, CellId, &[CellSystem]) -> bool,
     reaches: impl Fn(CellId) -> bool,
+    held: impl Fn(i64) -> bool,
     center: DVec3,
     bubble: Option<f64>,
-    mut crowded: Crowded,
+    lattice: impl Fn() -> Crowded,
     ceiling: usize,
 ) -> Vec<Vec<u32>> {
     let _zone = info_span!("claiming the admitted").entered();
@@ -1344,43 +1356,80 @@ fn claim_admitted(
             (mixed >> 40) as f32 / (1u64 << 24) as f32
         })
         .collect();
-    let due = |cell: usize, j: usize| {
-        let n = cells[cell].2.len() as f32;
-        (((j as f32 + dither[cell]) / n * DUE as f32) as usize).min(DUE - 1)
+    // Every candidate, cell by cell in rank order: which it is, when it
+    // falls due, and whether the map draws it already.
+    let mut whose: Vec<(u32, u32)> = Vec::new();
+    let mut dues: Vec<u16> = Vec::new();
+    let mut holds: Vec<bool> = Vec::new();
+    for (cell, (_, points, order)) in cells.iter().enumerate() {
+        let n = order.len() as f32;
+        for (j, &index) in order.iter().enumerate() {
+            whose.push((cell as u32, j as u32));
+            let due = ((j as f32 + dither[cell]) / n * DUE as f32) as usize;
+            dues.push(due.min(DUE - 1) as u16);
+            holds.push(held(points[index as usize].id64 as i64));
+        }
+    }
+    // The candidates by `step`, in `steps` of them, stably.
+    let queue = |step: &dyn Fn(usize) -> usize, steps: usize| {
+        let mut starts = vec![0u32; steps + 1];
+        for candidate in 0..whose.len() {
+            starts[step(candidate) + 1] += 1;
+        }
+        for at in 0..steps {
+            starts[at + 1] += starts[at];
+        }
+        let mut queued = vec![0u32; whose.len()];
+        for candidate in 0..whose.len() {
+            let at = &mut starts[step(candidate)];
+            queued[*at as usize] = candidate as u32;
+            *at += 1;
+        }
+        queued
     };
-    let mut starts = vec![0u32; DUE + 1];
-    for (cell, (_, _, order)) in cells.iter().enumerate() {
-        for j in 0..order.len() {
-            starts[due(cell, j) + 1] += 1;
+    // Claim down `queued` on a fresh lattice, answering the claims and the
+    // step the ceiling cut at, where it did.
+    let claim = |queued: &[u32]| {
+        let mut crowded = lattice();
+        let mut claims = vec![Vec::new(); marks.len()];
+        let mut claimed = 0usize;
+        let mut cut = None;
+        for &candidate in queued {
+            if claimed >= ceiling {
+                break;
+            }
+            let (cell, j) = whose[candidate as usize];
+            let (offer, points, order) = &cells[cell as usize];
+            let index = order[j as usize];
+            if crowded.claim(points[index as usize].position) {
+                claims[*offer as usize].push(index);
+                claimed += 1;
+                if claimed == ceiling {
+                    cut = Some(usize::from(dues[candidate as usize]));
+                }
+            }
         }
+        (claims, cut)
+    };
+    let fair = queue(&|candidate| usize::from(dues[candidate]), DUE);
+    if !holds.contains(&true) {
+        return claim(&fair).0;
     }
-    for step in 0..DUE {
-        starts[step + 1] += starts[step];
-    }
-    let mut queued = vec![(0u32, 0u32); starts[DUE] as usize];
-    let mut next = starts;
-    for (cell, (_, _, order)) in cells.iter().enumerate() {
-        for j in 0..order.len() {
-            let step = due(cell, j);
-            queued[next[step] as usize] = (cell as u32, j as u32);
-            next[step] += 1;
+    // **Held, but only to its share.** What the map draws claims first
+    // where it falls due before the ceiling would cut a view claimed
+    // afresh, and in its turn past that. Held whole, the cells weighed
+    // first kept more than their share of a ceiling the later ones then
+    // found spent, and columns of dense sky drew as little as 4% of their
+    // colonies beside others at 11%.
+    let cut = claim(&fair).1.unwrap_or(DUE);
+    let first = |candidate: usize| {
+        let due = usize::from(dues[candidate]);
+        match holds[candidate] && due <= cut {
+            true => due,
+            false => DUE + due,
         }
-    }
-    let mut claims = vec![Vec::new(); marks.len()];
-    let mut claimed = 0usize;
-    for (cell, j) in queued {
-        if claimed >= ceiling {
-            break;
-        }
-        let (offer, points, order) = &cells[cell as usize];
-        let index = order[j as usize];
-        let at = points[index as usize].position;
-        if crowded.claim(at) {
-            claims[*offer as usize].push(index);
-            claimed += 1;
-        }
-    }
-    claims
+    };
+    claim(&queue(&first, 2 * DUE)).0
 }
 
 /// What a populated choice was made against
@@ -1423,6 +1472,19 @@ pub(crate) struct Pass {
     /// The plan's marks in the order their verdicts are weighed, each by
     /// its place in the plan; see [`weighing`].
     weighing: Vec<u32>,
+    /// What the last pass's claims were made under; see [`ClaimedUnder`].
+    claimed_under: Option<ClaimedUnder>,
+}
+
+/// What a filtered view's claims turn on, besides which cells are weighed
+/// ([`claim_admitted`]): the lattice — reckoned about the centre, at the
+/// octave of the eye's distance, and as fine as the pixel pitch — the
+/// bubble and the filters. While none of it moves, what is drawn holds its
+/// patch; a turn of the camera moves none of it.
+#[derive(PartialEq)]
+pub(crate) struct ClaimedUnder {
+    against: Against,
+    back: i32,
 }
 
 /// The plan's marks in the order the verdict budget reaches them: coarse
@@ -1781,6 +1843,9 @@ pub(crate) fn reconcile(
     if planned.is_changed() || weighed_in.len() != planned.0.marks.len() {
         weighed_in = weighing(&planned.0.marks);
     }
+    // What the last pass's claims were made under, taken for the same
+    // reason; see [`ClaimedUnder`].
+    let claimed_before = pass.claimed_under.take();
     let choice = &mut pass.chosen;
     // Whether this pass asked for anything to be built; see [`Settled`].
     let mut wanting = false;
@@ -1911,6 +1976,19 @@ pub(crate) fn reconcile(
     // up and are one mark to a patch. The excluded, where the dim draws
     // them, fill what the cell's share leaves, as before.
     let narrowed = asking && limit.is_none() && !by_population;
+    // Whether what is on the map claims first: only while the view the
+    // last claims were made under still stands; see [`claim_admitted`].
+    let under = ClaimedUnder {
+        against: Against {
+            filters: filtering.filters.revision(),
+            bubble: bubble.unwrap_or(f64::INFINITY).to_bits(),
+            about: orbit.center().to_array().map(f64::to_bits),
+            pitch: view.pixels_per_radian().to_bits(),
+        },
+        back: orbit.center().distance(DVec3::from(view.eye)).log2().round()
+            as i32,
+    };
+    let keep_claims = narrowed && claimed_before.as_ref() == Some(&under);
     let claims = match narrowed {
         false => Vec::new(),
         true => claim_admitted(
@@ -1934,9 +2012,10 @@ pub(crate) fn reconcile(
                 weighed
             },
             |id| in_reach(id, orbit, bubble),
+            |address| keep_claims && existing.get(address).is_some(),
             orbit.center(),
             bubble,
-            Crowded::about(&view, orbit.center().to_array()),
+            || Crowded::about(&view, orbit.center().to_array()),
             view.crowded_marks() as usize,
         ),
     };
@@ -2489,6 +2568,7 @@ pub(crate) fn reconcile(
     // Finished, or not: see [`Settled`].
     pass.settled = (!wanting && !deferred).then_some(here);
     pass.weighing = weighed_in;
+    pass.claimed_under = narrowed.then_some(under);
 }
 
 /// Free the payloads the walk has stopped wanting, once it has stopped
@@ -3237,9 +3317,10 @@ mod tests {
                 )
             },
             |_| true,
+            |_| false,
             DVec3::ZERO,
             None,
-            Crowded::about(&view, [0.; 3]),
+            || Crowded::about(&view, [0.; 3]),
             11,
         );
         assert_eq!(
@@ -3247,6 +3328,96 @@ mod tests {
             [10, 1],
             "the ceiling was not shared in proportion"
         );
+    }
+
+    /// A colony drawn keeps its patch while the view holds still, and the
+    /// view claims afresh once it moves
+    ///
+    /// Two reports. A filtered view filling in built colonies and dropped
+    /// them again as each newly weighed cell took patches from what was on
+    /// the map — 5,590 on the way to 6,431 over `.index/full`. And held
+    /// across a zoom, the last view's picks stood in the next and it never
+    /// looked updated. So a colony keeps its patch against a rival that
+    /// arrives while nothing moves, and a moved view (here, its bubble) is
+    /// claimed as a fresh load would claim it.
+    #[test]
+    fn a_drawn_colony_keeps_its_patch_until_the_view_moves() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+
+        let spot = [5., 0., 0.];
+        let cells = [
+            (CellId::of_point(spot, 12), 7_000_001i64),
+            (CellId::of_point(spot, 13), 7_000_002i64),
+        ];
+        let payload = |address: i64| {
+            vec![CellSystem { position: spot, ..point(address as u64) }]
+        };
+        let viewing = |held: &[(CellId, i64)]| {
+            let mut app = walking();
+            app.insert_resource(Planned(galos_index::prelude::Needed {
+                mode: galos_index::prelude::Mode::Shell,
+                marks: cells
+                    .iter()
+                    .map(|&(id, _)| galos_index::read::walk::MarkRef {
+                        id,
+                        slice: 1,
+                        at: spot,
+                    })
+                    .collect(),
+                blobs: Vec::new(),
+                splats: Vec::new(),
+            }));
+            for &(id, address) in held {
+                app.world_mut()
+                    .resource_mut::<ResidentCells>()
+                    .0
+                    .insert(id, payload(address));
+            }
+            app.world_mut().resource_mut::<Filters>().add(Filter::Systems {
+                label: "rivals".into(),
+                systems: cells.iter().map(|&(_, address)| address).collect(),
+            });
+            app.insert_resource(DimTo(0.));
+            app
+        };
+        let queued =
+            |app: &App| app.world().resource::<PendingSpawns>().queued();
+        for (first, then) in [(0, 1), (1, 0)] {
+            let (_, drawn) = cells[first];
+            // The first cell alone, and its colony built.
+            let mut app = viewing(&cells[first..=first]);
+            app.update();
+            app.world_mut().spawn(crate::map::galaxy::tests::system(drawn));
+            app.insert_resource(PendingSpawns::default());
+            app.update();
+            // Its rival arrives, and nothing else moves.
+            let (id, address) = cells[then];
+            app.world_mut()
+                .resource_mut::<ResidentCells>()
+                .0
+                .insert(id, payload(address));
+            app.update();
+            assert_eq!(queued(&app), 0, "{address} was built over {drawn}");
+            assert!(!dropping(&mut app).contains(&drawn), "{drawn} dropped");
+
+            // The view moves, and is claimed as it would be loaded whole.
+            app.world_mut().resource_mut::<Spyglass>().radius = 40.;
+            app.insert_resource(PendingSpawns::default());
+            app.update();
+            let whole_drew_it = {
+                let mut again = viewing(&cells);
+                again
+                    .world_mut()
+                    .spawn(crate::map::galaxy::tests::system(drawn));
+                again.update();
+                queued(&again) == 0
+            };
+            assert_eq!(
+                queued(&app) == 0,
+                whole_drew_it,
+                "a moved view kept the picks of the one before it"
+            );
+        }
     }
 
     /// The clamp is the spyglass reach, and only while it is clearing
