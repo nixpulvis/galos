@@ -177,6 +177,8 @@ open rail takes both, rather than asking to be pressed twice.
 | `G` | Show or hide the grid |
 | `I` | Hide or show the interface, leaving the rose and color key |
 | `U` | Show or hide the settings |
+| `K` | Show or hide the color key over the hidden interface |
+| `N` | Show or hide the compass rose |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |

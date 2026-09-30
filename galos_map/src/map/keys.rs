@@ -32,6 +32,7 @@ use crate::map::galaxy::Spyglass;
 use crate::map::galaxy::spawn::ShowNames;
 use crate::map::grid::ShowGrid;
 use crate::map::labels::ShowBodyNames;
+use crate::map::rose::ShowRose;
 use crate::map::schedule::MapSet;
 use crate::map::selection::Selection;
 use bevy::math::DVec3;
@@ -349,10 +350,10 @@ fn home(
 
 /// Take the map's annotations off the sky and put them back
 ///
-/// `L` the names, `O` the orbit lines, `G` the ruled plane. The three things
-/// drawn over the galaxy rather than in it, which is what a key is worth
-/// having for: they are what stands between the user and a clear look at what
-/// they are pointed at.
+/// `L` the names, `O` the orbit lines, `G` the ruled plane, `N` the compass
+/// rose. The things drawn over the galaxy rather than in it, which is what a
+/// key is worth having for: they are what stands between the user and a
+/// clear look at what they are pointed at.
 fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
@@ -360,6 +361,7 @@ fn toggle(
     mut show_body_names: ResMut<ShowBodyNames>,
     mut show_orbits: ResMut<ShowOrbits>,
     mut show_grid: ResMut<ShowGrid>,
+    mut show_rose: ResMut<ShowRose>,
 ) {
     if keyboard.typing || !bare(&keys) {
         return;
@@ -382,6 +384,12 @@ fn toggle(
 
     if keys.just_pressed(KeyCode::KeyG) {
         show_grid.0 = !show_grid.0;
+    }
+
+    // `N` for the needle, and north: the rose is what says which way the
+    // map is turned.
+    if keys.just_pressed(KeyCode::KeyN) {
+        show_rose.0 = !show_rose.0;
     }
 }
 
@@ -965,6 +973,7 @@ mod tests {
         app.insert_resource(ShowBodyNames(body_names));
         app.insert_resource(ShowOrbits(true));
         app.insert_resource(ShowGrid(true));
+        app.insert_resource(ShowRose(true));
         app.add_systems(Update, toggle);
         app
     }
@@ -1026,6 +1035,17 @@ mod tests {
         pressed(&mut app, &[KeyCode::KeyG]);
 
         assert_eq!(showing(&app), (true, true, true, false));
+    }
+
+    /// `N` takes the compass rose, and only that
+    #[test]
+    fn a_key_takes_the_rose() {
+        let mut app = annotated(true, true);
+
+        pressed(&mut app, &[KeyCode::KeyN]);
+
+        assert!(!app.world().resource::<ShowRose>().0);
+        assert_eq!(showing(&app), (true, true, true, true));
     }
 
     /// A key held down toggles once rather than every frame

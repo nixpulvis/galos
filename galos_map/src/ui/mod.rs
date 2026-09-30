@@ -72,6 +72,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<ShowClock>();
     app.init_resource::<KeysOpen>();
     app.init_resource::<hide::ChromeHidden>();
+    app.init_resource::<hide::ShowLegend>();
     app.init_resource::<BarFields>();
     app.add_systems(
         Update,
@@ -103,7 +104,8 @@ pub(crate) struct SettingsOpen(bool);
 pub(crate) struct KeysOpen(pub(crate) bool);
 
 /// The switches over what of the chrome is out: the settings pane, the
-/// bindings window, and the chrome as a whole
+/// bindings window, the chrome as a whole, and the key left standing when
+/// it is put away
 ///
 /// One parameter, [`chrome`] being at Bevy's limit of sixteen.
 #[derive(SystemParam)]
@@ -111,6 +113,7 @@ pub(crate) struct Toggles<'w> {
     settings: ResMut<'w, SettingsOpen>,
     keys: ResMut<'w, KeysOpen>,
     hidden: ResMut<'w, hide::ChromeHidden>,
+    legend: Res<'w, hide::ShowLegend>,
 }
 
 /// Whether the pane's control over the clock is out
@@ -329,8 +332,9 @@ pub(crate) fn chrome(
     // and nothing else. The strip above has its own switch and stays.
     if toggles.hidden.0 {
         hide::eye(ctx, egui::pos2(MARGIN, MARGIN), &mut toggles.hidden.0);
-        // No key over a map in no colors: the realistic view.
-        if filter.active.mask().drawn().is_some() {
+        // No key over a map in no colors, the realistic view, nor where it
+        // was switched off.
+        if toggles.legend.0 && filter.active.mask().drawn().is_some() {
             let held = filter.key.counted().0.copied();
             hide::bare_legend(
                 ctx,

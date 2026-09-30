@@ -24,6 +24,20 @@ use bevy_egui::egui::{Color32, Context, Sense, Stroke, Vec2};
 #[derive(Resource, Default)]
 pub(crate) struct ChromeHidden(pub(crate) bool);
 
+/// Whether the bare color key is drawn while the chrome is put away
+///
+/// On to begin with, a map of colors being unreadable without one. Off is
+/// for a picture of the sky with nothing over it: `K` toggles it, and the
+/// rose has its own key beside it.
+#[derive(Resource)]
+pub(crate) struct ShowLegend(pub(crate) bool);
+
+impl Default for ShowLegend {
+    fn default() -> ShowLegend {
+        ShowLegend(true)
+    }
+}
+
 /// How large the eye is drawn, the gear's own size
 const EYE: f32 = 18.;
 

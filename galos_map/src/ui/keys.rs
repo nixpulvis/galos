@@ -7,7 +7,7 @@
 //! whether a field has the caret — are [`crate::input`]'s.
 
 use super::bar::{AskMode, BarFields};
-use super::hide::ChromeHidden;
+use super::hide::{ChromeHidden, ShowLegend};
 use super::{KeysOpen, Panes, SettingsOpen};
 use crate::input::{Keyboard, bare, shifted};
 use crate::map::schedule::MapSet;
@@ -21,7 +21,14 @@ pub(crate) fn plugin(app: &mut App) {
     // which is one press putting away two things.
     app.add_systems(
         Update,
-        (open_search, shut_search, toggle_keys, toggle_chrome, toggle_settings)
+        (
+            open_search,
+            shut_search,
+            toggle_keys,
+            toggle_chrome,
+            toggle_settings,
+            toggle_legend,
+        )
             .chain()
             .in_set(MapSet::Search),
     );
@@ -65,6 +72,21 @@ fn toggle_settings(
         open.0 = true;
     } else {
         open.0 = !open.0;
+    }
+}
+
+/// Take the color key off the hidden chrome's picture, or put it back
+///
+/// `K`, for key. Only the key standing bare while the chrome is put away:
+/// the color row under the bar is the control the key is worked with, and
+/// hiding that would leave nothing to work it by.
+fn toggle_legend(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    mut legend: ResMut<ShowLegend>,
+) {
+    if !keyboard.typing && keys.just_pressed(KeyCode::KeyK) && bare(&keys) {
+        legend.0 = !legend.0;
     }
 }
 
@@ -253,6 +275,7 @@ mod tests {
         app.init_resource::<KeysOpen>();
         app.init_resource::<ChromeHidden>();
         app.init_resource::<SettingsOpen>();
+        app.init_resource::<ShowLegend>();
         app.init_resource::<super::super::ClockControl>();
         app.add_systems(
             Update,
@@ -262,6 +285,7 @@ mod tests {
                 toggle_keys,
                 toggle_chrome,
                 toggle_settings,
+                toggle_legend,
             )
                 .chain(),
         );
@@ -346,6 +370,18 @@ mod tests {
 
         pressed(&mut app, &[KeyCode::KeyU]);
         assert!(!settings_out(&app));
+    }
+
+    /// `K` takes the bare color key away and puts it back
+    #[test]
+    fn k_hides_the_legend_and_brings_it_back() {
+        let mut app = barred();
+        let showing = |app: &App| app.world().resource::<ShowLegend>().0;
+
+        pressed(&mut app, &[KeyCode::KeyK]);
+        assert!(!showing(&app));
+        pressed(&mut app, &[KeyCode::KeyK]);
+        assert!(showing(&app));
     }
 
     /// An escape over the chrome put away brings it back, and puts away
