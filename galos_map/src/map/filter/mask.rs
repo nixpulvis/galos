@@ -129,16 +129,15 @@ impl ColorBy {
     }
 }
 
-/// Which buckets of every axis are hidden, which axis that is asked along,
-/// and whether it is being applied
+/// Which buckets of every axis are hidden, and which axis that is asked along
 ///
 /// A bit a bucket, one word an axis: the largest axis is eighteen buckets.
 /// Only the words of the axis the map is colored by ([`Self::drawn`]) are
 /// asked; the others are kept for when the map is colored by theirs.
 ///
-/// Off without being forgotten, as a filter's row is: [`Self::enabled`] false
-/// admits everything the bits would hide and keeps the bits, so the mask can
-/// be lifted to see what it was hiding and put back with one click.
+/// Always applied. There is no lifting it as a filter's row is lifted: a
+/// color shown is a chip clicked back on, and with only the axis on screen
+/// asked there is nothing out of sight for a switch to bring back.
 ///
 /// Edited through [`crate::map::filter::Filters::edit_mask`] and nowhere else,
 /// which is what counts an edit as a change to what the filters admit.
@@ -156,48 +155,34 @@ pub struct Mask {
     /// One flag shared by every axis: an uninhabited system has no reading on
     /// any of them, so there is nothing to tell apart.
     uninhabited: bool,
-    enabled: bool,
 }
 
 impl Default for Mask {
-    /// Hiding nothing, and on: a mask is applied as soon as anything is set
-    /// in it, a chip being a one-click toggle.
+    /// Hiding nothing.
     fn default() -> Mask {
         Mask {
             hidden: [0; ColorBy::ALL.len()],
             drawn: ColorBy::Allegiance,
             uninhabited: false,
-            enabled: true,
         }
     }
 }
 
 impl Mask {
-    /// Whether what is set is being applied
-    pub fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Whether `bucket` of `axis` is set to be hidden, applied or not
+    /// Whether `bucket` of `axis` is set to be hidden
     pub fn hides(&self, axis: ColorBy, bucket: usize) -> bool {
         self.hidden[axis.slot()] & (1 << bucket) != 0
     }
 
-    /// Whether the systems nobody lives in are set to be hidden, applied or
-    /// not
+    /// Whether the systems nobody lives in are hidden
     pub fn hides_uninhabited(&self) -> bool {
         self.uninhabited
     }
 
-    /// Whether anything is set that the axis drawn would hide, applied or
-    /// not
-    pub fn hides_anything(&self) -> bool {
-        self.uninhabited || self.hidden[self.drawn.slot()] != 0
-    }
-
-    /// Whether the mask is cutting anything off the map
+    /// Whether the mask is cutting anything off the map: anything hidden
+    /// along the axis drawn, or the systems nobody lives in
     pub(crate) fn narrows(&self) -> bool {
-        self.enabled && self.hides_anything()
+        self.uninhabited || self.hidden[self.drawn.slot()] != 0
     }
 
     /// The axis the mask is asked along
@@ -215,9 +200,6 @@ impl Mask {
     /// [`None`] is a system nobody lives in, which only the uninhabited flag
     /// says anything about.
     pub(crate) fn admits(&self, politics: Option<Buckets>) -> bool {
-        if !self.enabled {
-            return true;
-        }
         match politics {
             None => !self.uninhabited,
             Some(buckets) => !self.hides(self.drawn, buckets.on(self.drawn)),
@@ -239,7 +221,7 @@ impl Mask {
     /// The share of the systems nobody lives in that is let through: all of
     /// them or none
     pub(crate) fn keeps_uninhabited(&self) -> f32 {
-        match self.enabled && self.uninhabited {
+        match self.uninhabited {
             true => 0.,
             false => 1.,
         }
@@ -280,7 +262,6 @@ impl Mask {
         self.set(axis, 0..axis.buckets(), true);
         self.set(axis, buckets.iter().copied(), false);
         self.uninhabited = true;
-        self.enabled = true;
     }
 
     /// Show every bucket of `axis`, and the systems nobody lives in
@@ -308,11 +289,6 @@ impl Mask {
     /// Hide or show the systems nobody lives in
     pub fn set_uninhabited(&mut self, hidden: bool) {
         self.uninhabited = hidden;
-    }
-
-    /// Apply what is set, or lift it without forgetting it
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
     }
 }
 
@@ -402,27 +378,15 @@ mod tests {
         }
     }
 
-    /// Lifted, the mask lets everything through and keeps what was set
+    /// Only what the axis drawn hides, or empty space hidden, narrows
     #[test]
-    fn a_lifted_mask_admits_everything_and_forgets_nothing() {
+    fn nothing_hidden_along_the_axis_drawn_narrows_nothing() {
         let mut mask = Mask::default();
-        mask.set(
-            ColorBy::Allegiance,
-            [bucket_of(Allegiance::Federation)],
-            true,
-        );
-        mask.set_uninhabited(true);
-        mask.set_enabled(false);
-        assert!(
-            mask.admits(Some(federal(Government::Democracy, Security::High)))
-        );
-        assert!(mask.admits(None));
         assert!(!mask.narrows());
-        mask.set_enabled(true);
-        assert!(
-            !mask.admits(Some(federal(Government::Democracy, Security::High)))
-        );
-        assert!(!mask.admits(None));
+        mask.set(ColorBy::Security, [bucket_of(Security::High)], true);
+        assert!(!mask.narrows(), "security narrowed an allegiance map");
+        mask.set_uninhabited(true);
+        assert!(mask.narrows());
     }
 
     /// Uninhabited hides the systems nobody lives in and no others, an
@@ -479,11 +443,11 @@ mod tests {
         );
         assert!(!mask.hides_uninhabited());
         mask.invert(ColorBy::Security);
-        assert!(!mask.hides_anything());
+        assert!(!mask.narrows());
         mask.set_uninhabited(true);
         mask.hide_all(ColorBy::Security);
         mask.show_all(ColorBy::Security);
-        assert!(!mask.hides_anything());
+        assert!(!mask.narrows());
     }
 
     /// A cell keeps every bucket of the axis drawn but the hidden ones, and
@@ -502,8 +466,5 @@ mod tests {
         // A histogram read along another axis than the mask asks keeps all
         // of itself: the frame before the mask follows the coloring.
         assert_eq!(mask.keeps(ColorBy::Security), Keeps::ALL);
-
-        mask.set_enabled(false);
-        assert_eq!(mask.keeps(ColorBy::Government), Keeps::ALL);
     }
 }

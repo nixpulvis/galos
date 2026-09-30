@@ -2070,8 +2070,8 @@ mod tests {
         );
     }
 
-    /// A mask with no rows beside it is still asked, and lifting it asks
-    /// nothing
+    /// A mask with no rows beside it is still asked, and showing what it
+    /// hid asks nothing
     #[test]
     fn a_mask_on_its_own_is_asked() {
         use elite_journal::Allegiance;
@@ -2085,7 +2085,7 @@ mod tests {
         assert!(!filters.admit(&sworn(1, &[], Allegiance::Federation), now()));
         assert!(filters.admit(&member(2, &[]), now()), "nobody lives there");
 
-        filters.edit_mask(|mask| mask.set_enabled(false));
+        filters.edit_mask(|mask| mask.show_all(ColorBy::Allegiance));
         assert!(!filters.asking());
         assert!(filters.admit(&sworn(1, &[], Allegiance::Federation), now()));
     }

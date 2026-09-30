@@ -67,16 +67,6 @@ pub(super) fn color_row(
     let row = ui.horizontal(|ui| {
         ui.set_min_height(height);
         ui.add_space(ROW_PADDING);
-        let mut enabled = mask.enabled();
-        if ui
-            .add(egui::Checkbox::without_text(&mut enabled))
-            .on_hover_text(
-                "Hide the colors toggled off, or lift that and keep them",
-            )
-            .changed()
-        {
-            asked = Some(Keyed::Enabled(enabled));
-        }
         let name = ui
             .add(
                 egui::Label::new(
@@ -118,12 +108,9 @@ pub(super) fn color_row(
                 ui.add_space(ROW_PADDING);
                 let (said, hiding) = color_summary(axis, mask, held);
                 let text = egui::RichText::new(said);
-                let text = if !mask.enabled() {
-                    text.strikethrough().weak()
-                } else if hiding {
-                    text.color(attention(ui))
-                } else {
-                    text.weak()
+                let text = match hiding {
+                    true => text.color(attention(ui)),
+                    false => text.weak(),
                 };
                 ui.add(egui::Label::new(text).selectable(false));
             },

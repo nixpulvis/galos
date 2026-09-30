@@ -156,8 +156,6 @@ pub(super) enum Keyed {
     ShowAll,
     HideAll,
     Invert,
-    /// Apply what is set, or lift it and keep it
-    Enabled(bool),
 }
 
 impl Keyed {
@@ -180,7 +178,6 @@ impl Keyed {
             Keyed::ShowAll => mask.show_all(axis),
             Keyed::HideAll => mask.hide_all(axis),
             Keyed::Invert => mask.invert(axis),
-            Keyed::Enabled(enabled) => mask.set_enabled(enabled),
         });
     }
 }
@@ -199,7 +196,7 @@ fn soloing(ui: &Ui) -> bool {
 /// How tall the key's list grows before it scrolls
 ///
 /// Government is fifteen rows under eight headers, and at full length it
-/// pushed the faction lookup under it off the bottom of a laptop's screen.
+/// pushed the time control under it off the bottom of a laptop's screen.
 const KEY_HEIGHT: f32 = 360.;
 
 /// How large a swatch stands in the key
@@ -210,9 +207,11 @@ const CHEVRON: f32 = 14.;
 
 /// What the box asks in [`AskMode::Filter`](crate::ui::bar::AskMode::Filter), under the field
 ///
-/// The color key first: which axis the map is colored by, and a toggle for
-/// every color along it. It is the one filter that needs nothing typed, so it
-/// leads, and the faction's answers stand under it.
+/// The faction's answers first, directly under the box they answer: a name
+/// being typed is read against what it found, and a list below a key the
+/// height of the government axis is a list off the bottom of the screen.
+/// Then the color key: which axis the map is colored by, and a toggle for
+/// every color along it. Then the control over time.
 ///
 /// The field itself is the bar's one box, which is asking for a faction while
 /// this mode is out: see [`ask_bar`](crate::ui::bar::ask_bar). What is left is what a name cannot say
@@ -228,25 +227,6 @@ const CHEVRON: f32 = 14.;
 /// search's own note cannot be mistaken for it: one box asks all three
 /// questions, and only one of them is being asked at a time.
 pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
-    // Worked on through a copy, so that a pass which chose nothing does not
-    // mark the axis changed and rebuild the blobs.
-    let mut axis = *filter.key.color_by;
-    let (held, empty) = filter.key.counted();
-    let held = held.copied();
-    let asked = key(
-        ui,
-        filter.active.mask(),
-        &mut axis,
-        held.as_ref(),
-        empty,
-        &mut filter.key.state.other_open,
-    );
-    filter.key.color_by.set_if_neq(axis);
-    if let Some(asked) = asked {
-        asked.apply(filter.active.bypass_change_detection(), axis);
-    }
-    ui.separator();
-
     if let LookupNote::Failed(why) = &*filter.note {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, why);
@@ -267,6 +247,25 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
         *filter.input = None;
         filter.found.clear();
     }
+
+    // Worked on through a copy, so that a pass which chose nothing does not
+    // mark the axis changed and rebuild the blobs.
+    let mut axis = *filter.key.color_by;
+    let (held, empty) = filter.key.counted();
+    let held = held.copied();
+    let asked = key(
+        ui,
+        filter.active.mask(),
+        &mut axis,
+        held.as_ref(),
+        empty,
+        &mut filter.key.state.other_open,
+    );
+    filter.key.color_by.set_if_neq(axis);
+    if let Some(asked) = asked {
+        asked.apply(filter.active.bypass_change_detection(), axis);
+    }
+    ui.separator();
 
     watch_control(
         ui,

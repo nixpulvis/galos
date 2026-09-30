@@ -32,8 +32,7 @@ pub struct Mask {
     government: BitSet<{ Government::BUCKETS }>,
     security: BitSet<{ Security::BUCKETS }>,
     uninhabited: bool,
-    /// Lifted without being forgotten, like `Entry::enabled`
-    enabled: bool,
+    // No `enabled`: the mask is always applied (see below).
     revision: u32,
 }
 ```
@@ -49,8 +48,9 @@ pub struct Mask {
   applies whichever category is drawn.
 - "Uninhabited" means a system with no row in `Populated`. It is one flag
   shared by all three categories.
-- `enabled == false` admits everything the mask would hide, and keeps the
-  bits.
+- Always applied: no switch lifts it (dropped from the first draft, which had
+  a checkbox on the color row). One may come back if cross-category
+  filtering does.
 - Bump `revision` on every change (see 2.3).
 
 ### 2.2 How it combines with the filters
@@ -205,18 +205,16 @@ Always drawn, as the first row of the applied rows, whether the form is out or
 not. It replaces any separate "Color · N hidden" row.
 
 ```
-☑  ALLEGIANCE   ■ ■ ■ ◕   ◌        2 hidden
-^  ^            ^         ^        ^
-|  |            |         |        summary
-|  |            |         uninhabited chip
-|  |            one chip per top-tier entry of the current category
-|  current category name
-mask enabled
+ALLEGIANCE   ■ ■ ■ ◕   ◌        2 hidden
+^            ^         ^        ^
+|            |         |        summary
+|            |         uninhabited chip
+|            one chip per top-tier entry of the current category
+current category name
 ```
 
 | Part | Behavior |
 |---|---|
-| Checkbox | `Mask::enabled`. Unchecked, the summary is struck through and muted; the chips keep showing what is set. |
 | Category name | Click: open the Filter tab (`AskMode::Filter`) with the key showing. |
 | Chip | One per top-tier entry: an item, or a whole group. Click toggles it (a group: hide all if any are shown, else show all). Alt, ctrl or cmd click: solo, hiding every other value in the category and Uninhabited too. |
 | Uninhabited chip | Toggles `Mask::uninhabited`. |
