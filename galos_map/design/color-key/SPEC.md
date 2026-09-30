@@ -17,7 +17,7 @@ bar's Filter tab, and whose category tabs replace the Color By setting. When
 the form is closed, the key collapses to a **color row** at the top of the
 bar's applied rows: one chip per entry, each a one-click toggle. Hovering the
 row shows a **mini legend** naming the chips. A new **hide interface** toggle
-hides the chrome and shows the mini legend above the rose instead.
+hides the chrome and shows the mini legend in the top left instead.
 
 
 ## 2. Model
@@ -271,7 +271,7 @@ click a chip to toggle
   `k/n` in amber. Government groups read `Red (7)`.
 - **Popover**: framed, anchored under the color row, shown while the pointer
   is over the row and the Filter tab is not out. It has the footer hint.
-- **Bare**: frameless, above the rose in the bottom right, with the category
+- **Bare**: frameless, in the top left under the eye (where the chrome stood), with the category
   name over it in small caps, shown only while the interface is hidden. No
   hint line.
 

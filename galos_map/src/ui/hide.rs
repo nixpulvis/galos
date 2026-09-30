@@ -3,8 +3,9 @@
 //! For reading the sky, and for a picture of it: the bar, the gear, the rows
 //! under the bar, the settings pane and the windows a row opens all go, and
 //! what stays is what the picture needs to be read by — the rose, and the
-//! color key bare above it, since a map colored by allegiance with nothing to
-//! say which color is which is a map of colors. The names, the grid and the
+//! color key bare in the corner the chrome stood in, since a map colored by
+//! allegiance with nothing to say which color is which is a map of colors.
+//! The names, the grid and the
 //! time strip keep their own switches; this is not one more of those.
 //!
 //! Brought back by the key that hid it, by escape, and by the faint eye left
@@ -97,37 +98,25 @@ fn paint_eye(
     }
 }
 
-/// How far above the viewport's bottom edge the rose reaches, in logical
-/// pixels, which is where the bare key stands on it
-const ABOVE_THE_ROSE: f32 = crate::map::rose::REACHES_UP + MARGIN;
-
-/// The color key, bare, above the rose
+/// The color key, bare, in the top left corner, under the eye
 ///
-/// Frameless, over the picture rather than in a card on it, with the axis
-/// it is keyed on named over it. No line saying what a chip does: nothing
-/// here can be clicked.
-///
-/// `rose` is whether the rose is up to stand on; without it the key takes
-/// the corner.
+/// Where the chrome stood, so the key is read where the reader was already
+/// looking. Frameless, over the picture rather than in a card on it, with
+/// the axis it is keyed on named over it. No line saying what a chip does:
+/// nothing here can be clicked.
 pub(super) fn bare_legend(
     ctx: &Context,
     filters: &Filters,
     axis: ColorBy,
     held: Option<&galos_index::read::inhabited::Inhabited>,
-    rose: bool,
 ) {
-    let rect = ctx.content_rect();
-    let foot = match rose {
-        true => ABOVE_THE_ROSE,
-        false => MARGIN,
-    };
-    zone("bare-legend")
-        .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(rect.right_bottom() - Vec2::new(MARGIN, foot))
-        .show(ctx, |ui| {
+    zone("bare-legend").fixed_pos(egui::pos2(MARGIN, MARGIN * 2. + EYE)).show(
+        ctx,
+        |ui| {
             ui.label(
                 egui::RichText::new(axis.name().to_uppercase()).small().weak(),
             );
             legend(ui, filters, axis, held, false);
-        });
+        },
+    );
 }

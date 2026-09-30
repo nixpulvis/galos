@@ -204,7 +204,7 @@ const LEGEND_SWATCH: f32 = 10.;
 /// Name the color row's chips, one line a chip
 ///
 /// The one list, drawn in two places: framed as a popover under the color
-/// row while the pointer is over it, and bare above the rose while the
+/// row while the pointer is over it, and bare in the top left while the
 /// interface is hidden. `hint` says whether the line saying what a chip does
 /// is wanted under it, which it is only where a chip can be clicked.
 ///

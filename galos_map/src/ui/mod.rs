@@ -335,7 +335,6 @@ pub(crate) fn chrome(
             &filter.active,
             *filter.key.color_by,
             held.as_ref(),
-            settings.show_rose.0,
         );
         settle_input(ctx, &mut over_ui, &mut keyboard, &mut press, &buttons);
         return Ok(());

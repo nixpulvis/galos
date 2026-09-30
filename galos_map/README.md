@@ -126,7 +126,7 @@ With the form shut the key folds into the color row, the first row under the
 bar: a chip a value to click, and a count of what is hidden with an `x` to
 show it all again. Hovering it names the chips.
 `I`, or the eye under the gear, puts the interface away and leaves the rose
-and the key standing over the map. The key is
+and the key, in the top left, standing over the map. The key is
 [`src/map/filter/key.rs`](./src/map/filter/key.rs) and the mask it sets
 [`src/map/filter/mask.rs`](./src/map/filter/mask.rs).
 
