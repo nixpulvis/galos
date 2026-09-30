@@ -13,7 +13,9 @@ use crate::map::galaxy::fetch::Poll;
 use crate::map::galaxy::spawn::{
     ShowNames, SpawnBudget, StarExposure, StarProfile,
 };
-use crate::map::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
+use crate::map::grid::{
+    Bright, RulerUnit, ShowGrid, ShowMiddle, ShowNumbers, ShowPicked,
+};
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
 use crate::map::paint::glow::FieldExposure;
 use crate::map::paint::sizing::{ScalePopulation, View};
@@ -135,6 +137,7 @@ pub(crate) struct Settings<'w> {
     pub(super) show_clock: ResMut<'w, ShowClock>,
     show_body_names: ResMut<'w, ShowBodyNames>,
     show_grid: ResMut<'w, ShowGrid>,
+    show_numbers: ResMut<'w, ShowNumbers>,
     unit: ResMut<'w, RulerUnit>,
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
@@ -386,6 +389,18 @@ pub(super) fn settings_body(
         // system's distances in light years or a neighbourhood's in light
         // seconds.
         ui.indent("said", |ui| {
+            edited(
+                &mut settings.show_numbers,
+                |x| &mut x.0,
+                |on| {
+                    check(
+                        ui,
+                        on,
+                        "Show Cell Labels",
+                        "Show the coordinates along the grid lines",
+                    )
+                },
+            );
             edited(
                 &mut settings.show_middle,
                 |x| &mut x.0,
@@ -953,6 +968,7 @@ mod tests {
         world.insert_resource(ShowClock::default());
         world.insert_resource(ShowBodyNames(true));
         world.insert_resource(ShowGrid(true));
+        world.insert_resource(ShowNumbers(true));
         world.insert_resource(RulerUnit::default());
         world.insert_resource(ShowMiddle(false));
         world.insert_resource(ShowPicked(false));
@@ -1029,6 +1045,7 @@ mod tests {
                 ("ShowClock", touched::<ShowClock>(&world)),
                 ("ShowBodyNames", touched::<ShowBodyNames>(&world)),
                 ("ShowGrid", touched::<ShowGrid>(&world)),
+                ("ShowNumbers", touched::<ShowNumbers>(&world)),
                 ("RulerUnit", touched::<RulerUnit>(&world)),
                 ("ShowMiddle", touched::<ShowMiddle>(&world)),
                 ("ShowPicked", touched::<ShowPicked>(&world)),

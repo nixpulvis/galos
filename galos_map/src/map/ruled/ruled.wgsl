@@ -288,7 +288,14 @@ fn fragment(in: FullscreenVertexOutput) -> FragmentOutput {
     // plane here, and everything drawn on it is drawn into what is left. What
     // sets a number apart from a line is the ink it starts in, `numbers.z`
     // against a family's own strength, and nothing else.
-    let ink = lines + painted(at) * plane.numbers.z * (1.0 - lines);
+    //
+    // Not sampled at all where there is no ink for them, which is a ruling
+    // whose numbers are switched off. The same for every pixel, so the
+    // branch leaves the lettering's derivatives alone.
+    var ink = lines;
+    if plane.numbers.z > 0.0 {
+        ink += painted(at) * plane.numbers.z * (1.0 - lines);
+    }
     if ink <= 0.0 {
         discard;
     }

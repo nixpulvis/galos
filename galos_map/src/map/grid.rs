@@ -82,6 +82,7 @@ pub fn plugin(app: &mut App) {
         face: ruled::Face { bytes: epaint_default_fonts::HACK_REGULAR },
     });
     app.insert_resource(ShowGrid(true));
+    app.insert_resource(ShowNumbers(true));
     app.insert_resource(ShowMiddle(true));
     app.insert_resource(ShowPicked(true));
     app.init_resource::<Bright>();
@@ -129,6 +130,14 @@ pub fn plugin(app: &mut App) {
 /// Whether the ruled plane is drawn
 #[derive(Resource)]
 pub(crate) struct ShowGrid(pub(crate) bool);
+
+/// Whether the plane's lines carry their numbers
+///
+/// Apart from the lines: a ruling read for its scale alone, with the rose
+/// or the readouts saying where it is, has no use for a number at every
+/// crossing.
+#[derive(Resource)]
+pub(crate) struct ShowNumbers(pub(crate) bool);
 
 /// Whether the place the camera is looking at is marked at the middle of the
 /// view
@@ -900,6 +909,7 @@ fn rulable(unit: DistanceUnit, grid: &Grid, across: f64) -> f32 {
 fn rule(
     showing: Res<ShowGrid>,
     bright: Res<Bright>,
+    numbered: Res<ShowNumbers>,
     cameras: Query<(&OrbitCamera, Option<&Projection>)>,
     // The system the map is standing in, if there is one. It is the one
     // carrying a grid of its own, which it does only while its contents are
@@ -1111,7 +1121,11 @@ fn rule(
                 apart: (space.step / space.decade.fine) as f32,
                 tall: (space.across / space.decade.fine / FIGURES_ACROSS)
                     as f32,
-                strength: drawn_at(INK * space.showing(), bright.0),
+                strength: if numbered.0 {
+                    drawn_at(INK * space.showing(), bright.0)
+                } else {
+                    0.
+                },
                 // Written by `ruled::place`, which settles where the ruling is
                 // measured from and which way the camera is standing.
                 from: plane.numbers.from,
@@ -1576,6 +1590,7 @@ mod tests {
         app.add_plugins(MinimalPlugins);
         app.insert_resource(ShowGrid(true));
         app.insert_resource(ShowMiddle(true));
+        app.insert_resource(ShowNumbers(true));
         app.init_resource::<Bright>();
         app.init_resource::<RuledSystem>();
         app.init_resource::<Handover>();
