@@ -218,7 +218,7 @@ current category name
 | Category name | Click: open the Filter tab (`AskMode::Filter`) with the key showing. |
 | Chip | One per top-tier entry: an item, or a whole group. Click toggles it (a group: hide all if any are shown, else show all). Alt, ctrl or cmd click: solo, hiding every other value in the category and Uninhabited too. |
 | Uninhabited chip | Toggles `Mask::uninhabited`. |
-| Summary | `all shown`, or `N hidden` for the current category (Uninhabited counting as one). Amber when the mask is enabled and anything is hidden, muted otherwise. |
+| Summary | `all`, or `N hidden` for the current category (Uninhabited counting as one) followed by an `x` that shows everything again, as a filter row's `x` lets it go. Amber when anything is hidden, muted otherwise. |
 | Hover | Anywhere on the row, while the Filter tab is not out: show the mini legend popover (4.3). |
 
 For Allegiance that is four chips plus Uninhabited. For Government it is one

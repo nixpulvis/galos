@@ -102,11 +102,18 @@ pub(super) fn color_row(
         if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
             asked = Some(Keyed::Uninhabited);
         }
+        let (said, hiding) = color_summary(axis, mask, held);
+        // The mark that shows everything again, where anything is hidden:
+        // the close every filter row ends with, standing where theirs do.
+        let close = hiding.then(|| lay_out_close(ui));
         ui.with_layout(
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.add_space(ROW_PADDING);
-                let (said, hiding) = color_summary(axis, mask, held);
+                if let Some(close) = &close {
+                    let gap = ui.spacing().item_spacing.x;
+                    ui.add_space(buttons_width(close, gap));
+                }
                 let text = egui::RichText::new(said);
                 let text = match hiding {
                     true => text.color(attention(ui)),
@@ -115,7 +122,16 @@ pub(super) fn color_row(
                 ui.add(egui::Label::new(text).selectable(false));
             },
         );
+        close
     });
+    if let Some(close) = row.inner
+        && place_buttons(ui, row.response.rect, close, "color-row")
+            .close
+            .on_hover_text("Show every color again")
+            .clicked()
+    {
+        asked = Some(Keyed::ShowAll);
+    }
 
     // Under the row, and in front of whatever the rows below it hold. Not
     // interactable, so a press lands on what it covers: it is a caption, and
@@ -150,7 +166,7 @@ pub(super) fn color_summary(
     let here =
         hidden_values(axis, mask, held) + usize::from(mask.hides_uninhabited());
     match here {
-        0 => ("all shown".to_owned(), false),
+        0 => ("all".to_owned(), false),
         here => (format!("{here} hidden"), true),
     }
 }
@@ -1305,10 +1321,10 @@ mod tests {
 
     /// A mask hiding nothing says so, and not in the color of attention
     #[test]
-    fn a_mask_hiding_nothing_says_all_shown() {
+    fn a_mask_hiding_nothing_says_all() {
         assert_eq!(
             color_summary(ColorBy::Allegiance, &Mask::default(), None),
-            ("all shown".to_owned(), false),
+            ("all".to_owned(), false),
         );
     }
 
@@ -1339,7 +1355,7 @@ mod tests {
         );
         assert_eq!(
             color_summary(ColorBy::Security, &mask, None),
-            ("all shown".to_owned(), false),
+            ("all".to_owned(), false),
         );
     }
 
