@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Galos map, full view</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>body{margin:0}</style>
+</helmet>
+<div style="width: 1280px; height: 800px; position: relative; overflow: hidden; background: #07080c; color: #d7dae2; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 12px">
+
+<button aria-label="Close open forms" onClick="{{ closeAll }}" style="position: absolute; left: 0; top: 0; width: 1280px; height: 800px; border: 0; padding: 0; margin: 0; background: transparent; cursor: default; font-family: inherit">
+<div style="position: absolute; left: 330px; top: 170px; width: 640px; height: 460px; border-radius: 50%; background: radial-gradient(closest-side, rgba(120,130,170,0.16), rgba(120,130,170,0))"></div>
+<sc-for list="{{ dots }}" as="d" hint-placeholder-count="40">
+<div style="{{ d.style }}"></div>
+</sc-for>
+<div style="position: absolute; left: 626px; top: 402px; width: 26px; height: 26px; border: 1px solid rgba(215,218,226,0.7); border-radius: 50%"></div>
+<div style="position: absolute; left: 660px; top: 396px; color: #d7dae2; font-size: 12px">Sol</div>
+<div style="position: absolute; left: 520px; top: 470px; color: #9aa0ae; font-size: 11px">Wolf 359</div>
+<div style="position: absolute; left: 748px; top: 360px; color: #9aa0ae; font-size: 11px">Achenar</div>
+<div style="position: absolute; left: 440px; top: 382px; color: #9aa0ae; font-size: 11px">Alioth</div>
+</button>
+
+<sc-if value="{{ chrome }}" hint-placeholder-val="{{ true }}">
+<div style="position: absolute; left: 50%; top: 10px; transform: translateX(-50%); color: #d7dae2; font-size: 13px; letter-spacing: 0.04em">16 DEC 3300 13:45:00</div>
+
+<div style="position: absolute; left: 12px; top: 12px; display: flex; gap: 8px; align-items: flex-start">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<button aria-label="Settings" style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: #111319; border: 1px solid #2a2f3b; border-radius: 4px; color: #b7bcc8; cursor: pointer; font-family: inherit">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
+</button>
+<button aria-label="Hide interface" onClick="{{ hideChrome }}" style="width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: #111319; border: 1px solid #2a2f3b; border-radius: 4px; color: #b7bcc8; cursor: pointer; font-family: inherit">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"></path><path d="M10.6 5.1A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4"></path><path d="M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6"></path></svg>
+</button>
+</div>
+
+<div style="width: 330px; display: flex; flex-direction: column; gap: 8px">
+<div style="background: #111319; border: 1px solid #2a2f3b; border-radius: 4px; display: flex; flex-direction: column">
+<div style="{{ askTabsStyle }}">
+<sc-for list="{{ askTabs }}" as="t" hint-placeholder-count="3">
+<button aria-pressed="{{ t.active }}" onClick="{{ t.pick }}" style="{{ t.style }}">{{ t.label }}</button>
+</sc-for>
+</div>
+<sc-if value="{{ askSystem }}" hint-placeholder-val="{{ false }}">
+<label style="display: flex; padding: 7px 8px; gap: 6px; align-items: center"><span style="color: #9aa0ae">&gt;</span><input aria-label="Search a system" placeholder="Search a system" style="flex-grow: 1; background: transparent; border: 0; outline: none; color: #e4e7ee; font-family: inherit; font-size: 12px"></label>
+</sc-if>
+<sc-if value="{{ askRoute }}" hint-placeholder-val="{{ false }}">
+<label style="display: flex; padding: 7px 8px; gap: 6px; align-items: center"><span style="color: #9aa0ae">range</span><input aria-label="Jump range in light years" placeholder="ly" style="flex-grow: 1; background: transparent; border: 0; outline: none; color: #e4e7ee; font-family: inherit; font-size: 12px"></label>
+</sc-if>
+<sc-if value="{{ askFilter }}" hint-placeholder-val="{{ true }}">
+<div style="display: flex; flex-direction: column">
+<div style="display: flex; padding: 8px 10px 4px 10px; gap: 14px">
+<sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+<button aria-pressed="{{ t.active }}" onClick="{{ t.pick }}" style="{{ t.style }}">{{ t.label }}</button>
+</sc-for>
+</div>
+<div style="display: flex; flex-direction: column; padding: 2px 0 4px 0; max-height: 360px; overflow-y: auto">
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="8">
+<sc-if value="{{ r.isHeader }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; align-items: center; padding: 0 10px 0 0">
+<sc-if value="{{ r.collapsible }}" hint-placeholder-val="{{ false }}">
+<button aria-label="{{ r.discLabel }}" aria-expanded="{{ r.open }}" onClick="{{ r.disclose }}" style="width: 22px; height: 24px; display: flex; align-items: center; justify-content: center; padding: 0; background: transparent; border: 0; color: #9aa0ae; cursor: pointer; font-family: inherit">
+<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" style="{{ r.chevStyle }}"><path d="M3 2l4 3-4 3"></path></svg>
+</button>
+</sc-if>
+<button onClick="{{ r.toggle }}" style="{{ r.headStyle }}">
+<span style="{{ r.swatchStyle }}"></span>
+<span style="{{ r.labelStyle }}">{{ r.label }}</span>
+<span style="{{ r.countStyle }}">{{ r.count }}</span>
+<span style="{{ r.stateStyle }}">{{ r.state }}</span>
+</button>
+</div>
+</sc-if>
+<sc-if value="{{ r.isItem }}" hint-placeholder-val="{{ true }}">
+<button aria-pressed="{{ r.shown }}" onClick="{{ r.toggle }}" onMouseEnter="{{ r.enter }}" onMouseLeave="{{ r.leave }}" style="{{ r.btnStyle }}">
+<span style="{{ r.swatchStyle }}"></span>
+<span style="{{ r.nameStyle }}">{{ r.name }}</span>
+<span style="{{ r.countStyle }}">{{ r.count }}</span>
+</button>
+</sc-if>
+</sc-for>
+</div>
+<div style="display: flex; gap: 14px; padding: 5px 10px 7px 10px; color: #8b91a1">
+<button onClick="{{ showAll }}" style="background: transparent; border: 0; padding: 2px 0; color: #b7bcc8; font-size: 11px; cursor: pointer; font-family: inherit">all</button>
+<button onClick="{{ showNone }}" style="background: transparent; border: 0; padding: 2px 0; color: #b7bcc8; font-size: 11px; cursor: pointer; font-family: inherit">none</button>
+<button onClick="{{ invert }}" style="background: transparent; border: 0; padding: 2px 0; color: #b7bcc8; font-size: 11px; cursor: pointer; font-family: inherit">invert</button>
+<span style="flex-grow: 1; text-align: right; font-size: 10px">alt-click: solo</span>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px; padding: 9px 10px 10px 10px; border-top: 1px solid #2a2f3b">
+<label style="display: flex; gap: 8px; align-items: center"><span style="width: 52px; color: #8b91a1">Faction</span><span style="color: #9aa0ae">&gt;</span><input aria-label="Filter by faction" placeholder="search a faction" style="flex-grow: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #e4e7ee; font-family: inherit; font-size: 12px"></label>
+<label style="display: flex; gap: 8px; align-items: center"><span style="width: 52px; color: #8b91a1">Heard</span><input type="range" min="0" max="8" value="{{ span }}" onInput="{{ setSpan }}" aria-label="Heard from within" style="flex-grow: 1; min-width: 0; accent-color: #8fb4ff"><span style="width: 34px; text-align: right; color: #d7dae2">{{ spanLabel }}</span></label>
+</div>
+</div>
+</sc-if>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 1px; padding: 0 4px; position: relative">
+<div onMouseEnter="{{ legendIn }}" onMouseLeave="{{ legendOut }}" style="display: flex; align-items: center; gap: 8px; padding: 3px 0">
+<input type="checkbox" aria-label="Apply colour mask" checked="{{ maskOn }}" onChange="{{ toggleMask }}" style="margin: 0; accent-color: #8fb4ff">
+<button onClick="{{ openFilter }}" style="{{ catLabelStyle }}">{{ tabUpper }}</button>
+<span style="display: flex; gap: 4px; align-items: center">
+<sc-for list="{{ chips }}" as="c" hint-placeholder-count="5">
+<button aria-label="{{ c.label }}" onClick="{{ c.toggle }}" style="{{ c.style }}"></button>
+</sc-for>
+</span>
+<span style="{{ summaryStyle }}">{{ summary }}</span>
+</div>
+<sc-if value="{{ popover }}" hint-placeholder-val="{{ false }}">
+<div style="position: absolute; left: 22px; top: 26px; z-index: 5; min-width: 190px; display: flex; flex-direction: column; gap: 5px; padding: 8px 10px; background: #111319; border: 1px solid #2a2f3b; border-radius: 4px; box-shadow: 0 6px 18px rgba(0,0,0,0.5)">
+<sc-for list="{{ legend }}" as="l" hint-placeholder-count="4">
+<div style="display: flex; gap: 8px; align-items: center"><span style="{{ l.swatch }}"></span><span style="{{ l.nameStyle }}">{{ l.name }}</span><span style="{{ l.noteStyle }}">{{ l.note }}</span></div>
+</sc-for>
+<div style="color: #8b91a1; font-size: 10px; padding-top: 2px">click a chip to toggle</div>
+</div>
+</sc-if>
+<div style="display: flex; align-items: center; gap: 8px; padding: 3px 0">
+<input type="checkbox" aria-label="Apply faction filter" style="margin: 0; accent-color: #8fb4ff">
+<span style="width: 74px; color: #8b91a1">Faction</span>
+<span style="flex-grow: 1; color: #8b91a1">Mother Gaia</span>
+</div>
+<sc-if value="{{ spanOn }}" hint-placeholder-val="{{ false }}">
+<div style="display: flex; align-items: center; gap: 8px; padding: 3px 0">
+<input type="checkbox" checked aria-label="Apply recency filter" style="margin: 0; accent-color: #8fb4ff">
+<span style="width: 74px">Heard</span>
+<span style="flex-grow: 1">within {{ spanLabel }}</span>
+</div>
+</sc-if>
+<div style="display: flex; gap: 8px; padding: 6px 0 0 0; color: #8b91a1"><span>through</span><span style="color: #d7dae2">{{ throughText }}</span></div>
+</div>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ bare }}" hint-placeholder-val="{{ false }}">
+<button aria-label="Show interface" onClick="{{ showChrome }}" style="position: absolute; left: 12px; top: 12px; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; background: rgba(17,19,25,0.5); border: 1px solid #20242e; border-radius: 4px; color: #8b91a1; cursor: pointer; font-family: inherit">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+</button>
+<div style="position: absolute; right: 24px; bottom: 200px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; font-size: 12px">
+<div style="color: #8b91a1; font-size: 10px; letter-spacing: 0.08em">{{ tabUpper }}</div>
+<sc-for list="{{ legend }}" as="l" hint-placeholder-count="4">
+<div style="display: flex; gap: 8px; align-items: center"><span style="{{ l.swatch }}"></span><span style="{{ l.nameStyle }}">{{ l.name }}</span></div>
+</sc-for>
+</div>
+</sc-if>
+
+<div style="position: absolute; right: 20px; bottom: 20px; width: 170px; height: 168px">
+<svg width="170" height="168" viewBox="0 0 170 168" fill="none">
+<ellipse cx="85" cy="70" rx="62" ry="30" stroke="#3a4050" stroke-width="1"></ellipse>
+<ellipse cx="85" cy="70" rx="44" ry="21" stroke="#5b6272" stroke-width="1" stroke-dasharray="3 3"></ellipse>
+<line x1="23" y1="70" x2="147" y2="70" stroke="#5b6272"></line>
+<line x1="85" y1="40" x2="85" y2="100" stroke="#5b6272"></line>
+<line x1="85" y1="70" x2="85" y2="18" stroke="#d7dae2" stroke-width="1.5"></line>
+<circle cx="85" cy="70" r="2.5" fill="#d7dae2"></circle>
+<text x="151" y="74" fill="#9aa0ae" font-size="10" font-family="JetBrains Mono, monospace">+X</text>
+<text x="2" y="74" fill="#9aa0ae" font-size="10" font-family="JetBrains Mono, monospace">-X</text>
+<text x="78" y="36" fill="#9aa0ae" font-size="10" font-family="JetBrains Mono, monospace">+Z</text>
+<text x="78" y="112" fill="#9aa0ae" font-size="10" font-family="JetBrains Mono, monospace">-Z</text>
+<text x="90" y="16" fill="#d7dae2" font-size="10" font-family="JetBrains Mono, monospace">+Y</text>
+<line x1="41" y1="136" x2="129" y2="136" stroke="#b7bcc8"></line>
+<line x1="41" y1="130" x2="41" y2="140" stroke="#b7bcc8"></line>
+<line x1="129" y1="130" x2="129" y2="140" stroke="#b7bcc8"></line>
+<text x="85" y="156" fill="#b7bcc8" font-size="10" text-anchor="middle" font-family="JetBrains Mono, monospace">100 ly</text>
+</svg>
+</div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"preset":{"editor":"enum","options":["idle","hover","otherHidden","solo","filterOpen","otherOpen","govTab","summary","lifted","bare"],"default":"idle","section":"Start state"},"promoteIndependent":{"editor":"boolean","default":false,"section":"Allegiance"},"otherAsGrey":{"editor":"boolean","default":false,"section":"Allegiance"},"dimTo":{"editor":"range","default":0.08,"min":0,"max":0.5,"step":0.01,"section":"Filters"},"$preview":{"width":1280,"height":800}}'>
+var HUE = {red:'#ff5a52', cyan:'#3fdcea', green:'#4fdc6a', yellow:'#f0dd3a', orange:'#ff8f2e', blue:'#6b86ff', magenta:'#ef62ef', grey:'#b3b8c4'};
+var OTHER_GREY = '#8f95a3';
+var CONIC = 'conic-gradient(#f0dd3a 0 30%, #ff8f2e 30% 50%, #6b86ff 50% 65%, #ef62ef 65% 80%, #b3b8c4 80% 100%)';
+var NAMES = {federation:'Federation', empire:'Empire', alliance:'Alliance', independent:'Independent', player:'Player pilots', pilotsfed:'Pilots Federation', frontline:'Frontline Solutions', guardian:'Guardian', thargoid:'Thargoid', unaligned:'Unaligned',
+  communism:'Communism', confederacy:'Confederacy', dictatorship:'Dictatorship', feudal:'Feudal', patronage:'Patronage', prison:'Prison', prisoncolony:'Prison Colony', corporate:'Corporate', democracy:'Democracy', theocracy:'Theocracy', anarchy:'Anarchy', cooperative:'Cooperative', carrier:'Carrier', megacon:'Megaconstruction', private:'Private Ownership', engineer:'Engineer', govnone:'None',
+  high:'High', medium:'Medium', low:'Low', secanarchy:'Anarchy', secnone:'None'};
+var AHUE = {federation:'red', empire:'cyan', alliance:'green', independent:'yellow', player:'yellow', pilotsfed:'orange', frontline:'orange', guardian:'blue', thargoid:'magenta', unaligned:'grey'};
+var GOV = [['red',['communism','confederacy','dictatorship','feudal','patronage','prison','prisoncolony']],['cyan',['corporate']],['blue',['democracy','theocracy']],['yellow',['anarchy']],['orange',['cooperative']],['green',['carrier','megacon','private']],['magenta',['engineer']],['grey',['govnone']]];
+var SEC = [['blue','high'],['cyan','medium'],['green','low'],['red','secanarchy'],['grey','secnone']];
+var ORDER = ['allegiance','government','security'];
+var LABEL = {allegiance:'Allegiance', government:'Government', security:'Security'};
+var SPANS = ['1h','6h','1d','3d','7d','14d','30d','90d','off'];
+var SCALE = 37;
+
+function tiersFor(tab, promote){
+  if(tab === 'allegiance'){
+    var major = promote ? ['federation','empire','alliance','independent'] : ['federation','empire','alliance'];
+    var other = ['independent','player','pilotsfed','frontline','guardian','thargoid','unaligned'].filter(function(x){ return major.indexOf(x) < 0; });
+    var t = major.map(function(id){ return {kind:'item', id:id, hue:AHUE[id]}; });
+    t.push({kind:'group', key:'other', label:'Other', collapsible:true, chip:'conic', items: other.map(function(id){ return {id:id, hue:AHUE[id]}; })});
+    return t;
+  }
+  if(tab === 'government'){
+    return GOV.map(function(g){
+      if(g[1].length === 1) return {kind:'item', id:g[1][0], hue:g[0]};
+      return {kind:'group', key:g[0], label:g[0].charAt(0).toUpperCase() + g[0].slice(1), collapsible:false, chip:g[0], items: g[1].map(function(id){ return {id:id, hue:g[0]}; })};
+    });
+  }
+  return SEC.map(function(s){ return {kind:'item', id:s[1], hue:s[0]}; });
+}
+function allIds(tab){ var o = []; tiersFor(tab, false).forEach(function(t){ if(t.kind === 'item') o.push(t.id); else t.items.forEach(function(i){ o.push(i.id); }); }); return o; }
+
+function rng(seed){ return function(){ seed |= 0; seed = seed + 0x6D2B79F5 | 0; var t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function pick(r, list){ var sum = 0, i; for(i=0;i<list.length;i++) sum += list[i][1]; var x = r()*sum; for(i=0;i<list.length;i++){ x -= list[i][1]; if(x <= 0) return list[i][0]; } return list[list.length-1][0]; }
+function gauss(r){ return (r()+r()+r()+r()-2)/2; }
+function fmt(n){ return n.toLocaleString('en-US'); }
+
+function makeDots(){
+  var r = rng(3300), dots = [], i;
+  var A = [['federation',26],['empire',20],['alliance',9],['independent',30],['player',2],['pilotsfed',2],['frontline',1],['guardian',0.6],['thargoid',2],['unaligned',6]];
+  var G = [['communism',3],['confederacy',6],['dictatorship',7],['feudal',3],['patronage',6],['prison',0.5],['prisoncolony',1],['corporate',20],['democracy',16],['theocracy',3],['anarchy',9],['cooperative',6],['carrier',2],['megacon',0.5],['private',2],['engineer',0.5],['govnone',4]];
+  var S = [['high',30],['medium',30],['low',25],['secanarchy',10],['secnone',5]];
+  for(i=0;i<420;i++){ dots.push({pop:false, x: 60 + r()*1160, y: 70 + r()*700, size: 1.2 + r()*1.2, age: r()*9}); }
+  for(i=0;i<330;i++){
+    var a = pick(r, A), g = pick(r, G), s = pick(r, S);
+    if(a === 'thargoid'){ g = 'govnone'; s = 'secnone'; }
+    var x = 640 + gauss(r)*300, y = 420 + gauss(r)*170;
+    if(a === 'empire'){ x += 90; y -= 40; }
+    if(a === 'alliance'){ x -= 160; y -= 30; }
+    if(a === 'federation'){ x -= 30; y += 50; }
+    if(a === 'thargoid'){ x = 880 + gauss(r)*120; y = 250 + gauss(r)*80; }
+    dots.push({pop:true, a:a, g:g, s:s, x:x, y:y, size: 3 + r()*2.6, age: r()*9});
+  }
+  return dots;
+}
+
+function presetState(p){
+  var none = function(){ return {allegiance:{}, government:{}, security:{}, uninhabited:false}; };
+  var s = {ask:null, tab:'allegiance', hidden:none(), maskOn:true, hover:null, span:8, otherOpen:false, legendHover:false, chrome:true};
+  var otherIds = ['independent','player','pilotsfed','frontline','guardian','thargoid','unaligned'];
+  if(p === 'hover'){ s.legendHover = true; }
+  if(p === 'otherHidden'){ otherIds.forEach(function(x){ s.hidden.allegiance[x] = true; }); }
+  if(p === 'solo'){ allIds('allegiance').forEach(function(x){ if(x !== 'federation') s.hidden.allegiance[x] = true; }); s.hidden.uninhabited = true; }
+  if(p === 'filterOpen'){ s.ask = 'filter'; }
+  if(p === 'otherOpen'){ s.ask = 'filter'; s.otherOpen = true; s.hidden.allegiance.independent = true; s.hover = 'independent'; }
+  if(p === 'govTab' || p === 'summary' || p === 'lifted'){ s.hidden.allegiance.independent = true; s.hidden.government.prison = true; s.hidden.government.prisoncolony = true; s.tab = 'government'; }
+  if(p === 'govTab'){ s.ask = 'filter'; }
+  if(p === 'lifted'){ s.maskOn = false; }
+  if(p === 'bare'){ s.chrome = false; s.hidden.allegiance.independent = true; }
+  return s;
+}
+
+class Component extends DCLogic {
+  constructor(props){
+    super(props);
+    this.dots = makeDots();
+    this.state = presetState(props.preset || 'idle');
+  }
+  valueOf(d, tab){ return tab === 'allegiance' ? d.a : tab === 'government' ? d.g : d.s; }
+  isHidden(d, h){
+    if(this.state.span < 8 && d.age > this.state.span + 1) return true;
+    if(!this.state.maskOn) return false;
+    if(!d.pop) return !!h.uninhabited;
+    return !!(h.allegiance[d.a] || h.government[d.g] || h.security[d.s]);
+  }
+  setHidden(fn){
+    var h = this.state.hidden;
+    var c = {allegiance: Object.assign({}, h.allegiance), government: Object.assign({}, h.government), security: Object.assign({}, h.security), uninhabited: h.uninhabited};
+    fn(c);
+    this.setState({hidden: c, maskOn: true});
+  }
+  solo(tab, keep){ this.setHidden(function(c){ allIds(tab).forEach(function(x){ c[tab][x] = keep.indexOf(x) < 0; }); c.uninhabited = true; }); }
+  renderVals(){
+    var self = this, st = this.state, tab = st.tab, h = st.hidden, hov = st.hover;
+    var dim = this.props.dimTo === undefined ? 0.08 : this.props.dimTo;
+    var promote = !!this.props.promoteIndependent, greyOther = !!this.props.otherAsGrey;
+    var tiers = tiersFor(tab, promote);
+    var otherSet = {};
+    if(tab === 'allegiance'){ tiers.forEach(function(t){ if(t.kind === 'group') t.items.forEach(function(i){ otherSet[i.id] = true; }); }); }
+    var counts = {}, uninhab = 0, visible = 0, total = 0;
+    var dots = this.dots.map(function(d){
+      total++;
+      var hid = self.isHidden(d, h);
+      if(!hid) visible++;
+      var color, op, glow = '';
+      if(d.pop){
+        var v = self.valueOf(d, tab);
+        counts[v] = (counts[v] || 0) + 1;
+        var hueName = tab === 'allegiance' ? AHUE[v] : null;
+        if(tab === 'government'){ GOV.forEach(function(g){ if(g[1].indexOf(v) >= 0) hueName = g[0]; }); }
+        if(tab === 'security'){ SEC.forEach(function(s){ if(s[1] === v) hueName = s[0]; }); }
+        color = (greyOther && otherSet[v]) ? OTHER_GREY : HUE[hueName];
+        op = 0.95;
+        glow = 'box-shadow:0 0 6px ' + color + ';';
+        if(hov && hov !== v && !(hov === 'group:other' && otherSet[v])) op *= 0.22;
+      } else {
+        uninhab++; color = '#8e94a4'; op = 0.38;
+        if(hov && hov !== 'uninhabited') op *= 0.3;
+      }
+      if(hid){ op = d.pop ? dim : dim * 0.4; glow = ''; }
+      return {style: 'position:absolute;left:' + d.x.toFixed(1) + 'px;top:' + d.y.toFixed(1) + 'px;width:' + d.size.toFixed(1) + 'px;height:' + d.size.toFixed(1) + 'px;border-radius:50%;background:' + color + ';opacity:' + op.toFixed(3) + ';' + glow + 'transition:opacity 120ms'};
+    });
+
+    var swatchFor = function(fill, shownN, n, size, round){
+      var r = round ? '50%' : '2px', base = 'display:inline-block;flex-shrink:0;width:' + size + 'px;height:' + size + 'px;border-radius:' + r + ';box-sizing:border-box;';
+      var solid = fill === 'conic' ? CONIC : fill;
+      var edge = fill === 'conic' ? '#b3b8c4' : fill;
+      if(shownN === n) return base + 'background:' + solid + ';';
+      if(shownN === 0) return base + 'background:transparent;border:1.5px solid ' + edge + ';opacity:0.5;';
+      return base + 'background:' + (fill === 'conic' ? CONIC : 'linear-gradient(90deg,' + fill + ' 50%,transparent 50%)') + ';border:1.5px solid ' + edge + ';opacity:' + (fill === 'conic' ? '0.6' : '1') + ';';
+    };
+
+    var rows = [], chips = [], legend = [], tabHidden = 0;
+    tiers.forEach(function(t){
+      if(t.kind === 'item'){
+        var id = t.id, isHid = !!h[tab][id], hidden = isHid && st.maskOn;
+        if(isHid) tabHidden++;
+        var fill = (greyOther && otherSet[id]) ? OTHER_GREY : HUE[t.hue];
+        var toggle = function(e){ if(e && (e.altKey || e.ctrlKey || e.metaKey)) { self.solo(tab, [id]); return; } self.setHidden(function(c){ c[tab][id] = !c[tab][id]; }); };
+        rows.push({isHeader:false, isItem:true, name: NAMES[id], count: fmt((counts[id] || 0) * SCALE), shown: !hidden,
+          btnStyle: 'display:flex;align-items:center;gap:8px;padding:4px 10px 4px 32px;background:' + (hov === id ? '#1b1f28' : 'transparent') + ';border:0;color:inherit;font-size:12px;text-align:left;cursor:pointer;width:100%;font-family:inherit',
+          swatchStyle: swatchFor(fill, isHid ? 0 : 1, 1, 10, false),
+          nameStyle: 'flex-grow:1;color:' + (hidden ? '#7d8494' : '#d7dae2') + ';' + (hidden ? 'text-decoration:line-through;' : ''),
+          countStyle: 'color:' + (hidden ? '#6f7585' : '#9aa0ae') + ';font-size:11px',
+          toggle: toggle, enter: function(){ self.setState({hover: id}); }, leave: function(){ self.setState({hover: null}); }});
+        chips.push({label: 'Toggle ' + NAMES[id], toggle: toggle, style: swatchFor(fill, isHid ? 0 : 1, 1, 13, false) + 'padding:0;margin:0;cursor:pointer;' + (isHid ? '' : 'border:0;')});
+        legend.push({swatch: swatchFor(fill, isHid ? 0 : 1, 1, 10, false), name: NAMES[id], note: '', nameStyle: 'color:' + (isHid ? '#7d8494' : '#d7dae2') + ';' + (isHid ? 'text-decoration:line-through' : ''), noteStyle: 'color:#8b91a1'});
+      } else {
+        var ids = t.items.map(function(i){ return i.id; }), n = ids.length, shownN = 0, cnt = 0;
+        ids.forEach(function(x){ if(!h[tab][x]) shownN++; else tabHidden++; cnt += (counts[x] || 0); });
+        var gfill = t.chip === 'conic' ? (greyOther ? OTHER_GREY : 'conic') : HUE[t.chip];
+        var open = t.collapsible ? st.otherOpen : true;
+        var gToggle = function(e){ if(e && (e.altKey || e.ctrlKey || e.metaKey)) { self.solo(tab, ids); return; } self.setHidden(function(c){ var hideAll = shownN > 0; ids.forEach(function(x){ c[tab][x] = hideAll; }); }); };
+        var allHid = shownN === 0 && st.maskOn;
+        rows.push({isHeader:true, isItem:false, collapsible: t.collapsible, open: open, discLabel: (open ? 'Collapse ' : 'Expand ') + t.label,
+          chevStyle: 'transform:rotate(' + (open ? 90 : 0) + 'deg);transition:transform 120ms',
+          disclose: function(){ self.setState({otherOpen: !st.otherOpen}); },
+          headStyle: 'flex-grow:1;display:flex;align-items:center;gap:8px;padding:4px 0 4px ' + (t.collapsible ? 0 : 32) + 'px;background:' + (hov === 'group:' + t.key ? '#1b1f28' : 'transparent') + ';border:0;color:inherit;text-align:left;cursor:pointer;font-family:inherit',
+          swatchStyle: swatchFor(gfill, shownN, n, 10, false),
+          label: t.collapsible ? t.label : t.label.toUpperCase(),
+          labelStyle: 'flex-grow:1;' + (t.collapsible ? 'font-size:12px;color:' + (allHid ? '#7d8494' : '#d7dae2') + ';' + (allHid ? 'text-decoration:line-through;' : '') : 'font-size:10px;letter-spacing:0.08em;color:#8b91a1'),
+          count: t.collapsible ? fmt(cnt * SCALE) : '',
+          countStyle: 'color:#9aa0ae;font-size:11px',
+          state: shownN === n ? (t.collapsible ? '' : 'all') : shownN === 0 ? 'none' : shownN + '/' + n,
+          stateStyle: 'min-width:28px;text-align:right;font-size:10px;color:' + (shownN === n ? '#8b91a1' : '#f0c060'),
+          toggle: gToggle});
+        if(open){
+          t.items.forEach(function(it){
+            var id = it.id, isHid = !!h[tab][id], hidden = isHid && st.maskOn;
+            var fill = (greyOther && otherSet[id]) ? OTHER_GREY : HUE[it.hue];
+            rows.push({isHeader:false, isItem:true, name: NAMES[id], count: fmt((counts[id] || 0) * SCALE), shown: !hidden,
+              btnStyle: 'display:flex;align-items:center;gap:8px;padding:4px 10px 4px 50px;background:' + (hov === id ? '#1b1f28' : 'transparent') + ';border:0;color:inherit;font-size:12px;text-align:left;cursor:pointer;width:100%;font-family:inherit',
+              swatchStyle: swatchFor(fill, isHid ? 0 : 1, 1, 9, false),
+              nameStyle: 'flex-grow:1;color:' + (hidden ? '#7d8494' : '#d7dae2') + ';' + (hidden ? 'text-decoration:line-through;' : ''),
+              countStyle: 'color:' + (hidden ? '#6f7585' : '#9aa0ae') + ';font-size:11px',
+              toggle: function(e){ if(e && (e.altKey || e.ctrlKey || e.metaKey)) { self.solo(tab, [id]); return; } self.setHidden(function(c){ c[tab][id] = !c[tab][id]; }); },
+              enter: function(){ self.setState({hover: id}); }, leave: function(){ self.setState({hover: null}); }});
+          });
+        }
+        chips.push({label: 'Toggle ' + t.label, toggle: gToggle, style: swatchFor(gfill, shownN, n, 13, false) + 'padding:0;margin:0;cursor:pointer;' + (shownN === n ? 'border:0;' : '')});
+        var partial = shownN > 0 && shownN < n;
+        legend.push({swatch: swatchFor(gfill, shownN, n, 10, false), name: t.collapsible ? t.label : t.label + ' (' + n + ')', note: partial ? shownN + '/' + n : '',
+          nameStyle: 'color:' + (shownN === 0 ? '#7d8494' : '#d7dae2') + ';' + (shownN === 0 ? 'text-decoration:line-through' : ''), noteStyle: 'color:#f0c060;font-size:11px'});
+      }
+    });
+    var uh = !!h.uninhabited && st.maskOn;
+    if(h.uninhabited) tabHidden++;
+    var uToggle = function(){ self.setHidden(function(c){ c.uninhabited = !c.uninhabited; }); };
+    rows.push({isHeader:false, isItem:true, name:'Uninhabited', count: fmt(uninhab * SCALE * 40), shown: !uh,
+      btnStyle: 'display:flex;align-items:center;gap:8px;padding:5px 10px 5px 32px;margin-top:4px;border:0;border-top:1px solid #20242e;background:' + (hov === 'uninhabited' ? '#1b1f28' : 'transparent') + ';color:inherit;font-size:12px;text-align:left;cursor:pointer;width:100%;font-family:inherit',
+      swatchStyle: 'width:10px;height:10px;border-radius:50%;box-sizing:border-box;border:1.5px dashed #8e94a4;' + (uh ? 'opacity:0.45' : ''),
+      nameStyle: 'flex-grow:1;color:' + (uh ? '#7d8494' : '#d7dae2') + ';' + (uh ? 'text-decoration:line-through;' : ''),
+      countStyle: 'color:' + (uh ? '#6f7585' : '#9aa0ae') + ';font-size:11px',
+      toggle: uToggle, enter: function(){ self.setState({hover: 'uninhabited'}); }, leave: function(){ self.setState({hover: null}); }});
+    chips.push({label: 'Toggle uninhabited', toggle: uToggle, style: 'width:13px;height:13px;padding:0;margin:0 0 0 3px;border-radius:50%;box-sizing:border-box;background:transparent;cursor:pointer;border:1.5px dashed #8e94a4;' + (h.uninhabited ? 'opacity:0.4' : '')});
+
+    var otherHidden = 0;
+    ORDER.forEach(function(k){ if(k !== tab) otherHidden += Object.keys(h[k]).filter(function(x){ return h[k][x]; }).length; });
+    var summary = tabHidden === 0 ? 'all shown' : tabHidden + ' hidden';
+    if(otherHidden) summary += ' +' + otherHidden;
+    var anyHidden = tabHidden + otherHidden > 0;
+
+    var tabs = ORDER.map(function(k){
+      var active = k === tab;
+      return {label: LABEL[k].toUpperCase(), active: active,
+        style: 'padding:3px 0;border:0;border-bottom:1.5px solid ' + (active ? '#d7dae2' : 'transparent') + ';background:transparent;font-size:10px;letter-spacing:0.08em;cursor:pointer;font-family:inherit;color:' + (active ? '#e4e7ee' : '#8b91a1'),
+        pick: function(){ self.setState({tab: k, hover: null}); }};
+    });
+    var askTabs = [['system','System'],['filter','Filter'],['route','Route']].map(function(p){
+      var active = st.ask === p[0];
+      return {label: p[1], active: active,
+        style: 'flex-grow:1;padding:7px 0;border:0;font-size:12px;cursor:pointer;font-family:inherit;background:' + (active ? '#1b1f28' : 'transparent') + ';color:' + (active ? '#e4e7ee' : '#9aa0ae'),
+        pick: function(){ self.setState({ask: active ? null : p[0], hover: null}); }};
+    });
+
+    return {
+      dots: dots, rows: rows, chips: chips, legend: legend, tabs: tabs, askTabs: askTabs,
+      chrome: st.chrome, bare: !st.chrome,
+      popover: st.legendHover && st.ask !== 'filter',
+      askSystem: st.ask === 'system', askFilter: st.ask === 'filter', askRoute: st.ask === 'route',
+      askTabsStyle: 'display:flex;' + (st.ask ? 'border-bottom:1px solid #2a2f3b' : ''),
+      tabUpper: LABEL[tab].toUpperCase(),
+      catLabelStyle: 'width:74px;text-align:left;background:transparent;border:0;padding:0;font-size:10px;letter-spacing:0.08em;cursor:pointer;font-family:inherit;color:' + (st.maskOn ? '#b7bcc8' : '#8b91a1'),
+      summary: summary,
+      summaryStyle: 'flex-grow:1;text-align:right;color:' + (st.maskOn && anyHidden ? '#f0c060' : '#8b91a1') + ';' + (!st.maskOn && anyHidden ? 'text-decoration:line-through' : ''),
+      maskOn: st.maskOn,
+      span: st.span, spanLabel: SPANS[st.span], spanOn: st.span < 8,
+      setSpan: function(e){ self.setState({span: parseInt(e.target.value, 10)}); },
+      throughText: fmt(visible * SCALE) + ' / ' + fmt(total * SCALE),
+      legendIn: function(){ self.setState({legendHover: true}); },
+      legendOut: function(){ self.setState({legendHover: false}); },
+      openFilter: function(){ self.setState({ask: 'filter', legendHover: false}); },
+      closeAll: function(){ if(st.ask) self.setState({ask: null, hover: null}); },
+      hideChrome: function(){ self.setState({chrome: false, ask: null}); },
+      showChrome: function(){ self.setState({chrome: true}); },
+      toggleMask: function(){ self.setState({maskOn: !st.maskOn}); },
+      showAll: function(){ self.setHidden(function(c){ c[tab] = {}; c.uninhabited = false; }); },
+      showNone: function(){ self.setHidden(function(c){ allIds(tab).forEach(function(x){ c[tab][x] = true; }); }); },
+      invert: function(){ self.setHidden(function(c){ allIds(tab).forEach(function(x){ c[tab][x] = !c[tab][x]; }); }); }
+    };
+  }
+}
+</script>
+</body>
+</html>

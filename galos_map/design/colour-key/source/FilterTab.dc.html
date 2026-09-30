@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Filter tab</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&amp;display=swap" rel="stylesheet">
+<style>body{margin:0}</style>
+</helmet>
+<div style="width: 560px; height: 820px; box-sizing: border-box; padding: 48px; background: #07080c; color: #d7dae2; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 16px; ">
+<div style="display: flex; flex-direction: column"><div style="color: #8b91a1; font-size: 13px; letter-spacing: 0.08em; padding-bottom: 10px">FILTER TAB · whole form</div><div style="width: 460px; background: #111319; border: 1px solid #2a2f3b; border-radius: 6px; display: flex; flex-direction: column">
+<div style="display: flex; border-bottom: 1px solid #2a2f3b"><button aria-pressed="false" style="flex-grow: 1; padding: 10px 0; border: 0; background: transparent; color: #9aa0ae; font-family: inherit; font-size: 16px; cursor: pointer">System</button><button aria-pressed="true" style="flex-grow: 1; padding: 10px 0; border: 0; background: #1b1f28; color: #e4e7ee; font-family: inherit; font-size: 16px; cursor: pointer">Filter</button><button aria-pressed="false" style="flex-grow: 1; padding: 10px 0; border: 0; background: transparent; color: #9aa0ae; font-family: inherit; font-size: 16px; cursor: pointer">Route</button></div>
+<div style="display: flex; gap: 20px; padding: 12px 14px 6px 14px"><button style="padding: 4px 0; border: 0; border-bottom: 2px solid #d7dae2; background: transparent; font-family: inherit; font-size: 13px; letter-spacing: 0.08em; color: #e4e7ee; cursor: pointer">ALLEGIANCE</button><button style="padding: 4px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; font-family: inherit; font-size: 13px; letter-spacing: 0.08em; color: #8b91a1; cursor: pointer">GOVERNMENT</button><button style="padding: 4px 0; border: 0; border-bottom: 2px solid transparent; background: transparent; font-family: inherit; font-size: 13px; letter-spacing: 0.08em; color: #8b91a1; cursor: pointer">SECURITY</button></div>
+<div style="display: flex; flex-direction: column; padding: 4px 0 6px 0"><button aria-pressed="true" style="display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 14px 7px 40px; background: transparent; border: 0; color: inherit; font-family: inherit; font-size: 16px; text-align: left; cursor: pointer"><span style="display: inline-block; flex-shrink: 0; width: 13px; height: 13px; border-radius: 3px; box-sizing: border-box; background: #ff5a52"></span><span style="flex-grow: 1; color: #d7dae2">Federation</span><span style="font-size: 14px; color: #9aa0ae">3,219</span></button><button aria-pressed="true" style="display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 14px 7px 40px; background: transparent; border: 0; color: inherit; font-family: inherit; font-size: 16px; text-align: left; cursor: pointer"><span style="display: inline-block; flex-shrink: 0; width: 13px; height: 13px; border-radius: 3px; box-sizing: border-box; background: #3fdcea"></span><span style="flex-grow: 1; color: #d7dae2">Empire</span><span style="font-size: 14px; color: #9aa0ae">2,442</span></button><button aria-pressed="true" style="display: flex; align-items: center; gap: 12px; width: 100%; padding: 7px 14px 7px 40px; background: transparent; border: 0; color: inherit; font-family: inherit; font-size: 16px; text-align: left; cursor: pointer"><span style="display: inline-block; flex-shrink: 0; width: 13px; height: 13px; border-radius: 3px; box-sizing: border-box; background: #4fdc6a"></span><span style="flex-grow: 1; color: #d7dae2">Alliance</span><span style="font-size: 14px; color: #9aa0ae">1,036</span></button><div style="display: flex; align-items: center; padding-right: 14px">
+<button aria-label="Expand Other" aria-expanded="false" style="width: 40px; height: 32px; display: flex; align-items: center; justify-content: center; padding: 0; background: transparent; border: 0; color: #9aa0ae; cursor: pointer"><svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" style="transform: rotate(0deg)"><path d="M3 2l4 3-4 3"></path></svg></button>
+<button style="flex-grow: 1; display: flex; align-items: center; gap: 12px; padding: 7px 0; background: transparent; border: 0; color: inherit; font-family: inherit; font-size: 16px; text-align: left; cursor: pointer"><span style="display: inline-block; flex-shrink: 0; width: 13px; height: 13px; border-radius: 3px; box-sizing: border-box; background: conic-gradient(#f0dd3a 0 30%, #ff8f2e 30% 50%, #6b86ff 50% 65%, #ef62ef 65% 80%, #b3b8c4 80% 100%)"></span><span style="flex-grow: 1; color: #d7dae2">Other</span><span style="font-size: 14px; color: #9aa0ae">4,514</span><span style="min-width: 36px"></span></button>
+</div><button style="display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 6px; padding: 9px 14px 9px 40px; border: 0; border-top: 1px solid #20242e; background: transparent; color: inherit; font-family: inherit; font-size: 16px; text-align: left; cursor: pointer"><span style="display: inline-block; flex-shrink: 0; width: 13px; height: 13px; border-radius: 3px; box-sizing: border-box; border-radius: 50%; border: 2px dashed #8e94a4;"></span><span style="flex-grow: 1">Uninhabited</span><span style="font-size: 14px; color: #9aa0ae">621,600</span></button></div>
+<div style="display: flex; gap: 20px; padding: 8px 14px 10px 14px; color: #8b91a1; font-size: 14px"><span style="color: #b7bcc8">all</span><span style="color: #b7bcc8">none</span><span style="color: #b7bcc8">invert</span><span style="flex-grow: 1; text-align: right; font-size: 13px">alt-click: solo</span></div>
+<div style="display: flex; flex-direction: column; gap: 12px; padding: 14px; border-top: 1px solid #2a2f3b">
+<label style="display: flex; gap: 12px; align-items: center"><span style="width: 70px; color: #8b91a1">Faction</span><span style="color: #9aa0ae">&gt;</span><input aria-label="Filter by faction" placeholder="search a faction" style="flex-grow: 1; min-width: 0; background: transparent; border: 0; outline: none; color: #e4e7ee; font-family: inherit; font-size: 16px"></label>
+<label style="display: flex; gap: 12px; align-items: center"><span style="width: 70px; color: #8b91a1">Heard</span><input type="range" min="0" max="8" value="6" aria-label="Heard from within" style="flex-grow: 1; accent-color: #8fb4ff"><span style="width: 44px; text-align: right">30d</span></label>
+</div>
+</div></div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":560,"height":820}}'>
+class Component extends DCLogic {
+  renderVals(){ return {}; }
+}
+</script>
+</body>
+</html>
