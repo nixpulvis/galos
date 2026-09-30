@@ -8,7 +8,8 @@
 //! So a plane is ruled into cells and laid through what the camera is looking
 //! at. Its lines carry their own numbers, painted over and over along them so
 //! that one can be read wherever it is being looked at, and the place the
-//! camera is looking at is said at the middle of the view. A line is dropped
+//! camera is looking at can be said at the middle of the view, though the
+//! rose's hub says it by default. A line is dropped
 //! to the plane from whatever is picked out, which is the one thing a plane
 //! cannot say by being ruled. The cells and the numbers follow the zoom: out
 //! among the systems they are light years, and once the camera has descended
@@ -83,7 +84,11 @@ pub fn plugin(app: &mut App) {
     });
     app.insert_resource(ShowGrid(true));
     app.insert_resource(ShowNumbers(true));
-    app.insert_resource(ShowMiddle(true));
+    // Off, the rose saying where the view is under its hub for as long as it
+    // is pointed at: said at the middle of the view as well, it is forty
+    // characters over the one place on the map the user is looking at. See
+    // [`crate::map::rose`].
+    app.insert_resource(ShowMiddle(false));
     app.insert_resource(ShowPicked(true));
     app.init_resource::<Bright>();
     app.init_resource::<RulerUnit>();
@@ -144,6 +149,9 @@ pub(crate) struct ShowNumbers(pub(crate) bool);
 ///
 /// The plane's own numbers say where its lines are; this says where the view is,
 /// which is the one of the three a line cannot carry.
+///
+/// Off unless asked for. The rose's hub says the same thing when it is
+/// pointed at, out of the way of what the view is centred on.
 #[derive(Resource)]
 pub(crate) struct ShowMiddle(pub(crate) bool);
 

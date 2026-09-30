@@ -105,6 +105,22 @@ seconds, whether or not the grid is shown. It has its own switch in the
 settings pane, under General beside the grid's. The rose is
 [`src/map/rose.rs`](./src/map/rose.rs).
 
+Everything picked out is marked on the rose's ring by a small head in the
+selection's color, pointing in at the hub: its bearing from the middle of the
+view, laid flat on the plane, which says which way to turn for something off
+the screen.
+
+The rose answers the pointer. Clicking a point turns the camera to face along
+that axis and keeps its pitch, and clicking a bearing faces what it bears on.
+Clicking `+Y` looks straight down onto the plane and `-Y` straight up from
+under it. Clicking the hub looks straight down, and clicking it again goes
+back to the pitch it was clicked from. Every turn eases, as a drag does.
+Hovering over a piece of the rose says what it does in the line under the
+scale bar. Over the hub, that line gives where the view is centred, and over
+the bar, how wide the whole view is. The view's centre is no longer written
+at the middle of the view by default; "Show Center Position" in the settings
+pane puts it back.
+
 ## The color key
 
 The map is colored by allegiance, government or security, and every color of
