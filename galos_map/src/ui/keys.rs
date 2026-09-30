@@ -8,7 +8,7 @@
 
 use super::bar::{AskMode, BarFields};
 use super::hide::ChromeHidden;
-use super::{KeysOpen, Panes};
+use super::{KeysOpen, Panes, SettingsOpen};
 use crate::input::{Keyboard, bare, shifted};
 use crate::map::schedule::MapSet;
 use bevy::prelude::*;
@@ -21,7 +21,7 @@ pub(crate) fn plugin(app: &mut App) {
     // which is one press putting away two things.
     app.add_systems(
         Update,
-        (open_search, shut_search, toggle_keys, toggle_chrome)
+        (open_search, shut_search, toggle_keys, toggle_chrome, toggle_settings)
             .chain()
             .in_set(MapSet::Search),
     );
@@ -42,6 +42,29 @@ fn toggle_chrome(
 ) {
     if !keyboard.typing && keys.just_pressed(KeyCode::KeyI) && bare(&keys) {
         hidden.0 = !hidden.0;
+    }
+}
+
+/// Slide the settings pane out, or put it back
+///
+/// `O`, for options, and bare, as the gear it stands in for is one click.
+/// Opened over a hidden chrome it brings the chrome back too, the pane being
+/// part of what was put away: a key that opened something nobody can see
+/// would read as a key that did nothing.
+fn toggle_settings(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    mut open: ResMut<SettingsOpen>,
+    mut hidden: ResMut<ChromeHidden>,
+) {
+    if keyboard.typing || !keys.just_pressed(KeyCode::KeyO) || !bare(&keys) {
+        return;
+    }
+    if hidden.0 {
+        hidden.0 = false;
+        open.0 = true;
+    } else {
+        open.0 = !open.0;
     }
 }
 

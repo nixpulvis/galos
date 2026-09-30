@@ -173,9 +173,10 @@ open rail takes both, rather than asking to be pressed twice.
 | `Space` | Fly to what is picked out, one at a time |
 | `H` | Go home: Sol, from where the map opened |
 | `L` | Show or hide the labels |
-| `O` | Show or hide the orbit lines |
+| `U` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
 | `I` | Hide or show the interface, leaving the rose and color key |
+| `O` | Show or hide the settings |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |
