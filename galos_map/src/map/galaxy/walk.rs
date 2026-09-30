@@ -948,7 +948,8 @@ impl PointOrders {
         }
     }
 
-    /// Work out whatever this cut has not asked about this cell yet
+    /// Work out whatever this cut has not asked about this cell yet, and say
+    /// whether that was done or left for a later budget
     ///
     /// Both lists in one pass over the payload, so [`reconcile`] can read
     /// either or both of them afterwards without holding this borrow open.
@@ -964,7 +965,7 @@ impl PointOrders {
         now: DateTime<Utc>,
         by_population: bool,
         budget: &mut usize,
-    ) {
+    ) -> bool {
         // Whether what is held about this cell was worked out against the
         // filters as they stand. A cell nothing is held about at all is
         // stale too, this being the first time it has been reached.
@@ -975,7 +976,7 @@ impl PointOrders {
         // a frame or two of the wrong dimming — against a map that stops
         // for seconds.
         if !fresh && *budget < points.len() {
-            return;
+            return false;
         }
         if !fresh {
             *budget -= points.len();
@@ -1019,6 +1020,7 @@ impl PointOrders {
                 order.into_iter().map(|(_, index)| index).collect()
             });
         }
+        true
     }
 
     /// The indices of a cell's points the filters admit, ascending
@@ -1054,12 +1056,16 @@ impl PointOrders {
         id: CellId,
         points: &[CellSystem],
         budget: &mut usize,
-    ) {
-        if self.strata.contains_key(&id) || *budget < points.len() {
-            return;
+    ) -> bool {
+        if self.strata.contains_key(&id) {
+            return true;
+        }
+        if *budget < points.len() {
+            return false;
         }
         *budget -= points.len();
         self.strata.insert(id, strata(points));
+        true
     }
 
     /// The order star class draws a cell in, where [`Self::stratify`] has
@@ -1216,6 +1222,108 @@ fn stratified_first<'a>(
     first.chain(rest).map(|&index| index as usize)
 }
 
+/// What each narrowed cell draws of what the filters admit: the payload
+/// indices, by the cell's offer in the plan, that won a patch of sky
+///
+/// Each admitted point in the bubble claims its patch ([`Crowded::claim`])
+/// until the frame has claimed `ceiling`; one landing on a patch already
+/// claimed is left to the field. So a sparse arm draws every colony that
+/// stands apart, and the core is one mark to a patch however many stand in
+/// it — where a share of each cell's count drew the arm's colonies a mark a
+/// cell at best and piled the core's up into a white disc.
+///
+/// **Offered in rounds across the cells**, as [`Unspawned`] is: every
+/// cell's first before any cell's second, coarse before fine and scattered
+/// by address within a round. Offered cell by cell in the plan's order, the
+/// ceiling ran out partway through the walk and the cells after it drew
+/// nothing, a whole side of the view at once.
+///
+/// `weigh` brings a cell's verdicts (and its strata, along star class)
+/// forward, answering whether they are current; a cell it puts off offers
+/// nothing this pass, and the pass runs again. The cells are weighed in
+/// `weighing`'s order, so the budget reaches them all over the view at once
+/// ([`weighing`]).
+fn claim_admitted(
+    marks: &[galos_index::read::walk::MarkRef],
+    weighing: &[u32],
+    resident: &ResidentCells,
+    orders: &mut PointOrders,
+    mut weigh: impl FnMut(&mut PointOrders, CellId, &[CellSystem]) -> bool,
+    reaches: impl Fn(CellId) -> bool,
+    center: DVec3,
+    bubble: Option<f64>,
+    mut crowded: Crowded,
+    ceiling: usize,
+) -> Vec<Vec<u32>> {
+    let _zone = info_span!("claiming the admitted").entered();
+    let mut offered: Vec<Claim> = Vec::new();
+    for &offer in weighing {
+        let mark = &marks[offer as usize];
+        if !reaches(mark.id) {
+            continue;
+        }
+        let Some(cell) = resident.0.cell(mark.id) else { continue };
+        if !weigh(orders, mark.id, &cell.points) {
+            continue;
+        }
+        let admits = orders.admits(mark.id);
+        let ranked = rank(mark.id, true);
+        let mut offer_at = |round: usize, index: u32| {
+            let at = cell.points[index as usize].position;
+            // The bubble before the lattice, a system the frame will not
+            // draw being one that must not claim sky and leave it empty.
+            if !bubble
+                .is_some_and(|radius| center.distance(DVec3::from(at)) > radius)
+            {
+                offered.push(Claim {
+                    round: round as u32,
+                    rank: ranked,
+                    offer,
+                    index,
+                    at,
+                });
+            }
+        };
+        match orders.strata(mark.id) {
+            Some(strata) => strata
+                .iter()
+                .filter(|index| admits.binary_search(index).is_ok())
+                .enumerate()
+                .for_each(|(round, &index)| offer_at(round, index)),
+            None => admits
+                .iter()
+                .enumerate()
+                .for_each(|(round, &index)| offer_at(round, index)),
+        }
+    }
+    offered.sort_unstable_by_key(|claim| (claim.round, claim.rank));
+    let mut claims = vec![Vec::new(); marks.len()];
+    let mut claimed = 0usize;
+    for claim in offered {
+        if claimed >= ceiling {
+            break;
+        }
+        if crowded.claim(claim.at) {
+            claims[claim.offer as usize].push(claim.index);
+            claimed += 1;
+        }
+    }
+    claims
+}
+
+/// An admitted point offered its patch of sky; see [`claim_admitted`]
+struct Claim {
+    /// Its place among its cell's admitted, brightest first.
+    round: u32,
+    /// Its cell's; see [`rank`].
+    rank: (bool, u8, u64),
+    /// Its cell's place in the plan.
+    offer: u32,
+    /// Which point of the cell's payload it is.
+    index: u32,
+    at: [f64; 3],
+}
+
 /// What a populated choice was made against
 ///
 /// Remade when any of this moves, and neither a still view nor a turning
@@ -1253,6 +1361,23 @@ pub(crate) struct Pass {
     /// Where the camera stood when the last pass found nothing left to do,
     /// or [`None`] where it did not; see [`Settled`].
     settled: Option<Settled>,
+    /// The plan's marks in the order their verdicts are weighed, each by
+    /// its place in the plan; see [`weighing`].
+    weighing: Vec<u32>,
+}
+
+/// The plan's marks in the order the verdict budget reaches them: coarse
+/// before fine and scattered by address within a level, as the reads are
+/// ([`rank`])
+///
+/// **Not the plan's own order.** The walk hands its marks over a subtree
+/// at a time, so a budget spent down the plan brought the filters in a
+/// patch of sky after the next — reported as a filter loading left to
+/// right and top to bottom, every other load filling in all over at once.
+fn weighing(marks: &[galos_index::read::walk::MarkRef]) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..marks.len() as u32).collect();
+    order.sort_unstable_by_key(|&offer| rank(marks[offer as usize].id, true));
+    order
 }
 
 /// What a finished pass was worked out from, besides the resources it reads
@@ -1266,9 +1391,14 @@ pub(crate) struct Pass {
 /// written every frame whether it moves or not — so the camera's part is
 /// kept by value and compared.
 ///
-/// Finished means it offered nothing, pushed nothing and had verdict budget
-/// to spare: a pass that is still filling a view in or bringing the filters'
-/// verdicts forward a budget at a time runs again next frame whatever moved.
+/// Finished means it offered nothing, pushed nothing and put no cell off
+/// for a later budget: a pass that is still filling a view in or bringing
+/// the filters' verdicts forward a budget at a time runs again next frame
+/// whatever moved. Budget left over is not the test. A cell bigger than
+/// what is left is put off with most of it unspent, and a pass that settled
+/// on that left the cell unweighed for as long as the camera stood still —
+/// reported as half the colonies on screen standing as a blur, the uninhabited
+/// hidden, until the view was turned a hair.
 #[derive(PartialEq)]
 struct Settled {
     view: galos_index::prelude::View,
@@ -1473,13 +1603,14 @@ pub struct Sampled {
 /// is gone with the floor that made it necessary.
 ///
 /// *Which* systems fill the count is the filters' to say. The count is a
-/// budget of marks the screen can tell apart, worked out from the cell's own
-/// footprint and not from which systems are chosen, so spending it on what
-/// the filters admit draws exactly as many marks as before, no closer
-/// together. Taking the brightest of the payload instead spends the budget
+/// budget of marks the screen can tell apart, a share of the frame's
+/// capacity. Taking the brightest of the payload instead spends the budget
 /// on whatever happens to be bright: a faction is a handful of systems in a
 /// cell of thousands, so a filter on one used to draw nothing at all from
-/// most cells while the marks the screen could carry went unused.
+/// most cells while the marks the screen could carry went unused. And what
+/// the filters admit is not held to that count at all: it is drawn wherever
+/// it stands apart on the sky ([`claim_admitted`]), so a map narrowed to the
+/// colonies draws every colony of an arm and one to a patch of the core.
 ///
 /// So the order is: what the filters admit, brightest first, and then — only
 /// where [`crate::map::filter::DimTo`] still draws the excluded — the rest,
@@ -1585,6 +1716,12 @@ pub(crate) fn reconcile(
     if !moved && pass.settled.as_ref() == Some(&here) {
         return;
     }
+    // The order the verdicts are weighed in, remade with the plan; see
+    // [`weighing`]. Taken for the pass and put back at its end.
+    let mut weighed_in = std::mem::take(&mut pass.weighing);
+    if planned.is_changed() || weighed_in.len() != planned.0.marks.len() {
+        weighed_in = weighing(&planned.0.marks);
+    }
     let choice = &mut pass.chosen;
     // Whether this pass asked for anything to be built; see [`Settled`].
     let mut wanting = false;
@@ -1648,6 +1785,8 @@ pub(crate) fn reconcile(
     // would be the three-and-a-half-second hang this bounds. See
     // [`VERDICT_BUDGET`].
     let mut verdicts = VERDICT_BUDGET;
+    // Whether a cell was put off for a later budget; see [`Settled`].
+    let mut deferred = false;
     // The addresses the filters name, gathered once for the pass rather
     // than walked per point: a route of three hundred stops is what made
     // having one on the map cost seven times what any other filter does.
@@ -1693,6 +1832,73 @@ pub(crate) fn reconcile(
     // payload.
     let population = population(&planned.0);
     let share = Share::of(population, view.marks());
+    // **Under a filter, what it admits is drawn where it stands apart.**
+    // The share above is struck over every system the marked cells hold,
+    // and a cell's budget off it is a share of its whole slice: with the
+    // uninhabited hidden, the colonies a hundredth of the systems about
+    // them, that left each cell a fraction of a mark for its dozens of
+    // colonies, the dither deciding cell by cell which drew one and which
+    // stood as a blur, and a turn of the camera moving the population
+    // enough to decide it again. Measured over `.index/full` at nine
+    // thousand light years back, the cells' budgets reached 3,783 of the
+    // 142,414 colonies they held. A share struck over the admitted instead
+    // spreads the screen in proportion to them, and the core, where most
+    // of them are, took most of it and washed out.
+    //
+    // So the admitted are drawn as the populated draw draws them: each
+    // claims a mark's patch of sky, and one that would land on a patch
+    // already claimed is left to the field; see [`claim_admitted`]. An
+    // arm's colonies stand apart and are drawn every one; the core's pile
+    // up and are one mark to a patch. The excluded, where the dim draws
+    // them, fill what the cell's share leaves, as before.
+    let narrowed = asking && limit.is_none() && !by_population;
+    let claims = match narrowed {
+        false => Vec::new(),
+        true => claim_admitted(
+            &planned.0.marks,
+            &weighed_in,
+            &resident,
+            orders,
+            |orders, id, points| {
+                let weighed = orders.walk(
+                    id,
+                    points,
+                    &asked_for,
+                    &populated,
+                    wall,
+                    by_population,
+                    &mut verdicts,
+                );
+                let stratified =
+                    !by_class || orders.stratify(id, points, &mut verdicts);
+                deferred |= !(weighed && stratified);
+                weighed
+            },
+            |id| in_reach(id, orbit, bubble),
+            orbit.center(),
+            bubble,
+            Crowded::about(&view, orbit.center().to_array()),
+            view.crowded_marks() as usize,
+        ),
+    };
+    // And star class's strata, off the same budget and in the same order,
+    // for the cells whose share draws; the draw below then finds them
+    // worked out. Left to the draw, they came in down the plan's order and
+    // the classes filled in a patch at a time.
+    if by_class && !narrowed {
+        for &offer in &weighed_in {
+            let mark = &planned.0.marks[offer as usize];
+            if !in_reach(mark.id, orbit, bubble)
+                || share.wanted(mark.slice as usize, mark.id) == 0
+            {
+                continue;
+            }
+            if let Some(cell) = resident.0.cell(mark.id) {
+                deferred |=
+                    !orders.stratify(mark.id, &cell.points, &mut verdicts);
+            }
+        }
+    }
     // Where this pass takes its systems from. Drawing by population draws
     // the systems anybody lives in, and every one of those is resident in
     // full — so the cell's own populated systems answer, exactly and the same however
@@ -1831,7 +2037,9 @@ pub(crate) fn reconcile(
                 .wanted(mark.slice as usize, id)
                 .max(usize::from(is_lit(offer as u32))),
         };
-        if asked == 0 {
+        // A narrowed cell draws what it admits wherever that stands apart,
+        // share or no share; see [`Claims`].
+        if asked == 0 && !narrowed {
             continue;
         }
         // Taken rather than walked lazily, since the two sources are
@@ -1870,11 +2078,11 @@ pub(crate) fn reconcile(
                     })
                 }
             };
-            if target == 0 {
+            if target == 0 && !narrowed {
                 continue;
             }
             refreshed = republished.holds(id);
-            orders.walk(
+            deferred |= !orders.walk(
                 id,
                 &cell.points,
                 &asked_for,
@@ -1884,13 +2092,35 @@ pub(crate) fn reconcile(
                 &mut verdicts,
             );
             if by_class {
-                orders.stratify(id, &cell.points, &mut verdicts);
+                deferred |= !orders.stratify(id, &cell.points, &mut verdicts);
             }
             let admits = orders.admits(id);
             let order: Vec<usize> = if by_population {
                 busiest_first(orders.populated(id), admits, asking, fill)
                     .take(target)
                     .collect()
+            } else if narrowed {
+                // What won its patch of sky, and the excluded after it to
+                // fill the cell's share, where the dim draws them.
+                let claimed = &claims[offer];
+                let left = target.saturating_sub(claimed.len());
+                let won = claimed.iter().map(|&index| index as usize);
+                match orders.strata(id) {
+                    Some(strata) => won
+                        .chain(
+                            stratified_first(strata, admits, fill)
+                                .skip(admits.len())
+                                .take(left),
+                        )
+                        .collect(),
+                    None => won
+                        .chain(
+                            drawn_first(&cell.points, admits, fill)
+                                .skip(admits.len())
+                                .take(left),
+                        )
+                        .collect(),
+                }
             } else if let Some(strata) = orders.strata(id) {
                 stratified_first(strata, admits, fill).take(target).collect()
             } else {
@@ -2195,7 +2425,8 @@ pub(crate) fn reconcile(
     drop(_zone);
 
     // Finished, or not: see [`Settled`].
-    pass.settled = (!wanting && verdicts > 0).then_some(here);
+    pass.settled = (!wanting && !deferred).then_some(here);
+    pass.weighing = weighed_in;
 }
 
 /// Free the payloads the walk has stopped wanting, once it has stopped
@@ -2719,6 +2950,160 @@ mod tests {
             held.admits(cells[0]),
             &[2],
             "a cut threw the old verdicts away instead of keeping them"
+        );
+    }
+
+    /// The verdicts come in all over the view, not down the plan
+    ///
+    /// The walk hands its marks over a subtree at a time, so a budget spent
+    /// in its order weighed one side of the sky before the other: a filter
+    /// loading left to right, top to bottom.
+    #[test]
+    fn the_verdicts_come_in_all_over_the_view() {
+        // A row of cells, in the plan's order from one end to the other.
+        let marks: Vec<galos_index::read::walk::MarkRef> = (0..64)
+            .map(|n| {
+                let id = CellId::of_point([n as f64 * 40., 0., 0.], 12);
+                galos_index::read::walk::MarkRef {
+                    id,
+                    slice: 100,
+                    at: id.bounds().center(),
+                }
+            })
+            .collect();
+        // Whatever half a budget reaches first holds both ends of the row.
+        let first = &weighing(&marks)[..32];
+        let near_end = first.iter().filter(|&&offer| offer < 32).count();
+        assert!(
+            (12..=20).contains(&near_end),
+            "{near_end} of the first 32 weighed are the row's first half"
+        );
+    }
+
+    /// A pass that left a cell for a later budget runs again, whatever moved
+    ///
+    /// The reported trouble: with the uninhabited hidden, half the colonies
+    /// on screen stood as a blur for as long as the camera stood still, and
+    /// turning it a hair resolved them. A pass settled whenever it ended with
+    /// any budget left, and a cell bigger than what was left had been
+    /// passed over — so the pass settled on a view with cells it never
+    /// weighed, and nothing brought them forward until something moved.
+    #[test]
+    fn a_pass_the_budget_ran_short_of_runs_again() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+
+        // Two cells that do not both fit in one frame's budget, whichever
+        // is weighed first, each holding one system asked for — either side
+        // of the origin, so they are two patches of sky at any zoom.
+        let first = CellId::of_point([-20., 0., 0.], 12);
+        let second = CellId::of_point([20., 0., 0.], 12);
+        let each = VERDICT_BUDGET as u64 * 3 / 4;
+        let at =
+            |id: u64, x: f64| CellSystem { position: [x, 0., 0.], ..point(id) };
+        let one: Vec<CellSystem> = (1..=each).map(|id| at(id, -20.)).collect();
+        let two: Vec<CellSystem> =
+            (1..=each).map(|id| at(1_000_000 + id, 20.)).collect();
+
+        let mut app = walking();
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
+            marks: [(first, &one), (second, &two)]
+                .into_iter()
+                .map(|(id, points)| galos_index::read::walk::MarkRef {
+                    id,
+                    slice: points.len() as u32,
+                    at: id.bounds().center(),
+                })
+                .collect(),
+            blobs: Vec::new(),
+            splats: Vec::new(),
+        }));
+        {
+            let mut resident = app.world_mut().resource_mut::<ResidentCells>();
+            resident.0.insert(first, one);
+            resident.0.insert(second, two);
+        }
+        app.world_mut().resource_mut::<Filters>().add(Filter::Systems {
+            label: "one apiece".into(),
+            systems: vec![each as i64, 1_000_000 + each as i64],
+        });
+        app.insert_resource(DimTo(0.));
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            1,
+            "both cells were weighed off one frame's budget"
+        );
+        // Nothing moves, and the next frame's budget reaches the other.
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            2,
+            "the pass settled with a cell it never weighed"
+        );
+    }
+
+    /// Under a filter, what it admits is drawn wherever it stands apart, and
+    /// one to a patch of sky where it piles up
+    ///
+    /// The reported trouble: with the uninhabited hidden, the colonies of an
+    /// arm stood as blur, their cells' budgets a share of every system about
+    /// them, while the core's piled up into a white disc. Two colonies alone
+    /// in their cells are drawn both; fifty on one spot are one mark.
+    #[test]
+    fn the_admitted_are_drawn_where_they_stand_apart() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+
+        let at = |id: u64, place: [f64; 3]| CellSystem {
+            position: place,
+            ..point(id)
+        };
+        let mut marks = Vec::new();
+        let mut asked = Vec::new();
+        let mut app = walking();
+        for (n, place) in [[20., 0., 0.], [0., 20., 0.], [-20., 0., 0.]]
+            .into_iter()
+            .enumerate()
+        {
+            let id = CellId::of_point(place, 12);
+            // A thousand the filter excludes, the brightest of the cell.
+            let mut points: Vec<CellSystem> =
+                (1..=1_000).map(|k| at(n as u64 * 10_000 + k, place)).collect();
+            // Then the admitted: one alone in each of the first two, fifty
+            // on one spot in the third.
+            let admitted = if n < 2 { 1 } else { 50 };
+            for k in 0..admitted {
+                let address = 5_000_000 + n as u64 * 100 + k;
+                points.push(at(address, place));
+                asked.push(address as i64);
+            }
+            marks.push(galos_index::read::walk::MarkRef {
+                id,
+                slice: points.len() as u32,
+                at: place,
+            });
+            app.world_mut()
+                .resource_mut::<ResidentCells>()
+                .0
+                .insert(id, points);
+        }
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
+            marks,
+            blobs: Vec::new(),
+            splats: Vec::new(),
+        }));
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Systems { label: "colonies".into(), systems: asked });
+        app.insert_resource(DimTo(0.));
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            3,
+            "not every colony that stands apart, or more than one of a pile"
         );
     }
 
