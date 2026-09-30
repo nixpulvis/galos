@@ -47,7 +47,7 @@ fn toggle_chrome(
 
 /// Slide the settings pane out, or put it back
 ///
-/// `O`, for options, and bare, as the gear it stands in for is one click.
+/// `U`, bare, as the gear it stands in for is one click.
 /// Opened over a hidden chrome it brings the chrome back too, the pane being
 /// part of what was put away: a key that opened something nobody can see
 /// would read as a key that did nothing.
@@ -57,7 +57,7 @@ fn toggle_settings(
     mut open: ResMut<SettingsOpen>,
     mut hidden: ResMut<ChromeHidden>,
 ) {
-    if keyboard.typing || !keys.just_pressed(KeyCode::KeyO) || !bare(&keys) {
+    if keyboard.typing || !keys.just_pressed(KeyCode::KeyU) || !bare(&keys) {
         return;
     }
     if hidden.0 {
@@ -314,37 +314,37 @@ mod tests {
         app.world().resource::<SettingsOpen>().0
     }
 
-    /// `O` slides the settings out and puts them back
+    /// `U` slides the settings out and puts them back
     #[test]
-    fn o_opens_and_shuts_the_settings() {
+    fn u_opens_and_shuts_the_settings() {
         let mut app = barred();
 
-        pressed(&mut app, &[KeyCode::KeyO]);
+        pressed(&mut app, &[KeyCode::KeyU]);
         assert!(settings_out(&app));
-        pressed(&mut app, &[KeyCode::KeyO]);
+        pressed(&mut app, &[KeyCode::KeyU]);
         assert!(!settings_out(&app));
     }
 
-    /// `O` over the chrome put away brings it back with the settings out,
+    /// `U` over the chrome put away brings it back with the settings out,
     /// rather than opening a pane nobody can see
     #[test]
-    fn o_over_a_hidden_chrome_brings_it_back() {
+    fn u_over_a_hidden_chrome_brings_it_back() {
         let mut app = barred();
         app.world_mut().resource_mut::<ChromeHidden>().0 = true;
 
-        pressed(&mut app, &[KeyCode::KeyO]);
+        pressed(&mut app, &[KeyCode::KeyU]);
 
         assert!(!hidden(&app));
         assert!(settings_out(&app));
     }
 
-    /// `O` typed into a field is a letter of a name
+    /// `U` typed into a field is a letter of a name
     #[test]
-    fn an_o_typed_into_a_field_leaves_the_settings_alone() {
+    fn a_u_typed_into_a_field_leaves_the_settings_alone() {
         let mut app = barred();
         type_a_name(&mut app);
 
-        pressed(&mut app, &[KeyCode::KeyO]);
+        pressed(&mut app, &[KeyCode::KeyU]);
         assert!(!settings_out(&app));
     }
 

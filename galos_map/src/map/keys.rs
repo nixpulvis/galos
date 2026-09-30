@@ -349,7 +349,7 @@ fn home(
 
 /// Take the map's annotations off the sky and put them back
 ///
-/// `L` the names, `U` the orbit lines, `G` the ruled plane. The three things
+/// `L` the names, `O` the orbit lines, `G` the ruled plane. The three things
 /// drawn over the galaxy rather than in it, which is what a key is worth
 /// having for: they are what stands between the user and a clear look at what
 /// they are pointed at.
@@ -376,7 +376,7 @@ fn toggle(
         show_body_names.0 = !showing;
     }
 
-    if keys.just_pressed(KeyCode::KeyU) {
+    if keys.just_pressed(KeyCode::KeyO) {
         show_orbits.0 = !show_orbits.0;
     }
 
@@ -1008,12 +1008,12 @@ mod tests {
         assert!(showing(&app).1, "the bodies were left unnamed");
     }
 
-    /// `U` takes the orbit lines, and only those
+    /// `O` takes the orbit lines, and only those
     #[test]
     fn a_key_takes_the_orbit_lines() {
         let mut app = annotated(true, true);
 
-        pressed(&mut app, &[KeyCode::KeyU]);
+        pressed(&mut app, &[KeyCode::KeyO]);
 
         assert_eq!(showing(&app), (true, true, false, true));
     }
@@ -1061,7 +1061,7 @@ mod tests {
         let mut app = annotated(true, true);
         type_a_name(&mut app);
 
-        pressed(&mut app, &[KeyCode::KeyL, KeyCode::KeyU, KeyCode::KeyG]);
+        pressed(&mut app, &[KeyCode::KeyL, KeyCode::KeyO, KeyCode::KeyG]);
 
         assert_eq!(showing(&app), (true, true, true, true));
     }
