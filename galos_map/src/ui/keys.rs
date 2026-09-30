@@ -8,7 +8,7 @@
 
 use super::bar::{AskMode, BarFields};
 use super::hide::{ChromeHidden, ShowLegend};
-use super::{KeysOpen, Panes, SettingsOpen};
+use super::{KeysOpen, Panes, SettingsOpen, ShowClock};
 use crate::input::{Keyboard, bare, shifted};
 use crate::map::schedule::MapSet;
 use bevy::prelude::*;
@@ -28,6 +28,7 @@ pub(crate) fn plugin(app: &mut App) {
             toggle_chrome,
             toggle_settings,
             toggle_legend,
+            toggle_clock,
         )
             .chain()
             .in_set(MapSet::Search),
@@ -87,6 +88,20 @@ fn toggle_legend(
 ) {
     if !keyboard.typing && keys.just_pressed(KeyCode::KeyK) && bare(&keys) {
         legend.0 = !legend.0;
+    }
+}
+
+/// Take the clock's reading off the top of the map, or put it back
+///
+/// `T`, for time. The same switch the pane's own is, so taking it away puts
+/// the map back to the present as that does: see [`crate::ui::clock::hidden`].
+fn toggle_clock(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    mut clock: ResMut<ShowClock>,
+) {
+    if !keyboard.typing && keys.just_pressed(KeyCode::KeyT) && bare(&keys) {
+        clock.0 = !clock.0;
     }
 }
 
@@ -276,6 +291,7 @@ mod tests {
         app.init_resource::<ChromeHidden>();
         app.init_resource::<SettingsOpen>();
         app.init_resource::<ShowLegend>();
+        app.init_resource::<ShowClock>();
         app.init_resource::<super::super::ClockControl>();
         app.add_systems(
             Update,
@@ -286,6 +302,7 @@ mod tests {
                 toggle_chrome,
                 toggle_settings,
                 toggle_legend,
+                toggle_clock,
             )
                 .chain(),
         );
@@ -381,6 +398,18 @@ mod tests {
         pressed(&mut app, &[KeyCode::KeyK]);
         assert!(!showing(&app));
         pressed(&mut app, &[KeyCode::KeyK]);
+        assert!(showing(&app));
+    }
+
+    /// `T` takes the clock's reading away and puts it back
+    #[test]
+    fn t_hides_the_clock_and_brings_it_back() {
+        let mut app = barred();
+        let showing = |app: &App| app.world().resource::<ShowClock>().0;
+
+        pressed(&mut app, &[KeyCode::KeyT]);
+        assert!(!showing(&app));
+        pressed(&mut app, &[KeyCode::KeyT]);
         assert!(showing(&app));
     }
 

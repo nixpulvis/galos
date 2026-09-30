@@ -179,6 +179,7 @@ open rail takes both, rather than asking to be pressed twice.
 | `U` | Show or hide the settings |
 | `K` | Show or hide the color key over the hidden interface |
 | `N` | Show or hide the compass rose |
+| `T` | Show or hide the clock |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |

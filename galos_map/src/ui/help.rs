@@ -16,7 +16,7 @@ use bevy_egui::egui::{Context, Ui};
 /// Each is a key struck on its own, but for the four that want shift — the
 /// three that put a question in the bar's box and the `?` that opens this
 /// window — which is what [`crate::map::keys`] promises and the README says.
-const BINDINGS: [(&str, &str); 20] = [
+const BINDINGS: [(&str, &str); 21] = [
     ("W A S D", "Pan along the ruled plane"),
     ("Q E", "Pan down and up through it"),
     ("Z X", "Swing the camera round what it looks at"),
@@ -31,6 +31,7 @@ const BINDINGS: [(&str, &str); 20] = [
     ("U", "Show or hide the settings"),
     ("K", "Show or hide the color key over the hidden interface"),
     ("N", "Show or hide the compass rose"),
+    ("T", "Show or hide the clock"),
     ("/ or Shift-S", "Search the box for a system"),
     ("Shift-F", "Ask the box for a faction to filter on"),
     ("Shift-R", "Ask the box for systems to route between"),
