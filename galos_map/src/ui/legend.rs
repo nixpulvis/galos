@@ -216,7 +216,8 @@ pub(crate) fn attention(ui: &Ui) -> Color32 {
 /// How large a swatch stands in the mini legend
 const LEGEND_SWATCH: f32 = 10.;
 
-/// Name the color row's chips, one line a chip
+/// Name the color row's chips, one line a chip, a group's members indented
+/// under it
 ///
 /// The one list, drawn in two places: framed as a popover under the color
 /// row while the pointer is over it, and bare in the top left while the
@@ -233,27 +234,33 @@ pub(crate) fn legend(
 ) {
     let mask = filters.mask();
     let muted = ui.visuals().weak_text_color();
+    let named = |name: &str, hidden: Hidden| {
+        let text = egui::RichText::new(name);
+        match hidden {
+            Hidden::All => text.strikethrough().color(muted),
+            _ => text,
+        }
+    };
+    // A member's swatch stands under its group's name, past the group's.
+    let indent = LEGEND_SWATCH + ui.spacing().item_spacing.x;
     for tier in held_tiers(axis, held) {
         let hidden = tier.hidden(axis, mask);
         ui.horizontal(|ui| {
             Swatch::of_tier(&tier, axis, mask).paint(ui, LEGEND_SWATCH);
-            let name = match &tier {
-                // A government's color stands for several, and says how
-                // many: "Red (7)".
-                Tier::Group { hue: Some(_), items, .. } => {
-                    format!("{} ({})", tier.name(), items.len())
-                }
-                _ => tier.name().to_owned(),
-            };
-            let text = egui::RichText::new(name);
-            ui.label(match hidden {
-                Hidden::All => text.strikethrough().color(muted),
-                _ => text,
-            });
+            ui.label(named(tier.name(), hidden));
             if let Some(showing) = showing(hidden) {
                 ui.label(egui::RichText::new(showing).color(attention(ui)));
             }
         });
+        if let Tier::Group { items, .. } = &tier {
+            for item in items {
+                ui.horizontal(|ui| {
+                    ui.add_space(indent);
+                    Swatch::of_item(item, axis, mask).paint(ui, LEGEND_SWATCH);
+                    ui.label(named(item.name, item.hidden(axis, mask)));
+                });
+            }
+        }
     }
     if mask.draws_uninhabited() && !axis.every_system() {
         ui.horizontal(|ui| {
