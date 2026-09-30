@@ -249,23 +249,26 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
     }
 
     // Worked on through a copy, so that a pass which chose nothing does not
-    // mark the axis changed and rebuild the blobs.
-    let mut axis = *filter.key.color_by;
-    let (held, empty) = filter.key.counted();
-    let held = held.copied();
-    let asked = key(
-        ui,
-        filter.active.mask(),
-        &mut axis,
-        held.as_ref(),
-        empty,
-        &mut filter.key.state.other_open,
-    );
-    filter.key.color_by.set_if_neq(axis);
-    if let Some(asked) = asked {
-        asked.apply(filter.active.bypass_change_detection(), axis);
+    // mark the axis changed and rebuild the blobs. Only while the map is
+    // colored: the realistic view has no color for a key to name.
+    if filter.active.mask().drawn().is_some() {
+        let mut axis = *filter.key.color_by;
+        let (held, empty) = filter.key.counted();
+        let held = held.copied();
+        let asked = key(
+            ui,
+            filter.active.mask(),
+            &mut axis,
+            held.as_ref(),
+            empty,
+            &mut filter.key.state.other_open,
+        );
+        filter.key.color_by.set_if_neq(axis);
+        if let Some(asked) = asked {
+            asked.apply(filter.active.bypass_change_detection(), axis);
+        }
+        ui.separator();
     }
-    ui.separator();
 
     watch_control(
         ui,

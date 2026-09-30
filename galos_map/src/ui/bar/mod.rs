@@ -600,23 +600,27 @@ pub(super) fn state_bar(
                     // to read it, and the one row always standing. Off the
                     // live filters rather than a held copy, being clicked and
                     // never dragged. Its mini legend only while the key it
-                    // stands for is not on screen to say the same.
-                    let axis = *filter.key.color_by;
-                    let held = filter.key.counted().0.copied();
-                    let (keyed, keying) = color_row(
-                        ui,
-                        &filter.active,
-                        axis,
-                        held.as_ref(),
-                        !filter.key.state.out,
-                    );
-                    if let Some(keyed) = keyed {
-                        keyed.apply(
-                            filter.active.bypass_change_detection(),
+                    // stands for is not on screen to say the same. Not at all
+                    // while the map is not colored, the realistic view having
+                    // no color to name; what it hides is kept for when it is.
+                    if filter.active.mask().drawn().is_some() {
+                        let axis = *filter.key.color_by;
+                        let held = filter.key.counted().0.copied();
+                        let (keyed, keying) = color_row(
+                            ui,
+                            &filter.active,
                             axis,
+                            held.as_ref(),
+                            !filter.key.state.out,
                         );
+                        if let Some(keyed) = keyed {
+                            keyed.apply(
+                                filter.active.bypass_change_detection(),
+                                axis,
+                            );
+                        }
+                        filter.key.state.opening |= keying;
                     }
-                    filter.key.state.opening |= keying;
                     // Then the filters, and the selection under them. Both
                     // stand in the one column, so whichever is on top decides
                     // which of them holds still: picking a system out or

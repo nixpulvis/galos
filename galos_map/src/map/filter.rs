@@ -84,19 +84,25 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-/// Ask the mask along the axis the map is colored by, as that changes
+/// Ask the mask along the axis the map is colored by, as that changes, and
+/// not at all while it is not colored
 ///
 /// The key's tabs choose the coloring; this is what makes the choice the
 /// mask's too, so a color hidden along government stops hiding anything the
-/// moment the map is colored by security. Through [`Filters::edit_mask`], so
-/// the change is counted as one to what the filters admit and every pass
-/// holding a verdict asks again.
+/// moment the map is colored by security. The realistic view colors a star
+/// by its own light, so there is no color on screen for the key to name:
+/// the mask is ignored there and kept for when the map view comes back.
+/// Through [`Filters::edit_mask`], so the change is counted as one to what
+/// the filters admit and every pass holding a verdict asks again.
 pub(crate) fn follow_color_by(
     color_by: Res<crate::map::galaxy::spawn::ColorBy>,
+    view: Res<crate::map::paint::sizing::View>,
     mut filters: ResMut<Filters>,
 ) {
-    if filters.mask().drawn() != *color_by {
-        filters.edit_mask(|mask| mask.draw(*color_by));
+    let drawn =
+        (*view == crate::map::paint::sizing::View::Map).then_some(*color_by);
+    if filters.mask().drawn() != drawn {
+        filters.edit_mask(|mask| mask.draw(drawn));
     }
 }
 

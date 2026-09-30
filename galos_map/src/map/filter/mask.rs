@@ -144,12 +144,15 @@ impl ColorBy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mask {
     hidden: [u32; ColorBy::ALL.len()],
-    /// The axis the map is colored by, which is the one asked
+    /// The axis the map is colored by, which is the one asked, and nothing
+    /// in the realistic view, which colors the stars by their own light
     ///
-    /// A copy of [`ColorBy`], kept here because every pass that asks the
-    /// mask asks it about a system and not about the map, and is followed
-    /// from the resource by [`crate::map::filter::follow_color_by`].
-    drawn: ColorBy,
+    /// A copy of [`ColorBy`] and the view, kept here because every pass that
+    /// asks the mask asks it about a system and not about the map, and
+    /// followed from the resources by [`crate::map::filter::follow_color_by`].
+    /// Nothing drawn in a color is nothing a color key can hide: the mask
+    /// lets everything through, and keeps what it holds for the map view.
+    drawn: Option<ColorBy>,
     /// Whether the systems nobody lives in are hidden
     ///
     /// One flag shared by every axis: an uninhabited system has no reading on
@@ -162,7 +165,7 @@ impl Default for Mask {
     fn default() -> Mask {
         Mask {
             hidden: [0; ColorBy::ALL.len()],
-            drawn: ColorBy::Allegiance,
+            drawn: Some(ColorBy::Allegiance),
             uninhabited: false,
         }
     }
@@ -180,18 +183,22 @@ impl Mask {
     }
 
     /// Whether the mask is cutting anything off the map: anything hidden
-    /// along the axis drawn, or the systems nobody lives in
+    /// along the axis drawn, or the systems nobody lives in, while the map
+    /// is colored at all
     pub(crate) fn narrows(&self) -> bool {
-        self.uninhabited || self.hidden[self.drawn.slot()] != 0
+        self.drawn.is_some_and(|drawn| {
+            self.uninhabited || self.hidden[drawn.slot()] != 0
+        })
     }
 
-    /// The axis the mask is asked along
-    pub fn drawn(&self) -> ColorBy {
+    /// The axis the mask is asked along, nothing in the realistic view
+    pub fn drawn(&self) -> Option<ColorBy> {
         self.drawn
     }
 
-    /// Ask along `axis` from here on, keeping what every axis hides
-    pub(crate) fn draw(&mut self, axis: ColorBy) {
+    /// Ask along `axis` from here on, or not at all, keeping what every axis
+    /// hides
+    pub(crate) fn draw(&mut self, axis: Option<ColorBy>) {
         self.drawn = axis;
     }
 
@@ -200,9 +207,10 @@ impl Mask {
     /// [`None`] is a system nobody lives in, which only the uninhabited flag
     /// says anything about.
     pub(crate) fn admits(&self, politics: Option<Buckets>) -> bool {
+        let Some(drawn) = self.drawn else { return true };
         match politics {
             None => !self.uninhabited,
-            Some(buckets) => !self.hides(self.drawn, buckets.on(self.drawn)),
+            Some(buckets) => !self.hides(drawn, buckets.on(drawn)),
         }
     }
 
@@ -212,7 +220,7 @@ impl Mask {
     /// along. Everything where `drawn` is not the axis the mask asks, which
     /// is a frame between the coloring changing and the mask following it.
     pub(crate) fn keeps(&self, drawn: ColorBy) -> Keeps {
-        if !self.narrows() || drawn != self.drawn {
+        if !self.narrows() || Some(drawn) != self.drawn {
             return Keeps::ALL;
         }
         Keeps { hidden: self.hidden[drawn.slot()] }
@@ -221,7 +229,7 @@ impl Mask {
     /// The share of the systems nobody lives in that is let through: all of
     /// them or none
     pub(crate) fn keeps_uninhabited(&self) -> f32 {
-        match self.uninhabited {
+        match self.narrows() && self.uninhabited {
             true => 0.,
             false => 1.,
         }
@@ -356,11 +364,11 @@ mod tests {
         mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
         let prison = federal(Government::Prison, Security::High);
 
-        mask.draw(ColorBy::Security);
+        mask.draw(Some(ColorBy::Security));
         assert!(mask.admits(Some(prison)));
         assert!(!mask.narrows(), "a hidden prison narrowed a security map");
 
-        mask.draw(ColorBy::Government);
+        mask.draw(Some(ColorBy::Government));
         assert!(!mask.admits(Some(prison)));
         assert!(
             mask.admits(Some(federal(Government::Democracy, Security::High)))
@@ -373,7 +381,7 @@ mod tests {
         let mut mask = Mask::default();
         mask.set_uninhabited(true);
         for axis in ColorBy::ALL {
-            mask.draw(axis);
+            mask.draw(Some(axis));
             assert!(!mask.admits(None), "{axis:?} let empty space through");
         }
     }
@@ -436,7 +444,7 @@ mod tests {
     #[test]
     fn the_footer_answers_one_axis() {
         let mut mask = Mask::default();
-        mask.draw(ColorBy::Security);
+        mask.draw(Some(ColorBy::Security));
         mask.hide_all(ColorBy::Security);
         assert!(
             (0..Security::BUCKETS).all(|b| mask.hides(ColorBy::Security, b))
@@ -457,7 +465,7 @@ mod tests {
         let mut mask = Mask::default();
         mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
         mask.set(ColorBy::Security, [bucket_of(Security::Low)], true);
-        mask.draw(ColorBy::Government);
+        mask.draw(Some(ColorBy::Government));
 
         let drawn = mask.keeps(ColorBy::Government);
         assert_eq!(drawn.of(bucket_of(Government::Prison)), 0.);
@@ -466,5 +474,23 @@ mod tests {
         // A histogram read along another axis than the mask asks keeps all
         // of itself: the frame before the mask follows the coloring.
         assert_eq!(mask.keeps(ColorBy::Security), Keeps::ALL);
+    }
+
+    /// Not colored at all, the mask lets everything through and forgets
+    /// nothing: colored again, it hides what it hid
+    #[test]
+    fn an_uncolored_map_ignores_the_mask_and_keeps_it() {
+        let mut mask = Mask::default();
+        mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
+        mask.set_uninhabited(true);
+        let prison = federal(Government::Prison, Security::High);
+
+        mask.draw(None);
+        assert!(!mask.narrows());
+        assert!(mask.admits(Some(prison)) && mask.admits(None));
+        assert_eq!(mask.keeps_uninhabited(), 1.);
+
+        mask.draw(Some(ColorBy::Government));
+        assert!(!mask.admits(Some(prison)) && !mask.admits(None));
     }
 }
