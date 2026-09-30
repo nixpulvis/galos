@@ -105,18 +105,20 @@ seconds, whether or not the grid is shown. It has its own switch in the
 settings pane, under General beside the grid's. The rose is
 [`src/map/rose.rs`](./src/map/rose.rs).
 
-Everything picked out is marked on the rose by a small head pointing in at
-the hub: its bearing from the middle of the view, which says which way to
-turn for something off the screen. The needle is as long as the card is
-wide, so the rose is read as a sphere, and a bearing lands where the way to
-the thing meets it — on the ring for something level with the view's
-middle, at the needle's head for something straight above, and between for
-everything between. Each is painted in its star's color — the color key's
-hue on the map, the star's own tint in the realistic view — so the bearings
-tell apart which is which.
+Everything picked out is marked on the rose. The needle is as long as the
+card is wide, so the rose is read as a sphere, drawn at the scale the dashed
+ring says. Something near enough to lie inside that sphere is a circle where
+it is, to scale. Something further off is a small head pointing in at the
+hub, its bearing from the middle of the view, which says which way to turn
+for it: it lands where the way to the thing meets the sphere — on the ring
+for something level with the view's middle, at the needle's head for
+something straight above, and between for everything between. Each is
+painted in its star's color — the color key's hue on the map, the star's own
+tint in the realistic view — so the marks tell apart which is which.
 
 The rose answers the pointer. Clicking a point turns the camera to face along
-that axis and keeps its pitch, and clicking a bearing faces what it bears on.
+that axis and keeps its pitch, and clicking a mark turns the camera to look
+straight at what it marks, which then stands in the middle of the screen.
 Clicking `+Y` looks straight down onto the plane and `-Y` straight up from
 under it. Clicking the hub looks straight down, and clicking it again goes
 back to the pitch it was clicked from. Every turn eases, as a drag does.

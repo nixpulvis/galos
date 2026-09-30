@@ -98,6 +98,16 @@ fn tune_bloom(
 /// the camera passes over the point it is orbiting.
 pub(crate) const PITCH_LIMIT: f32 = FRAC_PI_2 - 1e-3;
 
+/// Which way the camera is turned at `yaw` and `pitch`
+///
+/// The one answer to it, for [`orbit_camera`] placing the camera and for
+/// whoever works out a yaw and a pitch to turn it to: the way into the
+/// screen is this taken to `-Z`, and it rises with the pitch as its sine,
+/// a pitch below the horizontal looking down.
+pub(crate) fn turned(yaw: f32, pitch: f32) -> Quat {
+    Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.)
+}
+
 /// How the camera is scaled: across its own `x`, mirrored
 ///
 /// The game's coordinates are left handed. Seen from the galactic north pole
@@ -1370,7 +1380,7 @@ pub(crate) fn orbit_camera(
     let yaw = eased(orbit.yaw, orbit.target_yaw, turn);
     let pitch = eased(orbit.pitch, orbit.target_pitch, turn);
 
-    let rotation = Quat::from_euler(EulerRot::YXZ, yaw, pitch, 0.);
+    let rotation = turned(yaw, pitch);
     // The center and the offset are both measured in the camera's own frame,
     // so inside a system both are fractions of a light year and the sum is
     // exact to well under a metre. Added onto a galactic position instead,
