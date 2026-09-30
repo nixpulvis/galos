@@ -82,6 +82,13 @@ struct Shot {
     /// What has left lately and when, so a star that comes back can be told
     /// from one that merely went.
     gone: std::collections::HashMap<u64, u32>,
+    /// A color to hide partway through, from `GALOS_SHOT_HIDE`: an axis and
+    /// buckets of it, `state:0,27` being the key's No state. The map is
+    /// colored along the axis throughout, and the buckets hidden on frame
+    /// `hide_at`, from `GALOS_SHOT_HIDE_AT`, so what a click on the key costs
+    /// can be profiled.
+    hide: Option<(crate::map::galaxy::spawn::ColorBy, Vec<usize>)>,
+    hide_at: u32,
 }
 
 /// Where the camera stands on one frame.
@@ -182,6 +189,23 @@ pub fn plugin(app: &mut App) {
         last: std::collections::HashSet::new(),
         gone: std::collections::HashMap::new(),
         real: std::env::var("GALOS_SHOT_VIEW").as_deref() == Ok("real"),
+        hide: std::env::var("GALOS_SHOT_HIDE").ok().map(|it| {
+            let (axis, buckets) = it
+                .split_once(':')
+                .expect("GALOS_SHOT_HIDE is an axis and buckets, `state:0,27`");
+            let axis = crate::map::galaxy::spawn::ColorBy::ALL
+                .into_iter()
+                .find(|offered| offered.name().eq_ignore_ascii_case(axis))
+                .unwrap_or_else(|| panic!("GALOS_SHOT_HIDE: no axis {axis}"));
+            let buckets = buckets
+                .split(',')
+                .map(|bucket| {
+                    bucket.parse().expect("GALOS_SHOT_HIDE: a bucket number")
+                })
+                .collect();
+            (axis, buckets)
+        }),
+        hide_at: number("GALOS_SHOT_HIDE_AT", 60.) as u32,
     });
     // After the field is built, so what is counted is what was painted this
     // frame and not what the last one left behind.
@@ -189,6 +213,7 @@ pub fn plugin(app: &mut App) {
         Update,
         capture.after(crate::map::paint::field::build_field),
     );
+    app.add_systems(Update, hide.after(capture));
     // The window's size, where the run names one, so a capture comes out the
     // same on any display: `GALOS_SHOT_WIDTH` by `GALOS_SHOT_HEIGHT` points,
     // at `GALOS_SHOT_SCALE` pixels a point.
@@ -210,6 +235,22 @@ pub fn plugin(app: &mut App) {
             }
         },
     );
+}
+
+/// Color along `GALOS_SHOT_HIDE`'s axis, and hide its buckets on the frame
+/// it names, as a click on the key would
+fn hide(
+    shot: Res<Shot>,
+    mut color_by: ResMut<crate::map::galaxy::spawn::ColorBy>,
+    mut filters: ResMut<crate::map::filter::Filters>,
+) {
+    let Some((axis, buckets)) = &shot.hide else { return };
+    color_by.set_if_neq(*axis);
+    if shot.frame == shot.hide_at {
+        filters
+            .edit_mask(|mask| mask.set(*axis, buckets.iter().copied(), true));
+        info!("shot: frame {} hid {axis:?} {buckets:?}", shot.frame);
+    }
 }
 
 fn capture(

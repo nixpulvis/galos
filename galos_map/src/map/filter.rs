@@ -1217,6 +1217,30 @@ impl Filters {
                     .all(|filter| matches!(filter, Filter::Faction { .. })))
     }
 
+    /// Whether what these filters admit is the sky with some colonies taken
+    /// out of it
+    ///
+    /// Only the mask asking, along a political axis, while the systems nobody
+    /// lives in are drawn and let through. Those are nearly every system, so
+    /// a cell's brightest are what it admits whatever the mask hides, and the
+    /// map is drawn as it is unfiltered, the hidden colonies dimmed or left
+    /// out. Anything else admitted stands anywhere in a payload's magnitude
+    /// order, and is found by reading cells whole and claiming it a patch of
+    /// sky apiece; see [`crate::map::galaxy::walk::fetch`] and
+    /// [`crate::map::galaxy::walk::reconcile`].
+    ///
+    /// **Claimed like a filter, it was the whole sky claimed.** Hiding No
+    /// state at thirty thousand light years back read every marked cell
+    /// whole and put every point of them to the claim, which grew with each
+    /// read that landed: measured over `.index/full`, frames went from 25 ms
+    /// to over 450 in the four hundred after the click, and had not settled.
+    pub(crate) fn only_thins_colonies(&self) -> bool {
+        !self.asked.iter().any(|active| active.enabled)
+            && self.mask.drawn().is_some_and(|axis| !axis.every_system())
+            && self.mask.draws_uninhabited()
+            && !self.mask.hides_uninhabited()
+    }
+
     /// The filters that pick systems out, which is every kind that does not
     /// narrow
     ///
@@ -2001,6 +2025,75 @@ mod tests {
                 !only_rows,
                 "{asked}: the rowless system"
             );
+        }
+    }
+
+    /// Only a mask hiding colonies along a political axis, the uninhabited
+    /// drawn and let through, draws as the unfiltered map does
+    ///
+    /// Anything else admitted has to be found anywhere in a cell's magnitude
+    /// order. Taken for thinning, a faction's systems or a hidden sky would
+    /// never be drawn; a thinning taken for a filter reads every marked cell
+    /// whole and claims every point of them, which hiding No state at thirty
+    /// thousand light years back took from 25 ms frames to over 450.
+    #[test]
+    fn only_a_mask_hiding_colonies_thins_the_sky() {
+        let no_state = || {
+            let mut filters = Filters::default();
+            filters.edit_mask(|mask| {
+                mask.draw(Some(ColorBy::State));
+                mask.set(ColorBy::State, [0, 27], true);
+            });
+            filters
+        };
+        let cases = [
+            ("No state hidden", no_state(), true),
+            (
+                "and the uninhabited",
+                {
+                    let mut filters = no_state();
+                    filters.edit_mask(|mask| mask.set_uninhabited(true));
+                    filters
+                },
+                false,
+            ),
+            (
+                "and a faction",
+                {
+                    let mut filters = no_state();
+                    filters.add(faction(7));
+                    filters
+                },
+                false,
+            ),
+            (
+                "while only colonies are drawn",
+                {
+                    let mut filters = no_state();
+                    filters.edit_mask(|mask| mask.draw_uninhabited(false));
+                    filters
+                },
+                false,
+            ),
+            (
+                "M stars hidden",
+                {
+                    let mut filters = Filters::default();
+                    filters.edit_mask(|mask| {
+                        mask.draw(Some(ColorBy::StarClass));
+                        mask.toggle(
+                            ColorBy::StarClass,
+                            &[usize::from(StarKind::M.code())],
+                        );
+                    });
+                    filters
+                },
+                false,
+            ),
+        ];
+        for (asked, filters, thins) in cases {
+            assert!(filters.asking(), "{asked} asked nothing");
+            assert_eq!(filters.only_thins_colonies(), thins, "{asked}");
         }
     }
 

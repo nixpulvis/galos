@@ -45,7 +45,9 @@ scenario() {
     in) echo "GALOS_SHOT_BACK=60000 GALOS_SHOT_ZOOM=-0.012" ;;
     pan) echo "GALOS_SHOT_BACK=3000 GALOS_SHOT_PAN=25" ;;
     turn) echo "GALOS_SHOT_BACK=3000 GALOS_SHOT_SPIN=0.01" ;;
-    *) echo "no scenario $1; there are still out in pan turn" >&2; exit 2 ;;
+    # Standing still, the key's No state hidden once the view has loaded.
+    hide) echo "GALOS_SHOT_BACK=3000 GALOS_SHOT_HIDE=state:0,27 GALOS_SHOT_HIDE_AT=120" ;;
+    *) echo "no scenario $1; there are still out in pan turn hide" >&2; exit 2 ;;
   esac
 }
 
@@ -69,7 +71,7 @@ if [ ${#compare[@]} -eq 1 ]; then
   shift
 fi
 scenarios=("$@")
-[ ${#scenarios[@]} -gt 0 ] || scenarios=(still out in pan turn)
+[ ${#scenarios[@]} -gt 0 ] || scenarios=(still out in pan turn hide)
 
 # Fly one scenario and capture it to `$out/<name>.tracy`.
 fly() {

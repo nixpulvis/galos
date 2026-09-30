@@ -590,9 +590,11 @@ pub(crate) fn fetch(
     // payload's magnitude order and [`reconcile`] drawing them first out of
     // whatever of it is held — or where all it admits is rows of the
     // populated table, every one holding a row; and the ones that draw
-    // along star class, drawing every class in its proportion.
+    // along star class, drawing every class in its proportion. Not under a
+    // mask that only thins the colonies, which admits a cell's brightest
+    // as the unfiltered map does; see [`Filters::only_thins_colonies`].
     let by_class = by_class(*color_by, &planned.0.mode, by_population);
-    let whole = if filters.asking() {
+    let whole = if filters.asking() && !filters.only_thins_colonies() {
         match filters.admits_only_rows() {
             true => Whole::Rows { by_class },
             false => Whole::Every,
@@ -1923,7 +1925,21 @@ pub(crate) fn reconcile(
     // impose: the admitted lists are dropped and the fill draws the payload in
     // its own order, which is what this did before the filters had a say.
     let asking = filtering.filters.asking();
-    orders.hold(cut.0, asking);
+    // Whether the excluded are wanted on screen at all. Below the dim they are
+    // never spawned ([`crate::map::galaxy::spawn`]) and queued to drop by this pass, so
+    // queueing them is a slot of the spawn budget spent on a system that
+    // cannot land and rebuilt again next frame.
+    let fill = !asking || filtering.excluded_are_drawn();
+    // Whether the mask only thins the colonies out of the sky, which is then
+    // drawn as it is unfiltered rather than claimed; see
+    // [`Filters::only_thins_colonies`].
+    let thins = asking && filtering.filters.only_thins_colonies();
+    // And where what it thins is still drawn, dimmed, the order is the
+    // payload's own and there is nothing to weigh: which of the drawn are
+    // dimmed is asked of the drawn alone ([`crate::map::filter`]). Weighed,
+    // every resident point was walked for a list admitting nearly all of it.
+    let unweighed = thins && fill;
+    orders.hold(cut.0, asking && !unweighed);
     // Whether a cell's budget is spent on the systems with a population, which is
     // what the sky says while it is read that way. The cells are the walk's to
     // choose either way — that is the index's own business and it knows
@@ -1943,11 +1959,6 @@ pub(crate) fn reconcile(
     // having one on the map cost seven times what any other filter does.
     // See [`Filters::prepared`].
     let asked_for = filtering.filters.prepared();
-    // Whether the excluded are wanted on screen at all. Below the dim they are
-    // never spawned ([`crate::map::galaxy::spawn`]) and queued to drop by this pass, so
-    // queueing them is a slot of the spawn budget spent on a system that
-    // cannot land and rebuilt again next frame.
-    let fill = !asking || filtering.excluded_are_drawn();
     // One clock for the pass, as the spawn batch takes one: a span's near edge
     // moves by a frame's worth in a frame.
     let wall = Utc::now();
@@ -2001,8 +2012,10 @@ pub(crate) fn reconcile(
     // already claimed is left to the field; see [`claim_admitted`]. An
     // arm's colonies stand apart and are drawn every one; the core's pile
     // up and are one mark to a patch. The excluded, where the dim draws
-    // them, fill what the cell's share leaves, as before.
-    let narrowed = asking && limit.is_none() && !by_population;
+    // them, fill what the cell's share leaves, as before. Not where the mask
+    // only thins the colonies: what it admits is nearly every system, and
+    // claimed, every one of them was a candidate.
+    let narrowed = asking && !thins && limit.is_none() && !by_population;
     // Whether what is on the map claims first: only while the view the
     // last claims were made under still stands; see [`claim_admitted`].
     let under = ClaimedUnder {
@@ -2250,15 +2263,17 @@ pub(crate) fn reconcile(
                 continue;
             }
             refreshed = republished.holds(id);
-            deferred |= !orders.walk(
-                id,
-                &cell.points,
-                &asked_for,
-                &populated,
-                wall,
-                by_population,
-                &mut verdicts,
-            );
+            if !unweighed {
+                deferred |= !orders.walk(
+                    id,
+                    &cell.points,
+                    &asked_for,
+                    &populated,
+                    wall,
+                    by_population,
+                    &mut verdicts,
+                );
+            }
             if by_class {
                 deferred |= !orders.stratify(id, &cell.points, &mut verdicts);
             }
