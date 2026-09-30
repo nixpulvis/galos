@@ -43,9 +43,10 @@ const CHIP: f32 = 13.;
 ///
 /// The key folded down to one line: a chip for each of the key's top-tier
 /// rows and one for the systems nobody lives in, each a one-click toggle, so
-/// the colors can be worked without the form out. The name opens the key for
-/// the rest. `popover` says whether to name the chips under the row while
-/// the pointer is over it, which is not wanted with the key itself on screen.
+/// the colors can be worked without the form out. Anywhere else on the row
+/// opens the key for the rest. `popover` says whether to name the chips under
+/// the row while the pointer is over it, which is not wanted with the key
+/// itself on screen.
 ///
 /// Answers what a click asked of the mask, carried out by the caller since
 /// the chips are drawn from it, and whether the key was asked for.
@@ -60,27 +61,33 @@ pub(super) fn color_row(
 ) -> (Option<Keyed>, bool) {
     let mask = filters.mask();
     let mut asked = None;
-    let mut opening = false;
     let height = ui.text_style_height(&egui::TextStyle::Body)
         + (ROW_PADDING + ROW_MARGIN) * 2.;
+
+    // The whole row opens the key, not only its name. Answered before what
+    // stands in it, so the chips and the close, answered over it, keep their
+    // own clicks.
+    let whole = ui
+        .interact(
+            egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), height),
+            ),
+            ui.id().with("color-row"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let opening = whole.clicked();
 
     let row = ui.horizontal(|ui| {
         ui.set_min_height(height);
         ui.add_space(ROW_PADDING);
-        let name = ui
-            .add(
-                egui::Label::new(
-                    egui::RichText::new(axis.name().to_uppercase())
-                        .small()
-                        .weak(),
-                )
-                .selectable(false)
-                .sense(egui::Sense::click()),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(axis.name().to_uppercase()).small().weak(),
             )
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        if name.clicked() {
-            opening = true;
-        }
+            .selectable(false),
+        );
         // Answered over the chip once painted, the swatch itself only
         // sensing the pointer.
         let chip = |ui: &mut Ui, swatch: Swatch, id| {
@@ -1382,6 +1389,68 @@ mod tests {
             color_summary(ColorBy::Allegiance, &mask, None).0,
             "10 hidden"
         );
+    }
+
+    /// A click anywhere on the color row opens the key, and one on a chip
+    /// toggles the chip without opening it
+    ///
+    /// The name alone was once all that opened it, and the row reads as one
+    /// control: a press on the room between the chips and the summary did
+    /// nothing.
+    #[test]
+    fn the_whole_color_row_opens_the_key_but_a_chip_toggles() {
+        let filters = Filters::default();
+        let ctx = crate::testing::context();
+        let pass = |input| {
+            let mut answered = (None, false);
+            let output = ctx.run_ui(input, |ui| {
+                answered =
+                    color_row(ui, &filters, ColorBy::Allegiance, None, false);
+            });
+            (answered, output)
+        };
+        let click = |at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+                ..Default::default()
+            }
+        };
+
+        // The first pass places the row, and says where its first chip went:
+        // a hue hiding nothing is painted as a filled square a chip across.
+        let (_, placed) = pass(egui::RawInput::default());
+        let chip = placed
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.size() == egui::Vec2::splat(CHIP) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("a chip painted");
+
+        // Past the last chip, well short of the summary at the far end.
+        let between = egui::pos2(chip.left() + 300., chip.center().y);
+        let ((asked, opening), _) = pass(click(between));
+        assert!(opening, "a click on the row's room opened nothing");
+        assert!(asked.is_none(), "and asked nothing of the mask");
+
+        let ((asked, opening), _) = pass(click(chip.center()));
+        assert!(asked.is_some(), "the chip toggled nothing");
+        assert!(!opening, "and the key opened under it");
     }
 
     // Only the debug-only passes below use it: egui compiles its

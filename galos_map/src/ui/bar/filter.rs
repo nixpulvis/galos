@@ -102,7 +102,7 @@ pub(crate) struct FilterBar<'w, 's> {
 /// What the color key is drawn from, beside the mask [`Filters`] holds
 #[derive(SystemParam)]
 pub(crate) struct ColorKey<'w, 's> {
-    /// Which axis the map is colored by, which the key's tabs choose
+    /// Which axis the map is colored by, which the key's dropdown chooses
     ///
     /// Set only on a change, since the blobs are rebuilt on one.
     pub(in crate::ui) color_by: ResMut<'w, ColorBy>,
@@ -281,8 +281,9 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
     );
 }
 
-/// The color key: a tab for each axis, a row for each of its values, the
-/// systems nobody lives in, and what can be done to the axis at once
+/// The color key: a dropdown of the axes, a row for each of the chosen one's
+/// values, the systems nobody lives in, and what can be done to the axis at
+/// once
 ///
 /// Answers what a click asked of the mask, carried out by the caller since
 /// the rows are drawn from the mask it changes.
@@ -299,39 +300,26 @@ pub(super) fn key(
     other_open: &mut bool,
 ) -> Option<Keyed> {
     ui.add_space(FIELD_GAP);
-    // Wrapped, so a narrower bar folds the eight axes onto a second line
-    // rather than running them off its edge.
-    ui.horizontal_wrapped(|ui| {
-        for offered in ColorBy::ALL {
-            let text =
-                egui::RichText::new(offered.name().to_uppercase()).small();
-            // Star class is not offered while only colonies are drawn; see
-            // `crate::map::filter::follow_color_by`.
-            if offered.every_system() && !mask.draws_uninhabited() {
-                ui.add(egui::Label::new(text.weak().strikethrough()))
-                    .on_hover_text(
-                        "Star class colors every system, and only colonies \
-                         are drawn while scaling with population",
-                    );
-                continue;
+    // One control whatever the bar's width: eight axes as tabs wrapped onto
+    // a second line, leaving one of them alone under the rest. Unlabeled, the
+    // axis it shows being label enough.
+    egui::ComboBox::from_id_salt("color-by")
+        .selected_text(axis.name())
+        .show_ui(ui, |ui| {
+            for offered in ColorBy::ALL {
+                // Star class is not offered while only colonies are drawn;
+                // see `crate::map::filter::follow_color_by`.
+                let drawn = !offered.every_system() || mask.draws_uninhabited();
+                ui.add_enabled_ui(drawn, |ui| {
+                    ui.selectable_value(&mut *axis, offered, offered.name())
+                })
+                .inner
+                .on_disabled_hover_text(
+                    "Star class colors every system, and only colonies are \
+                     drawn while scaling with population",
+                );
             }
-            let text = if offered == *axis {
-                text.strong().underline()
-            } else {
-                text.weak()
-            };
-            let tab = ui
-                .add(
-                    egui::Label::new(text)
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if tab.clicked() {
-                *axis = offered;
-            }
-        }
-    });
+        });
     let axis = *axis;
     let mut asked = None;
 

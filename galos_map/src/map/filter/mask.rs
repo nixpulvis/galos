@@ -85,7 +85,7 @@ const _: () = {
 };
 
 impl ColorBy {
-    /// Every axis the map can be colored by, in the order the key tabs them
+    /// Every axis the map can be colored by, in the order the key lists them
     pub const ALL: [ColorBy; 8] = [
         ColorBy::Allegiance,
         ColorBy::Government,
@@ -230,7 +230,7 @@ impl ColorBy {
         }
     }
 
-    /// What the axis is called, as a tab or a row says it
+    /// What the axis is called, as the dropdown or a row says it
     pub fn name(self) -> &'static str {
         match self {
             ColorBy::Allegiance => "Allegiance",

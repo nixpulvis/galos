@@ -145,10 +145,10 @@ state; each power under the allegiance it answers to, in that allegiance's
 color; four values for security, anarchy being the absence of security; and
 the Powerplay standings down the ladder of a hold, a firmer one bluer — with
 how many colonies each counts, leaving out any value no colony holds, and its
-tabs are what choose the coloring. Clicking a value hides the systems drawn in
-it; alt, ctrl or command clicking one shows it alone. Uninhabited systems have
-a row of their own. A system's panel names its state, power and standing
-beside its politics.
+dropdown is what chooses the coloring. Clicking a value hides the
+systems drawn in it; alt, ctrl or command clicking one shows it alone.
+Uninhabited systems have a row of their own. A system's panel names its state,
+power and standing beside its politics.
 
 Star class is the one coloring of every system rather than of the colonies:
 each system in the color of the star a ship arrives at, the main sequence
@@ -181,7 +181,8 @@ Opacity setting, or not loaded at all at zero.
 
 With the form shut the key folds into the color row, the first row under the
 bar: a swatch a value to click, and a count of what is hidden with an `x`
-to show it all again. Hovering it names the colors. While scaling with
+to show it all again. Hovering it names the colors; a click anywhere on it
+but a swatch or the `x` opens the whole key. While scaling with
 population only colonies are drawn, so Uninhabited leaves the key until it
 is off. The realistic view colors
 stars by their own light, so it shows no key and ignores what the key hides,
