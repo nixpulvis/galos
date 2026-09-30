@@ -29,20 +29,18 @@ pub(crate) fn plugin(app: &mut App) {
 
 /// Hide the chrome, or bring it back
 ///
-/// `F2`, which is the key beside the one that says what the keys do and
-/// the one no desktop has claimed for anything. Escape brings it back as
-/// well — see [`shut_search`] — since a reader who hid it and does not
-/// remember the key looks there first.
+/// `I`, for the interface, and bare: a letter every keyboard has, where a
+/// function key is not on every one and is under a modifier on many. Escape
+/// brings it back as well — see [`shut_search`] — since a reader who hid it
+/// and does not remember the key looks there first.
 ///
-/// Not while typing, which cannot happen with the chrome put away and is
-/// what a function key pressed into a field with the chrome up should leave
-/// alone.
+/// Not while typing, a letter pressed into a field being part of a name.
 fn toggle_chrome(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
     mut hidden: ResMut<ChromeHidden>,
 ) {
-    if !keyboard.typing && keys.just_pressed(KeyCode::F2) && bare(&keys) {
+    if !keyboard.typing && keys.just_pressed(KeyCode::KeyI) && bare(&keys) {
         hidden.0 = !hidden.0;
     }
 }
@@ -259,14 +257,24 @@ mod tests {
         app.world().resource::<ChromeHidden>().0
     }
 
-    /// `F2` puts the chrome away and brings it back
+    /// `I` puts the chrome away and brings it back
     #[test]
-    fn f2_hides_the_chrome_and_brings_it_back() {
+    fn i_hides_the_chrome_and_brings_it_back() {
         let mut app = barred();
 
-        pressed(&mut app, &[KeyCode::F2]);
+        pressed(&mut app, &[KeyCode::KeyI]);
         assert!(hidden(&app));
-        pressed(&mut app, &[KeyCode::F2]);
+        pressed(&mut app, &[KeyCode::KeyI]);
+        assert!(!hidden(&app));
+    }
+
+    /// `I` typed into a field is a letter of a name, not a switch
+    #[test]
+    fn an_i_typed_into_a_field_leaves_the_chrome_up() {
+        let mut app = barred();
+        type_a_name(&mut app);
+
+        pressed(&mut app, &[KeyCode::KeyI]);
         assert!(!hidden(&app));
     }
 

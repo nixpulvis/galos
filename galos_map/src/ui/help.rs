@@ -27,12 +27,12 @@ const BINDINGS: [(&str, &str); 17] = [
     ("L", "Show or hide the labels"),
     ("O", "Show or hide the orbit lines"),
     ("G", "Show or hide the grid"),
+    ("I", "Hide or show the interface, leaving the rose and color key"),
     ("/ or Shift-S", "Search the box for a system"),
     ("Shift-F", "Ask the box for a faction to filter on"),
     ("Shift-R", "Ask the box for systems to route between"),
     ("Esc", "Put away the bindings, or everything the chrome has open"),
     ("F1 or ?", "Show or hide these bindings"),
-    ("F2", "Hide or show the interface, leaving the rose and color key"),
     ("F3", "Show or hide the diagnostics window"),
 ];
 

@@ -55,8 +55,8 @@ pub(super) fn eye(ctx: &Context, at: egui::Pos2, hidden: &mut bool) {
             paint_eye(ui.painter(), rect, ink, !*hidden);
             response
                 .on_hover_text(match *hidden {
-                    true => "Show the interface (F2)",
-                    false => "Hide the interface (F2)",
+                    true => "Show the interface (I)",
+                    false => "Hide the interface (I)",
                 })
                 .clicked()
         })

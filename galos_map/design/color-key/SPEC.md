@@ -277,7 +277,8 @@ click a chip to toggle
 ### 4.4 Hide interface
 
 New. A second square button under the gear (an eye with a slash) and a key
-binding (`F2` is free; `F1` is help and `F3` diagnostics). Hidden, the map
+binding (bare `I`, for interface: not a function key, which not every
+keyboard has). Hidden, the map
 draws only: the rose, the bare mini legend (4.3), and a faint eye button in
 the top left to bring the chrome back. `Esc` also brings it back. Names, grid
 and the time strip keep their own switches; this hides the bar, gear, rows and
@@ -337,7 +338,7 @@ Indents in the key: top-tier rows at 32 px, children of a collapsible group at
 | `src/ui/bar/applied.rs` | the color row first; the "through" count includes the mask |
 | `src/ui/settings.rs` | remove Color By; update DimTo help text |
 | `src/ui/mod.rs`, new `src/ui/legend.rs` | mini legend (popover and bare), hide interface |
-| `src/map/keys.rs`, `README.md` | `F2` binding and its row in the table |
+| `src/ui/keys.rs`, `src/ui/help.rs`, `README.md` | `I` binding and its row in the table |
 
 
 ## 7. Plan

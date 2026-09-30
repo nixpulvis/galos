@@ -122,7 +122,7 @@ not loaded at all at zero.
 With the form shut the key folds into the color row, the first row under the
 bar: a chip a value to click, a box to lift everything it hides without
 forgetting it, and a count of what is hidden. Hovering it names the chips.
-`F2`, or the eye under the gear, puts the interface away and leaves the rose
+`I`, or the eye under the gear, puts the interface away and leaves the rose
 and the key standing over the map. The key is
 [`src/map/filter/key.rs`](./src/map/filter/key.rs) and the mask it sets
 [`src/map/filter/mask.rs`](./src/map/filter/mask.rs).
@@ -168,12 +168,12 @@ open rail takes both, rather than asking to be pressed twice.
 | `L` | Show or hide the labels |
 | `O` | Show or hide the orbit lines |
 | `G` | Show or hide the grid |
+| `I` | Hide or show the interface, leaving the rose and color key |
 | `/` or `Shift-S` | Search the box for a system |
 | `Shift-F` | Ask the box for a faction to filter on |
 | `Shift-R` | Ask the box for systems to route between |
 | `Esc` | Put away the bindings, or everything the chrome has open |
 | `F1` or `?` | Show or hide these bindings |
-| `F2` | Hide or show the interface, leaving the rose and color key |
 | `F3` | Show or hide the diagnostics window |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so
