@@ -58,14 +58,17 @@
 //!
 //! # Bearings
 //!
-//! Whatever is picked out is marked on the ring by a head pointing in at the
-//! hub, in the color its star is painted in: the way it lies from the
-//! middle of the view, laid flat onto the plane, as a chart marks the bearing
-//! to a light. On the card, so it turns and foreshortens with it, and a
-//! bearing on something ahead or behind lands on the near or far side of the
-//! ring and is drawn as strongly as that side is. Most use where the thing is
-//! off the screen, which is where nothing else on the map says which way it
-//! went.
+//! Whatever is picked out is marked by a head pointing in at the hub, in the
+//! color its star is painted in: the way it lies from the middle of the view,
+//! as a chart marks the bearing to a light. Not laid flat onto the card. The
+//! needle is a diameter as long as the card's, so the rose is a sphere drawn
+//! by three of its diameters, and a bearing is where the way to the thing
+//! meets that sphere: on the ring for something level with the middle of the
+//! view, at the needle's head for something straight over it, and between
+//! for everything between. So it turns with the rose, and something ahead or
+//! behind lands on the near or far half and is drawn as strongly as that half
+//! is. Most use where the thing is off the screen, which is where nothing else
+//! on the map says which way it went.
 //!
 //! The star's color rather than the selection's, since every bearing is on
 //! something selected and the selection's blue would say only that. The
@@ -694,21 +697,22 @@ pub(crate) fn draw_rose(
     let shown: [f32; 6] =
         std::array::from_fn(|index| names[index].2 * kept[index]);
 
-    // The bearing on each thing picked out, as the plane at the middle of the
-    // view lies to it: which way it is from what is being looked at, laid
-    // flat, and nothing for a thing straight over or under the middle, which
-    // has no bearing from it. Faded in over the last few pixels it could be
-    // said to lie off the middle by, so a mark does not spin round the card
-    // as the view passes over what it points at.
+    // The bearing on each thing picked out: which way it is from what is
+    // being looked at, in all three of the rose's axes. The card and the
+    // needle are three diameters of one sphere, and a bearing is a point on
+    // it — on the ring for a thing level with the middle of the view, at the
+    // needle's head for one straight over it, and on the way between for
+    // anything between. Faded in over the last few pixels it could be said
+    // to lie off the middle by, so a mark does not wander the sphere as the
+    // view passes over what it points at.
     let center = orbit.center();
     let bearings: Vec<Option<(Vec3, f32, Srgba)>> = (0..selection.len())
         .map(|index| {
             let picked = selection.get(index)?;
             let off = picked.position() - center;
-            let level = Vec2::new(off.x as f32, off.z as f32);
-            let pixels = f64::from(level.length()) / per_light_year;
-            let there = smoothstep(1., 4., pixels as f32);
-            let way = level.try_normalize()?;
+            let there =
+                smoothstep(1., 4., (off.length() / per_light_year) as f32);
+            let way = off.as_vec3().try_normalize()?;
             // The system itself, or the one a body is in, where the map
             // has it; see [`star_color`].
             let system = match picked {
@@ -718,16 +722,24 @@ pub(crate) fn draw_rose(
                     .and_then(|entity| systems.get(entity).ok()),
             };
             let color = star_color(system, *view, *color_by);
-            (there > 0.).then_some((Vec3::new(way.x, 0., way.y), there, color))
+            (there > 0.).then_some((way, there, color))
         })
         .collect();
-    // The three corners of the mark bearing on `way`: a point on the ring,
-    // and a head standing out past it, laid in the card so it turns and
-    // foreshortens with it.
+    // The mark bearing on `way`: where on the sphere it lands, and a head
+    // standing out past there, flat on the screen as the needle's is and
+    // pointing in at the hub. Its three corners, and how much of it is
+    // head: a point turned end on lands on the hub with no way in to point
+    // along, and is a dot there instead, as the needle end on is.
     let bearing_mark = |way: Vec3| {
-        let side = Vec3::Y.cross(way) * BEARING.y;
-        let back = way * (CARD + CLEAR + BEARING.x);
-        [way * (CARD + CLEAR), back + side, back - side]
+        let on = at(way * CARD);
+        let out = flat(way);
+        let headed = smoothstep(0.15, 0.35, out.length());
+        let out = out.normalize_or(Vec2::NEG_Y);
+        let (out, side) =
+            (egui::vec2(out.x, out.y), egui::vec2(-out.y, out.x) * BEARING.y);
+        let tip = on + out * CLEAR;
+        let back = tip + out * BEARING.x;
+        (on, [tip, back + side, back - side], headed)
     };
 
     // What the pointer can be over, most wanted first; see [`aimed`]. A name
@@ -750,8 +762,11 @@ pub(crate) fn draw_rose(
         if let Some((way, there, _)) = bearing
             && *there >= PICKABLE
         {
-            let rect = egui::Rect::from_points(&bearing_mark(*way).map(at));
-            pieces.push((Aim::Bearing(index), rect.expand(CLEAR * 2.)));
+            let (on, head, _) = bearing_mark(*way);
+            let rect = egui::Rect::from_points(&head).union(
+                egui::Rect::from_center_size(on, egui::Vec2::splat(REACH)),
+            );
+            pieces.push((Aim::Bearing(index), rect.expand(CLEAR)));
         }
     }
     for (index, (up_end, end)) in
@@ -848,6 +863,33 @@ pub(crate) fn draw_rose(
         if north_near { (south, north) } else { (north, south) };
     needle(under_hub);
 
+    // The bearings, each in the color its star is painted in. Those on the
+    // far half of the sphere go under the card, painted here, and those on
+    // the near half over the hub, painted after it: which half a bearing is
+    // on is half of what it says.
+    let bearing = |index: usize, near: bool| {
+        let Some((way, there, color)) = bearings[index] else { return };
+        if (nearness(way) >= 0.5) != near {
+            return;
+        }
+        let share = if is_lit(Aim::Bearing(index)) { 1. } else { depth(way) };
+        let (on, head, headed) = bearing_mark(way);
+        let color = |share: f32| color32(going(color, share * there));
+        if headed > 0. {
+            painter.add(egui::Shape::convex_polygon(
+                head.to_vec(),
+                color(share * headed),
+                egui::Stroke::NONE,
+            ));
+        }
+        if headed < 1. {
+            painter.circle_filled(on, BEARING.y, color(share * (1. - headed)));
+        }
+    };
+    for index in 0..bearings.len() {
+        bearing(index, false);
+    }
+
     // The ring the bearings are marked on, every fifteen degrees and longer
     // every forty five.
     const ROUND: usize = 96;
@@ -890,18 +932,6 @@ pub(crate) fn draw_rose(
         ));
     }
 
-    // The bearings, over the ring they stand on and under the points, each
-    // in the color its star is painted in.
-    for (index, bearing) in bearings.iter().enumerate() {
-        let Some((way, there, color)) = *bearing else { continue };
-        let share = if is_lit(Aim::Bearing(index)) { 1. } else { depth(way) };
-        painter.add(egui::Shape::convex_polygon(
-            bearing_mark(way).map(at).to_vec(),
-            color32(going(color, share * there)),
-            egui::Stroke::NONE,
-        ));
-    }
-
     // The points, each a bare line from the hub out to its tip.
     let point = |way: Vec3, reach: f32, lit: bool| {
         let (width, share) =
@@ -932,6 +962,10 @@ pub(crate) fn draw_rose(
                 );
             }
         }
+    }
+
+    for index in 0..bearings.len() {
+        bearing(index, true);
     }
 
     needle(over_hub);
