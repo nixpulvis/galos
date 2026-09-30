@@ -44,6 +44,7 @@ use galos_index::read::resident::Resident;
 use galos_index::read::screen::{Crowded, Empty, Share};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::io;
@@ -1232,11 +1233,30 @@ fn stratified_first<'a>(
 /// it — where a share of each cell's count drew the arm's colonies a mark a
 /// cell at best and piled the core's up into a white disc.
 ///
-/// **Offered in rounds across the cells**, as [`Unspawned`] is: every
-/// cell's first before any cell's second, coarse before fine and scattered
-/// by address within a round. Offered cell by cell in the plan's order, the
-/// ceiling ran out partway through the walk and the cells after it drew
-/// nothing, a whole side of the view at once.
+/// **Offered in proportion across the cells**, as the strata are within
+/// one ([`strata`]): the `j`th of a cell's `n` admitted falls due at
+/// `(j + d) / n`, and they are claimed as they fall due, coarse before fine
+/// and scattered by address among those due together ([`rank`]). Where the
+/// ceiling cuts, every cell has drawn the same share of what it admits,
+/// brightest first, so the marks thin evenly and stand as dense as the
+/// field under them says the colonies are. Where it does not — a view wide
+/// enough that the lattice is what thins — every colony that stands apart
+/// is drawn, and the order only settles which of two in one patch it is.
+///
+/// `d` is the cell's own place in `0..1`, as the share's dither is
+/// ([`Share::wanted`]): a patch of small cells each due a third of a mark
+/// draws one in a third of them rather than one in none.
+///
+/// The other rules each drew a gap. Offered cell by cell in the plan's
+/// order, the ceiling ran out partway through the walk and the cells after
+/// it drew nothing, a whole side of the view at once. Offered a round
+/// apiece, a big cell drew no more than a small one, and one holding
+/// hundreds over a wide patch stood among small ones drawn whole as a false
+/// gap — measured over `.index/full` at eight hundred light years back,
+/// columns of sky drawing anywhere from 8% to 32% of their colonies, where
+/// in proportion they draw 12% to 16%. Offered by density, what each cell's
+/// box made of its colonies decided it, and clusters of small cells drew
+/// thinner than the sky about them.
 ///
 /// `weigh` brings a cell's verdicts (and its strata, along star class)
 /// forward, answering whether they are current; a cell it puts off offers
@@ -1256,72 +1276,111 @@ fn claim_admitted(
     ceiling: usize,
 ) -> Vec<Vec<u32>> {
     let _zone = info_span!("claiming the admitted").entered();
-    let mut offered: Vec<Claim> = Vec::new();
+    // Weighed first, every cell the budget reaches, so the orders are read
+    // below without holding them open across a weighing.
+    let mut weighed: Vec<(u32, &[CellSystem])> = Vec::new();
     for &offer in weighing {
         let mark = &marks[offer as usize];
         if !reaches(mark.id) {
             continue;
         }
         let Some(cell) = resident.0.cell(mark.id) else { continue };
-        if !weigh(orders, mark.id, &cell.points) {
-            continue;
-        }
-        let admits = orders.admits(mark.id);
-        let ranked = rank(mark.id, true);
-        let mut offer_at = |round: usize, index: u32| {
-            let at = cell.points[index as usize].position;
-            // The bubble before the lattice, a system the frame will not
-            // draw being one that must not claim sky and leave it empty.
-            if !bubble
-                .is_some_and(|radius| center.distance(DVec3::from(at)) > radius)
-            {
-                offered.push(Claim {
-                    round: round as u32,
-                    rank: ranked,
-                    offer,
-                    index,
-                    at,
-                });
-            }
-        };
-        match orders.strata(mark.id) {
-            Some(strata) => strata
-                .iter()
-                .filter(|index| admits.binary_search(index).is_ok())
-                .enumerate()
-                .for_each(|(round, &index)| offer_at(round, index)),
-            None => admits
-                .iter()
-                .enumerate()
-                .for_each(|(round, &index)| offer_at(round, index)),
+        if weigh(orders, mark.id, &cell.points) {
+            weighed.push((offer, &cell.points));
         }
     }
-    offered.sort_unstable_by_key(|claim| (claim.round, claim.rank));
+    // Each weighed cell's admitted in the order it draws them, in the
+    // weighing's order, which is [`rank`]'s. Along star class that is the
+    // strata's order and has to be worked out; otherwise it is the admitted
+    // list itself, brightest first.
+    //
+    // And only what stands inside the bubble, so a cell the edge cuts is
+    // weighed for what it can draw: counted whole, its outside took places
+    // in its order and was then passed over, and the bubble's rim drew
+    // thinner than the sky within it.
+    let inside = |at: [f64; 3]| {
+        !bubble.is_some_and(|radius| center.distance(DVec3::from(at)) > radius)
+    };
+    let cells: Vec<_> = weighed
+        .into_iter()
+        .filter_map(|(offer, points)| {
+            let id = marks[offer as usize].id;
+            let admits = orders.admits(id);
+            let bounds = id.bounds();
+            let whole = bubble.is_none_or(|radius| {
+                center.distance(DVec3::from(bounds.center()))
+                    + id.edge_ly() * 3f64.sqrt() / 2.
+                    <= radius
+            });
+            let kept = |index: &u32| inside(points[*index as usize].position);
+            let order = match orders.strata(id) {
+                Some(strata) => Cow::Owned(
+                    strata
+                        .iter()
+                        .copied()
+                        .filter(|index| admits.binary_search(index).is_ok())
+                        .filter(|index| whole || kept(index))
+                        .collect(),
+                ),
+                None if whole => Cow::Borrowed(admits),
+                None => {
+                    Cow::Owned(admits.iter().copied().filter(kept).collect())
+                }
+            };
+            (!order.is_empty()).then_some((offer, points, order))
+        })
+        .collect();
+    // Claimed as they fall due, in `DUE` steps: a counting sort of every
+    // candidate by its step, the cells in rank order within one. Linear in
+    // the candidates, where sorting them outright took a zooming frame's
+    // pass from 9.4 ms to 14.8 at the median at nine thousand light years
+    // back, measured over `.index/full` with the uninhabited hidden.
+    const DUE: usize = 1024;
+    let dither: Vec<f32> = cells
+        .iter()
+        .map(|(offer, _, _)| {
+            let id = marks[*offer as usize].id;
+            let mixed = id.morton().wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            (mixed >> 40) as f32 / (1u64 << 24) as f32
+        })
+        .collect();
+    let due = |cell: usize, j: usize| {
+        let n = cells[cell].2.len() as f32;
+        (((j as f32 + dither[cell]) / n * DUE as f32) as usize).min(DUE - 1)
+    };
+    let mut starts = vec![0u32; DUE + 1];
+    for (cell, (_, _, order)) in cells.iter().enumerate() {
+        for j in 0..order.len() {
+            starts[due(cell, j) + 1] += 1;
+        }
+    }
+    for step in 0..DUE {
+        starts[step + 1] += starts[step];
+    }
+    let mut queued = vec![(0u32, 0u32); starts[DUE] as usize];
+    let mut next = starts;
+    for (cell, (_, _, order)) in cells.iter().enumerate() {
+        for j in 0..order.len() {
+            let step = due(cell, j);
+            queued[next[step] as usize] = (cell as u32, j as u32);
+            next[step] += 1;
+        }
+    }
     let mut claims = vec![Vec::new(); marks.len()];
     let mut claimed = 0usize;
-    for claim in offered {
+    for (cell, j) in queued {
         if claimed >= ceiling {
             break;
         }
-        if crowded.claim(claim.at) {
-            claims[claim.offer as usize].push(claim.index);
+        let (offer, points, order) = &cells[cell as usize];
+        let index = order[j as usize];
+        let at = points[index as usize].position;
+        if crowded.claim(at) {
+            claims[*offer as usize].push(index);
             claimed += 1;
         }
     }
     claims
-}
-
-/// An admitted point offered its patch of sky; see [`claim_admitted`]
-struct Claim {
-    /// Its place among its cell's admitted, brightest first.
-    round: u32,
-    /// Its cell's; see [`rank`].
-    rank: (bool, u8, u64),
-    /// Its cell's place in the plan.
-    offer: u32,
-    /// Which point of the cell's payload it is.
-    index: u32,
-    at: [f64; 3],
 }
 
 /// What a populated choice was made against
@@ -2037,9 +2096,12 @@ pub(crate) fn reconcile(
                 .wanted(mark.slice as usize, id)
                 .max(usize::from(is_lit(offer as u32))),
         };
-        // A narrowed cell draws what it admits wherever that stands apart,
-        // share or no share; see [`Claims`].
-        if asked == 0 && !narrowed {
+        // A narrowed cell draws what won its patches of sky, share or no
+        // share; see [`claim_admitted`]. One that won none and whose share
+        // draws nothing is skipped here as any other, before its payload is
+        // looked up.
+        let won = narrowed && !claims[offer].is_empty();
+        if asked == 0 && !won {
             continue;
         }
         // Taken rather than walked lazily, since the two sources are
@@ -2078,7 +2140,7 @@ pub(crate) fn reconcile(
                     })
                 }
             };
-            if target == 0 && !narrowed {
+            if target == 0 && !won {
                 continue;
             }
             refreshed = republished.holds(id);
@@ -3104,6 +3166,86 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             3,
             "not every colony that stands apart, or more than one of a pile"
+        );
+    }
+
+    /// Where the ceiling cuts, every cell draws the same share of what it
+    /// admits, whatever its size
+    ///
+    /// The reported trouble: a false gap in a filtered view. Offered a round
+    /// apiece, a cell holding hundreds drew no more than one holding a
+    /// dozen, and stood among small ones drawn whole as a thin patch in its
+    /// own glow. A hundred and ten colonies under a ceiling of eleven draw a
+    /// tenth of each cell.
+    #[test]
+    fn the_ceiling_takes_every_cell_alike() {
+        use crate::map::filter::{Filter, Filters};
+
+        let big = CellId::of_point([0., 0., 0.], 9);
+        let small = CellId::of_point([0., 0., 0.], 12);
+        let row = |from: u64, count: u64, z: f64| -> Vec<CellSystem> {
+            (0..count)
+                .map(|k| CellSystem {
+                    position: [k as f64 * 2., 0., z],
+                    ..point(from + k)
+                })
+                .collect()
+        };
+        let mut resident = ResidentCells::default();
+        resident.0.insert(big, row(1, 100, 0.));
+        resident.0.insert(small, row(1_000, 10, 7.));
+        let marks: Vec<galos_index::read::walk::MarkRef> = [big, small]
+            .into_iter()
+            .map(|id| galos_index::read::walk::MarkRef {
+                id,
+                slice: 1,
+                at: [0.; 3],
+            })
+            .collect();
+        let mut filters = Filters::default();
+        filters.add(Filter::Systems {
+            label: "every one".into(),
+            systems: (1..=100).chain(1_000..1_010).collect(),
+        });
+        let prepared = filters.prepared();
+        let populated = Populated::default();
+        // Close enough that a patch of sky is well under the two light
+        // years between any two of them.
+        let mut orbit = OrbitCamera::stood_back(100.);
+        orbit.looks_at(DVec3::ZERO);
+        orbit.stands_at(DVec3::new(0., 0., 100.));
+        let view = crate::map::galaxy::plan::view(
+            &orbit,
+            &crate::map::galaxy::tests::seeing(),
+        )
+        .expect("a view");
+        let mut budget = VERDICT_BUDGET;
+        let claims = claim_admitted(
+            &marks,
+            &weighing(&marks),
+            &resident,
+            &mut PointOrders::default(),
+            |orders, id, points| {
+                orders.walk(
+                    id,
+                    points,
+                    &prepared,
+                    &populated,
+                    Utc::now(),
+                    false,
+                    &mut budget,
+                )
+            },
+            |_| true,
+            DVec3::ZERO,
+            None,
+            Crowded::about(&view, [0.; 3]),
+            11,
+        );
+        assert_eq!(
+            [claims[0].len(), claims[1].len()],
+            [10, 1],
+            "the ceiling was not shared in proportion"
         );
     }
 
