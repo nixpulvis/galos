@@ -188,6 +188,21 @@ impl ColorBy {
         }
     }
 
+    /// The color a key swatch of `hue` is filled with along this axis
+    ///
+    /// Along star class at its class's
+    /// [`star_level`](crate::map::paint::glow::star_level), under the
+    /// brightest of them, so the key's swatches stand in the order the map's
+    /// marks do. Every other axis draws its hues at one level, and fills
+    /// them full.
+    pub(crate) fn swatch(self, hue: Hue) -> bevy::color::Srgba {
+        use crate::map::paint::glow::{STAR_LEVEL_TOP, star_level};
+        match self {
+            ColorBy::StarClass => hue.swatch(star_level(hue) / STAR_LEVEL_TOP),
+            _ => hue.swatch(1.),
+        }
+    }
+
     /// A cell's colonies counted along this axis, bucket by bucket
     ///
     /// Nothing along star class: a colony's histogram carries no star, and

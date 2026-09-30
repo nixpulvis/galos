@@ -123,17 +123,25 @@ beside its politics.
 
 Star class is the one coloring of every system rather than of the colonies:
 each system in the color of the star a ship arrives at, the main sequence
-through the colors those stars shade through — O and B blue, A and F cyan,
-G yellow, K orange, M red, every one of them a star a fuel scoop can use —
-then what cannot be scooped, remnants magenta and the rest green, and
-nothing on record gray. A scanned star is drawn as a colony is on the other
-colorings, at a full mark in its color, and an unscanned one as the empty
-sky is, faint and neutral and held down so the three fifths of the galaxy
-nobody has scanned cannot bury the rest. It has no Uninhabited row, and is
-not offered while scaling with population, which draws the colonies alone
-and knows none of their stars. The far field reads it off each cell's count
-of its stars by kind, which an index written before that count arrived
-gains with `galos index migrate`.
+hot to cool — O and B cyan, A and F blue, G yellow, K orange, M red, every
+one of them a star a fuel scoop can use — then what cannot be scooped,
+remnants magenta and the rest green, and nothing on record gray. The main
+sequence also dims hot to cool, each class a step darker than the one before
+it, map and key alike: the colors keep their hue and are drawn brighter or
+dimmer, since yellow on its own would outshine them all. A scanned star is
+drawn as a colony with no politics on record is on the other colorings, a
+quarter of a mark in its color times its class's step, and an unscanned one
+as the empty sky is, faint and neutral and held down so the three fifths of
+the galaxy nobody has scanned cannot bury the rest. Its marks are a sample of
+the systems rather than the brightest of them: each cell spends its marks on
+every class in the proportion it holds, brightest first within each, so a
+cell of brown dwarfs draws brown dwarfs where the other colorings would draw
+its few bright stars. That reads each drawing cell whole, as a filter does,
+while its share is big enough to sample, and from its brightest part beyond.
+It has no Uninhabited row, and is not offered while scaling with population,
+which draws the colonies alone and knows none of their stars. The far field
+reads it off each cell's count of its stars by kind, which an index written
+before that count arrived gains with `galos index migrate`.
 
 Only the coloring on screen is filtered: hide the prisons and color by
 security, and every security rating is shown, the prisons among them. Each

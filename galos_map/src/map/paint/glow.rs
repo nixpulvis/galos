@@ -320,27 +320,31 @@ pub struct Gains {
     /// along star class than the crowd of scanned stars over it
     ///
     /// Star class's [`backdrop`](Self::backdrop): the scanned stars are its
-    /// colonies, drawn at a full mark, and the unscanned its empty sky at
+    /// colonies, each worth [`unaligned`](Self::unaligned) of a mark times
+    /// its class's [`star_level`], and the unscanned its empty sky at
     /// [`faint`](Self::faint). Derived the same way by [`settle_gains`], so
     /// the two reach the same brightness where the scanned are dense — for a
-    /// scanned share `s`, `faint · (1/s - 1)`, two unscanned stars weighed
-    /// against a scanned one where `backdrop` weighs forty empty systems
-    /// against a colony.
+    /// scanned share `s` at a mean level `l`,
+    /// `faint / (unaligned · l) · (1/s - 1)`. Weighed against a full mark
+    /// instead, the gray came out four times the scanned colors over it.
     ///
-    /// The scanned crowd itself is held down by `backdrop`, as the empty sky
-    /// is on the political axes, being that same sky: at the colonies' own
-    /// [`crowd`](Self::crowd), seventy-six million scanned stars drew the
-    /// core and every arm pure white, and at a quarter of a mark with the
-    /// backdrop's pivot they drew nothing brighter than the gray.
+    /// The scanned crowd itself is held down by `backdrop` once packed, as
+    /// the empty sky is on the political axes, being that same sky: at the
+    /// colonies' own [`crowd`](Self::crowd), seventy-six million scanned
+    /// stars drew the core and every arm pure white, and at a quarter of a
+    /// mark with the backdrop's pivot they drew nothing brighter than the
+    /// gray. Short of packed it is held as colonies are, so a star leaving
+    /// the marks stays in the field; see [`Crowd`].
     pub unscanned: f32,
 }
 
 impl Default for Gains {
     fn default() -> Gains {
         let faint = 0.08;
+        let unaligned = 0.25;
         Gains {
             mark: 0.6,
-            unaligned: 0.25,
+            unaligned,
             faint,
             crowd: 17.,
             // Off the share `.galos_index` measures, until `settle_gains`
@@ -348,8 +352,9 @@ impl Default for Gains {
             // in forty-four is inhabited, so forty-three are not.
             backdrop: faint * 43.,
             // Off the share `.index/full` measures: 124 million of 200
-            // million systems have no star on record.
-            unscanned: faint * 1.6,
+            // million systems have no star on record. The scanned taken at
+            // a mean level of one until the directory says otherwise.
+            unscanned: faint / unaligned * 1.6,
         }
     }
 }
@@ -664,10 +669,11 @@ const PACKED: f32 = 32.0;
 /// - **A crowd** (`fill >= 1`) is a density: its marks would cover the
 ///   footprint over and over. Ten thousand systems in a pixel are a
 ///   backdrop and not ten thousand marks' worth of light, so a crowd is
-///   held down by `crowd`, which is the field's whole exposure and what
-///   keeps the galaxy a picture rather than a white sheet.
-/// - **A packed crowd** (`fill >= PACKED`) is held harder still, the
-///   correction growing as the square root of the crowding from there up.
+///   held down by `crowd` ([`Crowd::crowd`]), which is the field's whole
+///   exposure and what keeps the galaxy a picture rather than a white sheet.
+/// - **A packed crowd** (`fill >= PACKED`) is held harder still, by
+///   [`Crowd::packed`] — the same figure but on star class — and the
+///   correction grows as the square root of the crowding from there up.
 ///   A line of sight through the bubble carries the whole bubble's light,
 ///   and conserved, that is a white disc however the rest of the frame is
 ///   exposed: measured over `.galos_index` from ten thousand light years
@@ -704,7 +710,7 @@ pub(crate) fn splat(
     light: Vec3,
     covered: f32,
     spread: f32,
-    crowd: f32,
+    crowd: Crowd,
 ) -> (f32, Vec3) {
     let sigma = spread.max(FINEST);
     let radius = sigma * REACH;
@@ -712,15 +718,73 @@ pub(crate) fn splat(
     // Off the radius actually drawn, so a cell floored to a point is read as
     // the crowd it is rather than as a scatter over an area it was not given.
     let fill = covered / area;
-    let pressed = if fill <= 1. {
-        fill
+    let crowding = if fill <= 1. {
+        1. + (crowd.crowd - 1.) * fill
     } else if fill <= PACKED {
-        1.
+        // Across the band from a crowd to a packed one, geometrically: a
+        // flat crowd has nothing to cross, and one packed harder than it is
+        // crowded is brought down to it in equal ratios, with no step at
+        // either end.
+        if crowd.packed == crowd.crowd {
+            crowd.crowd
+        } else {
+            crowd.crowd
+                * (crowd.packed / crowd.crowd).powf(fill.ln() / PACKED.ln())
+        }
     } else {
-        (fill / PACKED).sqrt()
+        1. + (crowd.packed - 1.) * (fill / PACKED).sqrt()
     };
-    let crowding = 1. + (crowd - 1.) * pressed;
     (radius, light / (crowding * area))
+}
+
+/// What a splat's crowd is held down by, crowded and packed
+///
+/// **Most channels are held by one figure throughout**, [`Crowd::flat`]: a
+/// crowd and a packed crowd are the same exposure, the packed one pressed
+/// harder only by the square root [`splat`] grows it by.
+///
+/// **Star class holds its crowds by two.** Its channels are every star on
+/// record and every one not, tens of millions apiece, so the galaxy seen
+/// whole wants them held as hard as the political axes hold the sky nobody
+/// lives in, [`Gains::backdrop`] times [`Gains::crowd`] — at the colonies'
+/// own crowd the core and every arm drew pure white. But that is a hundred
+/// and six on `.index/full` against the colonies' seventeen, and spent from
+/// the scatter up it left a star that dropped out of the marks at under a
+/// hundredth of its mark's light by a tenth of the fill: a cell's brown
+/// dwarfs, last in its magnitude order, went out together a little way into
+/// a zoom and left a dark band where they stood. So a star-class crowd is
+/// held as a crowd of colonies is, and pressed to the backdrop across the
+/// band up to [`PACKED`], where the galaxy's crowds are.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct Crowd {
+    /// What a crowd is held down by, reached at a fill of one
+    pub(crate) crowd: f32,
+    /// What a packed crowd is held down by, reached at [`PACKED`]
+    pub(crate) packed: f32,
+}
+
+impl Crowd {
+    /// One figure, crowded and packed alike
+    pub(crate) const fn flat(crowd: f32) -> Crowd {
+        Crowd { crowd, packed: crowd }
+    }
+
+    /// Star class's crowd of stars on record: the colonies' crowd, and the
+    /// backdrop's once packed
+    pub(crate) fn scanned(gains: &Gains) -> Crowd {
+        Crowd { crowd: gains.crowd, packed: gains.crowd * gains.backdrop }
+    }
+
+    /// And of stars nothing has recorded, held harder by
+    /// [`Gains::unscanned`] throughout, so the two balance at every fill as
+    /// they do in the galaxy whole
+    pub(crate) fn unscanned(gains: &Gains) -> Crowd {
+        let scanned = Crowd::scanned(gains);
+        Crowd {
+            crowd: scanned.crowd * gains.unscanned,
+            packed: scanned.packed * gains.unscanned,
+        }
+    }
 }
 
 /// What one system is worth, in linear light
@@ -751,14 +815,45 @@ pub(crate) fn mark_light(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
 /// record is worth what a colony with no politics on record is
 /// ([`Gains::unaligned`]): enough over the unscanned that the color reads,
 /// and nowhere near a colony with a reading, since the axis is every system
-/// and not a few thousand picked out of them.
+/// and not a few thousand picked out of them — times its class's
+/// [`star_level`].
 pub(crate) fn star_light(hue: Hue, gains: &Gains) -> f32 {
     let share = match hue {
         Hue::Grey => gains.faint,
         _ => gains.unaligned,
     };
-    share * gains.mark
+    share * gains.mark * star_level(hue)
 }
+
+/// How much brighter or dimmer a star class's hue is drawn than its share
+/// alone, so the main sequence dims hot to cool
+///
+/// **A level and not a color.** The hue's light is scaled whole, so its
+/// chromaticity is untouched and a class reads as the color the key names.
+/// What it fixes is that the hues are not equally bright to the eye: yellow
+/// carries 0.93 of the Rec. 709 luminance, cyan 0.79, orange 0.37, the blue
+/// 0.28 and red 0.21, so drawn at one level G outshone O and B, and A and F
+/// read dimmer than K.
+///
+/// Laid on a geometric ladder instead, cyan's luminance down to red's in
+/// four equal ratios of 0.72 — 0.79, 0.57, 0.41, 0.29, 0.21 for O and B, A
+/// and F, G, K and M — which is equal steps as the eye weighs brightness.
+/// The two ends stand where their hues put them; the three between are
+/// brought onto the rungs. What cannot be scooped, and what is not on
+/// record, are left at their share: they are off the sequence.
+pub(crate) const fn star_level(hue: Hue) -> f32 {
+    match hue {
+        Hue::Blue => 2.056,
+        Hue::Yellow => 0.441,
+        Hue::Orange => 0.8065,
+        Hue::Cyan | Hue::Red | Hue::Magenta | Hue::Green | Hue::Grey => 1.,
+    }
+}
+
+/// The brightest [`star_level`], which the key's swatches are drawn under so
+/// the brightest of them is the full color and the rest stand below it as
+/// they do on the map
+pub(crate) const STAR_LEVEL_TOP: f32 = star_level(Hue::Blue);
 
 /// What one system is worth along `color_by`, in linear light: a mark's
 /// level, and the light laid in its place
@@ -839,14 +934,27 @@ fn settle_gains(
         let empty = (stellar - peopled) as f64 / peopled as f64;
         gains.backdrop = gains.faint * empty as f32;
     }
-    let unknown = index
-        .0
-        .get(galos_index::prelude::CellId::ROOT)
-        .map_or(0, |cell| u64::from(cell.aggregate.kinds()[0]));
+    let Some(root) = index.0.get(galos_index::prelude::CellId::ROOT) else {
+        return;
+    };
+    let kinds = root.aggregate.kinds();
+    let unknown = u64::from(kinds[0]);
     let scanned = stellar.saturating_sub(unknown);
-    if unknown > 0 && scanned > 0 {
-        gains.unscanned =
-            gains.faint * (unknown as f64 / scanned as f64) as f32;
+    // What a scanned star is worth on the whole, its class's level weighed
+    // by how many of each class there are.
+    let levelled: f64 = kinds
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(code, n)| {
+            f64::from(*n)
+                * f64::from(star_level(ColorBy::StarClass.hue_of(code)))
+        })
+        .sum();
+    if unknown > 0 && scanned > 0 && levelled > 0. {
+        let level = levelled / scanned as f64;
+        gains.unscanned = gains.faint / gains.unaligned
+            * (unknown as f64 / scanned as f64 / level) as f32;
     }
 }
 
@@ -1271,7 +1379,8 @@ fn build_glow(
                 // lives there: the unscanned are its backdrop, neutral, and
                 // the scanned its colonies, in the color their kinds come to
                 // and compressed about the colonies' pivot. Both crowds are
-                // the sky's, held down by [`Gains::backdrop`] and the
+                // the sky's, held as colonies are until packed and then by
+                // [`Gains::backdrop`] ([`Crowd::scanned`]), and the
                 // unscanned by [`Gains::unscanned`] under that. Both at the
                 // cell's own moments, there being no weighting of the scanned
                 // apart; the colonies' kinds are among these, and a political
@@ -1310,7 +1419,7 @@ fn build_glow(
                             spread,
                             light,
                             systems * MARK_AREA,
-                            gains.crowd * gains.backdrop * gains.unscanned,
+                            Crowd::unscanned(&gains),
                             PIVOT,
                             spent(share * keeps.of(0)),
                             room(at),
@@ -1336,7 +1445,7 @@ fn build_glow(
                             spread,
                             mix * carried * gains.mark * MARK_AREA,
                             scanned as f32 * carried * MARK_AREA,
-                            gains.crowd * gains.backdrop,
+                            Crowd::scanned(&gains),
                             COLONY_PIVOT,
                             admitted,
                             room(at),
@@ -1366,7 +1475,7 @@ fn build_glow(
                             .max(covered(mass.rms_radius())),
                         light,
                         systems * MARK_AREA,
-                        gains.crowd * gains.backdrop,
+                        Crowd::flat(gains.crowd * gains.backdrop),
                         PIVOT,
                         spent(backdrop_share),
                         room(at),
@@ -1418,7 +1527,7 @@ fn build_glow(
                         (held.spread() * FLATTENED).max(covered(held.spread())),
                         mix * carried * gains.mark * MARK_AREA,
                         systems * MARK_AREA,
-                        gains.crowd,
+                        Crowd::flat(gains.crowd),
                         COLONY_PIVOT,
                         admitted,
                         room(at),
@@ -1575,7 +1684,7 @@ impl Quads {
         spread: f64,
         light: Vec3,
         covered: f32,
-        crowd: f32,
+        crowd: Crowd,
         pivot: f32,
         // What the filters leave of this splat, `0.0..=1.0`. Carried to
         // [`Quads::expose`] rather than spent here: a share spent before
@@ -1903,8 +2012,12 @@ mod tests {
         let systems = 100.;
         let covered = systems * MARK_AREA;
         let marks = systems * level * MARK_AREA;
-        let (radius, peak) =
-            splat(Hue::Cyan.light() * marks, covered, 300., gains.crowd);
+        let (radius, peak) = splat(
+            Hue::Cyan.light() * marks,
+            covered,
+            300.,
+            Crowd::flat(gains.crowd),
+        );
 
         assert_eq!(radius, 300. * REACH, "the splat left its cell's own size");
         let sigma = radius / REACH;
@@ -1913,6 +2026,56 @@ mod tests {
             (laid - marks).abs() < marks * 0.01,
             "a resolved splat laid {laid} where its marks lay {marks}"
         );
+    }
+
+    /// A crowd of stars on record hands off to its marks as a crowd of
+    /// colonies does, and is held as the sky is only once it is packed
+    ///
+    /// Held by the backdrop from the scatter up, a star dropped out of the
+    /// marks at a three-hundred-and-sixtieth of its mark's light at a fifth
+    /// of the fill, and a slab of brown dwarfs, last in every cell's
+    /// magnitude order, went out together a little way into a zoom and left
+    /// a dark band. The galaxy seen whole must not brighten for it.
+    #[test]
+    fn a_star_class_crowd_hands_off_as_colonies_and_packs_as_the_sky() {
+        let gains = Gains { backdrop: 106., ..Gains::default() };
+        let sigma = 100.;
+        let area = std::f32::consts::TAU * sigma * sigma;
+        // The light a splat of `fill` lays, all told, against the marks it
+        // stands for at one unit apiece.
+        let laid = |fill: f32, crowd: Crowd| {
+            let (radius, peak) =
+                splat(Vec3::ONE * fill * area, fill * area, sigma, crowd);
+            let sigma = radius / REACH;
+            peak.x * std::f32::consts::TAU * sigma * sigma / (fill * area)
+        };
+        let stars = Crowd::scanned(&gains);
+        let colonies = Crowd::flat(gains.crowd);
+        let sky = Crowd::flat(gains.crowd * gains.backdrop);
+
+        for fill in [0.05, 0.2, 0.5, 1.] {
+            let (got, want) = (laid(fill, stars), laid(fill, colonies));
+            assert!(
+                (got - want).abs() < want * 1e-4,
+                "at a fill of {fill} the stars laid {got}, colonies {want}"
+            );
+        }
+        for fill in [PACKED, 100., 10_000.] {
+            let (got, want) = (laid(fill, stars), laid(fill, sky));
+            assert!(
+                (got - want).abs() < want * 1e-4,
+                "packed at {fill}, the stars laid {got} and the sky {want}"
+            );
+        }
+        // Between the two, down all the way and with no step at either end.
+        let mut last = laid(1., stars);
+        for step in 1..=100 {
+            let fill = PACKED.powf(step as f32 / 100.);
+            let now = laid(fill, stars);
+            assert!(now <= last, "brighter at a fill of {fill}");
+            assert!(now > last * 0.9, "a step at a fill of {fill}");
+            last = now;
+        }
     }
 
     /// The curve lifts the faint end, holds the bright end down, and
@@ -2034,8 +2197,9 @@ mod tests {
         // up against it.
         let dim = light * 0.125;
 
-        let (tight, close) = splat(dim, covered, wide, gains.crowd);
-        let (broad, far) = splat(dim, covered, wide * 4., gains.crowd);
+        let crowd = Crowd::flat(gains.crowd);
+        let (tight, close) = splat(dim, covered, wide, crowd);
+        let (broad, far) = splat(dim, covered, wide * 4., crowd);
         assert_eq!(tight, wide * REACH, "a crowded splat covers its cell");
         assert_eq!(broad, wide * 4. * REACH);
         // Four times the spread is sixteen times the area, and the same
@@ -2052,7 +2216,7 @@ mod tests {
         // And past the roll-off it stops keeping up with its own density:
         // sixteen times packed together is four times the light, not
         // sixteen.
-        let (_, packed) = splat(dim, covered, wide / 4., gains.crowd);
+        let (_, packed) = splat(dim, covered, wide / 4., crowd);
         let steepness = packed.max_element() / close.max_element();
         assert!(
             (steepness - 4.).abs() < 0.2,
@@ -2063,7 +2227,7 @@ mod tests {
 
         // At the light it is really laid at, a crowd spread over its own
         // cell is still worth less than one system's mark.
-        let (_, spread) = splat(light, covered, wide * 4., gains.crowd);
+        let (_, spread) = splat(light, covered, wide * 4., crowd);
         assert!(
             spread.max_element() < level,
             "a crowd of systems was laid brighter than one mark: {}",
@@ -2090,7 +2254,7 @@ mod tests {
                     Vec3::splat(marks),
                     covered,
                     spread,
-                    gains.crowd * gains.backdrop,
+                    Crowd::flat(gains.crowd * gains.backdrop),
                 );
                 assert_eq!(
                     radius,

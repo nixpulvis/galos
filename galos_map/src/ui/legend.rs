@@ -9,8 +9,9 @@
 use crate::map::filter::Filters;
 use crate::map::filter::key::{Hidden, Item, Tier, held_tiers};
 use crate::map::filter::mask::Mask;
-use crate::map::galaxy::spawn::{ColorBy, Hue};
+use crate::map::galaxy::spawn::ColorBy;
 use crate::style::color32;
+use bevy::color::Srgba;
 use bevy_egui::egui;
 use bevy_egui::egui::{Color32, Response, Sense, Stroke, Ui, Vec2};
 
@@ -22,12 +23,15 @@ const CORNER: f32 = 2.;
 
 /// What a swatch shows: the color, and how much of what it stands for is
 /// hidden
+///
+/// The color as the axis draws it ([`ColorBy::swatch`]), so a hue one axis
+/// draws brighter than another is brighter in its key too.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Swatch {
     /// One color: a value, or a group every member of which is drawn in it
-    Hue { hue: Hue, hidden: Hidden },
+    Hue { color: Srgba, hidden: Hidden },
     /// Several colors, a slice each: the Other of allegiance
-    Pie { hues: Vec<Hue>, hidden: Hidden },
+    Pie { colors: Vec<Srgba>, hidden: Hidden },
     /// The systems nobody lives in, which have no color of their own
     Uninhabited { hidden: bool },
 }
@@ -39,10 +43,13 @@ impl Swatch {
         match tier {
             Tier::Item(item) => Swatch::of_item(item, axis, mask),
             Tier::Group { hue: Some(hue), .. } => {
-                Swatch::Hue { hue: *hue, hidden }
+                Swatch::Hue { color: axis.swatch(*hue), hidden }
             }
             Tier::Group { hue: None, items, .. } => Swatch::Pie {
-                hues: items.iter().map(|item| item.hue).collect(),
+                colors: items
+                    .iter()
+                    .map(|item| axis.swatch(item.hue))
+                    .collect(),
                 hidden,
             },
         }
@@ -50,7 +57,10 @@ impl Swatch {
 
     /// The swatch one value is shown by
     pub(crate) fn of_item(item: &Item, axis: ColorBy, mask: &Mask) -> Swatch {
-        Swatch::Hue { hue: item.hue, hidden: item.hidden(axis, mask) }
+        Swatch::Hue {
+            color: axis.swatch(item.hue),
+            hidden: item.hidden(axis, mask),
+        }
     }
 
     /// The swatch the systems nobody lives in are shown by
@@ -68,8 +78,8 @@ impl Swatch {
         let painter = ui.painter();
         let muted = ui.visuals().weak_text_color();
         match self {
-            Swatch::Hue { hue, hidden } => {
-                let color = color32(hue.swatch());
+            Swatch::Hue { color, hidden } => {
+                let color = color32(*color);
                 match hidden {
                     Hidden::None => {
                         painter.rect_filled(rect, CORNER, color);
@@ -95,14 +105,14 @@ impl Swatch {
                     }
                 }
             }
-            Swatch::Pie { hues, hidden } => {
+            Swatch::Pie { colors, hidden } => {
                 let alpha = match hidden {
                     Hidden::None => 1.,
                     Hidden::Some { .. } => 0.6,
                     Hidden::All => 0.,
                 };
                 if alpha > 0. {
-                    pie(painter, rect, hues, alpha);
+                    pie(painter, rect, colors, alpha);
                 }
                 if *hidden != Hidden::None {
                     painter.circle_stroke(
@@ -129,22 +139,27 @@ impl Swatch {
     }
 }
 
-/// A disc cut into an even slice for each of `hues`
+/// A disc cut into an even slice for each of `colors`
 ///
 /// A fan of triangles, egui having no conic fill. Twenty-four steps round the
 /// whole, which at thirteen pixels across is rounder than the eye can tell.
-fn pie(painter: &egui::Painter, rect: egui::Rect, hues: &[Hue], alpha: f32) {
-    if hues.is_empty() {
+fn pie(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    colors: &[Srgba],
+    alpha: f32,
+) {
+    if colors.is_empty() {
         return;
     }
     const STEPS: usize = 24;
     let center = rect.center();
     let radius = rect.width() / 2.;
     let mut mesh = egui::Mesh::default();
-    let slice = std::f32::consts::TAU / hues.len() as f32;
-    for (n, hue) in hues.iter().enumerate() {
-        let color = color32(hue.swatch()).gamma_multiply(alpha);
-        let steps = (STEPS / hues.len()).max(2);
+    let slice = std::f32::consts::TAU / colors.len() as f32;
+    for (n, color) in colors.iter().enumerate() {
+        let color = color32(*color).gamma_multiply(alpha);
+        let steps = (STEPS / colors.len()).max(2);
         let from = slice * n as f32 - std::f32::consts::FRAC_PI_2;
         let base = mesh.vertices.len() as u32;
         mesh.colored_vertex(center, color);

@@ -173,8 +173,8 @@ pub fn hidden_values(axis: ColorBy, mask: &Mask, held: Option<&Held>) -> usize {
 /// The order a star's colors stand in: the main sequence hot to cool, then
 /// what cannot be scooped, and nothing on record last
 const STAR_HUES: [Hue; 8] = [
-    Hue::Blue,
     Hue::Cyan,
+    Hue::Blue,
     Hue::Yellow,
     Hue::Orange,
     Hue::Red,
@@ -425,8 +425,8 @@ fn power_bloc(hue: Hue) -> &'static str {
 /// classes or the kind of thing every star drawn in it is
 fn star_group(hue: Hue) -> &'static str {
     match hue {
-        Hue::Blue => "O and B",
-        Hue::Cyan => "A and F",
+        Hue::Cyan => "O and B",
+        Hue::Blue => "A and F",
         Hue::Magenta => "Remnants",
         Hue::Green => "Other stars",
         _ => hue_name(hue),

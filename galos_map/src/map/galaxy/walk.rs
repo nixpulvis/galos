@@ -26,7 +26,7 @@ use crate::map::bodies::spawn::Entered;
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::map::galaxy::plan::{Accounted, Planned};
-use crate::map::galaxy::spawn::PendingSpawns;
+use crate::map::galaxy::spawn::{ColorBy, PendingSpawns};
 use crate::map::galaxy::{PendingEvictions, Spyglass, System};
 use crate::map::index::{Names, Populated, Transport};
 use crate::map::paint::sizing::{ScalePopulation, View, by_population};
@@ -315,6 +315,9 @@ pub(crate) struct Worked<'w> {
     blobs: ResMut<'w, Blobs>,
     /// Which entity draws each system.
     addresses: Res<'w, crate::map::galaxy::Addresses>,
+    /// What the map is colored by, star class spending each cell's budget by
+    /// class; see [`strata`].
+    color_by: Res<'w, ColorBy>,
 }
 
 /// One cell's read as it lands: the payload and the [`Stamp`] it was read
@@ -496,6 +499,20 @@ impl BoundedTasks {
 const READ_SLACK: usize = 4;
 const READ_LEAST: usize = 16;
 
+/// Whether the draw spends each cell's budget by class ([`strata`]): along
+/// star class, on the map — not in the sky, whose marks are the stars that
+/// clear the eye's floor, nor among who lives where, which star class is
+/// not offered for
+fn by_class(
+    color_by: ColorBy,
+    mode: &galos_index::prelude::Mode,
+    by_population: bool,
+) -> bool {
+    matches!(color_by, ColorBy::StarClass)
+        && matches!(mode, galos_index::prelude::Mode::Shell)
+        && !by_population
+}
+
 /// Ask for the payloads of the marks cells the map does not hold enough of
 ///
 /// **A prefix and not the payload.** A cell's payload is magnitude-ordered
@@ -512,10 +529,13 @@ const READ_LEAST: usize = 16;
 /// camera whose plan has not moved may yet have marks nobody has asked for
 /// — the map opening on one, or a payload freed and wanted again.
 ///
-/// Where a filter is asked the whole cell is read instead. The filters
-/// promote systems out of magnitude order — a faction is a handful of
-/// systems anywhere in a payload — so a prefix is the one thing that cannot
-/// answer them.
+/// Where a filter is asked, or star class draws each cell by class
+/// ([`strata`]), every marked cell is held whole. The filters promote
+/// systems out of magnitude order — a faction is a handful of systems
+/// anywhere in a payload — and a class sample reaches as far down it as the
+/// faintest class the cell holds, so a prefix is the one thing that cannot
+/// answer either. A cell the frame draws from is still read to its prefix
+/// first, so the frame fills in evenly; see [`reads`].
 pub(crate) fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
@@ -523,6 +543,7 @@ pub(crate) fn fetch(
     filters: Res<crate::map::filter::Filters>,
     view_mode: Res<View>,
     scale_population: Res<ScalePopulation>,
+    color_by: Res<ColorBy>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
@@ -537,6 +558,7 @@ pub(crate) fn fetch(
         && !filters.is_changed()
         && !view_mode.is_changed()
         && !scale_population.is_changed()
+        && !color_by.is_changed()
     {
         return;
     }
@@ -549,20 +571,27 @@ pub(crate) fn fetch(
     //
     // Unless a span is asked, a moment being a payload's to carry; see
     // [`Filters::asking_a_span`] and [`reconcile`].
-    if crate::map::paint::sizing::by_population(&view_mode, &scale_population)
-        && !filters.asking_a_span()
-    {
+    let by_population =
+        crate::map::paint::sizing::by_population(&view_mode, &scale_population);
+    if by_population && !filters.asking_a_span() {
         return;
     }
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = crate::map::galaxy::plan::view(orbit, camera) else {
         return;
     };
-    // Whether a filter narrows the map, which wants every marked cell held
-    // whole: the systems it admits can stand anywhere in a payload's
-    // magnitude order, and [`reconcile`] draws them first out of whatever of
-    // it is held.
-    let whole = filters.asking();
+    // Which marked cells are wanted whole: every one under a filter
+    // narrowing the map, the systems it admits standing anywhere in a
+    // payload's magnitude order and [`reconcile`] drawing them first out of
+    // whatever of it is held; and the ones that draw along star class,
+    // drawing every class in its proportion.
+    let whole = if filters.asking() {
+        Whole::Every
+    } else if by_class(*color_by, &planned.0.mode, by_population) {
+        Whole::Drawing
+    } else {
+        Whole::None
+    };
     // What the draw will spread over. Off the plan alone — a mark carries
     // its own slice — which is what lets the share be struck here as well
     // as in [`reconcile`] and lets the two agree without either of them
@@ -594,13 +623,13 @@ pub(crate) fn fetch(
 /// wants, and how much of it, most wanted first
 ///
 /// `wanted` is how many of a cell's `slice` the frame draws, `held` how many
-/// of its points the map holds, `whole` whether a filter wants every marked
-/// cell held whole, and `real` whether this is the photometric sky.
+/// of its points the map holds, `whole` which marked cells the draw wants
+/// held whole, and `real` whether this is the photometric sky.
 fn reads(
     marks: &[galos_index::read::walk::MarkRef],
     wanted: impl Fn(usize, CellId) -> usize,
     held: impl Fn(CellId) -> usize,
-    whole: bool,
+    whole: Whole,
     real: bool,
 ) -> Vec<(CellId, usize)> {
     let mut asking = Vec::new();
@@ -620,52 +649,98 @@ fn reads(
         // cells reaching here are few and what they hold is what the sky is
         // made of.
         let drawn = wanted(slice, id);
-        let prefix = if real {
-            slice
-        } else {
-            (drawn * READ_SLACK).max(READ_LEAST).min(slice)
+        let draws = drawn > 0 || real;
+        let prefix = (drawn * READ_SLACK).max(READ_LEAST).min(slice);
+        let whole = match whole {
+            Whole::None => false,
+            Whole::Drawing => draws && slice <= prefix * WHOLE_REACH,
+            Whole::Every => true,
         };
+        // **Held whole, a cell that draws is read whole, but not first.** It is
+        // read to the prefix an unfiltered frame would read, and only once
+        // every drawing cell has its prefix is any of them read the rest of
+        // the way. Read whole from the first, the reads were thousands of
+        // points apiece and each cell drew nothing until its own landed, so
+        // the view filled in a tile at a time where unfiltered it fills
+        // evenly all over.
+        //
+        // **And one that draws nothing is read whole at once.** It has no
+        // share to fill in evenly, and a prefix would be a second open of
+        // the same file for the few points [`Empty`] lights a dark patch of
+        // sky from — at a wide zoom most marked cells, and an open is the
+        // whole cost of a read (see [`BoundedTasks`]).
+        let first = if real || (whole && !draws) { slice } else { prefix };
         let held = held(id);
-        // **Filtered, a cell is still read whole, but not first.** Every
-        // marked cell is read to the prefix an unfiltered frame would read,
-        // in the order an unfiltered frame reads them, and only then is any
-        // of them read the rest of the way. What is held once the queue
-        // drains is what it always was, every marked cell whole; what
-        // changed is the way there. Read whole from the first, the reads
-        // were thousands of points apiece and each cell drew nothing until
-        // its own landed, so the view filled in a tile at a time where
-        // unfiltered it fills evenly all over.
-        let (want, stage) = if held < prefix {
-            (prefix, Stage::Prefix)
+        let (want, stage) = if held < first {
+            (first, Stage::First)
         } else if whole && held < slice {
-            (slice, Stage::Whole)
+            (slice, Stage::Rest)
         } else {
             continue;
         };
-        // Every cell's prefix before any cell's rest; see [`Stage`].
-        asking.push(((stage, rank(id, drawn > 0 || real)), id, want));
+        let (idle, level, scatter) = rank(id, draws);
+        asking.push(((idle, stage, level, scatter), id, want));
     }
     asking.sort_unstable_by_key(|&(rank, _, _)| rank);
     asking.into_iter().map(|(_, id, want)| (id, want)).collect()
 }
 
-/// Which of a cell's two reads is being asked for, in the order the queue
-/// takes them
-///
-/// **Every cell's prefix before any cell's rest.** A filtered frame holds
-/// every marked cell whole, and a whole read is thousands of points; asked
-/// for first, they kept the prefixes that draw the frame waiting behind
-/// them, and the view filled in a cell at a time.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Stage {
-    /// What an unfiltered frame reads of the cell: the share it draws, with
-    /// [`READ_SLACK`] over it and [`READ_LEAST`] under it
-    Prefix,
-    /// The rest of the cell, which a filter narrowing the map wants held
-    Whole,
+/// Which marked cells the draw wants held whole
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Whole {
+    /// None: a prefix is all any of them is drawn from.
+    None,
+    /// The cells that draw this frame, along star class, and of those only
+    /// the ones a whole read costs at most [`WHOLE_REACH`] prefixes: a class
+    /// sample reaches as far down a payload as its faintest class, and a
+    /// cell that draws nothing samples nothing.
+    Drawing,
+    /// Every one, under a filter: see [`fetch`].
+    Every,
 }
 
-/// Where a cell stands in the queue, lowest first, within a [`Stage`]
+/// How many of its prefixes a drawing cell is read whole for along star
+/// class, past which its class sample is drawn from the prefix alone
+///
+/// **A sample of a handful is not worth a payload.** Zoomed out, a cell's
+/// share is a few marks of hundreds or thousands of systems, and every
+/// drawing cell read whole held nineteen times the points at five thousand
+/// light years out — measured over `.index/full`, 7.4 million against
+/// 381 thousand — to spend most of it on a few marks apiece. Eight
+/// prefixes is a share of a thirty-second, which reaches from Sol's own
+/// neighbourhood out to some fourteen hundred light years back, where the
+/// sample still has marks enough to say something; beyond it the marks are
+/// the prefix's brightest, drawn by class among themselves.
+const WHOLE_REACH: usize = 8;
+
+/// Which of a cell's reads is being asked for, in the order the queue takes
+/// them among the cells that draw alike
+///
+/// **Every drawing cell's prefix before any cell's rest.** A filtered frame
+/// holds every marked cell whole, and a whole read is thousands of points;
+/// asked for first, they kept the prefixes that draw the frame waiting
+/// behind them, and the view filled in a cell at a time.
+///
+/// **But never ahead of whether the cell draws.** A cell that draws nothing
+/// this frame waits behind every read of one that does, its rest included:
+/// ranked by stage first, every such cell's read went ahead of the rest of
+/// the cells the filter's systems are drawn out of, and under a filter
+/// admitting a handful of systems a payload the map drew nothing it asked
+/// for until tens of thousands of reads had landed.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    /// The cell's first read: what an unfiltered frame reads of it, the
+    /// share it draws with [`READ_SLACK`] over it and [`READ_LEAST`] under
+    /// it, or the whole of it where that is all it is read in (see
+    /// [`reads`])
+    First,
+    /// The rest of a cell already read to its prefix, which a filter
+    /// narrowing the map wants held
+    Rest,
+}
+
+/// Where a cell stands in the queue, lowest first, with its [`Stage`] ranked
+/// between the first of these and the rest
 ///
 /// **The cells that draw a mark this frame before the ones that do not.**
 /// Every marked cell in reach is read to [`READ_LEAST`] whatever its share,
@@ -770,7 +845,18 @@ pub(crate) fn collect(
 ) {
     for (id, read) in tasks.landed() {
         if let Ok((points, stamp)) = read {
-            adopt(&mut resident, &mut orders, &mut republished, id, points);
+            // The same payload read further down — the rest of a prefix, or a
+            // share that has outgrown it — holds nothing the systems already
+            // drawn out of it do not, so they are left standing. Anything
+            // else may be a republished cell, and rebuilds them.
+            let rebuild = !held.unchanged(id, stamp);
+            adopt(
+                &mut resident,
+                &mut orders,
+                rebuild.then_some(&mut *republished),
+                id,
+                points,
+            );
             held.holding(id, stamp);
         }
     }
@@ -795,7 +881,7 @@ const VERDICT_BUDGET: usize = 200_000;
 /// The orders a resident cell's points are drawn in, kept until what they are
 /// worked out from moves
 ///
-/// Two of them, both walks of every point of every resident payload and both
+/// Three of them, all walks of every point of every resident payload and all
 /// answers that hold still between the same few events, which is the whole
 /// reason they are kept rather than asked afresh every frame:
 ///
@@ -810,11 +896,15 @@ const VERDICT_BUDGET: usize = 200_000;
 ///   ([`crate::map::galaxy::visibility`]), so a slot of a cell's budget spent on
 ///   one buys nothing. It moves with the political table and the payload,
 ///   which is the same [`Cut`] and the same [`adopt`].
+/// - Along star class, every point in an order that spends a cell's budget
+///   on each class in proportion to how many of it the cell holds, brightest
+///   first within each; see [`strata`]. It moves only with the payload, so
+///   [`adopt`] is all that drops it.
 ///
 /// Indices into the cell's payload rather than addresses. The admitted list is
 /// ascending, so the fill can walk the payload and it together and take what
-/// is in one and not the other without a set to test against; the populated list
-/// is in the order it is drawn in.
+/// is in one and not the other without a set to test against; the populated
+/// list and the strata are in the order they are drawn in.
 #[derive(Resource, Default)]
 pub(crate) struct PointOrders {
     /// The cut being worked towards
@@ -837,6 +927,7 @@ pub(crate) struct PointOrders {
     at: FxHashMap<CellId, u64>,
     cells: FxHashMap<CellId, Vec<u32>>,
     populated: FxHashMap<CellId, Vec<u32>>,
+    strata: FxHashMap<CellId, Vec<u32>>,
 }
 
 impl PointOrders {
@@ -953,12 +1044,81 @@ impl PointOrders {
         self.populated.get(&id).map_or(&[], Vec::as_slice)
     }
 
+    /// Work out the order star class draws this cell in, where it has none
+    ///
+    /// Off the same budget as the verdicts, it being a walk and a sort of the
+    /// whole payload: a cell the budget does not reach draws brightest first
+    /// this frame and in its classes' proportions once it does.
+    fn stratify(
+        &mut self,
+        id: CellId,
+        points: &[CellSystem],
+        budget: &mut usize,
+    ) {
+        if self.strata.contains_key(&id) || *budget < points.len() {
+            return;
+        }
+        *budget -= points.len();
+        self.strata.insert(id, strata(points));
+    }
+
+    /// The order star class draws a cell in, where [`Self::stratify`] has
+    /// worked one out
+    fn strata(&self, id: CellId) -> Option<&[u32]> {
+        self.strata.get(&id).map(Vec::as_slice)
+    }
+
+    /// Drop every cell's strata, star class no longer drawing by them
+    fn unstratify(&mut self) {
+        if !self.strata.is_empty() {
+            self.strata = FxHashMap::default();
+        }
+    }
+
     /// Forget a cell, its payload having been freed
     pub(crate) fn forget(&mut self, id: CellId) {
         self.cells.remove(&id);
         self.populated.remove(&id);
+        self.strata.remove(&id);
         self.at.remove(&id);
     }
+}
+
+/// A cell's points in the order star class draws them: every class in
+/// proportion to how many of it the cell holds, brightest first within each
+///
+/// **Star class colors every system, so its marks are a sample of them.**
+/// Drawn brightest first, a cell spent the budget its faint stars earned on
+/// its bright ones, wherever in the cell they stood: brown dwarfs, last in
+/// every payload at an absolute magnitude of sixteen and a half, were never
+/// reached, and a slab of them twenty light years thick drew as a thin strip
+/// between two bands packed with the M, K and G stars of the same cells —
+/// measured over `.index/full` at four hundred light years out, 603 marks in
+/// it against 1,399 in the layer above, holding two and a half times as
+/// many systems.
+///
+/// The `j`th of a class's `n` points is due at `(j + ½) / n`, and the points
+/// are taken in the order they fall due, so any prefix holds each class in
+/// the proportion the cell does to within one point. Ties go to the brighter,
+/// so the order is the same answer every time.
+fn strata(points: &[CellSystem]) -> Vec<u32> {
+    let mut of = [0u32; StarKind::COUNT];
+    for point in points {
+        of[usize::from(point.kind.code())] += 1;
+    }
+    let mut seen = [0u32; StarKind::COUNT];
+    let mut due: Vec<(f64, u32)> = points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            let class = usize::from(point.kind.code());
+            let j = seen[class];
+            seen[class] += 1;
+            ((f64::from(j) + 0.5) / f64::from(of[class]), index as u32)
+        })
+        .collect();
+    due.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    due.into_iter().map(|(_, index)| index).collect()
 }
 
 /// Take `points` as a cell's payload, dropping whatever was worked out about
@@ -973,19 +1133,22 @@ impl PointOrders {
 /// The systems already drawn out of the old payload are the third thing that
 /// goes with it, and the one this cannot do itself: they are entities, and
 /// which of them the walk still draws is not known until it walks. So the
-/// cell is noted in [`Republished`] and [`reconcile`] rebuilds it. A first
+/// cell is noted in `republished` and [`reconcile`] rebuilds it. A first
 /// read notes it too and nothing comes of that, the cell having nothing drawn
-/// out of it yet.
+/// out of it yet. [`None`] where `points` is known to be the held payload
+/// read further, whose drawn systems are already what it says.
 pub(crate) fn adopt(
     resident: &mut ResidentCells,
     orders: &mut PointOrders,
-    republished: &mut Republished,
+    republished: Option<&mut Republished>,
     id: CellId,
     points: Vec<CellSystem>,
 ) {
     resident.0.insert(id, points);
     orders.forget(id);
-    republished.0.insert(id);
+    if let Some(republished) = republished {
+        republished.0.insert(id);
+    }
 }
 
 /// What the filters ask about a payload point: its address, what the resident
@@ -1032,6 +1195,25 @@ fn drawn_first<'a>(
     } else {
         0
     }))
+}
+
+/// [`drawn_first`] along star class: what the filters admit and then the
+/// rest, each in the cell's [`strata`] rather than its magnitude order
+///
+/// `admits` is ascending, so a point's admission is a binary search; both
+/// halves walk the strata, the second only where `fill` asks for it.
+fn stratified_first<'a>(
+    strata: &'a [u32],
+    admits: &'a [u32],
+    fill: bool,
+) -> impl Iterator<Item = usize> + 'a {
+    let admitted = move |index: &&u32| admits.binary_search(index).is_ok();
+    let first = strata.iter().filter(admitted);
+    let rest = strata
+        .iter()
+        .filter(move |index| !admitted(index))
+        .take(if fill { strata.len() } else { 0 });
+    first.chain(rest).map(|&index| index as usize)
 }
 
 /// What a populated choice was made against
@@ -1309,6 +1491,11 @@ pub struct Sampled {
 /// to. Where nothing is asked every system is admitted, the order is the
 /// payload's own, and this costs nothing.
 ///
+/// Along star class each half is drawn by class instead, every class of the
+/// cell taking its proportion of the budget, brightest first within it
+/// ([`strata`]): the coloring is of every system, so its marks are a sample
+/// of them rather than the bright end.
+///
 /// What this gives up is that the drawn set is no longer a prefix of the
 /// cell's magnitude order: it is a subset chosen by admission, still in
 /// magnitude order within each half. Nothing reads it as a prefix today.
@@ -1369,6 +1556,7 @@ pub(crate) fn reconcile(
         ref mut sampled,
         ref mut blobs,
         ref addresses,
+        ref color_by,
     } = worked;
     // Nothing to do where the last pass finished and nothing it reads has
     // moved since; see [`Settled`]. Clearing, the spyglass clamps the drawn
@@ -1392,7 +1580,8 @@ pub(crate) fn reconcile(
         || standing.is_changed()
         || republished.is_changed()
         || planned.is_changed()
-        || addresses.is_changed();
+        || addresses.is_changed()
+        || color_by.is_changed();
     if !moved && pass.settled.as_ref() == Some(&here) {
         return;
     }
@@ -1492,6 +1681,11 @@ pub(crate) fn reconcile(
         galos_index::prelude::Mode::Real { limit } => Some(limit),
         galos_index::prelude::Mode::Shell => None,
     };
+    // Whether each cell's budget is spent by class; see [`strata`].
+    let by_class = by_class(**color_by, &planned.0.mode, by_population);
+    if !by_class {
+        orders.unstratify();
+    }
     // What the frame has to spend and what it is spread over. A share of
     // the population is a share of every *other* marked cell's too, so the
     // whole has to be known before any of it is spent — which is a sum
@@ -1689,11 +1883,16 @@ pub(crate) fn reconcile(
                 by_population,
                 &mut verdicts,
             );
+            if by_class {
+                orders.stratify(id, &cell.points, &mut verdicts);
+            }
             let admits = orders.admits(id);
             let order: Vec<usize> = if by_population {
                 busiest_first(orders.populated(id), admits, asking, fill)
                     .take(target)
                     .collect()
+            } else if let Some(strata) = orders.strata(id) {
+                stratified_first(strata, admits, fill).take(target).collect()
             } else {
                 drawn_first(&cell.points, admits, fill).take(target).collect()
             };
@@ -2270,6 +2469,68 @@ mod tests {
         );
     }
 
+    /// Along star class every class takes its share of a cell's budget,
+    /// however faint it is, and the brightest of it
+    ///
+    /// Brightest first, a cell of ten G stars and twenty brown dwarfs spent
+    /// ten marks on the G stars and none on the dwarfs, and a slab of them
+    /// drew as a gap between the layers its budget went to.
+    #[test]
+    fn each_class_takes_its_share_of_a_cells_budget() {
+        use galos_index::prelude::StarKind;
+        // Ten G stars, then twenty brown dwarfs all fainter.
+        let points: Vec<CellSystem> = (1..=30)
+            .map(|id| CellSystem {
+                kind: if id <= 10 { StarKind::G } else { StarKind::BrownDwarf },
+                ..point(id)
+            })
+            .collect();
+        let order = strata(&points);
+
+        for take in 1..=points.len() {
+            let dwarfs = order[..take]
+                .iter()
+                .filter(|&&index| {
+                    points[index as usize].kind == StarKind::BrownDwarf
+                })
+                .count() as f64;
+            let fair = take as f64 * 20. / 30.;
+            assert!(
+                (dwarfs - fair).abs() <= 1.,
+                "{dwarfs} dwarfs in the first {take}, against {fair}"
+            );
+        }
+        let ids = |kind| -> Vec<u64> {
+            order
+                .iter()
+                .map(|&index| &points[index as usize])
+                .filter(|point| point.kind == kind)
+                .map(|point| point.id64)
+                .collect()
+        };
+        assert_eq!(
+            ids(StarKind::G),
+            (1..=10).collect::<Vec<_>>(),
+            "not brightest first"
+        );
+        assert_eq!(ids(StarKind::BrownDwarf), (11..=30).collect::<Vec<_>>());
+
+        // What the filters admit still goes first, in the cell's strata, and
+        // the excluded fill after.
+        let admits = [0u32, 1, 10, 11];
+        let taken: Vec<u64> = stratified_first(&order, &admits, true)
+            .take(5)
+            .map(|index| points[index].id64)
+            .collect();
+        assert_eq!(&taken[..4], &[11, 1, 12, 2], "the admitted, by class");
+        assert!(!admits.contains(&((taken[4] - 1) as u32)));
+        assert_eq!(
+            stratified_first(&order, &admits, false).count(),
+            admits.len(),
+            "the excluded were offered below the dim"
+        );
+    }
+
     /// A filter dense enough to overrun the budget decimates by magnitude
     ///
     /// The admitted are ordered among themselves as the whole payload used to
@@ -2530,6 +2791,7 @@ mod tests {
         app.insert_resource(Populated::default());
         app.insert_resource(Names::reaching(Vec::new(), Vec::new()));
         app.insert_resource(View::Map);
+        app.insert_resource(ColorBy::Allegiance);
         app.insert_resource(ScalePopulation(false));
         app.insert_resource(Spyglass {
             radius: 50.,
@@ -2613,12 +2875,12 @@ mod tests {
 
         let coarse_at_prefix = |id: CellId| if id == coarse { 40 } else { 0 };
         assert_eq!(
-            reads(&marks, wanted, coarse_at_prefix, true, false),
+            reads(&marks, wanted, coarse_at_prefix, Whole::Every, false),
             vec![(fine, 40), (coarse, 5_000)],
             "a cell was read whole while another's prefix waited"
         );
         assert_eq!(
-            reads(&marks, wanted, coarse_at_prefix, false, false),
+            reads(&marks, wanted, coarse_at_prefix, Whole::None, false),
             vec![(fine, 40)],
             "unfiltered, a prefix is all a cell is read to"
         );
@@ -2626,11 +2888,63 @@ mod tests {
         // The way there changed and the loaded set did not: once every
         // prefix is in, every marked cell is read whole, and then nothing.
         assert_eq!(
-            reads(&marks, wanted, |_| 40, true, false),
+            reads(&marks, wanted, |_| 40, Whole::Every, false),
             vec![(coarse, 5_000), (fine, 4_000)]
         );
         let whole = |id: CellId| if id == coarse { 5_000 } else { 4_000 };
-        assert!(reads(&marks, wanted, whole, true, false).is_empty());
+        assert!(reads(&marks, wanted, whole, Whole::Every, false).is_empty());
+    }
+
+    /// Filtered, the cells that draw are read the whole way before a cell
+    /// that draws nothing is read at all, and that one is read in one go
+    ///
+    /// Ranked by stage first, every idle cell's prefix went ahead of the rest
+    /// of the drawing cells, and under a filter admitting a handful of
+    /// systems a payload the map drew nothing it asked for until they landed.
+    #[test]
+    fn a_filtered_frame_reads_what_draws_whole_before_what_does_not() {
+        // The idle cell coarser, so coarse-before-fine alone would read it
+        // first.
+        let draws = CellId::of_point([900.0, 0.0, 900.0], 6);
+        let idle = CellId::of_point([0.0, 0.0, 0.0], 3);
+        let mark = |id: CellId, slice: u32| galos_index::read::walk::MarkRef {
+            id,
+            slice,
+            at: id.bounds().center(),
+        };
+        let marks = [mark(idle, 800), mark(draws, 5_000)];
+        let wanted = |_: usize, id: CellId| if id == draws { 10 } else { 0 };
+
+        assert_eq!(
+            reads(&marks, wanted, |_| 0, Whole::Every, false),
+            vec![(draws, 40), (idle, 800)],
+            "a cell that draws nothing was read to a prefix, or read first"
+        );
+        let draws_at_prefix = |id: CellId| if id == draws { 40 } else { 0 };
+        assert_eq!(
+            reads(&marks, wanted, draws_at_prefix, Whole::Every, false),
+            vec![(draws, 5_000), (idle, 800)],
+            "the rest of a drawing cell waited on a cell that draws nothing"
+        );
+        // Unfiltered, the idle cell is read to the least a cell is read to.
+        assert_eq!(
+            reads(&marks, wanted, |_| 0, Whole::None, false),
+            vec![(draws, 40), (idle, READ_LEAST)],
+        );
+        // Along star class, a drawing cell is read whole the same way where
+        // its share is big enough to sample, and only there; the idle one is
+        // read to its prefix, there being no class sample to draw.
+        let sampling = |_: usize, id: CellId| if id == draws { 200 } else { 0 };
+        let at_its_prefix = |id: CellId| if id == draws { 800 } else { 0 };
+        assert_eq!(
+            reads(&marks, sampling, at_its_prefix, Whole::Drawing, false),
+            vec![(draws, 5_000), (idle, READ_LEAST)],
+        );
+        assert_eq!(
+            reads(&marks, wanted, draws_at_prefix, Whole::Drawing, false),
+            vec![(idle, READ_LEAST)],
+            "ten marks of five thousand were read whole"
+        );
     }
 
     /// The walk does not drop what the user has picked out
@@ -3194,7 +3508,7 @@ mod tests {
                     adopt(
                         &mut resident,
                         &mut orders,
-                        &mut republished,
+                        Some(&mut *republished),
                         owner,
                         payload.clone(),
                     );
@@ -3216,6 +3530,96 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             0,
             "the cell went on being rebuilt after it was settled"
+        );
+    }
+
+    /// A cell read further under the stamp it is held at leaves what is drawn
+    /// out of it standing; under any other stamp, or none, it is rebuilt
+    ///
+    /// A filtered frame reads every drawing cell twice, its prefix and then
+    /// the rest, and a share that outgrows a prefix reads it again. Taken as
+    /// a republish, each of those rebuilt every system already drawn out of
+    /// the cell, spending the spawn budget on systems nothing had changed.
+    #[test]
+    fn a_cell_read_further_rebuilds_nothing() {
+        use bevy::ecs::system::RunSystemOnce;
+        use galos_index::prelude::{BuildParams, Snapshot};
+
+        let built = Snapshot::build(
+            &[galos_index::prelude::System {
+                id64: 1,
+                position: placed(1),
+                absolute_magnitude: 1.,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 1_700_000_000,
+                kind: galos_index::prelude::StarKind::G,
+            }],
+            &BuildParams::default(),
+        );
+        let owner = built
+            .index
+            .cells()
+            .map(|cell| cell.id)
+            .find(|&id| !built.payload(id).is_empty())
+            .expect("some cell owns the system");
+        let payload = built.payload(owner).to_vec();
+
+        let mut app = walking();
+        app.init_resource::<BoundedTasks>();
+        app.init_resource::<crate::map::index::refresh::Stamps>();
+        app.insert_resource(Transport(std::sync::Arc::new(
+            galos_index::prelude::FsSource::new("unread"),
+        )));
+        app.insert_resource(crate::map::index::ResidentIndex(
+            built.index.clone(),
+        ));
+        app.insert_resource(Planned(galos_index::prelude::Needed {
+            mode: galos_index::prelude::Mode::Shell,
+            marks: vec![galos_index::read::walk::MarkRef {
+                id: owner,
+                slice: payload.len() as u32,
+                at: owner.bounds().center(),
+            }],
+            blobs: Vec::new(),
+            splats: Vec::new(),
+        }));
+        // A read lands as the workers land one, and is taken in.
+        let land = |app: &mut App, stamp: Option<u64>| {
+            app.world()
+                .resource::<BoundedTasks>()
+                .shared
+                .lock()
+                .expect("the reads lock")
+                .landed
+                .push((owner, Ok((payload.clone(), stamp))));
+            app.world_mut().run_system_once(collect).expect("collect runs");
+            app.world_mut().insert_resource(PendingSpawns::default());
+            app.update();
+            app.world().resource::<PendingSpawns>().queued()
+        };
+
+        // First read, and the system drawn out of it.
+        land(&mut app, Some(7));
+        app.world_mut().spawn(crate::map::galaxy::tests::system(1));
+        app.insert_resource(PendingSpawns::default());
+        app.update();
+        assert_eq!(app.world().resource::<PendingSpawns>().queued(), 0);
+
+        assert_eq!(
+            land(&mut app, Some(7)),
+            0,
+            "the same payload read further rebuilt what was drawn out of it"
+        );
+        assert_eq!(
+            land(&mut app, Some(8)),
+            1,
+            "a read under a new stamp left the drawn system as first read"
+        );
+        assert_eq!(
+            land(&mut app, None),
+            1,
+            "a read nothing could stamp was taken for the payload held"
         );
     }
 

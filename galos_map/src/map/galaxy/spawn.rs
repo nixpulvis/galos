@@ -262,11 +262,18 @@ impl Hue {
     /// channel has deposited neutral for exactly this reason since it
     /// landed; this is the same fix in the two places that were left.
     ///
+    /// **Blue is lifted off the primary.** Pure blue carries seven hundredths
+    /// of the light the eye reads (Rec. 709 luminance), against 0.79 for cyan
+    /// and 0.21 for red, so a blue mark came out an eleventh as bright as a
+    /// cyan one at the same gain and a blue swatch read as near black. Blue
+    /// is sRGB `(0.3, 0.55, 1.0)` instead, a cornflower at 0.28: level with
+    /// the reds and oranges, and still clear of cyan and of the grey.
+    ///
     /// Written in linear light rather than converted from sRGB per call:
     /// [`crate::map::paint::field`] asks this once a system a frame, and the map draws a
-    /// hundred thousand of them. `srgb_to_linear` is checked against the one
-    /// value that is not a zero or a one in
-    /// [`tests::orange_is_half_way_up_in_srgb`].
+    /// hundred thousand of them. `srgb_to_linear` is checked against the
+    /// values that are not a zero or a one in
+    /// [`tests::the_curved_hues_are_their_srgb`].
     pub(crate) const fn light(self) -> Vec3 {
         match self {
             Hue::Green => Vec3::new(0., 1., 0.),
@@ -274,27 +281,29 @@ impl Hue {
             Hue::Red => Vec3::new(1., 0., 0.),
             Hue::Orange => Vec3::new(1., 0.214_041_14, 0.),
             Hue::Yellow => Vec3::new(1., 1., 0.),
-            Hue::Blue => Vec3::new(0., 0., 1.),
+            Hue::Blue => Vec3::new(0.073_238_96, 0.263_273_4, 1.),
             Hue::Magenta => Vec3::new(1., 0., 1.),
             Hue::Grey => Vec3::ONE,
         }
     }
 
-    /// The color a swatch of this hue is filled with in the chrome, in sRGB
+    /// The color a swatch of this hue is filled with in the chrome, in sRGB,
+    /// at `level` of its full light
     ///
     /// Off [`Self::light`] rather than a table of its own, so a key and the
     /// marks it names cannot drift apart: the chromatic hues are that light
-    /// encoded for the display. [`Hue::Grey`] is the one exception, and has
-    /// to be.
+    /// encoded for the display, and `level` is where an axis draws one hue
+    /// brighter than another (see [`ColorBy::swatch`]). [`Hue::Grey`] is the
+    /// one exception, and has to be.
     /// Its light is white, the level being the gains' to set, and a white
     /// swatch reads as a light the map never paints; filled in the gray an
     /// unreported colony comes out at among its neighbors, it reads as what
     /// it names.
-    pub(crate) fn swatch(self) -> Srgba {
+    pub(crate) fn swatch(self, level: f32) -> Srgba {
         match self {
             Hue::Grey => Srgba::rgb(0.7, 0.72, 0.77),
             _ => {
-                let light = self.light();
+                let light = self.light() * level;
                 Srgba::from(LinearRgba::rgb(light.x, light.y, light.z))
             }
         }
@@ -1626,16 +1635,19 @@ impl Hue {
     /// The color a system's arrival star is drawn in. See
     /// [`Hue::allegiance`].
     ///
-    /// The main sequence runs through the colors the stars themselves shade
-    /// through, hot to cool: O and B blue, A and F cyan, G yellow, K orange
-    /// and M red. Which is also every star a fuel scoop can use. What cannot
-    /// be scooped is the other two: what is left of a star magenta, and the
-    /// rest of the sky's oddities green. Nothing on record is gray, and is
-    /// most of the galaxy.
+    /// The main sequence runs hot to cool: O and B cyan, A and F blue, G
+    /// yellow, K orange and M red. Cyan rather than blue for the hottest,
+    /// being the brighter of the two, so the stars that outshine every other
+    /// class are not drawn dimmer than the class under them. Not an order
+    /// all the way down — yellow is the brightest hue there is — but the one
+    /// the two blues can keep. Which is also every star a fuel scoop can
+    /// use. What cannot be scooped is the other two: what is left of a star
+    /// magenta, and the rest of the sky's oddities green. Nothing on record
+    /// is gray, and is most of the galaxy.
     pub(crate) fn star(kind: StarKind) -> Hue {
         match kind {
-            StarKind::O | StarKind::B => Hue::Blue,
-            StarKind::A | StarKind::F => Hue::Cyan,
+            StarKind::O | StarKind::B => Hue::Cyan,
+            StarKind::A | StarKind::F => Hue::Blue,
             StarKind::G => Hue::Yellow,
             StarKind::K => Hue::Orange,
             StarKind::M => Hue::Red,
@@ -1674,28 +1686,109 @@ pub(crate) fn power_allegiance(power: Power) -> Allegiance {
 mod tests {
     use super::*;
 
-    /// The one hue whose light is not a zero or a one is the sRGB transfer
+    /// The hues whose light is not all zeros and ones are the sRGB transfer
     /// applied by hand, and this is what says it was applied right
     ///
     /// [`Hue::light`] is written in linear light so a mark costs no
     /// conversion, which is worth doing once and worth checking once: every
     /// other channel is an endpoint, where sRGB and linear agree, and orange
-    /// is the only one carrying a curve.
+    /// and blue are the ones carrying a curve.
     #[test]
-    fn orange_is_half_way_up_in_srgb() {
-        let converted = LinearRgba::from(Color::srgb(1., 0.5, 0.));
-        let light = Hue::Orange.light();
-        assert!(
-            (light.y - converted.green).abs() < 1e-6,
-            "orange's green is {} and sRGB 0.5 is {}",
-            light.y,
-            converted.green
-        );
+    fn the_curved_hues_are_their_srgb() {
+        for (hue, srgb) in [
+            (Hue::Orange, Color::srgb(1., 0.5, 0.)),
+            (Hue::Blue, Color::srgb(0.3, 0.55, 1.)),
+        ] {
+            let converted = LinearRgba::from(srgb);
+            let light = hue.light();
+            let wanted =
+                Vec3::new(converted.red, converted.green, converted.blue);
+            assert!(
+                (light - wanted).abs().max_element() < 1e-6,
+                "{hue:?} is {light} and its sRGB is {wanted}"
+            );
+        }
         assert_eq!(
             Hue::Grey.light(),
             Vec3::ONE,
             "grey is a level, not a paint"
         );
+    }
+
+    /// No hue reads darker than red, the dimmest primary the palette keeps
+    ///
+    /// Pure blue was the one below it, at an eleventh of cyan's luminance:
+    /// Democracy, High security and a class of stars all drawn near black at
+    /// the gain every other hue is seen at.
+    #[test]
+    fn no_hue_is_darker_than_red() {
+        let luminance =
+            |hue: Hue| hue.light().dot(Vec3::new(0.2126, 0.7152, 0.0722));
+        for hue in [
+            Hue::Green,
+            Hue::Cyan,
+            Hue::Orange,
+            Hue::Yellow,
+            Hue::Blue,
+            Hue::Magenta,
+        ] {
+            assert!(
+                luminance(hue) >= luminance(Hue::Red),
+                "{hue:?} reads at {} against red's {}",
+                luminance(hue),
+                luminance(Hue::Red)
+            );
+        }
+    }
+
+    /// The main sequence dims hot to cool, on the map and in its key
+    ///
+    /// Drawn at one level the hues are not: yellow is the brightest there is,
+    /// so G outshone O and B, and A and F read dimmer than K. The key is held
+    /// to the same order, and under full so no swatch clips off its hue.
+    #[test]
+    fn the_main_sequence_dims_hot_to_cool() {
+        let rec709 = Vec3::new(0.2126, 0.7152, 0.0722);
+        let gains = crate::map::paint::glow::Gains::default();
+        let drawn = |kind: StarKind| {
+            let hue = Hue::star(kind);
+            (hue.light() * crate::map::paint::glow::star_light(hue, &gains))
+                .dot(rec709)
+        };
+        let keyed = |kind: StarKind| {
+            let swatch =
+                LinearRgba::from(ColorBy::StarClass.swatch(Hue::star(kind)));
+            Vec3::new(swatch.red, swatch.green, swatch.blue)
+        };
+        let sequence = [
+            StarKind::O,
+            StarKind::B,
+            StarKind::A,
+            StarKind::F,
+            StarKind::G,
+            StarKind::K,
+            StarKind::M,
+        ];
+        for pair in sequence.windows(2) {
+            let (hot, cool) = (pair[0], pair[1]);
+            assert!(
+                drawn(hot) >= drawn(cool),
+                "{hot:?} drawn at {} under {cool:?} at {}",
+                drawn(hot),
+                drawn(cool)
+            );
+            assert!(
+                keyed(hot).dot(rec709) >= keyed(cool).dot(rec709),
+                "{hot:?} keyed under {cool:?}"
+            );
+        }
+        for kind in sequence {
+            assert!(
+                keyed(kind).max_element() <= 1. + 1e-6,
+                "{kind:?}'s swatch clips: {}",
+                keyed(kind)
+            );
+        }
     }
 
     /// A system named by address is drawn where the galaxy puts it

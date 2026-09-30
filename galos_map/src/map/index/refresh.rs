@@ -147,6 +147,15 @@ impl Stamps {
         self.cells.insert(id, stamp);
     }
 
+    /// Whether `stamp` is the one a cell's held payload was read under
+    ///
+    /// A read that answers yes read the same payload again, further down; one
+    /// that answers no may hold anything. A missing stamp is never the same:
+    /// not knowing whether a payload moved is not knowing that it did not.
+    pub fn unchanged(&self, id: CellId, stamp: Option<Stamp>) -> bool {
+        stamp.is_some() && self.cells.get(&id) == Some(&stamp)
+    }
+
     /// Forget every cell, the map having let go of every payload at once
     #[cfg(test)]
     pub fn clear(&mut self) {
@@ -462,7 +471,13 @@ fn apply(
         if !resident.0.contains(id) {
             continue;
         }
-        adopt(&mut resident, &mut admitted, &mut republished, id, points);
+        adopt(
+            &mut resident,
+            &mut admitted,
+            Some(&mut *republished),
+            id,
+            points,
+        );
         held.holding(id, stamp);
     }
 }
