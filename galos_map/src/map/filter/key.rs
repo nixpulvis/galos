@@ -315,7 +315,9 @@ fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
             Some(Government::Carrier) => "Carrier",
             Some(Government::Megaconstruction) => "Megaconstruction",
             Some(Government::PrivateOwnership) => "Private Ownership",
-            Some(Government::None) => "None",
+            // Not "None", which read as the same thing as Uninhabited beside
+            // it: these are colonies, with no government on record.
+            Some(Government::None) => "No government",
             None => "",
         },
         ColorBy::Security => match Security::at(bucket) {
@@ -323,7 +325,7 @@ fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
             Some(Security::Medium) => "Medium",
             Some(Security::Low) => "Low",
             Some(Security::Anarchy) => "Anarchy",
-            Some(Security::None) => "None",
+            Some(Security::None) => "No security",
             None => "",
         },
     }
@@ -389,7 +391,7 @@ mod tests {
                 "Cooperative",
                 "Green",
                 "Engineer",
-                "None"
+                "No government"
             ]
         );
         assert_eq!(tiers[0].items().len(), 7);

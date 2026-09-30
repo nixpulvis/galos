@@ -470,6 +470,13 @@ pub(super) fn key(
         None,
         held.map(|_| thousands(empty)),
     );
+    // Said on the row, beside the gray value of every axis it could be
+    // taken for: those are colonies with nothing on record, and these are
+    // systems nobody lives in at all.
+    let row = row.on_hover_text(
+        "Systems nobody lives in. Colonies with no allegiance, government \
+         or security on record are the gray row above.",
+    );
     if row.clicked() {
         asked = Some(Keyed::Uninhabited);
     }
