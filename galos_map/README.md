@@ -105,6 +105,27 @@ seconds, whether or not the grid is shown. It has its own switch in the
 settings pane, under General beside the grid's. The rose is
 [`src/map/rose.rs`](./src/map/rose.rs).
 
+Everything picked out is marked on the rose by a small head pointing in at
+the hub: its bearing from the middle of the view, which says which way to
+turn for something off the screen. The needle is as long as the card is
+wide, so the rose is read as a sphere, and a bearing lands where the way to
+the thing meets it — on the ring for something level with the view's
+middle, at the needle's head for something straight above, and between for
+everything between. Each is painted in its star's color — the color key's
+hue on the map, the star's own tint in the realistic view — so the bearings
+tell apart which is which.
+
+The rose answers the pointer. Clicking a point turns the camera to face along
+that axis and keeps its pitch, and clicking a bearing faces what it bears on.
+Clicking `+Y` looks straight down onto the plane and `-Y` straight up from
+under it. Clicking the hub looks straight down, and clicking it again goes
+back to the pitch it was clicked from. Every turn eases, as a drag does.
+Hovering over a piece of the rose says what it does in the line under the
+scale bar. Over the hub, that line gives where the view is centred, and over
+the bar, how wide the whole view is. The view's centre is no longer written
+at the middle of the view by default; "Show Center Position" in the settings
+pane puts it back.
+
 ## The color key
 
 The map is colored by allegiance, government, security, primary economy, the
