@@ -270,6 +270,7 @@ fn roll_up(
                 s.absolute_magnitude,
                 s.temperature,
                 s.age_bucket,
+                s.kind,
             ))
         });
         agg.insert(leaf, a);

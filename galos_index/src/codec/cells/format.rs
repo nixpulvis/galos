@@ -11,10 +11,10 @@
 //! an integer count of [`POSITION_STEP`] off the cell's own low corner, so a
 //! block is read *with* its cell rather than standing on its own.
 //!
-//! Nothing is frozen yet: the version moves when a record's width does and
-//! the check cannot catch it (see [`INDEX_VERSION`]), and the index record
-//! keeps growing, as the aggregate gains the field step's filter marginals
-//! and its quantization.
+//! Nothing is frozen yet: the version moves whenever a directory at the old
+//! one has to be brought forward rather than rebuilt (see [`INDEX_VERSION`]),
+//! and the index record keeps growing, as the aggregate gains the field
+//! step's filter marginals and its quantization.
 
 use crate::codec::bytes::{Decode, Encode, FixedCodec, record};
 use crate::core::aggregate::{AGE_BUCKETS, Aggregate, TempBucket};
@@ -127,6 +127,7 @@ record! {
         light: Moments,
         mass: Moments,
         aged: [u32; AGE_BUCKETS],
+        kinds: [u32; StarKind::COUNT],
     }
 }
 
@@ -352,23 +353,52 @@ pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<CellSystem> {
 
 /// The magic and version at the head of an index file.
 pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// Three, and moved by the payload's layout
+/// Four, and moved by what a directory needs brought forward
 ///
-/// A legacy payload is a block of records with no magic, no version and no
-/// count, so nothing about it can be held to a width: its decode takes whole
-/// records until fewer than one remains, and a file written at another width
-/// decodes as a plausible number of systems with every field read out of the
-/// wrong bytes. The index beside it cannot tell either, `Cell::LEN` being the
-/// same. So a change to that width is caught in the index file's header, and
-/// this is it: a stale directory is refused at `index.bin`, named by
-/// [`index_version`], and brought forward by [`crate::ops::upgrade::rewrite`],
-/// which reads the record blocks and writes them as columns.
+/// Each move is a step [`crate::ops::upgrade::rewrite`] knows how to take, and
+/// a stale directory is refused at `index.bin`, named by [`index_version`],
+/// and sent there by name rather than rebuilt:
+///
+/// - **3** moved for the payload's layout. A legacy payload is a block of
+///   records with no magic, no version and no count, so nothing about it can
+///   be held to a width: its decode takes whole records until fewer than one
+///   remains, and a file written at another width decodes as a plausible
+///   number of systems with every field read out of the wrong bytes. The
+///   index beside it could not tell either, `Cell::LEN` being the same, so
+///   the header had to. The step reads the record blocks and writes them as
+///   columns.
+/// - **4** moved for the index record: the aggregate gained its star-kind
+///   histogram, 64 bytes a cell. The length check in [`Index`]'s own `decode`
+///   would have refused the old file on its own, but as "not an index file",
+///   which is a rebuild — hours off a dump — for a record whose one new field
+///   is derivable from the payloads beside it. So the version says which
+///   record the file holds ([`CELL_LEN_BEFORE_KINDS`] up to 3), and the step
+///   fills the histogram in from the payloads' kind column.
 ///
 /// The columnar payload carries its own magic, version and count, and refuses
-/// a stale one itself. So a move costs a full rewrite of the cells, and is
-/// worth it only for a change the payload cannot catch itself. A change to the
-/// index record alone rides on the length check in [`Index`]'s own `decode`.
-pub const INDEX_VERSION: u16 = 3;
+/// a stale one itself.
+pub const INDEX_VERSION: u16 = 4;
+
+/// The first version whose index record carries [`Aggregate`]'s star kinds.
+pub(crate) const FIRST_WITH_KINDS: u16 = 4;
+
+/// How wide an index record was before [`FIRST_WITH_KINDS`]: the record less
+/// its star-kind histogram.
+pub(crate) const CELL_LEN_BEFORE_KINDS: usize =
+    Cell::LEN - StarKind::COUNT * u32::LEN;
+
+/// An index record written before [`FIRST_WITH_KINDS`], its star kinds zero
+///
+/// The histogram is the last field of the aggregate and the aggregate the
+/// last of the record, so an old record is exactly a current one cut short of
+/// it: padded back out with zeros, the current decode reads it. [`None`] for
+/// fewer than [`CELL_LEN_BEFORE_KINDS`] bytes.
+pub(crate) fn cell_before_kinds(record: &[u8]) -> Option<Cell> {
+    let mut whole = [0u8; Cell::LEN];
+    whole[..CELL_LEN_BEFORE_KINDS]
+        .copy_from_slice(record.get(..CELL_LEN_BEFORE_KINDS)?);
+    Cell::decode(&mut &whole[..])
+}
 
 /// The version an index file's header claims, or [`None`] for bytes that are
 /// not an index file at all.
@@ -409,16 +439,14 @@ impl Decode for Index {
     /// The header says how many cells follow and a cell is a fixed width, so
     /// the length is a thing the file can be held to: anything but exactly
     /// `count * Cell::LEN` bytes of body was written by a different build of
-    /// this code. That is the check that makes the index record's width safe
-    /// to change without moving [`INDEX_VERSION`] — without it a stale index
-    /// passes the header, decodes one record's bytes as another's, and hands
-    /// back a plausible-looking tree of nonsense. Refused here, it is a
-    /// rebuild instead of a wrong sky.
+    /// this code. Without that check a file whose header was not moved with
+    /// its record passes the header, decodes one record's bytes as another's,
+    /// and hands back a plausible-looking tree of nonsense. Refused here, it
+    /// is an error instead of a wrong sky.
     ///
-    /// The payload makes its own check — it carries a magic, a version and a
-    /// count — but a legacy block of records does not, and drops a short
-    /// tail rather than failing, so a directory of those is caught here
-    /// instead, by the version this refuses on. See [`INDEX_VERSION`].
+    /// A file of an earlier version is refused on the version alone, and
+    /// [`crate::codec::cells`]'s `Index::read` names `galos index migrate` for
+    /// it. See [`INDEX_VERSION`].
     fn decode(cur: &mut &[u8]) -> Option<Index> {
         if <[u8; 4]>::decode(cur)? != INDEX_MAGIC {
             return None;
@@ -446,8 +474,15 @@ mod tests {
     /// and all; the moments are `f64` and lose nothing.
     #[test]
     fn a_cell_record_round_trips() {
-        let agg = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2)
-            .merge(Aggregate::of_system([5.0, 6.0, 7.0], -1.0, 12000.0, 5));
+        let agg =
+            Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2, StarKind::G)
+                .merge(Aggregate::of_system(
+                    [5.0, 6.0, 7.0],
+                    -1.0,
+                    12000.0,
+                    5,
+                    StarKind::Neutron,
+                ));
         let cell = Cell {
             id: CellId { level: 3, x: 5, y: 6, z: 7 },
             rank_lo: 512,
@@ -460,6 +495,42 @@ mod tests {
         assert_eq!(buf.len(), Cell::LEN);
         let mut cur = &buf[..];
         assert_eq!(Cell::decode(&mut cur), Some(cell));
+    }
+
+    /// A record from before the star kinds reads as the same cell with no
+    /// kinds, and is the width the files of that version were written at
+    ///
+    /// Which is what `galos index migrate` stands on: it reads every older
+    /// record this way and fills the kinds in after.
+    #[test]
+    fn a_record_from_before_the_kinds_reads_without_them() {
+        assert_eq!(CELL_LEN_BEFORE_KINDS, 198, "the version 3 record width");
+        let agg =
+            Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2, StarKind::G)
+                .merge(Aggregate::of_system(
+                    [5.0, 6.0, 7.0],
+                    -1.0,
+                    12000.0,
+                    5,
+                    StarKind::Neutron,
+                ));
+        let cell = Cell {
+            id: CellId { level: 3, x: 5, y: 6, z: 7 },
+            rank_lo: 512,
+            rank_hi: 1024,
+            child_mask: 0b1010_0001,
+            aggregate: agg,
+        };
+        let mut buf = Vec::new();
+        cell.encode(&mut buf);
+
+        let mut wanted = cell;
+        wanted.aggregate.kinds = [0; StarKind::COUNT];
+        assert_eq!(
+            cell_before_kinds(&buf[..CELL_LEN_BEFORE_KINDS]),
+            Some(wanted)
+        );
+        assert_eq!(cell_before_kinds(&buf[..CELL_LEN_BEFORE_KINDS - 1]), None);
     }
 
     fn point(id: u64, mag: f32) -> CellSystem {
@@ -626,7 +697,13 @@ mod tests {
                 rank_lo: 0,
                 rank_hi: 512,
                 child_mask: 0xFF,
-                aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+                aggregate: Aggregate::of_system(
+                    [0.0; 3],
+                    1.0,
+                    5000.0,
+                    0,
+                    StarKind::K,
+                ),
             },
             Cell {
                 id: CellId { level: 1, x: 0, y: 1, z: 1 },
@@ -646,9 +723,9 @@ mod tests {
 
     /// An index whose *cell* record is a different width is refused
     ///
-    /// [`INDEX_VERSION`] does not move for a change to the index record, so
-    /// a stale file carries the same magic and the same version and the
-    /// header cannot tell it apart. Only its length can. Without this the
+    /// A header that was not moved with its record says the same magic and
+    /// the same version over bytes of another width, and nothing in it can
+    /// tell the two apart. Only its length can. Without this the
     /// decoder reads one record's bytes as another's and hands back a tree of
     /// plausible nonsense — the wrong sky, drawn with no complaint.
     ///
@@ -660,7 +737,13 @@ mod tests {
             rank_lo: 0,
             rank_hi: 512,
             child_mask: 0xFF,
-            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+            aggregate: Aggregate::of_system(
+                [0.0; 3],
+                1.0,
+                5000.0,
+                0,
+                StarKind::K,
+            ),
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
@@ -686,7 +769,13 @@ mod tests {
             rank_lo: 0,
             rank_hi: 512,
             child_mask: 0xFF,
-            aggregate: Aggregate::of_system([0.0; 3], 1.0, 5000.0, 0),
+            aggregate: Aggregate::of_system(
+                [0.0; 3],
+                1.0,
+                5000.0,
+                0,
+                StarKind::K,
+            ),
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert_eq!(index_version(&bytes), Some(INDEX_VERSION));

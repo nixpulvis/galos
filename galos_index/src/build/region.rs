@@ -194,6 +194,7 @@ impl Offer {
                 system.absolute_magnitude,
                 system.temperature,
                 system.age_bucket,
+                system.kind,
             ));
             if room == 0 {
                 continue;

@@ -972,10 +972,17 @@ mod tests {
                 8.0,
                 5000.0,
                 0,
+                crate::core::star::StarKind::Unknown,
             ));
         }
         for at in colonies {
-            mass = mass.merge(Aggregate::of_system(at, 8.0, 5000.0, 0));
+            mass = mass.merge(Aggregate::of_system(
+                at,
+                8.0,
+                5000.0,
+                0,
+                crate::core::star::StarKind::Unknown,
+            ));
         }
         let count = mass.count_centroid().unwrap();
 

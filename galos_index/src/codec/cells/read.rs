@@ -18,17 +18,17 @@ impl Index {
     /// A directory at another format version is refused here, by name. The
     /// payloads of an earlier layout carry no header of their own, and a
     /// reader of this layout refuses each one only as a cell with nothing
-    /// in it, so this is the one place that can say what is wrong. The error
-    /// names the version met and `galos index migrate` as the fix, which is
-    /// [`crate::ops::upgrade`].
+    /// in it; an earlier index record is another width. So this is the one
+    /// place that can say what is wrong. The error names the version met and
+    /// `galos index migrate` as the fix, which is [`crate::ops::upgrade`].
     pub fn read(dir: &Path) -> io::Result<Index> {
         let bytes = fs::read(dir.join(INDEX_FILE))?;
         Index::from_bytes(&bytes).ok_or_else(|| {
             let what = match index_version(&bytes) {
                 Some(found) if found != INDEX_VERSION => format!(
                     "index format version {found}, this build reads \
-                     {INDEX_VERSION}: the payloads changed layout, so run \
-                     `galos index migrate` over the directory"
+                     {INDEX_VERSION}: run `galos index migrate` over the \
+                     directory to bring it forward"
                 ),
                 _ => "not an index file".to_string(),
             };

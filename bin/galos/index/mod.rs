@@ -225,8 +225,9 @@ pub(super) enum Command {
     },
     /// Bring a directory's format forward, in place: its names chunks
     /// folded into the mapped table, its payloads rewritten to the columns
-    /// this build reads, and the table itself brought to the version this
-    /// build writes.
+    /// this build reads, the star kinds counted into an index written
+    /// before its records had them, and the table itself brought to the
+    /// version this build writes.
     ///
     /// One verb rather than three, because there is no order to choose
     /// between: the chunks are older than the table, the table is read by
@@ -727,21 +728,25 @@ fn size(bytes: u64) -> String {
 ///    left unfolded is a galaxy of names nothing can spell. It is an
 ///    external sort of gigabytes, which is why it is a verb and not
 ///    something discovered at the front of somebody's import.
-/// 2. **The payloads are rewritten to the columns this build reads.**
+/// 2. **The cells are brought to the format this build reads**, in one
+///    pass over them.
 ///
-///    The ones written before them hold every field the new ones do but
-///    the star kind, and that is derivable from `bodies/` — the scan
+///    Payloads written before the columns hold every field the new ones do
+///    but the star kind, and that is derivable from `bodies/` — the scan
 ///    record the class comes from. So this joins the two and rewrites each
 ///    cell, where the alternative is running the importer over the dump
-///    again.
+///    again. And an index written before its records carried a star-kind
+///    histogram has it counted in off the payloads, every system walked to
+///    the deepest cell over it and rolled up — refused whole, index
+///    untouched, unless every cell's histogram comes to its count.
 /// 3. **The table comes to the version this build writes**, where it is
 ///    behind. That rewrite is what drops every name the address spells —
 ///    97.4 % of a galaxy, and 3.94 GB of `text.bin` down to 133 MB.
 ///
 /// Idempotent and interruptible: a directory with no chunks is not
-/// folded, a cell already columnar is left alone, `index.bin` is rewritten
-/// last, and a table already at this version is not touched. The bodies,
-/// the sidecars and the tree itself are unchanged.
+/// folded, a cell already columnar is left alone, `index.bin` is replaced
+/// once every cell is forward, and a table already at this version is not
+/// touched. The bodies, the sidecars and the tree's shape are unchanged.
 fn migrate(dir: &Path, forced: bool) {
     let lock = locked(dir, forced);
     if !fold_names(dir, &lock) {
@@ -750,7 +755,7 @@ fn migrate(dir: &Path, forced: bool) {
     let at = std::time::Instant::now();
     // No stop flag of its own: a run cut short by a Ctrl-C leaves the
     // directory in a state the next run takes up, `index.bin` being
-    // rewritten last.
+    // replaced only once every cell is forward.
     let stop = || false;
     let mut said = |wrote: &galos_index::ops::upgrade::Rewrote| {
         // The sweep first and the rewrite after it, which is the order they
@@ -762,11 +767,12 @@ fn migrate(dir: &Path, forced: bool) {
             }
             false => eprint!(
                 "\r{} cells, {} systems, {} classed, {} already columnar, \
-                 {:.0?}",
+                 {} counted for kinds, {:.0?}",
                 wrote.cells,
                 wrote.systems,
                 wrote.classed,
                 wrote.kept,
+                wrote.counted,
                 at.elapsed(),
             ),
         }
@@ -789,6 +795,13 @@ fn migrate(dir: &Path, forced: bool) {
                 wrote.kept,
                 at.elapsed(),
             );
+            // Only where the index was written before it had star kinds.
+            if wrote.counted > 0 {
+                println!(
+                    "star kinds counted into the index off {} payloads",
+                    wrote.counted
+                );
+            }
             // Only where there was a table to bring forward, which is a
             // directory built before its owner changed its shape.
             if wrote.upgraded > 0 {
@@ -1424,7 +1437,7 @@ const DRIFT: f64 = 1e-9;
 /// What is compared, and how:
 ///
 /// - the cell tree, by its integer columns — the cells present, `rank_lo`,
-///   `rank_hi`, `child_mask` and each aggregate's count;
+///   `rank_hi`, `child_mask` and each aggregate's count and star kinds;
 /// - the aggregates' summed light, to [`DRIFT`];
 /// - every cell's payload, by the bytes of the two files, decoded only
 ///   where those disagree;
@@ -1584,15 +1597,16 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
         }
     }
 
-    // The integer columns: what a cell holds, how much of it, and where in
-    // the ranking its slice sits.
+    // The integer columns: what a cell holds, how much of it, of which star
+    // kinds, and where in the ranking its slice sits.
     let at = std::time::Instant::now();
     let mut differing = Vec::new();
     for (left, right) in &shared {
         let same = left.rank_lo == right.rank_lo
             && left.rank_hi == right.rank_hi
             && left.child_mask == right.child_mask
-            && left.aggregate.count() == right.aggregate.count();
+            && left.aggregate.count() == right.aggregate.count()
+            && left.aggregate.kinds() == right.aggregate.kinds();
         if !same {
             differing.push(*left);
         }

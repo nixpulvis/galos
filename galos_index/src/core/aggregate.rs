@@ -8,11 +8,11 @@
 //! arrived, is drawn instead, so no system counts twice.
 //!
 //! Everything additive is kept as a sum, sums composing where the things read
-//! off them do not: flux per temperature bucket, counts, age buckets. The
-//! centroids and spreads come out of [`Moments`], which keeps the moments
-//! they are read from rather than the answers. Two weightings run at once and
-//! diverge wherever the bright stars sit off centre: the glow follows the
-//! light and the density follows the count.
+//! off them do not: flux per temperature bucket, counts, age buckets, star
+//! kinds. The centroids and spreads come out of [`Moments`], which keeps the
+//! moments they are read from rather than the answers. Two weightings run at
+//! once and diverge wherever the bright stars sit off centre: the glow
+//! follows the light and the density follows the count.
 //!
 //! `m_min`, the brightest absolute magnitude in the subtree, composes by
 //! taking the smaller of two rather than by adding, and is stored because a
@@ -21,6 +21,7 @@
 //! leaves it be.
 
 use crate::core::moments::Moments;
+use crate::core::star::StarKind;
 use galos_photometry::Magnitude;
 
 /// Age buckets for the Recency axis, which a prefix sum answers any span from.
@@ -114,6 +115,11 @@ pub struct Aggregate {
     /// million, where a `u16` share of `count` would round the smallest
     /// bucket — the recently-changed one the axis exists to show — away.
     pub(crate) aged: [u32; AGE_BUCKETS],
+    /// Counts per arrival star kind, indexed by [`StarKind::code`]: what the
+    /// map colors a cell by when it colors every system by its star rather
+    /// than the colonies by their politics. Sums to `count`, exact for the
+    /// reason `aged` is.
+    pub(crate) kinds: [u32; StarKind::COUNT],
 }
 
 impl Aggregate {
@@ -125,6 +131,7 @@ impl Aggregate {
         light: Moments::ZERO,
         mass: Moments::ZERO,
         aged: [0; AGE_BUCKETS],
+        kinds: [0; StarKind::COUNT],
     };
 
     /// One system's contribution.
@@ -139,6 +146,7 @@ impl Aggregate {
         absolute_magnitude: f64,
         temperature: f64,
         age_bucket: u32,
+        kind: StarKind,
     ) -> Aggregate {
         let f = Magnitude(absolute_magnitude).flux().0;
         let mut flux_by_bucket = [0.0; TempBucket::COUNT];
@@ -147,6 +155,8 @@ impl Aggregate {
         if (age_bucket as usize) < AGE_BUCKETS {
             aged[age_bucket as usize] = 1;
         }
+        let mut kinds = [0; StarKind::COUNT];
+        kinds[usize::from(kind.code())] = 1;
         Aggregate {
             m_min: Some(absolute_magnitude as f32),
             count: 1,
@@ -154,6 +164,7 @@ impl Aggregate {
             light: Moments::point(f, position),
             mass: Moments::point(1.0, position),
             aged,
+            kinds,
         }
     }
 
@@ -162,11 +173,15 @@ impl Aggregate {
     pub fn merge(self, other: Aggregate) -> Aggregate {
         let mut flux = self.flux;
         let mut aged = self.aged;
+        let mut kinds = self.kinds;
         for (f, o) in flux.iter_mut().zip(other.flux) {
             *f += o;
         }
         for (a, o) in aged.iter_mut().zip(other.aged) {
             *a += o;
+        }
+        for (k, o) in kinds.iter_mut().zip(other.kinds) {
+            *k += o;
         }
         Aggregate {
             m_min: min_opt(self.m_min, other.m_min),
@@ -175,6 +190,7 @@ impl Aggregate {
             light: self.light.merge(other.light),
             mass: self.mass.merge(other.mass),
             aged,
+            kinds,
         }
     }
 
@@ -189,11 +205,15 @@ impl Aggregate {
     pub fn remove(self, slice: Aggregate) -> Aggregate {
         let mut flux = self.flux;
         let mut aged = self.aged;
+        let mut kinds = self.kinds;
         for (f, s) in flux.iter_mut().zip(slice.flux) {
             *f -= s;
         }
         for (a, s) in aged.iter_mut().zip(slice.aged) {
             *a -= s;
+        }
+        for (k, s) in kinds.iter_mut().zip(slice.kinds) {
+            *k -= s;
         }
         Aggregate {
             m_min: self.m_min,
@@ -202,6 +222,7 @@ impl Aggregate {
             light: self.light.remove(slice.light),
             mass: self.mass.remove(slice.mass),
             aged,
+            kinds,
         }
     }
 
@@ -225,6 +246,12 @@ impl Aggregate {
     /// day instead of to the second, and answered for a whole subtree at once.
     pub fn aged(&self) -> &[u32; AGE_BUCKETS] {
         &self.aged
+    }
+
+    /// How many systems of the subtree arrive at each kind of star, indexed
+    /// by [`StarKind::code`]
+    pub fn kinds(&self) -> &[u32; StarKind::COUNT] {
+        &self.kinds
     }
 
     /// The total linear flux across every temperature bucket.
@@ -303,7 +330,8 @@ mod tests {
     /// bucket, and both centroids on its position.
     #[test]
     fn a_system_is_its_own_aggregate() {
-        let a = Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 0);
+        let a =
+            Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 0, StarKind::G);
         assert_eq!(a.count(), 1);
         assert_eq!(a.m_min(), Some(4.83));
         assert!(close(a.total_flux(), Magnitude(4.83).flux().0));
@@ -347,8 +375,9 @@ mod tests {
     /// The brightest magnitude is the smallest, and merging keeps it.
     #[test]
     fn m_min_keeps_the_brightest() {
-        let dim = Aggregate::of_system([0.0; 3], 10.0, 3400.0, 0);
-        let bright = Aggregate::of_system([1.0; 3], -2.0, 20000.0, 0);
+        let dim = Aggregate::of_system([0.0; 3], 10.0, 3400.0, 0, StarKind::M);
+        let bright =
+            Aggregate::of_system([1.0; 3], -2.0, 20000.0, 0, StarKind::B);
         assert_eq!(dim.merge(bright).m_min(), Some(-2.0));
         assert_eq!(bright.merge(dim).m_min(), Some(-2.0));
     }
@@ -357,8 +386,8 @@ mod tests {
     /// the buckets rather than blending them.
     #[test]
     fn flux_stays_in_its_temperature_bucket() {
-        let cool = Aggregate::of_system([0.0; 3], 5.0, 3000.0, 0);
-        let hot = Aggregate::of_system([0.0; 3], 5.0, 25000.0, 0);
+        let cool = Aggregate::of_system([0.0; 3], 5.0, 3000.0, 0, StarKind::M);
+        let hot = Aggregate::of_system([0.0; 3], 5.0, 25000.0, 0, StarKind::B);
         let cool_b = TempBucket::of(3000.0).index();
         let hot_b = TempBucket::of(25000.0).index();
         assert_ne!(cool_b, hot_b);
@@ -371,8 +400,15 @@ mod tests {
     /// middle by count, where the glow leans toward the bright one.
     #[test]
     fn the_glow_and_the_map_centre_differ() {
-        let bright = Aggregate::of_system([0.0, 0.0, 0.0], -1.0, 15000.0, 0);
-        let dim = Aggregate::of_system([10.0, 0.0, 0.0], 9.0, 3400.0, 0);
+        let bright = Aggregate::of_system(
+            [0.0, 0.0, 0.0],
+            -1.0,
+            15000.0,
+            0,
+            StarKind::B,
+        );
+        let dim =
+            Aggregate::of_system([10.0, 0.0, 0.0], 9.0, 3400.0, 0, StarKind::M);
         let a = bright.merge(dim);
         // Count weights them equally: the midpoint.
         assert!(close3(a.count_centroid().unwrap(), [5.0, 0.0, 0.0]));
@@ -381,27 +417,21 @@ mod tests {
     }
 
     /// A set split any way and rejoined is the same aggregate: count, flux,
-    /// both centroids and both spreads all conserve.
+    /// both centroids, both spreads and the star kinds all conserve.
     #[test]
     fn a_split_conserves_the_subtree() {
         let systems = [
-            ([10.0, 0.0, 0.0], 3.0, 6000.0, 1u32),
-            ([0.0, 10.0, 0.0], 7.0, 3500.0, 2),
-            ([0.0, 0.0, 10.0], -1.0, 20000.0, 0),
-            ([-5.0, -5.0, -5.0], 5.0, 4800.0, 3),
+            ([10.0, 0.0, 0.0], 3.0, 6000.0, 1u32, StarKind::F),
+            ([0.0, 10.0, 0.0], 7.0, 3500.0, 2, StarKind::M),
+            ([0.0, 0.0, 10.0], -1.0, 20000.0, 0, StarKind::Neutron),
+            ([-5.0, -5.0, -5.0], 5.0, 4800.0, 3, StarKind::M),
         ];
-        let whole: Aggregate = systems
-            .iter()
-            .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
-            .collect();
-        let left: Aggregate = systems[..2]
-            .iter()
-            .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
-            .collect();
-        let right: Aggregate = systems[2..]
-            .iter()
-            .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
-            .collect();
+        let of = |&(p, m, t, a, k): &([f64; 3], f64, f64, u32, StarKind)| {
+            Aggregate::of_system(p, m, t, a, k)
+        };
+        let whole: Aggregate = systems.iter().map(of).collect();
+        let left: Aggregate = systems[..2].iter().map(of).collect();
+        let right: Aggregate = systems[2..].iter().map(of).collect();
         let rejoined = left.merge(right);
 
         assert_eq!(rejoined.count(), whole.count());
@@ -417,26 +447,35 @@ mod tests {
             rejoined.count_centroid().unwrap(),
             whole.count_centroid().unwrap()
         ));
+        assert_eq!(rejoined.kinds(), whole.kinds());
+        let mut wanted = [0u32; StarKind::COUNT];
+        wanted[usize::from(StarKind::F.code())] = 1;
+        wanted[usize::from(StarKind::M.code())] = 2;
+        wanted[usize::from(StarKind::Neutron.code())] = 1;
+        assert_eq!(*whole.kinds(), wanted, "a kind landed in the wrong slot");
     }
 
     /// Removing a slice from a total leaves exactly the rest, the residual the
     /// field splats over what has loaded.
     #[test]
     fn remove_leaves_the_residual() {
+        let of = |&(p, m, t, a, k): &([f64; 3], f64, f64, u32, StarKind)| {
+            Aggregate::of_system(p, m, t, a, k)
+        };
         let slice: Aggregate = [
-            ([1.0, 0.0, 0.0], 2.0, 6000.0, 0u32),
-            ([0.0, 1.0, 0.0], 4.0, 4000.0, 1),
+            ([1.0, 0.0, 0.0], 2.0, 6000.0, 0u32, StarKind::G),
+            ([0.0, 1.0, 0.0], 4.0, 4000.0, 1, StarKind::K),
         ]
         .iter()
-        .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
+        .map(of)
         .collect();
         let rest: Aggregate = [
-            ([5.0, 5.0, 5.0], 6.0, 3500.0, 2u32),
-            ([-2.0, 3.0, 1.0], 8.0, 3200.0, 3),
-            ([0.0, 0.0, 9.0], 1.0, 12000.0, 0),
+            ([5.0, 5.0, 5.0], 6.0, 3500.0, 2u32, StarKind::M),
+            ([-2.0, 3.0, 1.0], 8.0, 3200.0, 3, StarKind::G),
+            ([0.0, 0.0, 9.0], 1.0, 12000.0, 0, StarKind::Unknown),
         ]
         .iter()
-        .map(|&(p, m, t, a)| Aggregate::of_system(p, m, t, a))
+        .map(of)
         .collect();
         let total = slice.merge(rest);
         let residual = total.remove(slice);
@@ -449,12 +488,19 @@ mod tests {
         ));
         assert!(close(residual.count_extent(), rest.count_extent()));
         assert_eq!(residual.aged, rest.aged);
+        assert_eq!(residual.kinds(), rest.kinds());
+        assert_eq!(
+            residual.kinds().iter().map(|&n| u64::from(n)).sum::<u64>(),
+            residual.count(),
+            "the kinds stopped summing to the count",
+        );
     }
 
     /// The empty aggregate changes nothing it merges with.
     #[test]
     fn zero_is_the_identity() {
-        let a = Aggregate::of_system([1.0, 2.0, 3.0], 5.0, 5000.0, 0);
+        let a =
+            Aggregate::of_system([1.0, 2.0, 3.0], 5.0, 5000.0, 0, StarKind::K);
         assert_eq!(a.merge(Aggregate::ZERO), a);
         assert_eq!(Aggregate::ZERO.merge(a), a);
         assert_eq!(Aggregate::ZERO.count(), 0);

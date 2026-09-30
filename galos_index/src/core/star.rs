@@ -58,6 +58,10 @@ pub enum StarKind {
 }
 
 impl StarKind {
+    /// How many kinds there are, [`Self::Unknown`] included: one past the
+    /// largest [`Self::code`]
+    pub const COUNT: usize = 16;
+
     /// What the class the journals and the dumps state comes to
     ///
     /// Matched on the whole class rather than its first letter, because the

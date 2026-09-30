@@ -773,6 +773,7 @@ mod tests {
                     held.m_min,
                     5000.0,
                     0,
+                    crate::core::star::StarKind::Unknown,
                 )
             })
             .fold(Aggregate::ZERO, Aggregate::merge);
@@ -957,6 +958,7 @@ mod tests {
                 4.0,
                 5000.0,
                 0,
+                crate::core::star::StarKind::Unknown,
             ));
         }
         let leaf =
@@ -1001,6 +1003,7 @@ mod tests {
                 4.0,
                 5000.0,
                 0,
+                crate::core::star::StarKind::Unknown,
             ));
         }
         let leaf = Cell {

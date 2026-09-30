@@ -95,11 +95,12 @@ pub fn migrate(
 ) -> io::Result<Migrated> {
     // **Said rather than worked around.** Everything below moves files
     // about without reading what is in them, so it would run to completion
-    // over a directory whose payloads this build cannot read — and the
+    // over a directory whose cells this build cannot read — and the
     // refusal would surface later, out of whatever first asked for a cell,
-    // as a failed open with no remedy attached. A layout this build does
-    // not read is not something an open can fix: it is hours of re-encoding
-    // and a sweep of the scan record, which is `galos index migrate`.
+    // as a failed open with no remedy attached. A format this build does
+    // not read is not something an open can fix: it is a pass over every
+    // payload, and for the oldest a sweep of the scan record too, which is
+    // `galos index migrate`.
     if let Some(found) = Directory::at(dir).stale_index() {
         return Ok(Migrated {
             bodies: crate::codec::bodies::Packed { moved: 0, finished: true },

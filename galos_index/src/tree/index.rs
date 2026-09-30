@@ -51,7 +51,7 @@ pub struct Index {
 /// view, so it is worked out once when the index is built. What that keeps
 /// out of a frame is not the arithmetic (two cube roots and a
 /// square root a cell) but the cache: `contents_center` and `count_extent`
-/// read the second moments, which is most of a 216-byte [`Cell`], for every
+/// read the second moments, which sit in a 262-byte [`Cell`], for every
 /// cell in the tree.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct Node {
@@ -223,6 +223,30 @@ impl Index {
             match kids.clone().find(|&kid| self.nodes[kid].id == want) {
                 Some(kid) => at = kid,
                 None => return,
+            }
+        }
+    }
+
+    /// Where in the walk's nodes the deepest cell standing over `point` sits,
+    /// the descent begun at node `from` rather than at the root
+    ///
+    /// [`descend`](Self::descend)'s rule, answering a position in `nodes`
+    /// rather than an address, so a caller keeping a figure per cell can hold
+    /// it in a `Vec` beside them and roll it up without hashing. Begun below
+    /// the root for a system known to sit inside a cell — a payload's own.
+    pub(crate) fn deepest_below(&self, from: usize, point: [f64; 3]) -> usize {
+        let mut at = from;
+        loop {
+            let node = &self.nodes[at];
+            if node.children == 0 {
+                return at;
+            }
+            let want = CellId::of_point(point, node.id.level + 1);
+            let first = node.first_child as usize;
+            let kids = first..first + node.children as usize;
+            match kids.clone().find(|&kid| self.nodes[kid].id == want) {
+                Some(kid) => at = kid,
+                None => return at,
             }
         }
     }

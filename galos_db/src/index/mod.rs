@@ -382,7 +382,7 @@ where
 fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
     let asked = || stop();
     let done = galos_index::ops::migrate::migrate(dir, tables, &asked)?;
-    // Nothing was moved and nothing can be until the payloads are brought
+    // Nothing was moved and nothing can be until the directory is brought
     // forward, which is not something an open does: said at `warn` rather
     // than `info` because every read after this one fails, and the message
     // is the only place the remedy appears before it does.
@@ -391,7 +391,7 @@ fn migrate(dir: &Path, tables: &TableSet, stop: &Stop<'_>) -> Result<()> {
             found,
             reads = galos_index::prelude::INDEX_VERSION,
             dir = %dir.display(),
-            "the directory's payloads are of another layout; run \
+            "the directory is of another index format; run \
              `galos index migrate` over it",
         );
         return Ok(());

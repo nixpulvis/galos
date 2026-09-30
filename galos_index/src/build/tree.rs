@@ -415,6 +415,7 @@ impl Tree {
                             r.absolute_magnitude,
                             r.temperature,
                             r.age_bucket,
+                            r.kind,
                         ));
                     }
                 } else {
