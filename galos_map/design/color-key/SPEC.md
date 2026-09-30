@@ -1,8 +1,8 @@
-# galos_map: colour key and filter redesign
+# galos_map: color key and filter redesign
 
 A spec for implementation in `galos_map`. It merges "Color By" (today in the
 settings pane) and the Filter tab of the bar into one design, and makes every
-colour of every category a toggle that hides the systems drawn in it.
+color of every category a toggle that hides the systems drawn in it.
 
 Write the code in the repo's existing style: prose doc comments that say why,
 not what, and tests named as statements (`the_chrome_is_lettered_in_one_width`).
@@ -10,11 +10,11 @@ not what, and tests named as statements (`the_chrome_is_lettered_in_one_width`).
 
 ## 1. What changes, in one paragraph
 
-A **colour mask** is added beside the existing filters. It is a set of hidden
+A **color mask** is added beside the existing filters. It is a set of hidden
 values per category (allegiance, government, security) plus one flag for
 uninhabited systems. It is edited in a **key** that lives at the top of the
 bar's Filter tab, and whose category tabs replace the Color By setting. When
-the form is closed, the key collapses to a **colour row** at the top of the
+the form is closed, the key collapses to a **color row** at the top of the
 bar's applied rows: one chip per entry, each a one-click toggle. Hovering the
 row shows a **mini legend** naming the chips. A new **hide interface** toggle
 hides the chrome and shows the mini legend above the rose instead.
@@ -25,7 +25,7 @@ hides the chrome and shows the mini legend above the rose instead.
 ### 2.1 The mask
 
 ```rust
-/// What the user has asked not to see, by the value a system is coloured by
+/// What the user has asked not to see, by the value a system is colored by
 #[derive(Resource, Clone, Default)]
 pub struct Mask {
     allegiance: BitSet<{ Allegiance::BUCKETS }>,   // bit per Bucketed bucket
@@ -42,9 +42,9 @@ pub struct Mask {
   `Hue`. Seven governments share red, and each must toggle on its own. A `u32`
   per category is enough (the largest is 18 buckets); a const-generic bitset
   is optional.
-- **All three categories apply at once**, whichever one the map is coloured by.
-  Hiding Independent and then colouring by Security must not bring
-  Independent back. The colour row says so (see 4.1, `+N`).
+- **All three categories apply at once**, whichever one the map is colored by.
+  Hiding Independent and then coloring by Security must not bring
+  Independent back. The color row says so (see 4.1, `+N`).
 - "Uninhabited" means a system with no row in `Populated`. It is one flag
   shared by all three categories.
 - `enabled == false` admits everything the mask would hide, and keeps the
@@ -124,7 +124,7 @@ Other  (collapsible, closed by default)
   Pilots Federation, Frontline Solutions    orange
   Guardian                                  blue
   Thargoid                                  magenta
-  Unaligned  (buckets: unreported + None)   grey
+  Unaligned  (buckets: unreported + None)   gray
 Uninhabited
 ```
 
@@ -142,19 +142,19 @@ BLUE     Democracy, Theocracy
          Cooperative                                      orange
 GREEN    Carrier, Megaconstruction, Private Ownership
          Engineer                                         magenta
-         None  (buckets: unreported + None)               grey
+         None  (buckets: unreported + None)               gray
 Uninhabited
 ```
 
 **Security**: flat. High (blue), Medium (cyan), Low (green), Anarchy (red),
-None (grey, unreported + None), Uninhabited.
+None (gray, unreported + None), Uninhabited.
 
 Build the government and security groups by walking `Bucketed::at` through
 `Hue::government` / `Hue::security`, so the key and the map cannot disagree
-about which colour means what. Only the allegiance tier split (which three are
+about which color means what. Only the allegiance tier split (which three are
 on top) is written by hand.
 
-A row can cover several buckets (the grey rows do). Toggling a row sets or
+A row can cover several buckets (the gray rows do). Toggling a row sets or
 clears all of its buckets.
 
 ### 2.6 ColorBy
@@ -185,7 +185,7 @@ right except the mini legend while the interface is hidden.
          │ Faction  > search a faction            │   <- existing faction lookup
          │ Heard    ├────────●──┤ 30d             │   <- existing recency control
          └────────────────────────────────────────┘
-          ☑ ALLEGIANCE  ■ ■ ■ ◕  ◌      1 hidden      <- colour row (always shown)
+          ☑ ALLEGIANCE  ■ ■ ■ ◕  ◌      1 hidden      <- color row (always shown)
           ☐ Faction     Mother Gaia
           ☑ Heard       within 30d
             through     703 / 12,210
@@ -196,10 +196,10 @@ right except the mini legend while the interface is hidden.
 
 ## 4. Components
 
-### 4.1 Colour row (applied rows, `ui/bar/applied.rs`)
+### 4.1 Color row (applied rows, `ui/bar/applied.rs`)
 
 Always drawn, as the first row of the applied rows, whether the form is out or
-not. It replaces any separate "Colour · N hidden" row.
+not. It replaces any separate "Color · N hidden" row.
 
 ```
 ☑  ALLEGIANCE   ■ ■ ■ ◕   ◌        2 hidden +1
@@ -211,7 +211,7 @@ not. It replaces any separate "Colour · N hidden" row.
 mask enabled
 ```
 
-| Part | Behaviour |
+| Part | Behavior |
 |---|---|
 | Checkbox | `Mask::enabled`. Unchecked, the summary is struck through and muted; the chips keep showing what is set. |
 | Category name | Click: open the Filter tab (`AskMode::Filter`) with the key showing. |
@@ -265,10 +265,10 @@ One list, drawn in two places.
 click a chip to toggle
 ```
 
-- One line per top-tier entry, in the colour row's order, with the same
+- One line per top-tier entry, in the color row's order, with the same
   swatch. Fully hidden entries are struck and muted. Partly hidden groups show
   `k/n` in amber. Government groups read `Red (7)`.
-- **Popover**: framed, anchored under the colour row, shown while the pointer
+- **Popover**: framed, anchored under the color row, shown while the pointer
   is over the row and the Filter tab is not out. It has the footer hint.
 - **Bare**: frameless, above the rose in the bottom right, with the category
   name over it in small caps, shown only while the interface is hidden. No
@@ -302,17 +302,17 @@ the bar's current type size (Body 11.5).
 | count | `#9aa0ae`, one step smaller | counts |
 | attention | `#f0c060` | `N hidden`, `k/n` |
 
-Hue colours come from `Hue::light()` through `style::color32`, never a second
+Hue colors come from `Hue::light()` through `style::color32`, never a second
 table.
 
-Swatch states (10 px in the key, 13 px in the colour row, 2 px corner radius):
+Swatch states (10 px in the key, 13 px in the color row, 2 px corner radius):
 
 | State | Drawing |
 |---|---|
 | shown | filled with the hue |
 | hidden | 1.5 px stroke of the hue, no fill, 50 % alpha |
 | partly hidden (groups) | left half filled, 1.5 px stroke of the hue |
-| Other chip | a pie of its members' hues, weighted evenly; hidden = grey stroke only; partial = the pie at 60 % alpha with a grey stroke |
+| Other chip | a pie of its members' hues, weighted evenly; hidden = gray stroke only; partial = the pie at 60 % alpha with a gray stroke |
 | Uninhabited | 1.5 px dashed circle, `#8e94a4`; hidden = 40 % alpha |
 
 egui has no conic fill: draw the Other chip as a `Shape::mesh` of triangle
@@ -334,7 +334,7 @@ Indents in the key: top-tier rows at 32 px, children of a collapsible group at
 | `src/map/galaxy/blobs.rs` | check merged marks through `political` |
 | `src/map/galaxy/spawn.rs` | a function from category to tiers, built from `Hue::*`; `ColorBy` unchanged |
 | `src/ui/bar/filter.rs` | the key at the top of `filter_body` |
-| `src/ui/bar/applied.rs` | the colour row first; the "through" count includes the mask |
+| `src/ui/bar/applied.rs` | the color row first; the "through" count includes the mask |
 | `src/ui/settings.rs` | remove Color By; update DimTo help text |
 | `src/ui/mod.rs`, new `src/ui/legend.rs` | mini legend (popover and bare), hide interface |
 | `src/map/keys.rs`, `README.md` | `F2` binding and its row in the table |
@@ -351,14 +351,14 @@ Each step builds, passes tests, and leaves the map usable.
    faction filter plus a mask admits the intersection).
 2. **Walk and eviction.** Revision plumbing, `DimTo(0)` eviction. Test that a
    masked system is evicted at a dim of zero and dimmed above it.
-3. **Field.** `political` honours the mask. Test that a fully masked cell
+3. **Field.** `political` honors the mask. Test that a fully masked cell
    deposits nothing, and that the light a masked system takes out of the
    field equals its `mark_light`.
 4. **Tiers.** The category-to-tiers function. Test that every bucket of every
    category appears in exactly one row, and that every row's swatch is the
    `Hue` the map paints its buckets in.
 5. **Key.** The Filter tab form; remove Color By from settings.
-6. **Colour row.** Chips, solo, summary, checkbox; the "through" count.
+6. **Color row.** Chips, solo, summary, checkbox; the "through" count.
 7. **Mini legend popover.**
 8. **Hide interface** and the bare legend. Optional for a first release.
 
@@ -367,10 +367,10 @@ Each step builds, passes tests, and leaves the map usable.
 
 1. **Independent's tier.** Top tier beside the three powers, or under Other?
    By count it is the largest allegiance, so Other is mostly Independent.
-2. **"Other as grey".** An option to paint every Other system one neutral
-   grey on the map, so the map itself reads as three kinds. It was a lever in
+2. **"Other as gray".** An option to paint every Other system one neutral
+   gray on the map, so the map itself reads as three kinds. It was a lever in
    the mockups; not specified here.
-3. **Unreported vs None.** The grey rows fold `Bucketed` bucket 0 (no reading)
+3. **Unreported vs None.** The gray rows fold `Bucketed` bucket 0 (no reading)
    in with the explicit `None`. Split them if the difference matters.
 4. **Persistence.** If filters are saved between sessions, the mask and the
    chosen category should be saved with them.

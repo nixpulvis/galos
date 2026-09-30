@@ -1,7 +1,7 @@
-# Colour key and filter redesign
+# Color key and filter redesign
 
-The design for merging "Color By" and the bar's Filter tab into one colour key,
-where every colour of every category is a toggle that hides the systems drawn
+The design for merging "Color By" and the bar's Filter tab into one color key,
+where every color of every category is a toggle that hides the systems drawn
 in it. [`SPEC.md`](./SPEC.md) is the written spec. The mockups below are
 treated as authoritative alongside it: where the two disagree, ask.
 
@@ -17,12 +17,12 @@ what to read.
 | Allegiance key: Other collapsed, and expanded with Independent hidden | ![](mockups/KeyAllegiance.png) |
 | Government key: one group per hue | ![](mockups/KeyGovernment.png) |
 | The whole Filter tab: key, footer, faction lookup, recency | ![](mockups/FilterTab.png) |
-| Colour row: all shown, Other hidden, Federation solo, mask lifted | ![](mockups/BarRows.png) |
+| Color row: all shown, Other hidden, Federation solo, mask lifted | ![](mockups/BarRows.png) |
 | Mini legend: popover on hover, and bare above the rose | ![](mockups/KeyCollapsed.png) |
 
 ## Full view
 
-The interactive board, at its default state (the map idle, the colour row
+The interactive board, at its default state (the map idle, the color row
 under the bar).
 
 ![](mockups/Main.png)
@@ -31,7 +31,7 @@ under the bar).
 
 **A · Glance**
 
-1. Idle map, colour row under the bar ![](mockups/Flow-A1.png)
+1. Idle map, color row under the bar ![](mockups/Flow-A1.png)
 2. Hover the row: the mini legend names the chips ![](mockups/Flow-A2.png)
 
 **B · Quick toggle**
