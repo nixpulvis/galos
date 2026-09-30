@@ -28,7 +28,8 @@ const INDEPENDENT_ON_TOP: bool = false;
 ///
 /// The unreported bucket is folded in with the axis's explicit None: both draw
 /// gray, and a reader asked to tell "nothing on record" from "the game says
-/// none" has no use for two gray rows.
+/// none" has no use for two gray rows. Security has no unreported bucket of
+/// its own, nothing on record being anarchy, so its bucket zero is a value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
     pub name: &'static str,
@@ -148,9 +149,14 @@ pub fn tiers(axis: ColorBy) -> Vec<Tier> {
 }
 
 /// How many values `mask` hides along `axis`, as the color row's summary
-/// counts them
-pub fn hidden_values(axis: ColorBy, mask: &Mask) -> usize {
-    tiers(axis)
+/// counts them: the values the key lists for `held`, so one it leaves out is
+/// not counted as hidden. See [`held_tiers`].
+pub fn hidden_values(
+    axis: ColorBy,
+    mask: &Mask,
+    held: Option<&Inhabited>,
+) -> usize {
+    held_tiers(axis, held)
         .iter()
         .flat_map(|tier| tier.items().to_vec())
         .filter(|item| item.hidden(axis, mask) == Hidden::All)
@@ -173,20 +179,58 @@ const GOVERNMENT_HUES: [Hue; 8] = [
     Hue::Grey,
 ];
 
-/// Every value of `axis`, one item each, in bucket order, the unreported
-/// bucket folded into the axis's None
+/// Every value of `axis`, one item each, in bucket order
+///
+/// Bucket zero folded into the axis's None where it is the unreported one,
+/// and a value in its own right, last, where it names one: see
+/// [`galos_index::read::inhabited::Bucketed`].
 fn items(axis: ColorBy) -> Vec<Item> {
+    let names_zero = !value_name(axis, 0).is_empty();
     let none = axis.buckets() - 1;
-    (1..axis.buckets())
-        .map(|bucket| {
-            let mut buckets = vec![bucket];
-            if bucket == none {
-                buckets.insert(0, 0);
+    let item = |bucket: usize, buckets: Vec<usize>| Item {
+        name: value_name(axis, bucket),
+        hue: axis.hue_of(bucket),
+        buckets,
+    };
+    let mut items: Vec<Item> = (1..axis.buckets())
+        .map(|bucket| match !names_zero && bucket == none {
+            true => item(bucket, vec![0, bucket]),
+            false => item(bucket, vec![bucket]),
+        })
+        .collect();
+    if names_zero {
+        items.push(item(0, vec![0]));
+    }
+    items
+}
+
+/// The key's rows for `axis` as the galaxy holds it: a value no colony has
+/// is left out
+///
+/// Some values are only ever a station's or a faction's — a carrier, an
+/// engineer's base — and never a whole system's, so along government five of
+/// the seventeen come to nothing, and a row that counts nothing is a toggle
+/// that does nothing. A group left with one member is that member's own row,
+/// and one left with none goes. `held` is the galaxy's colonies, [`None`]
+/// while they are still being read, when every value is listed.
+pub fn held_tiers(axis: ColorBy, held: Option<&Inhabited>) -> Vec<Tier> {
+    let Some(held) = held else { return tiers(axis) };
+    tiers(axis)
+        .into_iter()
+        .filter_map(|tier| match tier {
+            Tier::Item(item) => {
+                (item.count(axis, held) > 0).then_some(Tier::Item(item))
             }
-            Item {
-                name: value_name(axis, bucket),
-                hue: axis.hue_of(bucket),
-                buckets,
+            Tier::Group { name, hue, collapsible, items } => {
+                let mut items: Vec<Item> = items
+                    .into_iter()
+                    .filter(|item| item.count(axis, held) > 0)
+                    .collect();
+                match items.len() {
+                    0 => None,
+                    1 => items.pop().map(Tier::Item),
+                    _ => Some(Tier::Group { name, hue, collapsible, items }),
+                }
             }
         })
         .collect()
@@ -325,7 +369,6 @@ fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
             Some(Security::Medium) => "Medium",
             Some(Security::Low) => "Low",
             Some(Security::Anarchy) => "Anarchy",
-            Some(Security::None) => "No security",
             None => "",
         },
     }
@@ -403,15 +446,50 @@ mod tests {
         let mut mask = Mask::default();
         let other = tiers(ColorBy::Allegiance).pop().expect("Other");
         mask.toggle(ColorBy::Allegiance, &other.buckets());
-        assert_eq!(hidden_values(ColorBy::Allegiance, &mask), 7);
+        assert_eq!(hidden_values(ColorBy::Allegiance, &mask, None), 7);
         assert_eq!(other.hidden(ColorBy::Allegiance, &mask), Hidden::All);
         mask.set(ColorBy::Allegiance, [0], false);
         // Unreported shown, None still hidden: Unaligned is partly hidden and
         // no longer counts.
-        assert_eq!(hidden_values(ColorBy::Allegiance, &mask), 6);
+        assert_eq!(hidden_values(ColorBy::Allegiance, &mask, None), 6);
         assert_eq!(
             other.hidden(ColorBy::Allegiance, &mask),
             Hidden::Some { hidden: 6, of: 7 }
         );
+    }
+
+    /// Anarchy is security's one no-security row, and it is red
+    #[test]
+    fn security_has_one_row_for_no_security_and_it_is_anarchy() {
+        let rows = tiers(ColorBy::Security);
+        let names: Vec<&str> = rows.iter().map(Tier::name).collect();
+        assert_eq!(names, ["High", "Medium", "Low", "Anarchy"]);
+        assert_eq!(rows[3].items()[0].hue, Hue::Red);
+    }
+
+    /// A value no colony holds is not listed, and a group it leaves with
+    /// one member is that member's own row
+    #[test]
+    fn a_value_no_colony_holds_is_not_listed() {
+        let held = Inhabited::of_system(
+            [0.; 3],
+            Some(Allegiance::Federation),
+            Some(Government::Democracy),
+            Some(Security::High),
+        );
+        let rows = held_tiers(ColorBy::Government, Some(&held));
+        assert_eq!(
+            rows,
+            [Tier::Item(Item {
+                name: "Democracy",
+                hue: Hue::Blue,
+                buckets: vec![Government::bucket(Some(Government::Democracy))],
+            })]
+        );
+
+        // Hiding every government counts only the one listed.
+        let mut mask = Mask::default();
+        mask.hide_all(ColorBy::Government);
+        assert_eq!(hidden_values(ColorBy::Government, &mask, Some(&held)), 1);
     }
 }

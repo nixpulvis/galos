@@ -1491,13 +1491,15 @@ impl Hue {
     }
 
     /// The color a security rating is drawn in. See [`Hue::allegiance`].
+    ///
+    /// Red for anarchy, and for no reading at all, which is how a store
+    /// keeps an anarchy: the two are one fact.
     pub(crate) fn security(security: Option<Security>) -> Hue {
         match security {
             Some(Security::High) => Hue::Blue,
             Some(Security::Medium) => Hue::Cyan,
             Some(Security::Low) => Hue::Green,
-            Some(Security::Anarchy) => Hue::Red,
-            Some(Security::None) | None => Hue::Grey,
+            Some(Security::Anarchy) | None => Hue::Red,
         }
     }
 }

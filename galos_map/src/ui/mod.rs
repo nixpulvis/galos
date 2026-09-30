@@ -329,10 +329,12 @@ pub(crate) fn chrome(
     // and nothing else. The strip above has its own switch and stays.
     if toggles.hidden.0 {
         hide::eye(ctx, egui::pos2(MARGIN, MARGIN), &mut toggles.hidden.0);
+        let held = filter.key.counted().0.copied();
         hide::bare_legend(
             ctx,
             &filter.active,
             *filter.key.color_by,
+            held.as_ref(),
             settings.show_rose.0,
         );
         settle_input(ctx, &mut over_ui, &mut keyboard, &mut press, &buttons);

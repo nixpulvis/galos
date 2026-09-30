@@ -145,7 +145,12 @@ Uninhabited
 ```
 
 **Security**: flat. High (blue), Medium (cyan), Low (green), Anarchy (red),
-None (gray, unreported + None), Uninhabited.
+Uninhabited. Anarchy is the absence of security: the empty reading and a
+store's null are the same value, so there is no separate None row.
+
+Values no colony holds (Carrier, Megaconstruction, Private Ownership,
+Engineer and None govern stations and factions, never a whole system) are left
+out of the key, the color row and the legend once the counts are read.
 
 Build the government and security groups by walking `Bucketed::at` through
 `Hue::government` / `Hue::security`, so the key and the map cannot disagree
@@ -219,7 +224,7 @@ mask enabled
 | Hover | Anywhere on the row, while the Filter tab is not out: show the mini legend popover (4.3). |
 
 For Allegiance that is four chips plus Uninhabited. For Government it is one
-per hue group (eight); for Security, five.
+per hue group present; for Security, four.
 
 ### 4.2 Key (Filter tab form, `ui/bar/filter.rs`)
 

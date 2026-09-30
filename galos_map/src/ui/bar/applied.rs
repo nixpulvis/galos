@@ -4,7 +4,7 @@
 //! Grouped into sections, the routes under the rest and a trip's legs under
 //! the trip, and each section with a row standing for all of it.
 
-use crate::map::filter::key::{hidden_values, tiers};
+use crate::map::filter::key::{held_tiers, hidden_values, tiers};
 use crate::map::filter::mask::Mask;
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::InReach;
@@ -49,10 +49,13 @@ const CHIP: f32 = 13.;
 ///
 /// Answers what a click asked of the mask, carried out by the caller since
 /// the chips are drawn from it, and whether the key was asked for.
+///
+/// `held` is the galaxy's colonies, for which values there are chips for.
 pub(super) fn color_row(
     ui: &mut Ui,
     filters: &Filters,
     axis: ColorBy,
+    held: Option<&galos_index::read::inhabited::Inhabited>,
     popover: bool,
 ) -> (Option<Keyed>, bool) {
     let mask = filters.mask();
@@ -96,7 +99,7 @@ pub(super) fn color_row(
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
         };
-        for (place, tier) in tiers(axis).iter().enumerate() {
+        for (place, tier) in held_tiers(axis, held).iter().enumerate() {
             if chip(
                 ui,
                 Swatch::of_tier(tier, axis, mask),
@@ -113,7 +116,7 @@ pub(super) fn color_row(
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.add_space(ROW_PADDING);
-                let (said, hiding) = color_summary(axis, mask);
+                let (said, hiding) = color_summary(axis, mask, held);
                 let text = egui::RichText::new(said);
                 let text = if !mask.enabled() {
                     text.strikethrough().weak()
@@ -138,7 +141,7 @@ pub(super) fn color_row(
             .interactable(false)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    legend(ui, filters, axis, true);
+                    legend(ui, filters, axis, held, true);
                 });
             });
     }
@@ -152,9 +155,13 @@ pub(super) fn color_row(
 /// The values hidden along the axis being drawn, the systems nobody lives in
 /// counting as one of them. Nothing about the other axes: what they hide
 /// hides nothing while this one is drawn.
-pub(super) fn color_summary(axis: ColorBy, mask: &Mask) -> (String, bool) {
+pub(super) fn color_summary(
+    axis: ColorBy,
+    mask: &Mask,
+    held: Option<&galos_index::read::inhabited::Inhabited>,
+) -> (String, bool) {
     let here =
-        hidden_values(axis, mask) + usize::from(mask.hides_uninhabited());
+        hidden_values(axis, mask, held) + usize::from(mask.hides_uninhabited());
     match here {
         0 => ("all shown".to_owned(), false),
         here => (format!("{here} hidden"), true),
@@ -1313,7 +1320,7 @@ mod tests {
     #[test]
     fn a_mask_hiding_nothing_says_all_shown() {
         assert_eq!(
-            color_summary(ColorBy::Allegiance, &Mask::default()),
+            color_summary(ColorBy::Allegiance, &Mask::default(), None),
             ("all shown".to_owned(), false),
         );
     }
@@ -1340,11 +1347,11 @@ mod tests {
         );
 
         assert_eq!(
-            color_summary(ColorBy::Government, &mask),
+            color_summary(ColorBy::Government, &mask, None),
             ("2 hidden".to_owned(), true),
         );
         assert_eq!(
-            color_summary(ColorBy::Security, &mask),
+            color_summary(ColorBy::Security, &mask, None),
             ("all shown".to_owned(), false),
         );
     }
@@ -1360,7 +1367,10 @@ mod tests {
             &value(ColorBy::Allegiance, "Federation"),
         );
 
-        assert_eq!(color_summary(ColorBy::Allegiance, &mask).0, "10 hidden");
+        assert_eq!(
+            color_summary(ColorBy::Allegiance, &mask, None).0,
+            "10 hidden"
+        );
     }
 
     // Only the debug-only passes below use it: egui compiles its

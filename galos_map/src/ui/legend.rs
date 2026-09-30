@@ -7,7 +7,7 @@
 //! of them it is read in.
 
 use crate::map::filter::Filters;
-use crate::map::filter::key::{Hidden, Item, Tier, tiers};
+use crate::map::filter::key::{Hidden, Item, Tier, held_tiers};
 use crate::map::filter::mask::Mask;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::style::color32;
@@ -207,15 +207,18 @@ const LEGEND_SWATCH: f32 = 10.;
 /// row while the pointer is over it, and bare above the rose while the
 /// interface is hidden. `hint` says whether the line saying what a chip does
 /// is wanted under it, which it is only where a chip can be clicked.
+///
+/// `held` is the galaxy's colonies, for which values there are lines for.
 pub(crate) fn legend(
     ui: &mut Ui,
     filters: &Filters,
     axis: ColorBy,
+    held: Option<&galos_index::read::inhabited::Inhabited>,
     hint: bool,
 ) {
     let mask = filters.mask();
     let muted = ui.visuals().weak_text_color();
-    for tier in tiers(axis) {
+    for tier in held_tiers(axis, held) {
         let hidden = tier.hidden(axis, mask);
         ui.horizontal(|ui| {
             Swatch::of_tier(&tier, axis, mask).paint(ui, LEGEND_SWATCH);

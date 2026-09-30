@@ -113,6 +113,7 @@ pub(super) fn bare_legend(
     ctx: &Context,
     filters: &Filters,
     axis: ColorBy,
+    held: Option<&galos_index::read::inhabited::Inhabited>,
     rose: bool,
 ) {
     let rect = ctx.content_rect();
@@ -127,6 +128,6 @@ pub(super) fn bare_legend(
             ui.label(
                 egui::RichText::new(axis.name().to_uppercase()).small().weak(),
             );
-            legend(ui, filters, axis, false);
+            legend(ui, filters, axis, held, false);
         });
 }

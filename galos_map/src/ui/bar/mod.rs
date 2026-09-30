@@ -602,10 +602,12 @@ pub(super) fn state_bar(
                     // never dragged. Its mini legend only while the key it
                     // stands for is not on screen to say the same.
                     let axis = *filter.key.color_by;
+                    let held = filter.key.counted().0.copied();
                     let (keyed, keying) = color_row(
                         ui,
                         &filter.active,
                         axis,
+                        held.as_ref(),
                         !filter.key.state.out,
                     );
                     if let Some(keyed) = keyed {

@@ -109,8 +109,9 @@ settings pane, under General beside the grid's. The rose is
 The map is colored by allegiance, government or security, and every color of
 every one of them is a toggle. The key at the top of the bar's Filter tab
 lists them — the three powers and an Other that folds away for allegiance,
-one group a color for government, five values for security — with how many
-colonies each counts, and its tabs are what choose the coloring. Clicking a
+one group a color for government, four values for security, anarchy being
+the absence of security — with how many colonies each counts, leaving out any
+value no colony holds, and its tabs are what choose the coloring. Clicking a
 value hides the systems drawn in it; alt, ctrl or command clicking one shows
 it alone. Uninhabited systems have a row of their own.
 

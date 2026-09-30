@@ -1,7 +1,7 @@
 //! The filter form: the color key, a faction looked up by name, and the
 //! control over how lately a system was updated
 
-use crate::map::filter::key::{Hidden, Item, Tier, tiers};
+use crate::map::filter::key::{Hidden, Item, Tier, held_tiers};
 use crate::map::filter::mask::Mask;
 use crate::map::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
@@ -118,7 +118,7 @@ impl ColorKey<'_, '_> {
     /// The root's colonies, and how many systems nobody lives in
     ///
     /// The root histograms are resident, so asking every frame costs nothing.
-    fn counted(&self) -> (Option<&Inhabited>, u64) {
+    pub(in crate::ui) fn counted(&self) -> (Option<&Inhabited>, u64) {
         let held = self.settled.0.get(CellId::ROOT);
         let stellar = self
             .index
@@ -318,7 +318,7 @@ pub(super) fn key(
     let axis = *axis;
     let mut asked = None;
 
-    let tiers = tiers(axis);
+    let tiers = held_tiers(axis, held);
     // Room for the chevron beside every top-tier row where any of them folds,
     // so the swatches stand in one column whether or not a row has one.
     let gutter = if tiers

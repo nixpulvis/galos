@@ -44,7 +44,8 @@ use crate::tree::index::Index;
 use elite_journal::prelude::{Allegiance, Government, Security};
 
 /// A political reading a histogram counts in buckets: one a variant, plus
-/// bucket zero for a system nothing has reported it of.
+/// bucket zero for a system nothing has reported it of — security excepted,
+/// where nothing on record is anarchy; see its impl.
 ///
 /// Zero is not the same fact as the variant `None`, which is the game saying
 /// a populated system has none: both draw grey and the two are kept apart
@@ -153,27 +154,28 @@ impl Bucketed for Government {
     }
 }
 
+/// Security is the one axis without an unreported bucket of its own. Anarchy
+/// is the absence of security, and a store keeps it as no reading at all (see
+/// [`elite_journal`]'s `Nullable`), so nothing on record and an anarchy are one
+/// fact: bucket zero, which is [`Security::Anarchy`].
 impl Bucketed for Security {
-    const BUCKETS: usize = 6;
+    const BUCKETS: usize = 4;
 
     fn bucket(of: Option<Security>) -> usize {
         match of {
-            None => 0,
+            None | Some(Security::Anarchy) => 0,
             Some(Security::High) => 1,
             Some(Security::Medium) => 2,
             Some(Security::Low) => 3,
-            Some(Security::Anarchy) => 4,
-            Some(Security::None) => 5,
         }
     }
 
     fn at(bucket: usize) -> Option<Security> {
         match bucket {
+            0 => Some(Security::Anarchy),
             1 => Some(Security::High),
             2 => Some(Security::Medium),
             3 => Some(Security::Low),
-            4 => Some(Security::Anarchy),
-            5 => Some(Security::None),
             _ => None,
         }
     }
