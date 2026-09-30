@@ -935,10 +935,10 @@ pub(crate) fn adopt(
     republished.0.insert(id);
 }
 
-/// What the filters ask about a payload point: its address, the factions the
-/// resident table puts in it, and the moment the payload carries.
+/// What the filters ask about a payload point: its address, what the resident
+/// table says of it, and the moment the payload carries.
 ///
-/// The same three facts a [`System`] answers, so a point is weighed by the one
+/// The same facts a [`System`] answers, so a point is weighed by the one
 /// predicate a drawn system is, and without building a system to ask —
 /// [`System::of`] clones a name and reads a reach, work worth avoiding
 /// for a point that is not going to be drawn.
@@ -946,15 +946,11 @@ fn candidate<'a>(
     point: &CellSystem,
     populated: &'a Populated,
 ) -> Candidate<'a> {
-    let address = point.id64 as i64;
-    Candidate {
-        address,
-        factions: populated
-            .get(address)
-            .map(|system| system.factions.as_slice())
-            .unwrap_or(&[]),
-        updated_at: DateTime::from_timestamp(point.updated_at as i64, 0),
-    }
+    Candidate::off_the_table(
+        point.id64 as i64,
+        populated,
+        DateTime::from_timestamp(point.updated_at as i64, 0),
+    )
 }
 
 /// The order a cell's points are drawn in: what the filters admit, brightest
@@ -1100,14 +1096,7 @@ fn choose_populated(
         }
         if filters.asking()
             && !filters.admits(
-                &Candidate {
-                    address: stands.address,
-                    factions: populated
-                        .get(stands.address)
-                        .map(|system| system.factions.as_slice())
-                        .unwrap_or(&[]),
-                    updated_at: None,
-                },
+                &Candidate::off_the_table(stands.address, populated, None),
                 now,
             )
             && !fill
@@ -1842,11 +1831,10 @@ pub(crate) fn reconcile(
         // ordinarily, and only the systems anybody lives in where the sky
         // is read as populations. A merged mark over a cell nobody lives
         // in stands for nothing in that mode and is not drawn.
-        let (light, admitted, stands_for) = standing.of(offer).unwrap_or((
-            Vec3::splat(f32::NAN),
-            1.,
-            blob.count,
-        ));
+        let mark = standing.of(offer).unwrap_or_else(|| {
+            crate::map::galaxy::blobs::Mark::unweighed(blob.count)
+        });
+        let stands_for = mark.stands_for;
         let drawn =
             share.scaled(blob.blend).wanted(stands_for as usize, blob.id) > 0
                 || is_lit((planned.0.marks.len() + offer) as u32);
@@ -1859,14 +1847,14 @@ pub(crate) fn reconcile(
         // marks at full and 9,997 at the dim if it split, so the one mark
         // it is drawn as is worth their average — which leaves it at the
         // dim, without ever claiming the cell is empty. See
-        // [`crate::map::galaxy::blobs::Standing`].
+        // [`crate::map::galaxy::blobs::Mark::drawn`].
         let dim = match fill {
             true => filtering.dim.opacity(),
             // Below the dim an excluded system is not drawn at all, so
             // neither is the share of a mark that stands for one.
             false => 0.,
         };
-        let fade = admitted + (1. - admitted) * dim;
+        let (light, fade) = mark.drawn(dim);
         if fade <= 0. {
             continue;
         }

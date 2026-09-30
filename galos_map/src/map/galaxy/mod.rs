@@ -282,7 +282,7 @@ impl System {
 
     /// The whole of what the filters ask about this system
     ///
-    /// The same three facts a payload point can answer, so a system on the map
+    /// The same four facts a payload point can answer, so a system on the map
     /// and a point the LOD draw is weighing are put to one predicate rather
     /// than to two that could drift apart. See [`filter::Candidate`].
     pub(crate) fn candidate(&self) -> crate::map::filter::Candidate<'_> {
@@ -290,6 +290,17 @@ impl System {
             address: self.address,
             factions: self.factions(),
             updated_at: self.updated_at(),
+            politics: self
+                .politics
+                .as_ref()
+                .filter(|politics| politics.population > 0)
+                .map(|politics| {
+                    crate::map::filter::mask::Buckets::of(
+                        politics.allegiance,
+                        politics.government,
+                        politics.security,
+                    )
+                }),
         }
     }
 

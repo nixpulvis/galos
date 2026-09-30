@@ -4,15 +4,20 @@
 //! Grouped into sections, the routes under the rest and a trip's legs under
 //! the trip, and each section with a row standing for all of it.
 
+use crate::map::filter::key::{hidden_values, tiers};
+use crate::map::filter::mask::Mask;
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::InReach;
+use crate::map::galaxy::spawn::ColorBy;
 use crate::map::route::ARROW;
 use crate::ui::DOT;
+use crate::ui::bar::filter::Keyed;
 use crate::ui::bar::rows::{
     Buttons, buttons_width, lay_out_buttons, lay_out_close, lay_out_replot,
     place_buttons, row_of,
 };
 use crate::ui::bar::{ROW_MARGIN, ROW_PADDING};
+use crate::ui::legend::{Swatch, attention, legend};
 use crate::ui::list::{
     RowGesture, asked_of_row, gathering_with, settled_click,
 };
@@ -22,6 +27,148 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::Ui;
 use galos_route::graph::{Drive, Routing, Tuning};
+
+/// How large a chip stands in the color row
+///
+/// Larger than the key's swatches, being a thing to hit rather than a thing
+/// to read beside a name.
+const CHIP: f32 = 13.;
+
+/// Say what the map is colored by, with a chip for each color that hides it
+///
+/// The first row under the bar, drawn whether or not any filter is and
+/// whether or not the form is out: a colored map has to say which color is
+/// which, and a color toggled off has to say it was, or the sky reads as
+/// emptier than it is.
+///
+/// The key folded down to one line: a chip for each of the key's top-tier
+/// rows and one for the systems nobody lives in, each a one-click toggle, so
+/// the colors can be worked without the form out. The name opens the key for
+/// the rest. `popover` says whether to name the chips under the row while
+/// the pointer is over it, which is not wanted with the key itself on screen.
+///
+/// Answers what a click asked of the mask, carried out by the caller since
+/// the chips are drawn from it, and whether the key was asked for.
+pub(super) fn color_row(
+    ui: &mut Ui,
+    filters: &Filters,
+    axis: ColorBy,
+    popover: bool,
+) -> (Option<Keyed>, bool) {
+    let mask = filters.mask();
+    let mut asked = None;
+    let mut opening = false;
+    let height = ui.text_style_height(&egui::TextStyle::Body)
+        + (ROW_PADDING + ROW_MARGIN) * 2.;
+
+    let row = ui.horizontal(|ui| {
+        ui.set_min_height(height);
+        ui.add_space(ROW_PADDING);
+        let mut enabled = mask.enabled();
+        if ui
+            .add(egui::Checkbox::without_text(&mut enabled))
+            .on_hover_text(
+                "Hide the colors toggled off, or lift that and keep them",
+            )
+            .changed()
+        {
+            asked = Some(Keyed::Enabled(enabled));
+        }
+        let name = ui
+            .add(
+                egui::Label::new(
+                    egui::RichText::new(axis.name().to_uppercase())
+                        .small()
+                        .weak(),
+                )
+                .selectable(false)
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if name.clicked() {
+            opening = true;
+        }
+        // Answered over the chip once painted, the swatch itself only
+        // sensing the pointer.
+        let chip = |ui: &mut Ui, swatch: Swatch, id| {
+            let painted = swatch.paint(ui, CHIP);
+            ui.interact(painted.rect, ui.id().with(id), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+        };
+        for (place, tier) in tiers(axis).iter().enumerate() {
+            if chip(
+                ui,
+                Swatch::of_tier(tier, axis, mask),
+                ("color-chip", place),
+            ) {
+                asked = Some(Keyed::clicked(ui, tier.buckets()));
+            }
+        }
+        ui.add_space(ui.spacing().item_spacing.x);
+        if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
+            asked = Some(Keyed::Uninhabited);
+        }
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.add_space(ROW_PADDING);
+                let (said, hiding) = color_summary(axis, mask);
+                let text = egui::RichText::new(said);
+                let text = if !mask.enabled() {
+                    text.strikethrough().weak()
+                } else if hiding {
+                    text.color(attention(ui))
+                } else {
+                    text.weak()
+                };
+                ui.add(egui::Label::new(text).selectable(false));
+            },
+        );
+    });
+
+    // Under the row, and in front of whatever the rows below it hold. Not
+    // interactable, so a press lands on what it covers: it is a caption, and
+    // it goes the moment the pointer leaves the row for what is under it.
+    let rect = row.response.rect;
+    if popover && ui.rect_contains_pointer(rect) {
+        egui::Area::new(ui.id().with("color-legend"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(rect.left_bottom())
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    legend(ui, filters, axis, true);
+                });
+            });
+    }
+
+    (asked, opening)
+}
+
+/// What the color row's summary says of `mask` along `axis`, and whether it
+/// is saying something is hidden
+///
+/// The values hidden along the axis being drawn, the systems nobody lives in
+/// counting as one of them, and then how many are hidden along the other
+/// two. Those still apply whichever axis is out, and a map that went on
+/// hiding Independent after being recolored by security with nothing to say
+/// so would look like a map missing systems.
+pub(super) fn color_summary(axis: ColorBy, mask: &Mask) -> (String, bool) {
+    let here =
+        hidden_values(axis, mask) + usize::from(mask.hides_uninhabited());
+    let elsewhere: usize = ColorBy::ALL
+        .into_iter()
+        .filter(|other| *other != axis)
+        .map(|other| hidden_values(other, mask))
+        .sum();
+    let said = match (here, elsewhere) {
+        (0, 0) => "all shown".to_owned(),
+        (here, 0) => format!("{here} hidden"),
+        (here, elsewhere) => format!("{here} hidden +{elsewhere}"),
+    };
+    (said, here + elsewhere > 0)
+}
 
 /// Say which filters are being applied, and how much is getting through
 ///
@@ -1160,6 +1307,66 @@ mod tests {
 
     use crate::ui::text::CUT;
     use crate::ui::{AGAIN, CLOSE, INFO};
+
+    /// The buckets of the value called `name` along `axis`
+    fn value(axis: ColorBy, name: &str) -> Vec<usize> {
+        tiers(axis)
+            .iter()
+            .flat_map(|tier| tier.items().to_vec())
+            .find(|item| item.name == name)
+            .unwrap_or_else(|| panic!("no {name} along {axis:?}"))
+            .buckets
+    }
+
+    /// A mask hiding nothing says so, and not in the color of attention
+    #[test]
+    fn a_mask_hiding_nothing_says_all_shown() {
+        assert_eq!(
+            color_summary(ColorBy::Allegiance, &Mask::default()),
+            ("all shown".to_owned(), false),
+        );
+    }
+
+    /// What is hidden along the other axes still counts, after a plus
+    ///
+    /// Two prisons hidden while colored by government, and Independent hidden
+    /// earlier under allegiance: the map is still missing Independent's
+    /// systems, and a row saying only "2 hidden" would hide that it is.
+    #[test]
+    fn what_is_hidden_along_other_axes_is_counted_after_a_plus() {
+        let mut mask = Mask::default();
+        for name in ["Prison", "Prison Colony"] {
+            mask.set(
+                ColorBy::Government,
+                value(ColorBy::Government, name),
+                true,
+            );
+        }
+        mask.set(
+            ColorBy::Allegiance,
+            value(ColorBy::Allegiance, "Independent"),
+            true,
+        );
+
+        assert_eq!(
+            color_summary(ColorBy::Government, &mask),
+            ("2 hidden +1".to_owned(), true),
+        );
+    }
+
+    /// A solo counts the uninhabited it hid among the values it hid
+    ///
+    /// Nine allegiances besides Federation, and the systems nobody lives in.
+    #[test]
+    fn a_solo_counts_the_uninhabited_among_what_it_hid() {
+        let mut mask = Mask::default();
+        mask.solo(
+            ColorBy::Allegiance,
+            &value(ColorBy::Allegiance, "Federation"),
+        );
+
+        assert_eq!(color_summary(ColorBy::Allegiance, &mask).0, "10 hidden");
+    }
 
     // Only the debug-only passes below use it: egui compiles its
     // between-pass id check out of a release build. See

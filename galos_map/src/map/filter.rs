@@ -5,10 +5,16 @@
 //! what is picked out rather than cutting into it, every filter being
 //! something the user asked to see.
 //!
-//! Except the one on time, which is asked of all of them. A span names no
-//! systems, only how lately one was heard from, so two factions and a span
+//! Except the ones that narrow, which are asked of all of them. A span names
+//! no systems, only how lately one was heard from, so two factions and a span
 //! mean either faction heard from within it. Counted alongside the factions it
 //! would put the whole of the last hour onto a map asked for two factions.
+//! Which way a filter joins the rest is [`Filter::join`]'s to say, so a new
+//! kind is one arm there rather than a special case in every pass.
+//!
+//! The color mask ([`mask::Mask`]) narrows too, and is always there: one set
+//! of hidden colors an axis, edited in the color key ([`key`]) rather than
+//! added as a row.
 //!
 //! This is a layer over the map rather than a mode: the walk goes on loading
 //! the cells it marks and the camera stays where it is. Whether it despawns
@@ -31,6 +37,10 @@
 //! standing and still naming its two ends — the route is what does not
 //! exist, and the two systems it was asked between are as real as any others.
 
+pub mod key;
+pub mod mask;
+
+use self::mask::{Buckets, Mask};
 use crate::map::galaxy::System;
 use crate::map::galaxy::fetch::Poll;
 use crate::map::index::{Factions, Names, Populated};
@@ -273,20 +283,70 @@ pub enum Filter {
 
 /// The whole of what a filter asks about a system
 ///
-/// Three facts: which factions are present, what the address is, and when the
-/// system was last heard from. A [`System`] answers all three, and so does a
-/// payload point joined against [`crate::map::index::Populated`] — which is what lets the
-/// LOD draw ask what the filters admit before it builds anything, and choose
-/// the systems it draws by the answer. See [`crate::map::galaxy::walk`].
+/// Four facts: which factions are present, what the address is, when the
+/// system was last heard from, and what it reads politically. A [`System`]
+/// answers all four, and so does a payload point joined against
+/// [`crate::map::index::Populated`] — which is what lets the LOD draw ask what
+/// the filters admit before it builds anything, and choose the systems it
+/// draws by the answer. See [`crate::map::galaxy::walk`].
 pub(crate) struct Candidate<'a> {
     pub address: i64,
     /// The factions present, by id, empty for an ungoverned system
     pub factions: &'a [i32],
     /// When the system was last updated, [`None`] where nothing says
     pub updated_at: Option<DateTime<Utc>>,
+    /// The buckets its politics count in, [`None`] for a system nobody
+    /// lives in
+    pub politics: Option<Buckets>,
+}
+
+impl<'a> Candidate<'a> {
+    /// What the populated table says of `address`, and the moment beside it
+    ///
+    /// One place for the join, so a payload point and a system chosen off the
+    /// table cannot read the table two ways.
+    pub(crate) fn off_the_table(
+        address: i64,
+        populated: &'a Populated,
+        updated_at: Option<DateTime<Utc>>,
+    ) -> Candidate<'a> {
+        let row = populated.get(address);
+        Candidate {
+            address,
+            factions: row.map_or(&[], |row| row.factions.as_slice()),
+            updated_at,
+            politics: row.and_then(Buckets::of_row),
+        }
+    }
+}
+
+/// How a filter's answer is joined with the others'
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Join {
+    /// Adds to what is shown: a system any of these admits is admitted
+    ///
+    /// Something the user asked to see. A faction and a route mean both,
+    /// where the systems they share would usually be none at all.
+    Picks,
+    /// Cuts into it: a system has to pass every one of these
+    ///
+    /// A condition on whatever is picked rather than a thing to show, like a
+    /// span, which names no systems and would otherwise put the whole of the
+    /// last hour onto a map asked for one faction.
+    Narrows,
 }
 
 impl Filter {
+    /// Whether this adds to what the others pick or cuts into it
+    pub(crate) fn join(&self) -> Join {
+        match self {
+            Filter::Faction { .. }
+            | Filter::Route { .. }
+            | Filter::Systems { .. } => Join::Picks,
+            Filter::Recency { .. } => Join::Narrows,
+        }
+    }
+
     /// Whether this filter admits `candidate`
     fn admits(&self, candidate: &Candidate, now: DateTime<Utc>) -> bool {
         match self {
@@ -806,7 +866,7 @@ impl Prepared<'_> {
 
     /// Whether the enabled filters admit what `candidate` says
     ///
-    /// The same rule as [`Filters::admits`] — a span is asked of every
+    /// The same rule as [`Filters::admits`] — what narrows is asked of every
     /// candidate and the filters that pick admit between them — with the
     /// address-naming filters answered out of the set rather than walked.
     pub(crate) fn admits(
@@ -814,6 +874,9 @@ impl Prepared<'_> {
         candidate: &Candidate,
         now: DateTime<Utc>,
     ) -> bool {
+        if !self.filters.mask.admits(candidate.politics) {
+            return false;
+        }
         let mut picked = None;
         if self.names {
             *picked.get_or_insert(false) |=
@@ -821,15 +884,15 @@ impl Prepared<'_> {
         }
         for active in self.filters.asked.iter().filter(|active| active.enabled)
         {
-            match &active.filter {
-                timed @ Filter::Recency { .. } => {
-                    if !timed.admits(candidate, now) {
+            match (&active.filter, active.filter.join()) {
+                // Already answered, out of the set.
+                (Filter::Route { .. } | Filter::Systems { .. }, _) => {}
+                (narrowing, Join::Narrows) => {
+                    if !narrowing.admits(candidate, now) {
                         return false;
                     }
                 }
-                // Already answered, out of the set.
-                Filter::Route { .. } | Filter::Systems { .. } => {}
-                picking => {
+                (picking, Join::Picks) => {
                     *picked.get_or_insert(false) |=
                         picking.admits(candidate, now);
                 }
@@ -847,6 +910,8 @@ impl Prepared<'_> {
 #[derive(Resource, Default, Clone)]
 pub struct Filters {
     asked: Vec<Entry>,
+    /// The colors the user has hidden, asked of every system beside the rows
+    mask: Mask,
     /// How many times this has been asked for something
     ///
     /// Counted because a [`ResMut`] reads as written for being handed out, and
@@ -977,20 +1042,23 @@ impl Filters {
         candidate: &Candidate,
         now: DateTime<Utc>,
     ) -> bool {
+        if !self.mask.admits(candidate.politics) {
+            return false;
+        }
         // Nothing while no filter picks systems out, which is what says a span
         // asked on its own admits whatever it reaches rather than nothing.
         let mut picked = None;
 
         for active in self.asked.iter().filter(|active| active.enabled) {
-            match &active.filter {
-                timed @ Filter::Recency { .. } => {
-                    if !timed.admits(candidate, now) {
+            match active.filter.join() {
+                Join::Narrows => {
+                    if !active.filter.admits(candidate, now) {
                         return false;
                     }
                 }
-                picking => {
+                Join::Picks => {
                     *picked.get_or_insert(false) |=
-                        picking.admits(candidate, now);
+                        active.filter.admits(candidate, now);
                 }
             }
         }
@@ -1051,7 +1119,10 @@ impl Filters {
                     let fresh: u32 = aged.iter().take(last + 1).copied().sum();
                     share = share.min(fresh as f32 / whole);
                 }
-                _ => picking = true,
+                picks => {
+                    debug_assert_eq!(picks.join(), Join::Picks);
+                    picking = true;
+                }
             }
         }
         match picking {
@@ -1074,8 +1145,8 @@ impl Filters {
             .any(|active| matches!(active.filter, Filter::Recency { .. }))
     }
 
-    /// The filters that pick systems out by address, which is every kind
-    /// but a span
+    /// The filters that pick systems out, which is every kind that does not
+    /// narrow
     ///
     /// What [`Self::admits`] calls the picking filters, handed over so the
     /// cells holding what they name can be gathered once a revision. A
@@ -1086,7 +1157,25 @@ impl Filters {
             .iter()
             .filter(|active| active.enabled)
             .map(|active| &active.filter)
-            .filter(|filter| !matches!(filter, Filter::Recency { .. }))
+            .filter(|filter| filter.join() == Join::Picks)
+    }
+
+    /// The colors hidden, as the key and the field read them
+    pub fn mask(&self) -> &Mask {
+        &self.mask
+    }
+
+    /// Change what the mask hides
+    ///
+    /// Counted as asking only where it changed anything: the key hands every
+    /// click through here, and a click that sets what was already set moves
+    /// no verdict.
+    pub fn edit_mask(&mut self, edit: impl FnOnce(&mut Mask)) {
+        let before = self.mask.clone();
+        edit(&mut self.mask);
+        if self.mask != before {
+            self.revision += 1;
+        }
     }
 
     /// The filters with their address lookups built, for a pass that asks
@@ -1126,14 +1215,16 @@ impl Filters {
         Prepared { filters: self, named, names }
     }
 
-    /// Whether any filter is being asked at all
+    /// Whether anything is being asked at all: a filter turned on, or a mask
+    /// hiding something
     ///
     /// What tells a map with nothing on it from one whose filters happen to
     /// admit everything drawn. Nothing asked means every system is admitted,
     /// so whoever weighs admitted against excluded has nothing to weigh and
-    /// can take the sky as it comes.
-    pub(crate) fn asking(&self) -> bool {
-        self.asked.iter().any(|active| active.enabled)
+    /// can take the sky as it comes. With every filter off and the mask lifted
+    /// the sky is drawn whole, as it is with none of them held at all.
+    pub fn asking(&self) -> bool {
+        self.mask.narrows() || self.asked.iter().any(|active| active.enabled)
     }
 
     /// Add `filter`, unless it is already being asked
@@ -1297,14 +1388,6 @@ impl Filters {
     /// Whether none is held at all, which is a map showing the whole sky
     pub fn is_empty(&self) -> bool {
         self.asked.is_empty()
-    }
-
-    /// Whether any filter is turned on
-    ///
-    /// Which is whether the map is picking anything out. With every filter
-    /// off the sky is drawn whole, as it is with none of them held at all.
-    pub fn any_enabled(&self) -> bool {
-        self.asked.iter().any(|active| active.enabled)
     }
 
     /// The filter standing in the `index`th place
@@ -1653,7 +1736,9 @@ fn mark(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::galaxy::spawn::ColorBy;
     use crate::map::galaxy::tests::{heard, politics, stamp, system};
+    use galos_index::read::inhabited::Bucketed;
     use galos_route::graph::Crossing;
 
     /// A moment `secs` after the epoch
@@ -1844,7 +1929,7 @@ mod tests {
 
         filters.toggle_all(&[0, 1]);
 
-        assert!(!filters.any_enabled());
+        assert!(!filters.asking());
         assert_eq!(filters.iter().count(), 2);
         assert!(filters.admit(&member(1, &[3]), now()));
     }
@@ -1881,7 +1966,7 @@ mod tests {
 
         filters.toggle_all(&[0, 1]);
 
-        assert!(!filters.any_enabled());
+        assert!(!filters.asking());
     }
 
     /// Clearing them takes every filter away
@@ -1907,7 +1992,7 @@ mod tests {
         filters.add(faction(7));
         filters.toggle(0);
 
-        assert!(!filters.any_enabled());
+        assert!(!filters.asking());
         assert!(filters.admit(&member(1, &[3]), now()));
     }
 
@@ -1921,8 +2006,77 @@ mod tests {
         let mut filters = Filters::default();
         filters.add(route(&[]));
 
-        assert!(filters.any_enabled());
+        assert!(filters.asking());
         assert!(!filters.admit(&member(1, &[7]), now()));
+    }
+
+    /// A system in `allegiance`, belonging to each of `factions`
+    fn sworn(
+        address: i64,
+        factions: &[i32],
+        allegiance: elite_journal::Allegiance,
+    ) -> System {
+        let mut system = member(address, factions);
+        let politics = politics(&mut system);
+        politics.population = 1_000;
+        politics.allegiance = Some(allegiance);
+        system
+    }
+
+    /// **The mask narrows and never adds.** A faction and a hidden
+    /// allegiance admit the faction's systems that are not of it, and
+    /// nothing outside the faction however it is aligned.
+    #[test]
+    fn a_mask_and_a_faction_admit_what_both_do() {
+        use elite_journal::Allegiance;
+        let federation = Allegiance::bucket(Some(Allegiance::Federation));
+        let mut filters = Filters::default();
+        filters.add(faction(7));
+        filters.edit_mask(|mask| {
+            mask.set(ColorBy::Allegiance, [federation], true);
+        });
+
+        assert!(filters.admit(&sworn(1, &[7], Allegiance::Empire), now()));
+        assert!(!filters.admit(&sworn(2, &[7], Allegiance::Federation), now()));
+        assert!(!filters.admit(&sworn(3, &[8], Allegiance::Empire), now()));
+        // The same answer through the pass the LOD draw takes.
+        let prepared = filters.prepared();
+        assert!(prepared.admit(&sworn(1, &[7], Allegiance::Empire), now()));
+        assert!(
+            !prepared.admit(&sworn(2, &[7], Allegiance::Federation), now())
+        );
+    }
+
+    /// A mask with no rows beside it is still asked, and lifting it asks
+    /// nothing
+    #[test]
+    fn a_mask_on_its_own_is_asked() {
+        use elite_journal::Allegiance;
+        let federation = Allegiance::bucket(Some(Allegiance::Federation));
+        let mut filters = Filters::default();
+        assert!(!filters.asking());
+        filters.edit_mask(|mask| {
+            mask.set(ColorBy::Allegiance, [federation], true);
+        });
+        assert!(filters.asking());
+        assert!(!filters.admit(&sworn(1, &[], Allegiance::Federation), now()));
+        assert!(filters.admit(&member(2, &[]), now()), "nobody lives there");
+
+        filters.edit_mask(|mask| mask.set_enabled(false));
+        assert!(!filters.asking());
+        assert!(filters.admit(&sworn(1, &[], Allegiance::Federation), now()));
+    }
+
+    /// An edit that sets what was already set is not counted as asking,
+    /// the key handing every click through whether or not it moved anything
+    #[test]
+    fn only_a_mask_edit_that_changes_something_is_counted() {
+        let mut filters = Filters::default();
+        let settled = filters.revision();
+        filters.edit_mask(|mask| mask.show_all(ColorBy::Security));
+        assert_eq!(filters.revision(), settled);
+        filters.edit_mask(|mask| mask.hide_all(ColorBy::Security));
+        assert_eq!(filters.revision(), settled + 1);
     }
 
     /// One of two turned off leaves the other asking
@@ -2617,7 +2771,7 @@ mod tests {
         let settled = filters.revision();
         let _ = filters.admit(&member(1, &[7]), now());
         let _ = filters.span();
-        let _ = filters.any_enabled();
+        let _ = filters.asking();
 
         assert_eq!(filters.revision(), settled, "reading counted as asking");
     }

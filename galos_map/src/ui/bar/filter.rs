@@ -1,21 +1,28 @@
-//! The filter form: a faction looked up by name, and the control over how
-//! lately a system was updated
+//! The filter form: the color key, a faction looked up by name, and the
+//! control over how lately a system was updated
 
+use crate::map::filter::key::{Hidden, Item, Tier, tiers};
+use crate::map::filter::mask::Mask;
 use crate::map::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
     SPANS, Standstill, Watch,
 };
-use crate::map::galaxy::spawn::PendingSpawns;
+use crate::map::galaxy::spawn::{ColorBy, PendingSpawns};
 use crate::map::galaxy::{InReach, PendingEvictions};
+use crate::map::index::{ResidentIndex, Settled};
 use crate::map::route::SelectedFilter;
 use crate::ui::FIELD_GAP;
 use crate::ui::bar::search::OFFERED;
+use crate::ui::legend::{Swatch, attention, showing};
 use crate::ui::list::{LINE_PADDING, line, scrolling};
+use crate::ui::text::thousands;
 use crate::ui::widgets::fill_width;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::{Response, Ui};
+use galos_index::prelude::CellId;
+use galos_index::read::inhabited::Inhabited;
 use galos_index::records::Faction as DbFaction;
 
 /// The name the time control's own `Ui` is spelled out under
@@ -88,9 +95,124 @@ pub(crate) struct FilterBar<'w, 's> {
     /// question about where its systems are and not about the row.
     pub(super) populated: Res<'w, crate::map::index::Populated>,
     pub(super) names: Res<'w, crate::map::index::Names>,
+    /// The color key, in a parameter of its own: this one is at the sixteen
+    /// a system may take
+    pub(in crate::ui) key: ColorKey<'w, 's>,
 }
 
+/// What the color key is drawn from, beside the mask [`Filters`] holds
+#[derive(SystemParam)]
+pub(crate) struct ColorKey<'w, 's> {
+    /// Which axis the map is colored by, which the key's tabs choose
+    ///
+    /// Set only on a change, since the blobs are rebuilt on one.
+    pub(in crate::ui) color_by: ResMut<'w, ColorBy>,
+    /// The colonies counted, for the counts beside each value
+    settled: Res<'w, Settled>,
+    /// Every system counted, for the systems nobody lives in
+    index: Res<'w, ResidentIndex>,
+    pub(super) state: Local<'s, KeyState>,
+}
+
+impl ColorKey<'_, '_> {
+    /// The root's colonies, and how many systems nobody lives in
+    ///
+    /// The root histograms are resident, so asking every frame costs nothing.
+    fn counted(&self) -> (Option<&Inhabited>, u64) {
+        let held = self.settled.0.get(CellId::ROOT);
+        let stellar = self
+            .index
+            .0
+            .get(CellId::ROOT)
+            .map_or(0, |cell| cell.aggregate.count());
+        let peopled = held.map_or(0, Inhabited::count);
+        (held, stellar.saturating_sub(peopled))
+    }
+}
+
+/// The key's own state, which outlives a pass over it
+#[derive(Default)]
+pub(super) struct KeyState {
+    /// Whether Other is unfolded, which it is not until asked
+    other_open: bool,
+    /// Whether the color row asked for the key, for the ask bar to open
+    ///
+    /// The rows are drawn after the bar, so the form comes out a frame
+    /// later, the same lateness a route asked for from the rows has.
+    pub(super) opening: bool,
+    /// Whether the key was out on the last pass over the bar, which is
+    /// when the color row keeps its mini legend to itself
+    pub(super) out: bool,
+}
+
+/// What a click in the key or on the color row asked of the mask
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Keyed {
+    /// Hide every one of these if any is shown, else show them all
+    Toggle(Vec<usize>),
+    /// Hide everything else in the axis, and the uninhabited too
+    Solo(Vec<usize>),
+    Uninhabited,
+    ShowAll,
+    HideAll,
+    Invert,
+    /// Apply what is set, or lift it and keep it
+    Enabled(bool),
+}
+
+impl Keyed {
+    /// A click on `buckets`, a solo where a modifier was held
+    pub(super) fn clicked(ui: &Ui, buckets: Vec<usize>) -> Keyed {
+        if soloing(ui) { Keyed::Solo(buckets) } else { Keyed::Toggle(buckets) }
+    }
+
+    /// Carry it out on `filters`' mask, along `axis`
+    ///
+    /// Through [`Filters::edit_mask`], which is what says the filters moved,
+    /// and only where they did.
+    pub(super) fn apply(self, filters: &mut Filters, axis: ColorBy) {
+        filters.edit_mask(|mask| match self {
+            Keyed::Toggle(buckets) => mask.toggle(axis, &buckets),
+            Keyed::Solo(buckets) => mask.solo(axis, &buckets),
+            Keyed::Uninhabited => {
+                mask.set_uninhabited(!mask.hides_uninhabited())
+            }
+            Keyed::ShowAll => mask.show_all(axis),
+            Keyed::HideAll => mask.hide_all(axis),
+            Keyed::Invert => mask.invert(axis),
+            Keyed::Enabled(enabled) => mask.set_enabled(enabled),
+        });
+    }
+}
+
+/// Whether a click is asking for one value alone
+///
+/// Alt, ctrl or cmd. Not shift, which the map already reads as gathering,
+/// and a solo is the opposite of adding to what is there.
+fn soloing(ui: &Ui) -> bool {
+    ui.input(|input| {
+        let keys = input.modifiers;
+        keys.alt || keys.ctrl || keys.command
+    })
+}
+
+/// How tall the key's list grows before it scrolls
+///
+/// Government is fifteen rows under eight headers, and at full length it
+/// pushed the faction lookup under it off the bottom of a laptop's screen.
+const KEY_HEIGHT: f32 = 360.;
+
+/// How large a swatch stands in the key
+const KEY_SWATCH: f32 = 10.;
+
+/// How wide the room the Other chevron stands in
+const CHEVRON: f32 = 14.;
+
 /// What the box asks in [`AskMode::Filter`](crate::ui::bar::AskMode::Filter), under the field
+///
+/// The color key first: which axis the map is colored by, and a toggle for
+/// every color along it. It is the one filter that needs nothing typed, so it
+/// leads, and the faction's answers stand under it.
 ///
 /// The field itself is the bar's one box, which is asking for a faction while
 /// this mode is out: see [`ask_bar`](crate::ui::bar::ask_bar). What is left is what a name cannot say
@@ -106,6 +228,25 @@ pub(crate) struct FilterBar<'w, 's> {
 /// search's own note cannot be mistaken for it: one box asks all three
 /// questions, and only one of them is being asked at a time.
 pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
+    // Worked on through a copy, so that a pass which chose nothing does not
+    // mark the axis changed and rebuild the blobs.
+    let mut axis = *filter.key.color_by;
+    let (held, empty) = filter.key.counted();
+    let held = held.copied();
+    let asked = key(
+        ui,
+        filter.active.mask(),
+        &mut axis,
+        held.as_ref(),
+        empty,
+        &mut filter.key.state.other_open,
+    );
+    filter.key.color_by.set_if_neq(axis);
+    if let Some(asked) = asked {
+        asked.apply(filter.active.bypass_change_detection(), axis);
+    }
+    ui.separator();
+
     if let LookupNote::Failed(why) = &*filter.note {
         ui.add_space(FIELD_GAP);
         ui.colored_label(egui::Color32::LIGHT_RED, why);
@@ -133,6 +274,347 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
         filter.active.bypass_change_detection(),
         &mut filter.standstill,
     );
+}
+
+/// The color key: a tab for each axis, a row for each of its values, the
+/// systems nobody lives in, and what can be done to the axis at once
+///
+/// Answers what a click asked of the mask, carried out by the caller since
+/// the rows are drawn from the mask it changes.
+///
+/// `held` is the galaxy's colonies, whatever has been counted of them, and
+/// `empty` how many systems nobody lives in; `other_open` whether Other is
+/// unfolded.
+pub(super) fn key(
+    ui: &mut Ui,
+    mask: &Mask,
+    axis: &mut ColorBy,
+    held: Option<&Inhabited>,
+    empty: u64,
+    other_open: &mut bool,
+) -> Option<Keyed> {
+    ui.add_space(FIELD_GAP);
+    ui.horizontal(|ui| {
+        for offered in ColorBy::ALL {
+            let text =
+                egui::RichText::new(offered.name().to_uppercase()).small();
+            let text = if offered == *axis {
+                text.strong().underline()
+            } else {
+                text.weak()
+            };
+            let tab = ui
+                .add(
+                    egui::Label::new(text)
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if tab.clicked() {
+                *axis = offered;
+            }
+        }
+    });
+    let axis = *axis;
+    let mut asked = None;
+
+    let tiers = tiers(axis);
+    // Room for the chevron beside every top-tier row where any of them folds,
+    // so the swatches stand in one column whether or not a row has one.
+    let gutter = if tiers
+        .iter()
+        .any(|tier| matches!(tier, Tier::Group { collapsible: true, .. }))
+    {
+        CHEVRON
+    } else {
+        0.
+    };
+    // A member is drawn in under its header's name, past the header's swatch.
+    let member = gutter + KEY_SWATCH + ui.spacing().item_spacing.x;
+    let count = |counted: u64| held.map(|_| thousands(counted));
+
+    scrolling(ui, KEY_HEIGHT, "color-key", |ui| {
+        for (place, tier) in tiers.iter().enumerate() {
+            match tier {
+                Tier::Item(item) => {
+                    let row = item_row(
+                        ui,
+                        ("key-item", place),
+                        gutter,
+                        item,
+                        axis,
+                        mask,
+                        held,
+                    );
+                    if row.clicked() {
+                        asked = Some(Keyed::clicked(ui, item.buckets.clone()));
+                    }
+                }
+                Tier::Group { collapsible: true, items, .. } => {
+                    let hidden = tier.hidden(axis, mask);
+                    let (row, rect) = key_line(
+                        ui,
+                        ("key-group", place),
+                        gutter,
+                        &Swatch::of_tier(tier, axis, mask),
+                        named(tier.name(), hidden),
+                        showing(hidden).map(|said| {
+                            egui::RichText::new(said)
+                                .small()
+                                .color(attention(ui))
+                        }),
+                        held.and_then(|held| count(tier.count(axis, held))),
+                    );
+                    // In front of the row, so the chevron takes its own press.
+                    let chevron = ui.interact(
+                        egui::Rect::from_min_size(
+                            rect.min,
+                            egui::vec2(CHEVRON + LINE_PADDING, rect.height()),
+                        ),
+                        ui.id().with(("key-chevron", place)),
+                        egui::Sense::click(),
+                    );
+                    chevron_mark(
+                        ui,
+                        egui::pos2(
+                            rect.left() + LINE_PADDING + CHEVRON / 2.,
+                            rect.center().y,
+                        ),
+                        *other_open,
+                    );
+                    if chevron.clicked() {
+                        *other_open = !*other_open;
+                    } else if row.clicked() {
+                        asked = Some(Keyed::clicked(ui, tier.buckets()));
+                    }
+                    chevron.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if *other_open {
+                        for (at, item) in items.iter().enumerate() {
+                            let row = item_row(
+                                ui,
+                                ("key-member", place, at),
+                                member,
+                                item,
+                                axis,
+                                mask,
+                                held,
+                            );
+                            if row.clicked() {
+                                asked = Some(Keyed::clicked(
+                                    ui,
+                                    item.buckets.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                // A government's color: its name over its members, always
+                // open, the members being what the reader came to toggle.
+                Tier::Group { items, .. } => {
+                    let hidden = tier.hidden(axis, mask);
+                    let (said, color) = match hidden {
+                        Hidden::None => {
+                            ("all".to_owned(), ui.visuals().weak_text_color())
+                        }
+                        Hidden::All => ("none".to_owned(), attention(ui)),
+                        Hidden::Some { .. } => {
+                            (showing(hidden).unwrap_or_default(), attention(ui))
+                        }
+                    };
+                    let (row, _) = key_line(
+                        ui,
+                        ("key-group", place),
+                        gutter,
+                        &Swatch::of_tier(tier, axis, mask),
+                        egui::RichText::new(tier.name().to_uppercase())
+                            .small()
+                            .weak(),
+                        Some(egui::RichText::new(said).small().color(color)),
+                        None,
+                    );
+                    if row.clicked() {
+                        asked = Some(Keyed::clicked(ui, tier.buckets()));
+                    }
+                    for (at, item) in items.iter().enumerate() {
+                        let row = item_row(
+                            ui,
+                            ("key-member", place, at),
+                            member,
+                            item,
+                            axis,
+                            mask,
+                            held,
+                        );
+                        if row.clicked() {
+                            asked =
+                                Some(Keyed::clicked(ui, item.buckets.clone()));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Under a hairline, being no value of the axis: the same systems whichever
+    // axis is out.
+    ui.separator();
+    let (row, _) = key_line(
+        ui,
+        "key-uninhabited",
+        gutter,
+        &Swatch::uninhabited(mask),
+        named(
+            "Uninhabited",
+            if mask.hides_uninhabited() { Hidden::All } else { Hidden::None },
+        ),
+        None,
+        held.map(|_| thousands(empty)),
+    );
+    if row.clicked() {
+        asked = Some(Keyed::Uninhabited);
+    }
+
+    ui.horizontal(|ui| {
+        for (said, what) in [
+            ("all", Keyed::ShowAll),
+            ("none", Keyed::HideAll),
+            ("invert", Keyed::Invert),
+        ] {
+            let pressed = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(said).small())
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if pressed.clicked() {
+                asked = Some(what);
+            }
+        }
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(egui::RichText::new("alt-click: solo").small().weak());
+            },
+        );
+    });
+
+    asked
+}
+
+/// A value's name, struck through and muted where it is wholly hidden
+fn named(name: &str, hidden: Hidden) -> egui::RichText {
+    let text = egui::RichText::new(name);
+    match hidden {
+        Hidden::All => text.strikethrough().weak(),
+        _ => text,
+    }
+}
+
+/// One value's row: its swatch, its name, and how many colonies it counts
+fn item_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash,
+    indent: f32,
+    item: &Item,
+    axis: ColorBy,
+    mask: &Mask,
+    held: Option<&Inhabited>,
+) -> Response {
+    let hidden = item.hidden(axis, mask);
+    key_line(
+        ui,
+        id,
+        indent,
+        &Swatch::of_item(item, axis, mask),
+        named(item.name, hidden),
+        None,
+        held.map(|held| thousands(item.count(axis, held))),
+    )
+    .0
+}
+
+/// One full-width line of the key, and the pointer's answer to it
+///
+/// Laid out, then answered over the whole of it, so the line is one control
+/// rather than a swatch and a label each bidding for the press: see
+/// [`line`]. Answers the line's rectangle beside, for what the caller lays
+/// in front of it.
+///
+/// `tail` is what stands at the right hand end, past the count.
+fn key_line(
+    ui: &mut Ui,
+    id: impl std::hash::Hash,
+    indent: f32,
+    swatch: &Swatch,
+    name: egui::RichText,
+    tail: Option<egui::RichText>,
+    count: Option<String>,
+) -> (Response, egui::Rect) {
+    let height =
+        ui.text_style_height(&egui::TextStyle::Body) + LINE_PADDING * 2.;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    if ui.rect_contains_pointer(rect) {
+        ui.painter().rect_filled(
+            rect,
+            ui.visuals().widgets.hovered.corner_radius,
+            ui.visuals().widgets.hovered.weak_bg_fill,
+        );
+    }
+    let inner = rect.shrink2(egui::vec2(LINE_PADDING, 0.));
+    let mut inside = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inside.add_space(indent);
+    swatch.paint(&mut inside, KEY_SWATCH);
+    inside.add(egui::Label::new(name).selectable(false).truncate());
+    inside.with_layout(
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            if let Some(tail) = tail {
+                ui.add(egui::Label::new(tail).selectable(false));
+            }
+            if let Some(count) = count {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(count).small().weak())
+                        .selectable(false),
+                );
+            }
+        },
+    );
+    let answer = ui
+        .interact(rect, ui.id().with(id), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    (answer, rect)
+}
+
+/// The disclosure mark: pointing right while folded, down while open
+///
+/// Painted rather than lettered, the faces the chrome is lettered in having
+/// no triangle a reader could count on.
+fn chevron_mark(ui: &Ui, center: egui::Pos2, open: bool) {
+    let arm = 3_f32;
+    let (a, b, c) = if open {
+        (
+            center + egui::vec2(-arm, -arm / 2.),
+            center + egui::vec2(0., arm / 2.),
+            center + egui::vec2(arm, -arm / 2.),
+        )
+    } else {
+        (
+            center + egui::vec2(-arm / 2., -arm),
+            center + egui::vec2(arm / 2., 0.),
+            center + egui::vec2(-arm / 2., arm),
+        )
+    };
+    let stroke = egui::Stroke::new(1.2_f32, ui.visuals().weak_text_color());
+    ui.painter().line_segment([a, b], stroke);
+    ui.painter().line_segment([b, c], stroke);
 }
 
 /// Ask for a filter by how lately a system was updated

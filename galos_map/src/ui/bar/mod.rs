@@ -13,7 +13,7 @@ use crate::map::route::frontier::Frontiers;
 use crate::map::route::{RouteSettings, Router};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults};
 use crate::map::selection::{Picked, Selection};
-use crate::ui::bar::applied::{RowAsk, applied, reaching};
+use crate::ui::bar::applied::{RowAsk, applied, color_row, reaching};
 use crate::ui::bar::filter::{FilterBar, filter_body};
 use crate::ui::bar::route::route_body;
 use crate::ui::bar::search::{Picking, answer, cleared};
@@ -338,6 +338,11 @@ pub(super) fn ask_bar(
     searching: &Frontiers,
     filter: &mut FilterBar,
 ) -> Asked {
+    // The key, where the color row asked for it on the last pass: the rows
+    // are drawn after the bar, so this is the first chance to open it.
+    if std::mem::take(&mut filter.key.state.opening) {
+        search.open(AskMode::Filter);
+    }
     // Whether the form is out, which is both what the card is framed by and
     // what the readings under it stand below.
     let out = search.asking.is_some();
@@ -511,6 +516,9 @@ pub(super) fn ask_bar(
 
     let (took_focus, middle, boxes, field_foot) = bar.inner;
     let rect = bar.response.rect;
+    // For the color row under it, which keeps its mini legend to itself while
+    // the key it summarizes is on screen.
+    filter.key.state.out = search.asking == Some(AskMode::Filter);
     // What the readings under the bar stand below; see [`Asked::foot`].
     let foot = if out { rect.bottom() } else { field_foot };
     Asked { middle, rect, foot, boxes, took_focus }
@@ -587,7 +595,27 @@ pub(super) fn state_bar(
                     // rectangle that kept its place, which is what egui reads
                     // as a widget taking another's state.
                     let mut place = 0;
-                    // The filters first, and the selection under them. Both
+                    // The colors first, drawn whether or not the form is out:
+                    // what the map is colored by is the first thing it takes
+                    // to read it, and the one row always standing. Off the
+                    // live filters rather than a held copy, being clicked and
+                    // never dragged. Its mini legend only while the key it
+                    // stands for is not on screen to say the same.
+                    let axis = *filter.key.color_by;
+                    let (keyed, keying) = color_row(
+                        ui,
+                        &filter.active,
+                        axis,
+                        !filter.key.state.out,
+                    );
+                    if let Some(keyed) = keyed {
+                        keyed.apply(
+                            filter.active.bypass_change_detection(),
+                            axis,
+                        );
+                    }
+                    filter.key.state.opening |= keying;
+                    // Then the filters, and the selection under them. Both
                     // stand in the one column, so whichever is on top decides
                     // which of them holds still: picking a system out or
                     // letting one go is a thing the user does over and over,
@@ -630,8 +658,7 @@ pub(super) fn state_bar(
                     // Two numbers only where there is a sky behind what is
                     // picked out and the user can see it: something has to be
                     // excluded, and what is excluded has to be drawn.
-                    let dimming =
-                        filter.active.any_enabled() && filter.dim.0 > 0.;
+                    let dimming = filter.active.asking() && filter.dim.0 > 0.;
                     reaching(
                         ui,
                         &filter.in_reach,

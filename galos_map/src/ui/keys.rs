@@ -1,12 +1,13 @@
 //! What the keyboard asks of the chrome
 //!
 //! The bindings that open and put away what is drawn over the map: the bar's
-//! three questions, the bindings window, and the escape that puts all of it
-//! away. What the keyboard asks of the map itself is [`crate::map::keys`], and
-//! the rules both read — what a chord is, whether a field has the caret — are
-//! [`crate::input`]'s.
+//! three questions, the bindings window, the chrome as a whole, and the
+//! escape that puts all of it away. What the keyboard asks of the map itself
+//! is [`crate::map::keys`], and the rules both read — what a chord is,
+//! whether a field has the caret — are [`crate::input`]'s.
 
 use super::bar::{AskMode, BarFields};
+use super::hide::ChromeHidden;
 use super::{KeysOpen, Panes};
 use crate::input::{Keyboard, bare, shifted};
 use crate::map::schedule::MapSet;
@@ -20,8 +21,30 @@ pub(crate) fn plugin(app: &mut App) {
     // which is one press putting away two things.
     app.add_systems(
         Update,
-        (open_search, shut_search, toggle_keys).chain().in_set(MapSet::Search),
+        (open_search, shut_search, toggle_keys, toggle_chrome)
+            .chain()
+            .in_set(MapSet::Search),
     );
+}
+
+/// Hide the chrome, or bring it back
+///
+/// `F2`, which is the key beside the one that says what the keys do and
+/// the one no desktop has claimed for anything. Escape brings it back as
+/// well — see [`shut_search`] — since a reader who hid it and does not
+/// remember the key looks there first.
+///
+/// Not while typing, which cannot happen with the chrome put away and is
+/// what a function key pressed into a field with the chrome up should leave
+/// alone.
+fn toggle_chrome(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    mut hidden: ResMut<ChromeHidden>,
+) {
+    if !keyboard.typing && keys.just_pressed(KeyCode::F2) && bare(&keys) {
+        hidden.0 = !hidden.0;
+    }
 }
 
 /// Show or hide what the keys do
@@ -118,6 +141,7 @@ fn open_search(
 fn shut_search(
     keys: Res<ButtonInput<KeyCode>>,
     open: Res<KeysOpen>,
+    mut hidden: ResMut<ChromeHidden>,
     mut panes: Panes,
 ) {
     if open.0 {
@@ -127,6 +151,13 @@ fn shut_search(
         return;
     }
 
+    // The chrome put away is the one thing an escape brings back rather
+    // than puts away. Only that, the panes under it being out of sight and
+    // left as they were.
+    if hidden.0 {
+        hidden.0 = false;
+        return;
+    }
     panes.shut_all();
 }
 
@@ -199,10 +230,11 @@ mod tests {
         let mut app = world();
         app.init_resource::<BarFields>();
         app.init_resource::<KeysOpen>();
+        app.init_resource::<ChromeHidden>();
         app.init_resource::<super::super::ClockControl>();
         app.add_systems(
             Update,
-            (open_search, shut_search, toggle_keys).chain(),
+            (open_search, shut_search, toggle_keys, toggle_chrome).chain(),
         );
         app
     }
@@ -220,6 +252,36 @@ mod tests {
     /// Which question the box has been asked to put
     fn asking(app: &App) -> Option<AskMode> {
         app.world().resource::<BarFields>().asking
+    }
+
+    /// Whether the chrome is put away
+    fn hidden(app: &App) -> bool {
+        app.world().resource::<ChromeHidden>().0
+    }
+
+    /// `F2` puts the chrome away and brings it back
+    #[test]
+    fn f2_hides_the_chrome_and_brings_it_back() {
+        let mut app = barred();
+
+        pressed(&mut app, &[KeyCode::F2]);
+        assert!(hidden(&app));
+        pressed(&mut app, &[KeyCode::F2]);
+        assert!(!hidden(&app));
+    }
+
+    /// An escape over the chrome put away brings it back, and puts away
+    /// nothing under it: the form left out when it was hidden is still out
+    /// when it comes back
+    #[test]
+    fn an_escape_brings_the_chrome_back_first() {
+        let mut app = barred();
+        app.world_mut().resource_mut::<ChromeHidden>().0 = true;
+
+        pressed(&mut app, &[KeyCode::Escape]);
+
+        assert!(!hidden(&app));
+        assert!(!shutting(&app), "the escape was spent twice");
     }
 
     /// `/` asks for the search box

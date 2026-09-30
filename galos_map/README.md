@@ -104,6 +104,29 @@ seconds, whether or not the grid is shown. It has its own switch in the
 settings pane, under General beside the grid's. The rose is
 [`src/map/rose.rs`](./src/map/rose.rs).
 
+## The color key
+
+The map is colored by allegiance, government or security, and every color of
+every one of them is a toggle. The key at the top of the bar's Filter tab
+lists them — the three powers and an Other that folds away for allegiance,
+one group a color for government, five values for security — with how many
+colonies each counts, and its tabs are what choose the coloring. Clicking a
+value hides the systems drawn in it; alt, ctrl or command clicking one shows
+it alone. Uninhabited systems have a row of their own.
+
+What is hidden is hidden along every axis at once: hide Independent and color
+by security, and Independent stays hidden. It narrows whatever the filters
+pick out, and is drawn the way they are, at the Filtered Opacity setting, or
+not loaded at all at zero.
+
+With the form shut the key folds into the color row, the first row under the
+bar: a chip a value to click, a box to lift everything it hides without
+forgetting it, and a count of what is hidden. Hovering it names the chips.
+`F2`, or the eye under the gear, puts the interface away and leaves the rose
+and the key standing over the map. The key is
+[`src/map/filter/key.rs`](./src/map/filter/key.rs) and the mask it sets
+[`src/map/filter/mask.rs`](./src/map/filter/mask.rs).
+
 ## Mouse
 
 | Gesture | What it does |
@@ -150,6 +173,7 @@ open rail takes both, rather than asking to be pressed twice.
 | `Shift-R` | Ask the box for systems to route between |
 | `Esc` | Put away the bindings, or everything the chrome has open |
 | `F1` or `?` | Show or hide these bindings |
+| `F2` | Hide or show the interface, leaving the rose and color key |
 | `F3` | Show or hide the diagnostics window |
 
 Panning and zooming cover ground in proportion to how far out the camera is, so

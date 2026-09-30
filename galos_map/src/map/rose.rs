@@ -137,6 +137,14 @@ const NEEDLE: f32 = 1.0;
 /// How long the needle's head is, and how wide either side of it, in pixels
 const HEAD: Vec2 = Vec2::new(7., 3.5);
 
+/// How far above the viewport's bottom edge the rose can reach, in logical
+/// pixels: its hub, the needle standing straight up over it, and the name on
+/// the needle's tip
+///
+/// What stands on the rose stands clear of this, however the rose is turned.
+pub(crate) const REACHES_UP: f32 =
+    HUB_FROM.y + CARD * NEEDLE + HEAD.x + GAP + 14.;
+
 /// The hub's radius, in pixels
 const HUB: f32 = 3.5;
 

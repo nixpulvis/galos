@@ -277,6 +277,26 @@ impl Hue {
             Hue::Grey => Vec3::ONE,
         }
     }
+
+    /// The color a swatch of this hue is filled with in the chrome, in sRGB
+    ///
+    /// Off [`Self::light`] rather than a table of its own, so a key and the
+    /// marks it names cannot drift apart: the chromatic hues are that light
+    /// encoded for the display. [`Hue::Grey`] is the one exception, and has
+    /// to be.
+    /// Its light is white, the level being the gains' to set, and a white
+    /// swatch reads as a light the map never paints; filled in the gray an
+    /// unreported colony comes out at among its neighbors, it reads as what
+    /// it names.
+    pub(crate) fn swatch(self) -> Srgba {
+        match self {
+            Hue::Grey => Srgba::rgb(0.7, 0.72, 0.77),
+            _ => {
+                let light = self.light();
+                Srgba::from(LinearRgba::rgb(light.x, light.y, light.z))
+            }
+        }
+    }
 }
 
 /// Determains what color to draw in system view mode.

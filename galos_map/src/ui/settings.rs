@@ -11,7 +11,7 @@ use crate::map::filter::DimTo;
 use crate::map::galaxy::Spyglass;
 use crate::map::galaxy::fetch::Poll;
 use crate::map::galaxy::spawn::{
-    ColorBy, ShowNames, SpawnBudget, StarExposure, StarProfile,
+    ShowNames, SpawnBudget, StarExposure, StarProfile,
 };
 use crate::map::grid::{Bright, RulerUnit, ShowGrid, ShowMiddle, ShowPicked};
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
@@ -121,7 +121,6 @@ fn radius_slider(ui: &mut Ui, radius: &mut f32, ceiling: f32) -> Response {
 pub(crate) struct Settings<'w> {
     spyglass: ResMut<'w, Spyglass>,
     view: ResMut<'w, View>,
-    color_by: ResMut<'w, ColorBy>,
     population_scale: ResMut<'w, ScalePopulation>,
     star_exposure: ResMut<'w, StarExposure>,
     field_exposure: ResMut<'w, FieldExposure>,
@@ -139,7 +138,7 @@ pub(crate) struct Settings<'w> {
     unit: ResMut<'w, RulerUnit>,
     show_middle: ResMut<'w, ShowMiddle>,
     show_picked: ResMut<'w, ShowPicked>,
-    show_rose: ResMut<'w, ShowRose>,
+    pub(super) show_rose: ResMut<'w, ShowRose>,
     bright: ResMut<'w, Bright>,
     spawn_budget: ResMut<'w, SpawnBudget>,
 }
@@ -513,35 +512,6 @@ pub(super) fn settings_body(
     );
     if *settings.view == View::Map {
         ui.add_space(FIELD_GAP);
-        titled(ui, "Color By", "What a system's color means");
-        edited(
-            &mut settings.color_by,
-            |x| x,
-            |color_by| {
-                choose(
-                    ui,
-                    color_by,
-                    ColorBy::Allegiance,
-                    "Allegiance",
-                    "Color by controlling power",
-                );
-                choose(
-                    ui,
-                    color_by,
-                    ColorBy::Government,
-                    "Government",
-                    "Color by government type",
-                );
-                choose(
-                    ui,
-                    color_by,
-                    ColorBy::Security,
-                    "Security",
-                    "Color by security level",
-                );
-            },
-        );
-        ui.add_space(FIELD_GAP);
         edited(
             &mut settings.population_scale,
             |x| &mut x.0,
@@ -674,7 +644,8 @@ pub(super) fn settings_body(
     titled(
         ui,
         "Filtered Opacity (%)",
-        "How faintly unmatched systems are drawn",
+        "How faintly unmatched systems are drawn, and the colors toggled off \
+         in the key. At zero they are not loaded at all",
     );
     let mut showing = dim.0 * 100.;
     fill_width(ui, VALUE_WIDTH);
@@ -763,9 +734,8 @@ pub(super) fn settings_body(
 /// settings straight in would mark every one of them changed every frame it
 /// stood open. What reads the mark does the work again:
 /// [`crate::map::galaxy::walk`] reconciles the whole sky on a [`View`] or a
-/// [`ScalePopulation`] said to have moved, and the blobs are rebuilt on a
-/// [`ColorBy`]. The copy is what the widget works on, and the resource is
-/// touched only when the copy comes back different.
+/// [`ScalePopulation`] said to have moved. The copy is what the widget works
+/// on, and the resource is touched only when the copy comes back different.
 ///
 /// The sliders that settle a value of their own first — the exposures, the
 /// grid's brightness, the dimming — and [`StarProfile`] already write back
@@ -966,7 +936,6 @@ mod tests {
             lock_camera: false,
             follow_camera: false,
         });
-        world.insert_resource(ColorBy::Allegiance);
         world.insert_resource(ScalePopulation(false));
         world.insert_resource(StarExposure::default());
         world.insert_resource(FieldExposure(0.));
@@ -1047,7 +1016,6 @@ mod tests {
 
             let changed: Vec<&str> = [
                 ("View", touched::<View>(&world)),
-                ("ColorBy", touched::<ColorBy>(&world)),
                 ("ScalePopulation", touched::<ScalePopulation>(&world)),
                 ("Spyglass", touched::<Spyglass>(&world)),
                 ("StarExposure", touched::<StarExposure>(&world)),

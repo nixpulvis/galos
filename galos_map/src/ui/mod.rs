@@ -51,7 +51,9 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 mod bar;
 mod clock;
 mod help;
+mod hide;
 pub(crate) mod keys;
+pub(crate) mod legend;
 pub(crate) mod list;
 pub(crate) mod loading;
 pub(crate) mod panels;
@@ -69,6 +71,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<ClockControl>();
     app.init_resource::<ShowClock>();
     app.init_resource::<KeysOpen>();
+    app.init_resource::<hide::ChromeHidden>();
     app.init_resource::<BarFields>();
     app.add_systems(
         Update,
@@ -98,6 +101,17 @@ pub(crate) struct SettingsOpen(bool);
 /// since a reader wanting to know what a key does has a hand on the keys.
 #[derive(Resource, Default)]
 pub(crate) struct KeysOpen(pub(crate) bool);
+
+/// The switches over what of the chrome is out: the settings pane, the
+/// bindings window, and the chrome as a whole
+///
+/// One parameter, [`chrome`] being at Bevy's limit of sixteen.
+#[derive(SystemParam)]
+pub(crate) struct Toggles<'w> {
+    settings: ResMut<'w, SettingsOpen>,
+    keys: ResMut<'w, KeysOpen>,
+    hidden: ResMut<'w, hide::ChromeHidden>,
+}
 
 /// Whether the pane's control over the clock is out
 ///
@@ -236,8 +250,7 @@ pub(crate) fn chrome(
     mut bar: SearchBar,
     mut over_ui: ResMut<PointerOverUi>,
     mut keyboard: ResMut<Keyboard>,
-    mut open: ResMut<SettingsOpen>,
-    mut keys: ResMut<KeysOpen>,
+    mut toggles: Toggles,
     mut search: ResMut<BarFields>,
     mut selection: ResMut<Selection>,
     contents: Res<Contents>,
@@ -262,16 +275,21 @@ pub(crate) fn chrome(
     let asked_at = filter.active.revision();
 
     // The pane first, since where it has reached is where the gear stands.
-    let edge = settings_pane(ctx, open.0, |ui| {
-        settings_body(ui, &mut settings, &mut filter.dim);
-    });
+    // Nowhere while the chrome is put away, which is the pane put away with
+    // it rather than slid shut: it comes back as it was left.
+    let edge = match toggles.hidden.0 {
+        true => 0.,
+        false => settings_pane(ctx, toggles.settings.0, |ui| {
+            settings_body(ui, &mut settings, &mut filter.dim);
+        }),
+    };
 
     // Its own window rather than a fold at the foot of the pane. It is a
     // reference and not a control: nothing in it is set, it is read while
     // doing something else, and the pane it was filed under is where the
     // things that *are* set live. Opened from the keyboard, which is what it
     // is about.
-    keys_window(ctx, &mut keys.0);
+    keys_window(ctx, &mut toggles.keys.0);
 
     // Where the bar's own column stands: past the pane, past the gear, and
     // as wide as the bar. Read by the strip, which is centered on the
@@ -305,6 +323,20 @@ pub(crate) fn chrome(
         mark_if_moved(&mut settings.clock, |clock| {
             hidden(clock, &mut settings.clock_control)
         });
+    }
+
+    // Put away: the eye to bring it back and the key to read the colors by,
+    // and nothing else. The strip above has its own switch and stays.
+    if toggles.hidden.0 {
+        hide::eye(ctx, egui::pos2(MARGIN, MARGIN), &mut toggles.hidden.0);
+        hide::bare_legend(
+            ctx,
+            &filter.active,
+            *filter.key.color_by,
+            settings.show_rose.0,
+        );
+        settle_input(ctx, &mut over_ui, &mut keyboard, &mut press, &buttons);
+        return Ok(());
     }
 
     // Where distances in either column are measured from, and nothing where
@@ -354,7 +386,13 @@ pub(crate) fn chrome(
                 settings.reach(),
             )
         });
-    gear(ctx, edge, asked.middle, &mut open.0);
+    gear(ctx, edge, asked.middle, &mut toggles.settings.0);
+    // Under the gear, as the gear hangs off the field.
+    hide::eye(
+        ctx,
+        egui::pos2(edge + MARGIN, asked.middle + GEAR_ROOM / 2. + MARGIN),
+        &mut toggles.hidden.0,
+    );
 
     // A press that landed on neither of the bar's two zones. Never spent: the
     // map is free to answer every one of them, which is what lets a user pick
@@ -410,6 +448,27 @@ pub(crate) fn chrome(
         search.open(AskMode::Route);
     }
 
+    settle_input(ctx, &mut over_ui, &mut keyboard, &mut press, &buttons);
+
+    if filter.active.revision() != asked_at {
+        filter.active.set_changed();
+    }
+
+    Ok(())
+}
+
+/// Say what the chrome made of the pointer and the keys this pass
+///
+/// Once a pass, however much of the chrome was drawn: what reads these
+/// asks whether the UI wanted the input, and a pass that put the chrome
+/// away is still a pass that drew the eye.
+fn settle_input(
+    ctx: &Context,
+    over_ui: &mut PointerOverUi,
+    keyboard: &mut Keyboard,
+    press: &mut PressOwner,
+    buttons: &ButtonInput<MouseButton>,
+) {
     // `egui_wants_pointer_input` covers a drag that began on a control and
     // has since been pulled off it, which being over one does not.
     over_ui.0 = ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input();
@@ -422,13 +481,7 @@ pub(crate) fn chrome(
     // of it: whether it landed on the UI, and nothing else. A press off the
     // form is the map's even while the form is open, the form having no claim
     // on a gesture aimed past it.
-    press.settle(&buttons, over_ui.0);
-
-    if filter.active.revision() != asked_at {
-        filter.active.set_changed();
-    }
-
-    Ok(())
+    press.settle(buttons, over_ui.0);
 }
 
 /// A piece of chrome the map opens, and how it is put away

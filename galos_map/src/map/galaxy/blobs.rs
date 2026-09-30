@@ -735,10 +735,17 @@ pub struct Standing {
 
 /// One merged mark, weighed.
 #[derive(Copy, Clone, Default)]
-struct Mark {
+pub(crate) struct Mark {
     /// The average of the marks it stands for, in linear light: already
     /// premultiplied, as a system's own mark colour is.
     light: Vec3,
+    /// The same average over only what the color mask lets through, the
+    /// rest counted as nothing: what the mark is lit by at full, where
+    /// `light` is what it is lit by at the dim.
+    kept_light: Vec3,
+    /// What share of what it stands for the color mask lets through,
+    /// `0.0..=1.0`, by count.
+    kept: f32,
     /// What share of what it stands for the filters admit, `0.0..=1.0`;
     /// see [`crate::map::filter::Filters::admitted_share`].
     share: f32,
@@ -746,7 +753,41 @@ struct Mark {
     /// against — the whole subtree ordinarily, and only the systems
     /// anybody lives in while the sky is read as populations, that mode
     /// drawing none of the rest.
-    stands_for: u64,
+    pub(crate) stands_for: u64,
+}
+
+impl Mark {
+    /// A mark not weighed yet, standing for `count`: drawn whole and in no
+    /// color, which the draw reads as gray for the one frame it lasts.
+    pub(crate) fn unweighed(count: u64) -> Mark {
+        Mark {
+            light: Vec3::splat(f32::NAN),
+            kept_light: Vec3::splat(f32::NAN),
+            kept: 1.,
+            share: 1.,
+            stands_for: count,
+        }
+    }
+
+    /// The light it is drawn at and how far it is faded, where what the
+    /// filters exclude is drawn at `dim`
+    ///
+    /// **What its systems' own marks would come to**: each at full where
+    /// the filters and the mask both let it through, and at the dim
+    /// otherwise, the two taken as independent. So the mark is
+    /// `dim · light + share · (1 - dim) · kept_light`, handed back as a
+    /// color and a fade whose product is that — the fade being what the
+    /// realistic view, which paints no color, dims a merged mark by. With
+    /// nothing masked it is `light` at `share + (1 - share) · dim`, which
+    /// is what a merged mark was drawn at before there was a mask.
+    pub(crate) fn drawn(&self, dim: f32) -> (Vec3, f32) {
+        let lit = self.share * (1. - dim);
+        let fade = dim + lit * self.kept;
+        if fade <= 0. {
+            return (self.light, 0.);
+        }
+        ((self.light * dim + self.kept_light * lit) / fade, fade)
+    }
 }
 
 impl Standing {
@@ -759,6 +800,8 @@ impl Standing {
                 .into_iter()
                 .map(|(light, share, stands_for)| Mark {
                     light,
+                    kept_light: light,
+                    kept: 1.,
                     share,
                     stands_for,
                 })
@@ -767,17 +810,15 @@ impl Standing {
         }
     }
 
-    /// The light the plan's `offer`th merged mark is painted at, and what
-    /// share of what it stands for the filters admit
+    /// The plan's `offer`th merged mark, weighed
     ///
     /// Nothing where it has not been weighed, which is the frame a plan
     /// lands on: the draw takes the mark whole and grey for that one frame
     /// rather than dropping it, a mark blinking out for a frame as the eye
-    /// moves being worse than a mark a frame behind on its colour.
-    pub(crate) fn of(&self, offer: usize) -> Option<(Vec3, f32, u64)> {
-        self.marks
-            .get(offer)
-            .map(|mark| (mark.light, mark.share, mark.stands_for))
+    /// moves being worse than a mark a frame behind on its color. See
+    /// [`Mark::unweighed`].
+    pub(crate) fn of(&self, offer: usize) -> Option<Mark> {
+        self.marks.get(offer).copied()
     }
 }
 
@@ -840,8 +881,25 @@ pub(crate) fn weigh_blobs(
             }
             false => blob.count,
         };
+        let light = average_mark(held, stands_for, *color_by, &gains);
+        let mask = filtering.filters.mask();
+        let (kept_light, kept) = match mask.narrows() {
+            true => averaged(
+                held,
+                stands_for,
+                *color_by,
+                &gains,
+                held.map_or(crate::map::filter::mask::Keeps::ALL, |held| {
+                    mask.keeps(held, *color_by)
+                }),
+                mask.keeps_uninhabited(),
+            ),
+            false => (light, 1.),
+        };
         Mark {
-            light: average_mark(held, stands_for, *color_by, &gains),
+            light,
+            kept_light,
+            kept,
             share: filtering.filters.admitted_share(
                 &blob.aged,
                 named.admitted(blob.id).whole(),
@@ -983,20 +1041,58 @@ fn average_mark(
     color_by: crate::map::galaxy::spawn::ColorBy,
     gains: &crate::map::paint::glow::Gains,
 ) -> Vec3 {
+    averaged(
+        held,
+        count,
+        color_by,
+        gains,
+        crate::map::filter::mask::Keeps::ALL,
+        1.,
+    )
+    .0
+}
+
+/// [`average_mark`] with each bucket counted at what `keeps` lets through
+/// of it, and the systems nobody lives in at `uninhabited`, and the share of
+/// the count that comes to
+///
+/// A system not let through counts as no light rather than as not there:
+/// the average is still over every system the mark stands for, so a cell
+/// with half of it hidden is half as bright where it is let through, and
+/// [`Mark::drawn`] puts the dim back in for the rest.
+fn averaged(
+    held: Option<&galos_index::read::inhabited::Inhabited>,
+    count: u64,
+    color_by: crate::map::galaxy::spawn::ColorBy,
+    gains: &crate::map::paint::glow::Gains,
+    keeps: crate::map::filter::mask::Keeps,
+    uninhabited: f32,
+) -> (Vec3, f32) {
     let mut light = Vec3::ZERO;
+    let mut kept = 0.0f32;
     let mut counted = 0u64;
     if let Some(held) = held {
-        crate::map::paint::glow::political(held, color_by, |hue, systems| {
-            light += hue.light()
-                * crate::map::paint::glow::mark_light(hue, true, gains)
-                * systems as f32;
-            counted += u64::from(systems);
-        });
+        crate::map::paint::glow::political(
+            held,
+            color_by,
+            |bucket, hue, systems| {
+                let share = keeps.of(bucket);
+                light += hue.light()
+                    * crate::map::paint::glow::mark_light(hue, true, gains)
+                    * systems as f32
+                    * share;
+                kept += systems as f32 * share;
+                counted += u64::from(systems);
+            },
+        );
     }
     let alone = count.saturating_sub(counted) as f32;
     let grey = crate::map::galaxy::spawn::Hue::Grey;
     light += grey.light()
         * crate::map::paint::glow::mark_light(grey, false, gains)
-        * alone;
-    light / count.max(1) as f32
+        * alone
+        * uninhabited;
+    kept += alone * uninhabited;
+    let whole = count.max(1) as f32;
+    (light / whole, kept / whole)
 }

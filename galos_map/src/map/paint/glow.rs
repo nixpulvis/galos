@@ -76,6 +76,7 @@
 //! over the field they stand in rather than the other way about.
 
 use crate::map::camera::{FIELD_LAYER, OrbitCamera};
+use crate::map::filter::mask::Keeps;
 use crate::map::galaxy::plan::Planned;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::index::{ResidentIndex, Settled};
@@ -91,7 +92,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
 use bevy::tasks::ComputeTaskPool;
-use galos_index::read::inhabited::{Bucketed, Inhabited};
+use galos_index::read::inhabited::Inhabited;
 use galos_index::tree::cell::UNIFORM_SPAN;
 
 pub fn plugin(app: &mut App) {
@@ -803,58 +804,80 @@ fn settle_gains(
 /// is [`Hue::light`], which is a chromaticity — an unreported colony is
 /// neutral at [`Gains::unaligned`] and not a dark grey paint dimmed a second
 /// time by a gain that already said it was dim.
+///
+/// `keeps` is how much of each bucket to count, which is the color mask's
+/// say ([`crate::map::filter::mask::Mask::keeps`]): [`Keeps::ALL`] for the
+/// cell as it stands.
 fn composition(
     held: &Inhabited,
     color_by: ColorBy,
     unaligned: f32,
+    keeps: Keeps,
 ) -> (Vec3, f32) {
     let mut light = Vec3::ZERO;
     let mut weight = 0.0;
-    political(held, color_by, |hue, count| {
+    political(held, color_by, |bucket, hue, count| {
         let gain = if hue == Hue::Grey { unaligned } else { 1.0 };
-        let w = count as f32 * gain;
+        let w = count as f32 * gain * keeps.of(bucket);
         light += hue.light() * w;
         weight += w;
     });
     (light, weight)
 }
 
-/// Walk a cell's political histogram along the axis the map is coloured by,
-/// handing each bucket's colour and count over
+/// Walk a cell's political histogram along the axis the map is colored by,
+/// handing each bucket, its color and its count over
 ///
 /// The axis is read through the very mapping a mark is painted by, so the
 /// field, a merged mark and a drawn system cannot disagree about what a
 /// colour means. Shared with [`crate::map::galaxy::blobs`], which paints a merged mark
 /// as the average of the marks it stands for and needs the same walk.
 ///
-/// Empty buckets are skipped, most of the eight being empty for most cells.
+/// Empty buckets are skipped, most of them being empty for most cells.
 pub(crate) fn political(
     held: &Inhabited,
     color_by: ColorBy,
-    mut lay: impl FnMut(Hue, u32),
+    mut lay: impl FnMut(usize, Hue, u32),
 ) {
-    let mut over = |hue: Hue, count: u32| {
-        if count > 0 {
-            lay(hue, count);
-        }
-    };
-    match color_by {
-        ColorBy::Allegiance => {
-            for (bucket, count) in held.allegiance().iter().enumerate() {
-                over(Hue::allegiance(Bucketed::at(bucket)), *count);
-            }
-        }
-        ColorBy::Government => {
-            for (bucket, count) in held.government().iter().enumerate() {
-                over(Hue::government(Bucketed::at(bucket)), *count);
-            }
-        }
-        ColorBy::Security => {
-            for (bucket, count) in held.security().iter().enumerate() {
-                over(Hue::security(Bucketed::at(bucket)), *count);
-            }
+    for (bucket, count) in color_by.counts(held).iter().enumerate() {
+        if *count > 0 {
+            lay(bucket, color_by.hue_of(bucket), *count);
         }
     }
+}
+
+/// What the filters and the color mask leave of a cell's colonies, as the
+/// light to lay and the share to spend after the curve
+///
+/// **Every colony is let through at full or drawn at the dim**, as its own
+/// mark would be. Along the mask the let-through light is `kept`, which can be
+/// another color entirely — a cell of Federation and Empire with the
+/// Federation hidden is cyan — and the picking filters and a span let through
+/// `share` of whatever the mask left, the two taken as independent. So the
+/// cell comes to `dim · whole + share · (1 - dim) · kept`.
+///
+/// Split into a color and a scalar for [`Quads::expose`], which spends the
+/// share after the curve so a filter dims the field as far as it dims a mark:
+/// the light is laid at the weight of the whole cell, which moves neither its
+/// crowding nor its compression, and carries the color the sum comes to.
+/// With nothing masked `kept` is `whole` and this is `(whole, spent(share))`
+/// exactly, which is what the field did before there was a mask.
+fn let_through(
+    whole: (Vec3, f32),
+    kept: (Vec3, f32),
+    share: f32,
+    dim: f32,
+) -> (Vec3, f32) {
+    let (light, weight) = whole;
+    if weight <= 0. {
+        return (light, 0.);
+    }
+    let lit = share * (1. - dim);
+    let spent = dim + lit * kept.1 / weight;
+    if spent <= 0. {
+        return (light, 0.);
+    }
+    ((light * dim + kept.0 * lit) / spent, spent)
 }
 
 /// What [`build_glow`] writes, and where the camera stood when it last did:
@@ -962,6 +985,7 @@ fn build_glow(
         RESTS_AT
     };
     let tilted = (reach / RESTS_AT).powf(TILT);
+    let mask = filtering.filters.mask();
     let mut quads = Quads::default();
     let mut counted = Laid::default();
 
@@ -1133,20 +1157,23 @@ fn build_glow(
                 // reached the marks and not the field would appear to take
                 // effect only where the camera had come in far enough to draw
                 // the systems themselves.
+                //
+                // The color mask's backdrop is all or nothing, uninhabited
+                // being one flag; its colonies are [`let_through`]'s.
                 let held_named = named.admitted(splat.id);
                 let aged = cell.aggregate.aged();
                 let backdrop_share = filtering.filters.admitted_share(
                     aged,
                     held_named.alone,
                     count.saturating_sub(peopled),
-                );
+                ) * mask.keeps_uninhabited();
                 let colony_share = filtering.filters.admitted_share(
                     aged,
                     held_named.populated,
                     peopled,
                 );
-                let spent =
-                    |share: f32| share + (1. - share) * filtering.dim.opacity();
+                let dim = filtering.dim.opacity();
+                let spent = |share: f32| share + (1. - share) * dim;
 
                 let mass = cell.aggregate.mass().remove(taken.mass);
                 if empty > 0
@@ -1193,8 +1220,23 @@ fn build_glow(
                     && let Some(at) = held.centroid()
                     && in_reach(at)
                 {
-                    let (mix, _) =
-                        composition(&held, *color_by, gains.unaligned);
+                    let whole = composition(
+                        &held,
+                        *color_by,
+                        gains.unaligned,
+                        Keeps::ALL,
+                    );
+                    let kept = match mask.narrows() {
+                        true => composition(
+                            &held,
+                            *color_by,
+                            gains.unaligned,
+                            mask.keeps(&held, *color_by),
+                        ),
+                        false => whole,
+                    };
+                    let (mix, admitted) =
+                        let_through(whole, kept, colony_share, dim);
                     let systems = held.count() as f32 * carried;
                     if let Some(lit) = quads.deposit(
                         orbit,
@@ -1207,7 +1249,7 @@ fn build_glow(
                         systems * MARK_AREA,
                         gains.crowd,
                         COLONY_PIVOT,
-                        spent(colony_share),
+                        admitted,
                         room(at),
                     ) {
                         counted.colonies += 1;
@@ -1584,7 +1626,8 @@ mod tests {
     /// weight, which is what makes a shell read as a shell.
     #[test]
     fn a_colony_lays_down_its_own_colour() {
-        let (light, weight) = composition(&empire(), ColorBy::Allegiance, 0.25);
+        let (light, weight) =
+            composition(&empire(), ColorBy::Allegiance, 0.25, Keeps::ALL);
         assert_eq!(weight, 1.0);
         assert!((light - Hue::Cyan.light()).length() < 1e-6);
     }
@@ -1594,8 +1637,10 @@ mod tests {
     /// shell.
     #[test]
     fn an_unreported_colony_weighs_less() {
-        let (_, aligned) = composition(&empire(), ColorBy::Allegiance, 0.25);
-        let (_, grey) = composition(&unreported(), ColorBy::Allegiance, 0.25);
+        let (_, aligned) =
+            composition(&empire(), ColorBy::Allegiance, 0.25, Keeps::ALL);
+        let (_, grey) =
+            composition(&unreported(), ColorBy::Allegiance, 0.25, Keeps::ALL);
         assert!(grey < aligned, "grey weighed {grey}, aligned {aligned}");
         assert!(grey > 0.0, "an unreported colony is still a colony");
     }
@@ -1610,7 +1655,8 @@ mod tests {
             crowd = crowd.merge(unreported());
         }
         let cell = crowd.merge(empire());
-        let (light, _) = composition(&cell, ColorBy::Allegiance, 0.25);
+        let (light, _) =
+            composition(&cell, ColorBy::Allegiance, 0.25, Keeps::ALL);
         let grey = 4.0 * 0.25;
         // The red channel carries only the grey, which is neutral; blue and
         // green carry the Empire's cyan over it.
@@ -1893,9 +1939,11 @@ mod tests {
     fn composition_is_additive() {
         let a = empire();
         let b = unreported();
-        let (whole, _) = composition(&a.merge(b), ColorBy::Allegiance, 0.25);
-        let (left, _) = composition(&a, ColorBy::Allegiance, 0.25);
-        let (right, _) = composition(&b, ColorBy::Allegiance, 0.25);
+        let all = Keeps::ALL;
+        let (whole, _) =
+            composition(&a.merge(b), ColorBy::Allegiance, 0.25, all);
+        let (left, _) = composition(&a, ColorBy::Allegiance, 0.25, all);
+        let (right, _) = composition(&b, ColorBy::Allegiance, 0.25, all);
         assert!((whole - (left + right)).length() < 1e-6);
     }
 
@@ -1903,11 +1951,65 @@ mod tests {
     /// no place to deposit it at.
     #[test]
     fn nobody_home_deposits_nothing() {
-        let (light, weight) =
-            composition(&Inhabited::ZERO, ColorBy::Allegiance, 0.25);
+        let (light, weight) = composition(
+            &Inhabited::ZERO,
+            ColorBy::Allegiance,
+            0.25,
+            Keeps::ALL,
+        );
         assert_eq!(weight, 0.0);
         assert_eq!(light, Vec3::ZERO);
         assert_eq!(Inhabited::ZERO.centroid(), None);
+    }
+
+    /// A cell whose every colony is hidden lays down nothing let through, and
+    /// only the dim of what it holds
+    #[test]
+    fn a_fully_masked_cell_deposits_nothing() {
+        let mut mask = crate::map::filter::mask::Mask::default();
+        mask.set(ColorBy::Allegiance, 0..11, true);
+        let cell = empire().merge(unreported());
+        let keeps = mask.keeps(&cell, ColorBy::Allegiance);
+        let (light, weight) =
+            composition(&cell, ColorBy::Allegiance, 0.25, keeps);
+        assert_eq!((light, weight), (Vec3::ZERO, 0.0));
+
+        let whole = composition(&cell, ColorBy::Allegiance, 0.25, Keeps::ALL);
+        let (_, admitted) = let_through(whole, (light, weight), 1.0, 0.0);
+        assert_eq!(admitted, 0.0, "a hidden cell was drawn at a zero dim");
+        let (_, dimmed) = let_through(whole, (light, weight), 1.0, 0.1);
+        assert!((dimmed - 0.1).abs() < 1e-6, "drawn at {dimmed}, not the dim");
+    }
+
+    /// **The light a hidden colony takes out of the field is the light its
+    /// mark takes off the map.** A cell of an Empire and an unreported colony
+    /// with the Empire hidden comes to the unreported one at full and the
+    /// Empire at the dim, as their two marks would.
+    #[test]
+    fn a_hidden_colony_leaves_the_field_as_its_mark_does() {
+        let mut mask = crate::map::filter::mask::Mask::default();
+        mask.set(ColorBy::Allegiance, [2], true);
+        let cell = empire().merge(unreported());
+        let whole = composition(&cell, ColorBy::Allegiance, 0.25, Keeps::ALL);
+        let kept = composition(
+            &cell,
+            ColorBy::Allegiance,
+            0.25,
+            mask.keeps(&cell, ColorBy::Allegiance),
+        );
+        let dim = 0.2;
+        let (light, admitted) = let_through(whole, kept, 1.0, dim);
+        let want = Hue::Cyan.light() * dim + Hue::Grey.light() * 0.25;
+        assert!(
+            (light * admitted - want).length() < 1e-6,
+            "{:?} against {want:?}",
+            light * admitted,
+        );
+
+        // And with nothing hidden it is the cell as it was, at the share.
+        let (light, admitted) = let_through(whole, whole, 0.5, dim);
+        assert!((light - whole.0).length() < 1e-6);
+        assert!((admitted - (0.5 + 0.5 * dim)).abs() < 1e-6);
     }
 
     /// The mask is a distribution: brightest in the middle, under a percent of

@@ -52,7 +52,8 @@ pub fn plugin(app: &mut App) {
         panels
             .in_set(PaintSet::Ui)
             .before(crate::ui::chrome)
-            .run_if(in_state(crate::map::index::load::Opening::Drawn)),
+            .run_if(in_state(crate::map::index::load::Opening::Drawn))
+            .run_if(|hidden: Res<crate::ui::hide::ChromeHidden>| !hidden.0),
     );
 }
 
