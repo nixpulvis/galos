@@ -300,7 +300,7 @@ impl Hue {
 }
 
 /// Determains what color to draw in system view mode.
-#[derive(Resource, Copy, Clone, Debug, PartialEq)]
+#[derive(Resource, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColorBy {
     Allegiance,
     Government,

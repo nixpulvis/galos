@@ -5,10 +5,13 @@
 //! ([`Bucketed`]) rather than on [`Hue`]: seven governments share red, and each
 //! has to be hidden on its own.
 //!
-//! **Every axis applies at once, whichever the map is colored by.** Hiding
-//! Independent and then coloring by security does not bring Independent back:
-//! the mask says what is wanted off the map, and the axis the map is colored
-//! by says only how what is left is painted.
+//! **Only the axis the map is colored by applies.** Hiding the prisons and
+//! then coloring by security shows every security rating, the prisons among
+//! them: the key is read as a key to the colors on screen, and a system
+//! missing for a color that is not on screen is a system missing for no
+//! reason the reader can see. What each axis hides is remembered, so coloring
+//! by government again hides the prisons again. Uninhabited is the one
+//! exception, being no value of any axis: it applies whichever is drawn.
 //!
 //! It narrows and never adds. The picking filters say what the user asked to
 //! see, and the mask cuts into that, as a span does; see
@@ -126,9 +129,12 @@ impl ColorBy {
     }
 }
 
-/// Which buckets of every axis are hidden, and whether that is being applied
+/// Which buckets of every axis are hidden, which axis that is asked along,
+/// and whether it is being applied
 ///
 /// A bit a bucket, one word an axis: the largest axis is eighteen buckets.
+/// Only the words of the axis the map is colored by ([`Self::drawn`]) are
+/// asked; the others are kept for when the map is colored by theirs.
 ///
 /// Off without being forgotten, as a filter's row is: [`Self::enabled`] false
 /// admits everything the bits would hide and keeps the bits, so the mask can
@@ -139,6 +145,12 @@ impl ColorBy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mask {
     hidden: [u32; ColorBy::ALL.len()],
+    /// The axis the map is colored by, which is the one asked
+    ///
+    /// A copy of [`ColorBy`], kept here because every pass that asks the
+    /// mask asks it about a system and not about the map, and is followed
+    /// from the resource by [`crate::map::filter::follow_color_by`].
+    drawn: ColorBy,
     /// Whether the systems nobody lives in are hidden
     ///
     /// One flag shared by every axis: an uninhabited system has no reading on
@@ -153,6 +165,7 @@ impl Default for Mask {
     fn default() -> Mask {
         Mask {
             hidden: [0; ColorBy::ALL.len()],
+            drawn: ColorBy::Allegiance,
             uninhabited: false,
             enabled: true,
         }
@@ -176,14 +189,25 @@ impl Mask {
         self.uninhabited
     }
 
-    /// Whether anything at all is set, applied or not
+    /// Whether anything is set that the axis drawn would hide, applied or
+    /// not
     pub fn hides_anything(&self) -> bool {
-        self.uninhabited || self.hidden.iter().any(|bits| *bits != 0)
+        self.uninhabited || self.hidden[self.drawn.slot()] != 0
     }
 
     /// Whether the mask is cutting anything off the map
     pub(crate) fn narrows(&self) -> bool {
         self.enabled && self.hides_anything()
+    }
+
+    /// The axis the mask is asked along
+    pub fn drawn(&self) -> ColorBy {
+        self.drawn
+    }
+
+    /// Ask along `axis` from here on, keeping what every axis hides
+    pub(crate) fn draw(&mut self, axis: ColorBy) {
+        self.drawn = axis;
     }
 
     /// Whether a system reading `politics` is let through
@@ -196,42 +220,20 @@ impl Mask {
         }
         match politics {
             None => !self.uninhabited,
-            Some(buckets) => ColorBy::ALL
-                .iter()
-                .all(|axis| !self.hides(*axis, buckets.on(*axis))),
+            Some(buckets) => !self.hides(self.drawn, buckets.on(self.drawn)),
         }
     }
 
-    /// How much of a cell's colonies the mask lets through, bucket by bucket
-    /// of the axis being drawn
+    /// Which of a cell's buckets along `drawn` the mask lets through
     ///
-    /// **Exact along the axis being drawn and an estimate across the rest.**
-    /// A cell holds one histogram an axis and not their joint, so it cannot
-    /// say how many of its Federation colonies are also anarchies. A hidden
-    /// bucket of the drawn axis is let through at nothing, exactly; every
-    /// other bucket at the share the other axes' masks leave of the whole
-    /// cell, read off their own histograms as though the axes were
-    /// independent. Which they are not quite, and a joint histogram would cost
-    /// the index a table the size of the three multiplied together.
-    pub(crate) fn keeps(&self, held: &Inhabited, drawn: ColorBy) -> Keeps {
-        if !self.narrows() {
+    /// Exact, the mask being asked along the axis the histogram is read
+    /// along. Everything where `drawn` is not the axis the mask asks, which
+    /// is a frame between the coloring changing and the mask following it.
+    pub(crate) fn keeps(&self, drawn: ColorBy) -> Keeps {
+        if !self.narrows() || drawn != self.drawn {
             return Keeps::ALL;
         }
-        let whole = held.count();
-        let mut others = 1.0f32;
-        if whole > 0 {
-            for axis in ColorBy::ALL.into_iter().filter(|axis| *axis != drawn) {
-                let kept: u64 = axis
-                    .counts(held)
-                    .iter()
-                    .enumerate()
-                    .filter(|(bucket, _)| !self.hides(axis, *bucket))
-                    .map(|(_, count)| u64::from(*count))
-                    .sum();
-                others *= kept as f32 / whole as f32;
-            }
-        }
-        Keeps { hidden: self.hidden[drawn.slot()], others }
+        Keeps { hidden: self.hidden[drawn.slot()] }
     }
 
     /// The share of the systems nobody lives in that is let through: all of
@@ -315,23 +317,21 @@ impl Mask {
 }
 
 /// What [`Mask::keeps`] leaves of one cell, by bucket of the axis being drawn
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Keeps {
     /// The drawn axis's hidden buckets
     hidden: u32,
-    /// The share the other axes leave of every bucket that is not hidden
-    others: f32,
 }
 
 impl Keeps {
     /// Everything, for a mask cutting nothing
-    pub(crate) const ALL: Keeps = Keeps { hidden: 0, others: 1. };
+    pub(crate) const ALL: Keeps = Keeps { hidden: 0 };
 
-    /// The share of `bucket`'s systems that is let through, `0..=1`
+    /// The share of `bucket`'s systems that is let through: all or none
     pub(crate) fn of(self, bucket: usize) -> f32 {
         match self.hidden & (1 << bucket) != 0 {
             true => 0.,
-            false => self.others,
+            false => 1.,
         }
     }
 }
@@ -372,17 +372,34 @@ mod tests {
         assert!(mask.admits(None), "nobody lives there, so nothing hid it");
     }
 
-    /// Hiding a government keeps it hidden whichever axis is being drawn:
-    /// the mask is asked along every axis at once
+    /// Hiding a government hides nothing while the map is colored by
+    /// security, and hides it again once it is colored by government
     #[test]
-    fn every_axis_applies_at_once() {
+    fn only_the_axis_drawn_applies() {
         let mut mask = Mask::default();
         mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
         let prison = federal(Government::Prison, Security::High);
+
+        mask.draw(ColorBy::Security);
+        assert!(mask.admits(Some(prison)));
+        assert!(!mask.narrows(), "a hidden prison narrowed a security map");
+
+        mask.draw(ColorBy::Government);
         assert!(!mask.admits(Some(prison)));
         assert!(
             mask.admits(Some(federal(Government::Democracy, Security::High)))
         );
+    }
+
+    /// Uninhabited applies whichever axis is drawn, being a value of none
+    #[test]
+    fn uninhabited_applies_along_every_axis() {
+        let mut mask = Mask::default();
+        mask.set_uninhabited(true);
+        for axis in ColorBy::ALL {
+            mask.draw(axis);
+            assert!(!mask.admits(None), "{axis:?} let empty space through");
+        }
     }
 
     /// Lifted, the mask lets everything through and keeps what was set
@@ -455,6 +472,7 @@ mod tests {
     #[test]
     fn the_footer_answers_one_axis() {
         let mut mask = Mask::default();
+        mask.draw(ColorBy::Security);
         mask.hide_all(ColorBy::Security);
         assert!(
             (0..Security::BUCKETS).all(|b| mask.hides(ColorBy::Security, b))
@@ -463,44 +481,29 @@ mod tests {
         mask.invert(ColorBy::Security);
         assert!(!mask.hides_anything());
         mask.set_uninhabited(true);
-        mask.hide_all(ColorBy::Allegiance);
-        mask.show_all(ColorBy::Allegiance);
+        mask.hide_all(ColorBy::Security);
+        mask.show_all(ColorBy::Security);
         assert!(!mask.hides_anything());
     }
 
-    /// Along the axis drawn a hidden bucket is let through at nothing; the
-    /// rest at the share the other axes leave of the cell
+    /// A cell keeps every bucket of the axis drawn but the hidden ones, and
+    /// the other axes' hidden buckets take nothing out of it
     #[test]
-    fn a_cell_keeps_what_the_other_axes_leave_of_it() {
-        let mut held = Inhabited::ZERO;
-        for (government, security) in [
-            (Government::Prison, Security::High),
-            (Government::Democracy, Security::High),
-            (Government::Democracy, Security::Low),
-            (Government::Democracy, Security::Low),
-        ] {
-            held = held.merge(Inhabited::of_system(
-                [0.; 3],
-                Some(Allegiance::Federation),
-                Some(government),
-                Some(security),
-            ));
-        }
+    fn a_cell_keeps_all_but_the_hidden_buckets_of_the_axis_drawn() {
         let mut mask = Mask::default();
         mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
         mask.set(ColorBy::Security, [bucket_of(Security::Low)], true);
+        mask.draw(ColorBy::Government);
 
-        let drawn = mask.keeps(&held, ColorBy::Government);
+        let drawn = mask.keeps(ColorBy::Government);
         assert_eq!(drawn.of(bucket_of(Government::Prison)), 0.);
-        // Half the cell is low security.
-        assert_eq!(drawn.of(bucket_of(Government::Democracy)), 0.5);
+        assert_eq!(drawn.of(bucket_of(Government::Democracy)), 1.);
 
-        let across = mask.keeps(&held, ColorBy::Allegiance);
-        // A quarter is a prison and half is low security, taken as
-        // independent: three quarters of a half.
-        assert_eq!(across.of(bucket_of(Allegiance::Federation)), 0.375);
+        // A histogram read along another axis than the mask asks keeps all
+        // of itself: the frame before the mask follows the coloring.
+        assert_eq!(mask.keeps(ColorBy::Security), Keeps::ALL);
 
         mask.set_enabled(false);
-        assert_eq!(mask.keeps(&held, ColorBy::Government), Keeps::ALL);
+        assert_eq!(mask.keeps(ColorBy::Government), Keeps::ALL);
     }
 }

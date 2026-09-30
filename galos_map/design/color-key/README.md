@@ -44,7 +44,8 @@ under the bar).
 1. Click ALLEGIANCE: the Filter tab opens on the key ![](mockups/Flow-C1.png)
 2. Expand Other, hide Independent ![](mockups/Flow-C2.png)
 3. Switch to GOVERNMENT, hide Prison and Prison Colony ![](mockups/Flow-C3.png)
-4. Close the form: the row reads `2 hidden +1` ![](mockups/Flow-C4.png)
+4. Close the form: the row reads `2 hidden` (the mockup's `+1` is from the first
+   draft, where other categories also applied) ![](mockups/Flow-C4.png)
 
 **D · Lift the mask**
 

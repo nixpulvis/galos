@@ -889,9 +889,7 @@ pub(crate) fn weigh_blobs(
                 stands_for,
                 *color_by,
                 &gains,
-                held.map_or(crate::map::filter::mask::Keeps::ALL, |held| {
-                    mask.keeps(held, *color_by)
-                }),
+                mask.keeps(*color_by),
                 mask.keeps_uninhabited(),
             ),
             false => (light, 1.),

@@ -66,6 +66,13 @@ pub fn plugin(app: &mut App) {
     app.add_message::<Lookup>();
     // Answering what the user asked for, so with the rest of that.
     app.add_systems(Update, resolve.in_set(MapSet::Search));
+    // Before anything asks the mask about a system this frame.
+    app.add_systems(
+        Update,
+        follow_color_by
+            .in_set(MapSet::Populate)
+            .before(crate::map::galaxy::spawn::spawn),
+    );
     // After the systems it marks exist. A system spawned this frame is
     // marked by `spawn` itself, since commands do not land until the next
     // sync point and nothing here could see it in time.
@@ -75,6 +82,22 @@ pub fn plugin(app: &mut App) {
             .in_set(Marking)
             .after(crate::map::galaxy::spawn::spawn),
     );
+}
+
+/// Ask the mask along the axis the map is colored by, as that changes
+///
+/// The key's tabs choose the coloring; this is what makes the choice the
+/// mask's too, so a color hidden along government stops hiding anything the
+/// moment the map is colored by security. Through [`Filters::edit_mask`], so
+/// the change is counted as one to what the filters admit and every pass
+/// holding a verdict asks again.
+pub(crate) fn follow_color_by(
+    color_by: Res<crate::map::galaxy::spawn::ColorBy>,
+    mut filters: ResMut<Filters>,
+) {
+    if filters.mask().drawn() != *color_by {
+        filters.edit_mask(|mask| mask.draw(*color_by));
+    }
 }
 
 /// When the filters were last cut afresh against the clock

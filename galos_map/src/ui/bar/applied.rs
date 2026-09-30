@@ -150,24 +150,15 @@ pub(super) fn color_row(
 /// is saying something is hidden
 ///
 /// The values hidden along the axis being drawn, the systems nobody lives in
-/// counting as one of them, and then how many are hidden along the other
-/// two. Those still apply whichever axis is out, and a map that went on
-/// hiding Independent after being recolored by security with nothing to say
-/// so would look like a map missing systems.
+/// counting as one of them. Nothing about the other axes: what they hide
+/// hides nothing while this one is drawn.
 pub(super) fn color_summary(axis: ColorBy, mask: &Mask) -> (String, bool) {
     let here =
         hidden_values(axis, mask) + usize::from(mask.hides_uninhabited());
-    let elsewhere: usize = ColorBy::ALL
-        .into_iter()
-        .filter(|other| *other != axis)
-        .map(|other| hidden_values(other, mask))
-        .sum();
-    let said = match (here, elsewhere) {
-        (0, 0) => "all shown".to_owned(),
-        (here, 0) => format!("{here} hidden"),
-        (here, elsewhere) => format!("{here} hidden +{elsewhere}"),
-    };
-    (said, here + elsewhere > 0)
+    match here {
+        0 => ("all shown".to_owned(), false),
+        here => (format!("{here} hidden"), true),
+    }
 }
 
 /// Say which filters are being applied, and how much is getting through
@@ -1327,13 +1318,13 @@ mod tests {
         );
     }
 
-    /// What is hidden along the other axes still counts, after a plus
+    /// What is hidden along another axis is not counted: it hides nothing
+    /// while this one is drawn
     ///
-    /// Two prisons hidden while colored by government, and Independent hidden
-    /// earlier under allegiance: the map is still missing Independent's
-    /// systems, and a row saying only "2 hidden" would hide that it is.
+    /// Two prisons hidden while colored by government, and Independent
+    /// hidden earlier under allegiance.
     #[test]
-    fn what_is_hidden_along_other_axes_is_counted_after_a_plus() {
+    fn only_what_the_axis_drawn_hides_is_counted() {
         let mut mask = Mask::default();
         for name in ["Prison", "Prison Colony"] {
             mask.set(
@@ -1350,7 +1341,11 @@ mod tests {
 
         assert_eq!(
             color_summary(ColorBy::Government, &mask),
-            ("2 hidden +1".to_owned(), true),
+            ("2 hidden".to_owned(), true),
+        );
+        assert_eq!(
+            color_summary(ColorBy::Security, &mask),
+            ("all shown".to_owned(), false),
         );
     }
 

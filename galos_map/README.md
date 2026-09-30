@@ -114,10 +114,12 @@ colonies each counts, and its tabs are what choose the coloring. Clicking a
 value hides the systems drawn in it; alt, ctrl or command clicking one shows
 it alone. Uninhabited systems have a row of their own.
 
-What is hidden is hidden along every axis at once: hide Independent and color
-by security, and Independent stays hidden. It narrows whatever the filters
-pick out, and is drawn the way they are, at the Filtered Opacity setting, or
-not loaded at all at zero.
+Only the coloring on screen is filtered: hide the prisons and color by
+security, and every security rating is shown, the prisons among them. Each
+coloring remembers what it hides, so going back to government hides the
+prisons again. Uninhabited applies whichever coloring is out. It narrows
+whatever the filters pick out, and is drawn the way they are, at the Filtered
+Opacity setting, or not loaded at all at zero.
 
 With the form shut the key folds into the color row, the first row under the
 bar: a chip a value to click, a box to lift everything it hides without

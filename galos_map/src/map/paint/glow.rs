@@ -1231,7 +1231,7 @@ fn build_glow(
                             &held,
                             *color_by,
                             gains.unaligned,
-                            mask.keeps(&held, *color_by),
+                            mask.keeps(*color_by),
                         ),
                         false => whole,
                     };
@@ -1969,7 +1969,7 @@ mod tests {
         let mut mask = crate::map::filter::mask::Mask::default();
         mask.set(ColorBy::Allegiance, 0..11, true);
         let cell = empire().merge(unreported());
-        let keeps = mask.keeps(&cell, ColorBy::Allegiance);
+        let keeps = mask.keeps(ColorBy::Allegiance);
         let (light, weight) =
             composition(&cell, ColorBy::Allegiance, 0.25, keeps);
         assert_eq!((light, weight), (Vec3::ZERO, 0.0));
@@ -1995,7 +1995,7 @@ mod tests {
             &cell,
             ColorBy::Allegiance,
             0.25,
-            mask.keeps(&cell, ColorBy::Allegiance),
+            mask.keeps(ColorBy::Allegiance),
         );
         let dim = 0.2;
         let (light, admitted) = let_through(whole, kept, 1.0, dim);

@@ -42,9 +42,11 @@ pub struct Mask {
   `Hue`. Seven governments share red, and each must toggle on its own. A `u32`
   per category is enough (the largest is 18 buckets); a const-generic bitset
   is optional.
-- **All three categories apply at once**, whichever one the map is colored by.
-  Hiding Independent and then coloring by Security must not bring
-  Independent back. The color row says so (see 4.1, `+N`).
+- **Only the category the map is colored by applies** (changed from the
+  first draft, which applied all three at once). Hiding Prison and then
+  coloring by Security shows every security rating, prisons included; each
+  category remembers what it hides for when it is drawn again. Uninhabited
+  applies whichever category is drawn.
 - "Uninhabited" means a system with no row in `Populated`. It is one flag
   shared by all three categories.
 - `enabled == false` admits everything the mask would hide, and keeps the
@@ -92,13 +94,9 @@ chip will not evict anything.
 it is drawn as its own mark or the field stands in for it (`mark_light`). The
 mask has to hold that invariant too:
 
-- `political()` skips masked buckets, across **all three** categories, not
-  only the one being drawn. Because `Inhabited` holds three separate marginal
-  histograms and not their joint, the field cannot remove exactly the systems
-  hidden in the *other* categories. Accept that: remove the masked buckets of
-  the category being drawn exactly, and scale the rest by the share of the
-  cell the other categories' masks leave, computed from their own histograms.
-  Note this approximation in a doc comment.
+- The field weighs out the masked buckets of the category being drawn. That
+  is exact, since only that category applies and the histogram is read along
+  it.
 - Uninhabited systems are the backdrop (`Gains::backdrop`). Hiding them drops
   the backdrop term.
 - A masked system drawn as a mark follows `DimTo`, like a filtered one; its
@@ -202,7 +200,7 @@ Always drawn, as the first row of the applied rows, whether the form is out or
 not. It replaces any separate "Color · N hidden" row.
 
 ```
-☑  ALLEGIANCE   ■ ■ ■ ◕   ◌        2 hidden +1
+☑  ALLEGIANCE   ■ ■ ■ ◕   ◌        2 hidden
 ^  ^            ^         ^        ^
 |  |            |         |        summary
 |  |            |         uninhabited chip
@@ -217,7 +215,7 @@ mask enabled
 | Category name | Click: open the Filter tab (`AskMode::Filter`) with the key showing. |
 | Chip | One per top-tier entry: an item, or a whole group. Click toggles it (a group: hide all if any are shown, else show all). Alt, ctrl or cmd click: solo, hiding every other value in the category and Uninhabited too. |
 | Uninhabited chip | Toggles `Mask::uninhabited`. |
-| Summary | `all shown`, or `N hidden` for the current category, plus ` +M` when M values are hidden in the other categories. Amber when the mask is enabled and anything is hidden, muted otherwise. |
+| Summary | `all shown`, or `N hidden` for the current category (Uninhabited counting as one). Amber when the mask is enabled and anything is hidden, muted otherwise. |
 | Hover | Anywhere on the row, while the Filter tab is not out: show the mini legend popover (4.3). |
 
 For Allegiance that is four chips plus Uninhabited. For Government it is one
