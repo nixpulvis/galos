@@ -4,7 +4,7 @@
 //! Grouped into sections, the routes under the rest and a trip's legs under
 //! the trip, and each section with a row standing for all of it.
 
-use crate::map::filter::key::{held_tiers, hidden_values, tiers};
+use crate::map::filter::key::{held_tiers, hidden_values};
 use crate::map::filter::mask::Mask;
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::InReach;
@@ -1301,6 +1301,7 @@ fn whole_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::filter::key::tiers;
     use crate::map::filter::{Standstill, Watch};
 
     use crate::testing::{painted, words};
