@@ -252,10 +252,18 @@ mod tests {
         app.init_resource::<BarFields>();
         app.init_resource::<KeysOpen>();
         app.init_resource::<ChromeHidden>();
+        app.init_resource::<SettingsOpen>();
         app.init_resource::<super::super::ClockControl>();
         app.add_systems(
             Update,
-            (open_search, shut_search, toggle_keys, toggle_chrome).chain(),
+            (
+                open_search,
+                shut_search,
+                toggle_keys,
+                toggle_chrome,
+                toggle_settings,
+            )
+                .chain(),
         );
         app
     }
@@ -299,6 +307,45 @@ mod tests {
 
         pressed(&mut app, &[KeyCode::KeyI]);
         assert!(!hidden(&app));
+    }
+
+    /// Whether the settings pane is out
+    fn settings_out(app: &App) -> bool {
+        app.world().resource::<SettingsOpen>().0
+    }
+
+    /// `O` slides the settings out and puts them back
+    #[test]
+    fn o_opens_and_shuts_the_settings() {
+        let mut app = barred();
+
+        pressed(&mut app, &[KeyCode::KeyO]);
+        assert!(settings_out(&app));
+        pressed(&mut app, &[KeyCode::KeyO]);
+        assert!(!settings_out(&app));
+    }
+
+    /// `O` over the chrome put away brings it back with the settings out,
+    /// rather than opening a pane nobody can see
+    #[test]
+    fn o_over_a_hidden_chrome_brings_it_back() {
+        let mut app = barred();
+        app.world_mut().resource_mut::<ChromeHidden>().0 = true;
+
+        pressed(&mut app, &[KeyCode::KeyO]);
+
+        assert!(!hidden(&app));
+        assert!(settings_out(&app));
+    }
+
+    /// `O` typed into a field is a letter of a name
+    #[test]
+    fn an_o_typed_into_a_field_leaves_the_settings_alone() {
+        let mut app = barred();
+        type_a_name(&mut app);
+
+        pressed(&mut app, &[KeyCode::KeyO]);
+        assert!(!settings_out(&app));
     }
 
     /// An escape over the chrome put away brings it back, and puts away
