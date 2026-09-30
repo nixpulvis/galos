@@ -15,7 +15,9 @@
 //! fixed layout would trade for is not worth its speed here.
 
 use crate::core::name::SystemName;
-use elite_journal::prelude::{Allegiance, Economy, Government, Security};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -39,6 +41,21 @@ pub struct PopulatedSystem {
     pub factions: Vec<i32>,
     pub body_count: Option<i32>,
     pub non_body_count: Option<i32>,
+    /// The controlling faction's state, the one the game names the
+    /// system's own
+    ///
+    /// This and the two columns after it are the last of the row and read
+    /// back as [`None`] where a table written before them lacks them: a
+    /// populated table is a positional array per row, and a field missing
+    /// off its end is filled by its default rather than refused.
+    #[serde(default)]
+    pub state: Option<State>,
+    /// The power controlling the system
+    #[serde(default)]
+    pub power: Option<Power>,
+    /// Where the system stands in Powerplay
+    #[serde(default)]
+    pub powerplay_state: Option<PowerplayState>,
 }
 
 /// How far a system reaches from its arrival star, in metres.

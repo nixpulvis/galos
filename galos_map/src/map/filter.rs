@@ -2056,7 +2056,7 @@ mod tests {
         let mut system = member(address, factions);
         let politics = politics(&mut system);
         politics.population = 1_000;
-        politics.allegiance = Some(allegiance);
+        politics.readings.allegiance = Some(allegiance);
         system
     }
 

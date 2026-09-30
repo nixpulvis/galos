@@ -7,15 +7,10 @@ use bevy::ecs::world::DeferredWorld;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use chrono::{DateTime, Utc};
-use elite_journal::{
-    // TODO: Fix these imports, they should all be in system.
-    Allegiance,
-    Government,
-    system::Security,
-};
 use galos_index::core::aggregate::TempBucket;
 use galos_index::prelude::CellSystem;
 use galos_index::prelude::SystemName;
+use galos_index::read::inhabited::Readings;
 use galos_index::records::{Economies, NameEntry, PopulatedSystem};
 use galos_photometry::ClassLight;
 
@@ -163,17 +158,17 @@ fn unaddressed(mut world: DeferredWorld, ctx: HookContext) {
     }
 }
 
-/// A populated system's political columns, as the populated table holds them
+/// A populated system's columns, as the populated table holds them
 ///
-/// One part of a [`System`] rather than six fields beside it, because they
+/// One part of a [`System`] rather than a dozen fields beside it, because they
 /// arrive together or not at all: a system is in the populated table or it is
 /// not.
 #[derive(Clone, Default)]
 pub(crate) struct Politics {
     pub(crate) population: u64,
-    pub(crate) allegiance: Option<Allegiance>,
-    pub(crate) government: Option<Government>,
-    pub(crate) security: Option<Security>,
+    /// Every reading the map colors by, one of which is the primary economy
+    pub(crate) readings: Readings,
+    /// Both economies, for the panel that names the secondary too
     pub(crate) economies: Option<Economies>,
     /// The factions present in the system, by id
     ///
@@ -189,9 +184,7 @@ impl Politics {
     pub(crate) fn of(row: &PopulatedSystem) -> Politics {
         Politics {
             population: row.population,
-            allegiance: row.allegiance,
-            government: row.government,
-            security: row.security,
+            readings: Readings::of(row),
             economies: Economies::new(
                 row.primary_economy,
                 row.secondary_economy,
@@ -295,11 +288,7 @@ impl System {
                 .as_ref()
                 .filter(|politics| politics.population > 0)
                 .map(|politics| {
-                    crate::map::filter::mask::Buckets::of(
-                        politics.allegiance,
-                        politics.government,
-                        politics.security,
-                    )
+                    crate::map::filter::mask::Buckets::of(&politics.readings)
                 }),
         }
     }

@@ -399,17 +399,14 @@ mod tests {
     /// imperial: what the aggregate's political histogram would say.
     fn inhabited(colonies: u32) -> galos_index::read::inhabited::Inhabited {
         use elite_journal::prelude::Allegiance;
-        let mut held = galos_index::read::inhabited::Inhabited::ZERO;
-        for n in 0..colonies {
-            held =
-                held.merge(galos_index::read::inhabited::Inhabited::of_system(
-                    [f64::from(n), 0., 0.],
-                    Some(Allegiance::Empire),
-                    None,
-                    None,
-                ));
-        }
-        held
+        use galos_index::read::inhabited::{Inhabited, Readings};
+        let empire = Readings {
+            allegiance: Some(Allegiance::Empire),
+            ..Readings::default()
+        };
+        (0..colonies)
+            .map(|n| Inhabited::of_system([f64::from(n), 0., 0.], empire))
+            .collect()
     }
 
     /// A merged mark is the average of the marks it stands for
@@ -654,6 +651,9 @@ mod tests {
                     factions: Vec::new(),
                     body_count: None,
                     non_body_count: None,
+                    state: None,
+                    power: None,
+                    powerplay_state: None,
                 },
             )]
             .into_iter()

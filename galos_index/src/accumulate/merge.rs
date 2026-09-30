@@ -336,6 +336,20 @@ pub fn barycenter(
 /// which is what `galos::sink::tables` asks of it. The other direction is
 /// what a merge of two directories needs and a feed does not: an older row
 /// still fills in a column nothing has ever had a word for.
+///
+/// **The three weekly columns are taken whole from the winner** — the
+/// controlling faction's state, the controlling power and the Powerplay
+/// standing — as `population` and the name are. A row cannot tell "none"
+/// from "never said" for them, and of the two mistakes open to it, filling
+/// a column the winner has emptied puts back a state that has ended or a
+/// power that has lost the system, and those are readings that change by
+/// the week. A report laid over a row, which *can* tell, carries forward
+/// what it does not speak to before it gets here:
+/// [`crate::accumulate::report::SystemReport::populated_over`].
+///
+/// Which means a winning row written before these columns existed, whose
+/// three read back as [`None`], empties them on the loser. The next arrival
+/// in the system writes them again.
 pub fn populated_over(
     held: &PopulatedSystem,
     said: PopulatedSystem,
@@ -358,6 +372,8 @@ pub fn populated_over(
         },
         body_count: win.body_count.or(lose.body_count),
         non_body_count: win.non_body_count.or(lose.non_body_count),
+        // `state`, `power` and `powerplay_state` are the winner's, whole;
+        // see above.
         ..win
     }
 }
@@ -549,6 +565,7 @@ mod tests {
     use super::*;
     use crate::records::SystemBodies;
     use elite_journal::body::{Orbit, Spin};
+    use elite_journal::prelude::{Power, PowerplayState, State};
 
     fn stamp(seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(seconds, 0).expect("a time")
@@ -714,6 +731,9 @@ mod tests {
             factions: vec![1, 2, 3],
             body_count: Some(40),
             non_body_count: None,
+            state: Some(State::Boom),
+            power: Some(Power::NakatoKaine),
+            powerplay_state: Some(PowerplayState::Fortified),
         };
         let said = PopulatedSystem {
             population: 1,
@@ -738,5 +758,44 @@ mod tests {
         assert_eq!(older.factions, vec![1, 2, 3]);
         assert_eq!(older.body_count, Some(40));
         assert_eq!(older.non_body_count, Some(7), "still filled a blank");
+    }
+
+    /// The weekly columns are the winner's whole, a blank included: a row
+    /// cannot say it never heard, and filling one the winner emptied puts
+    /// back a state that has ended.
+    #[test]
+    fn the_weekly_columns_are_the_winners() {
+        let stood = PopulatedSystem {
+            address: 1,
+            name: "SOL".into(),
+            position: [0.0; 3],
+            population: 1,
+            security: None,
+            government: None,
+            allegiance: None,
+            primary_economy: None,
+            secondary_economy: None,
+            factions: Vec::new(),
+            body_count: None,
+            non_body_count: None,
+            state: Some(State::Boom),
+            power: Some(Power::NakatoKaine),
+            powerplay_state: Some(PowerplayState::Fortified),
+        };
+        let emptied = PopulatedSystem {
+            state: None,
+            power: None,
+            powerplay_state: None,
+            ..stood.clone()
+        };
+        let weekly = |row: &PopulatedSystem| {
+            (row.state.is_some(), row.power, row.powerplay_state)
+        };
+
+        let newer = populated_over(&stood, emptied.clone(), true);
+        assert_eq!(weekly(&newer), (false, None, None), "the newer emptied");
+
+        let older = populated_over(&stood, emptied, false);
+        assert_eq!(weekly(&older), weekly(&stood), "the older overrode");
     }
 }

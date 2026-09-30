@@ -39,7 +39,9 @@ use elite_journal::entry::market::{
     BlackMarket as JournalBlackMarket, Market as JournalMarket, Module,
     Outfitting as JournalOutfitting, PricedModule, Shipyard as JournalShipyard,
 };
-use elite_journal::prelude::{Economy, Government};
+use elite_journal::prelude::{
+    Economy, Government, Power, PowerplayState, State,
+};
 use elite_journal::station::{
     LandingPads, Service, Station as JournalStation, StationType,
 };
@@ -58,7 +60,7 @@ use galos_db::{
     stars::Star,
     stations::Station,
     system_signals::SystemSignal,
-    systems::{Landed, System},
+    systems::{Landed, Standing, System},
     testing::Scratch,
     Database, Error,
 };
@@ -67,6 +69,7 @@ use galos_index::{
     prelude::{SystemName, SystemReport},
     records,
 };
+use sqlx::Row;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -159,6 +162,9 @@ const CONFORMANCE_COUNT: i64 = 900_000_063;
 const CONFORMANCE_CLASS: i64 = 900_000_064;
 const CONFORMANCE_STAR: i64 = 900_000_065;
 const CONFORMANCE_BODY: i64 = 900_000_066;
+const CONFORMANCE_CLEARS: i64 = 900_000_071;
+const CONFORMANCE_EMPTIED: i64 = 900_000_072;
+const CONFORMANCE_UNSPOKEN: i64 = 900_000_073;
 
 /// A market id per test, the addresses above being system addresses
 ///
@@ -274,6 +280,7 @@ async fn a_count_without_a_name_reaches_a_system_already_there() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -1462,6 +1469,7 @@ async fn two_messages_in_one_second_both_land() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -1480,6 +1488,7 @@ async fn two_messages_in_one_second_both_land() {
         None,
         Some(Allegiance::Empire),
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -1766,6 +1775,7 @@ async fn two_systems_may_share_a_position() {
                 None,
                 None,
                 None,
+                Standing::default(),
                 at(0),
                 "test",
             )
@@ -2182,6 +2192,7 @@ async fn a_late_create_wins_nothing_and_fills_what_is_blank() {
                 None,
                 Some(allegiance),
                 None,
+                Standing::default(),
                 at(secs),
                 user,
             )
@@ -2244,6 +2255,7 @@ async fn a_write_says_whether_it_made_a_row_moved_one_or_neither() {
                 None,
                 None,
                 None,
+                Standing::default(),
                 at(secs),
                 user,
             )
@@ -2515,6 +2527,7 @@ async fn trade_messages_do_not_wait_on_each_other() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -2637,6 +2650,9 @@ struct Columns {
     body_count: Option<i32>,
     non_body_count: Option<i32>,
     star_class: Option<String>,
+    state: Option<Option<State>>,
+    power: Option<Option<Power>>,
+    powerplay_state: Option<Option<PowerplayState>>,
     updated_at: DateTime<Utc>,
 }
 
@@ -2645,6 +2661,24 @@ impl Columns {
     async fn of_row(db: &Database, address: i64) -> Columns {
         let row =
             System::fetch(db, address).await.expect("the system should exist");
+        // A null said nothing and `'None'` said "none", which is the
+        // report's two depths of option.
+        let standing = sqlx::query(
+            "SELECT state IS NOT NULL AS state_said, \
+                    NULLIF(state, 'None') AS state, \
+                    controlling_power IS NOT NULL AS power_said, \
+                    NULLIF(controlling_power, 'None') AS power, \
+                    powerplay_state IS NOT NULL AS powerplay_state_said, \
+                    NULLIF(powerplay_state, 'None') AS powerplay_state \
+               FROM systems WHERE address = $1",
+        )
+        .bind(address)
+        .fetch_one(&mut *db.acquire().await.expect("a connection"))
+        .await
+        .expect("the standing should read");
+        let said = |column: &str| -> bool {
+            standing.try_get(format!("{column}_said").as_str()).unwrap()
+        };
         Columns {
             name: Some(row.name),
             position: row.position,
@@ -2657,6 +2691,10 @@ impl Columns {
             body_count: row.body_count,
             non_body_count: row.non_body_count,
             star_class: class_of(db, address).await,
+            state: said("state").then(|| standing.try_get("state").unwrap()),
+            power: said("power").then(|| standing.try_get("power").unwrap()),
+            powerplay_state: said("powerplay_state")
+                .then(|| standing.try_get("powerplay_state").unwrap()),
             updated_at: row.updated_at,
         }
     }
@@ -2675,6 +2713,9 @@ impl Columns {
             body_count: report.body_count,
             non_body_count: report.non_body_count,
             star_class: report.star_class.clone(),
+            state: report.state,
+            power: report.power,
+            powerplay_state: report.powerplay_state,
             updated_at: report.at,
         }
     }
@@ -2696,7 +2737,21 @@ fn arrived(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
         security: Some(Security::High),
         allegiance: Some(Allegiance::Federation),
         primary_economy: Some(Economy::Refinery),
+        state: Some(Some(State::Boom)),
+        power: Some(Some(Power::ZeminaTorval)),
+        powerplay_state: Some(Some(PowerplayState::Stronghold)),
         ..scanned(address, name, at)
+    }
+}
+
+/// An arrival in a system whose controlling faction is in no state and that
+/// no power has a hand in: all three weekly columns stated, and empty.
+fn emptied(address: i64, name: &str, at: DateTime<Utc>) -> SystemReport {
+    SystemReport {
+        state: Some(None),
+        power: Some(None),
+        powerplay_state: Some(None),
+        ..arrived(address, name, at)
     }
 }
 
@@ -2768,6 +2823,23 @@ async fn the_upsert_says_what_the_merge_rule_says() {
             "an arrival that names no class leaves the route's",
             plotted(CONFORMANCE_CLASS, at(0)),
             arrived(CONFORMANCE_CLASS, "Test Conformance Routed", at(60)),
+        ),
+        (
+            // The weekly columns, where "none" is a reading: a state that
+            // has ended and a power that has lost the system come off.
+            "a newer arrival stating no standing clears the one that stood",
+            arrived(CONFORMANCE_CLEARS, "Test Conformance Clears", at(0)),
+            emptied(CONFORMANCE_CLEARS, "Test Conformance Clears", at(60)),
+        ),
+        (
+            "an older arrival does not fill a standing a newer one emptied",
+            emptied(CONFORMANCE_EMPTIED, "Test Conformance Emptied", at(60)),
+            arrived(CONFORMANCE_EMPTIED, "Test Conformance Emptied", at(0)),
+        ),
+        (
+            "a newer report not speaking to the standing leaves it",
+            arrived(CONFORMANCE_UNSPOKEN, "Test Conformance Unspoken", at(0)),
+            scanned(CONFORMANCE_UNSPOKEN, "Test Conformance Unspoken", at(60)),
         ),
     ];
 
@@ -2865,6 +2937,7 @@ async fn the_star_upsert_says_what_the_merge_rule_says() {
             None,
             None,
             None,
+            Standing::default(),
             at(0),
             "test",
         )
@@ -2944,6 +3017,7 @@ async fn the_body_upsert_says_what_the_merge_rule_says() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -3098,6 +3172,7 @@ async fn an_interrupted_entry_writes_nothing() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -3205,6 +3280,7 @@ async fn one_star_written_twice_leaves_the_nearer_record() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )
@@ -3316,6 +3392,7 @@ async fn two_writers_of_one_name_do_not_refuse_each_other() {
         None,
         None,
         None,
+        Standing::default(),
         at(0),
         "test",
     )

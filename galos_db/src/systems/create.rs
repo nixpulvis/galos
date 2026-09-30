@@ -1,4 +1,4 @@
-use super::{Economies, Landed, System};
+use super::{Economies, Landed, Standing, System};
 use crate::factions::{Conflict, Faction, SystemFaction};
 use crate::Error;
 use chrono::{DateTime, Utc};
@@ -20,6 +20,13 @@ impl System {
     /// newest reading either way, so a late message does not put the row back
     /// to when it was sent.
     ///
+    /// `standing` is the same rule over the three weekly columns, with the
+    /// one difference that "none" is a value there: a report stating none is
+    /// written as `'None'` and weighed like any reading, so a newer arrival
+    /// empties a state or a power and an older one does not fill it back in.
+    /// A report not speaking to one is a null, and leaves it. See
+    /// [`Standing`].
+    ///
     /// [`Self::from_journal`] asks the same, and must: the two write one row.
     ///
     /// Returns what the write did to the row; see [`Landed`].
@@ -35,6 +42,7 @@ impl System {
         government: Option<Government>,
         allegiance: Option<Allegiance>,
         economies: Option<Economies>,
+        standing: Standing,
         updated_at: DateTime<Utc>,
         updated_by: &str,
     ) -> Result<Landed, Error> {
@@ -67,9 +75,19 @@ impl System {
                  primary_economy,
                  secondary_economy,
                  updated_at,
-                 updated_by)
+                 updated_by,
+                 state,
+                 controlling_power,
+                 powerplay_state)
             VALUES ($1, $2, $3, $4::geometry, $5, $6,
-                $7, $8, $9, $10, $11, $12)
+                $7, $8, $9, $10, $11, $12,
+                -- Null where the report does not speak to the column,
+                -- `'None'` where it says there is none. The state's arrives
+                -- as `'None'` already; the two enums have no variant for it,
+                -- so theirs is said by the flag beside them.
+                $13,
+                CASE WHEN $14 THEN COALESCE($15::power, 'None') END,
+                CASE WHEN $16 THEN COALESCE($17::powerplaystate, 'None') END)
             ON CONFLICT (address)
             DO UPDATE SET
                 name = CASE WHEN $11 >= systems.updated_at
@@ -98,6 +116,22 @@ impl System {
                 secondary_economy = CASE WHEN $11 >= systems.updated_at
                     THEN COALESCE($10, systems.secondary_economy)
                     ELSE COALESCE(systems.secondary_economy, $10) END,
+                -- The rule every column above states, over what the insert
+                -- would have written: `'None'` being a value, a newer "none"
+                -- wins and an older reading does not fill it in.
+                state = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE(EXCLUDED.state, systems.state)
+                    ELSE COALESCE(systems.state, EXCLUDED.state) END,
+                controlling_power = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE(EXCLUDED.controlling_power,
+                        systems.controlling_power)
+                    ELSE COALESCE(systems.controlling_power,
+                        EXCLUDED.controlling_power) END,
+                powerplay_state = CASE WHEN $11 >= systems.updated_at
+                    THEN COALESCE(EXCLUDED.powerplay_state,
+                        systems.powerplay_state)
+                    ELSE COALESCE(systems.powerplay_state,
+                        EXCLUDED.powerplay_state) END,
                 updated_at = GREATEST(systems.updated_at, $11),
                 updated_by = CASE WHEN $11 >= systems.updated_at
                     THEN $12 ELSE systems.updated_by END,
@@ -132,7 +166,12 @@ impl System {
             economies.map(|economies| economies.primary) as _,
             economies.and_then(|economies| economies.secondary) as _,
             updated_at.naive_utc(),
-            updated_by
+            updated_by,
+            standing.state.map(|it| it.unwrap_or(State::None)) as _,
+            standing.power.is_some(),
+            standing.power.flatten() as _,
+            standing.powerplay_state.is_some(),
+            standing.powerplay_state.flatten() as _,
         )
         .fetch_one(&mut *conn)
         .await?;
@@ -228,7 +267,9 @@ impl System {
     ///
     /// - Where it names the system, [`Self::create`] writes the name, the
     ///   place and the politics. Every political column there is
-    ///   `COALESCE`d, so a report stating none leaves what stands.
+    ///   `COALESCE`d, so a report stating none leaves what stands — bar the
+    ///   three weekly ones, where a report that states "none" says so; see
+    ///   [`Standing`].
     /// - Where it carries body counts, [`Self::set_body_counts`] writes
     ///   them — deliberately not stamp-guarded, for the reason stated
     ///   there. Asked by address: `create` has left the row wherever there
@@ -274,6 +315,11 @@ impl System {
                         report.primary_economy,
                         report.secondary_economy,
                     ),
+                    Standing {
+                        state: report.state,
+                        power: report.power,
+                        powerplay_state: report.powerplay_state,
+                    },
                     report.at,
                     by,
                 )
@@ -304,11 +350,12 @@ impl System {
 
     /// Write a system as an arrival event states it, factions and all.
     ///
-    /// [`Self::create`] for the columns — one copy of the merge rule, not
-    /// two — and then the rows only a journal ever carries. A faction and a
-    /// conflict are rows of their own, each with a stamp of its own and its
-    /// own say in whether a message is worth taking, which is why they are
-    /// asked whatever became of the system's row above.
+    /// [`Self::report`] of [`SystemReport::arrival`] for the columns — one
+    /// copy of the merge rule and one reading of an arrival, not two — and
+    /// then the rows only a journal ever carries. A faction and a conflict
+    /// are rows of their own, each with a stamp of its own and its own say
+    /// in whether a message is worth taking, which is why they are asked
+    /// whatever became of the system's row above.
     ///
     /// Drops what the write did: `galos_db::record` has already written
     /// this system's row from [`Self::report`], so that is the landing a
@@ -319,18 +366,9 @@ impl System {
         user: &str,
         system: &JournalSystem,
     ) -> Result<(), Error> {
-        Self::create(
+        Self::report(
             &mut *conn,
-            system.address,
-            &SystemName::new(system.name.clone()),
-            system.pos,
-            None,
-            system.population,
-            system.security,
-            system.government,
-            system.allegiance,
-            Economies::new(system.economy, system.second_economy),
-            timestamp,
+            &SystemReport::arrival(timestamp, system),
             user,
         )
         .await?;

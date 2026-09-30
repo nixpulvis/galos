@@ -17,6 +17,7 @@ use crate::bar;
 use crate::sink::{Sink, SystemName, SystemReport};
 use crate::{Shard, Shutdown};
 use chrono::offset::Utc;
+use galos_index::accumulate::report::stated;
 use std::path::{Path, PathBuf};
 
 /// A nightly dump already on disk: `--from edsm=PATH`.
@@ -152,6 +153,11 @@ async fn place(
                     allegiance: system.information.allegiance,
                     primary_economy: system.information.economy,
                     secondary_economy: system.information.second_economy,
+                    // The controlling faction's state, which a populated
+                    // system's row states and every other row leaves out.
+                    // `"None"` where the faction is in none, which is a
+                    // reading. EDSM carries nothing about Powerplay.
+                    state: system.information.state.map(|it| stated(Some(it))),
                     ..SystemReport::new(id as i64, Utc::now())
                 },
                 by,

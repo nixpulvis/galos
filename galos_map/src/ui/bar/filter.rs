@@ -296,7 +296,9 @@ pub(super) fn key(
     other_open: &mut bool,
 ) -> Option<Keyed> {
     ui.add_space(FIELD_GAP);
-    ui.horizontal(|ui| {
+    // Wrapped, so a narrower bar folds the seven axes onto a second line
+    // rather than running them off its edge.
+    ui.horizontal_wrapped(|ui| {
         for offered in ColorBy::ALL {
             let text =
                 egui::RichText::new(offered.name().to_uppercase()).small();

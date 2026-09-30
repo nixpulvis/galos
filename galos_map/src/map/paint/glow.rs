@@ -1613,13 +1613,20 @@ pub(crate) fn gaussian_mask() -> Image {
 mod tests {
     use super::*;
     use elite_journal::prelude::Allegiance;
+    use galos_index::read::inhabited::Readings;
 
     fn empire() -> Inhabited {
-        Inhabited::of_system([0.0; 3], Some(Allegiance::Empire), None, None)
+        Inhabited::of_system(
+            [0.0; 3],
+            Readings {
+                allegiance: Some(Allegiance::Empire),
+                ..Readings::default()
+            },
+        )
     }
 
     fn unreported() -> Inhabited {
-        Inhabited::of_system([0.0; 3], None, None, None)
+        Inhabited::of_system([0.0; 3], Readings::default())
     }
 
     /// A cell of one Empire system lays down the Empire's colour at full

@@ -39,7 +39,7 @@ use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use chrono::{DateTime, Utc};
 use galos_index::prelude::{CellId, CellSystem, Part, Stamp};
-use galos_index::read::inhabited::Inhabited;
+use galos_index::read::inhabited::{Inhabited, Readings};
 use galos_index::read::resident::Resident;
 use galos_index::read::screen::{Crowded, Empty, Share};
 use galos_photometry::{Distance, Magnitude};
@@ -1685,12 +1685,7 @@ pub(crate) fn reconcile(
                     .get(address)
                     .filter(|system| system.population > 0)
                     .map(|system| {
-                        Inhabited::of_system(
-                            pos,
-                            system.allegiance,
-                            system.government,
-                            system.security,
-                        )
+                        Inhabited::of_system(pos, Readings::of(system))
                     }),
             );
             // Already drawn is already answered, except out of a cell that
@@ -1787,12 +1782,7 @@ pub(crate) fn reconcile(
             drawn.0.entry(id).or_default().took(
                 at,
                 populated.get(address).map(|system| {
-                    Inhabited::of_system(
-                        at,
-                        system.allegiance,
-                        system.government,
-                        system.security,
-                    )
+                    Inhabited::of_system(at, Readings::of(system))
                 }),
             );
             match existing.get(address) {
@@ -2256,6 +2246,9 @@ mod tests {
                 factions: vec![7],
                 body_count: None,
                 non_body_count: None,
+                state: None,
+                power: None,
+                powerplay_state: None,
             },
         )])));
 
@@ -2706,6 +2699,9 @@ mod tests {
                 factions: vec![7],
                 body_count: None,
                 non_body_count: None,
+                state: None,
+                power: None,
+                powerplay_state: None,
             },
         )]))));
         for address in 1..=5 {
@@ -2817,6 +2813,9 @@ mod tests {
                     factions: Vec::new(),
                     body_count: None,
                     non_body_count: None,
+                    state: None,
+                    power: None,
+                    powerplay_state: None,
                 },
             )
         };
@@ -2897,6 +2896,9 @@ mod tests {
                     factions: Vec::new(),
                     body_count: None,
                     non_body_count: None,
+                    state: None,
+                    power: None,
+                    powerplay_state: None,
                 },
             )
         };

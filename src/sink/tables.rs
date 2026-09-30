@@ -27,7 +27,6 @@
 //! write — so what is published stands untouched for the life of the run.
 //! See `galos_index::accumulate::galaxy`.
 
-use galos_index::accumulate::merge;
 use galos_index::codec::tables::sidecars::{Counts, Sidecars};
 use galos_index::prelude::{Galaxy, System};
 use std::collections::HashSet;
@@ -161,29 +160,29 @@ impl Tables {
     /// tables.
     fn patch_tables(&mut self, galaxy: &Galaxy, touched: &HashSet<i64>) {
         for &address in touched {
-            if let Some(said) = galaxy.populated_of(address) {
-                // What an event says about a system, over what the directory
-                // publishes.
-                //
-                // A row derived from events is thinner than one derived from
-                // the database and always will be: a journal names factions and
-                // numbers none of them, so `Galaxy` publishes an empty faction
-                // list by construction, and the body counts arrive in their own
-                // events rather than with the arrival. Writing such a row
-                // straight over a published one took the faction ids off every
-                // populated system a feed happened to mention — a thousand of
-                // them in the directory this was found in — and the map colours
-                // and filters by exactly those.
-                //
-                // So the event wins where it says something and what stands is
-                // kept where it does not, which is the rule the database's own
-                // write path states column by column. `merge::populated_over`
-                // with `newer` set is that rule, stated once in `galos_index`
-                // for this and for a merge of two directories.
-                let row = match self.sidecars.published(address) {
-                    Some(stood) => merge::populated_over(stood, said, true),
-                    None => said,
-                };
+            // What an event says about a system, over what the directory
+            // publishes.
+            //
+            // A row derived from events is thinner than one derived from
+            // the database and always will be: a journal names factions and
+            // numbers none of them, so `Galaxy` publishes an empty faction
+            // list by construction, and the body counts arrive in their own
+            // events rather than with the arrival. Writing such a row
+            // straight over a published one took the faction ids off every
+            // populated system a feed happened to mention — a thousand of
+            // them in the directory this was found in — and the map colours
+            // and filters by exactly those.
+            //
+            // So the event wins where it says something and what stands is
+            // kept where it does not, which is the rule the database's own
+            // write path states column by column. `merge::populated_over`
+            // with `newer` set is that rule, stated once in `galos_index`
+            // for this and for a merge of two directories; the galaxy
+            // hands it on with the state and the powers the events never
+            // spoke to already carried forward, a row alone being unable to
+            // tell those from ones an arrival emptied.
+            let stood = self.sidecars.published(address);
+            if let Some(row) = galaxy.populated_over(address, stood) {
                 self.sidecars.populate(row);
             }
 

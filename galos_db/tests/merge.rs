@@ -59,7 +59,7 @@ use galos_db::factions::{Faction, SystemFaction};
 use galos_db::markets::Market;
 use galos_db::merge::{merge, Merged, Table};
 use galos_db::stations::Station;
-use galos_db::systems::System;
+use galos_db::systems::{Standing, System};
 use galos_db::testing::Scratch;
 use galos_db::Database;
 use galos_index::prelude::SystemName;
@@ -157,6 +157,7 @@ async fn tell(db: &Database, when: DateTime<Utc>, saw: &Saw) {
                 Some(Government::Democracy),
                 Some(*allegiance),
                 None,
+                Standing::default(),
                 when,
                 "test",
             )

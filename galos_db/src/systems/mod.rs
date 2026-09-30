@@ -108,6 +108,25 @@ impl fmt::Display for Economies {
     }
 }
 
+/// The three columns of a system that go stale by the week, as one report
+/// states them
+///
+/// The controlling faction's state, the power holding the system, and its
+/// Powerplay standing. Each is two options deep, as on
+/// [`SystemReport`](galos_index::prelude::SystemReport): the outer [`None`]
+/// says nothing and leaves the column, the inner one says "none" and is
+/// written as the label `'None'`, a reading that clears an older one. A
+/// null in the column is a system nothing has spoken to it about.
+///
+/// [`Default`] is a report that speaks to none of them, which is what
+/// everything but an arrival and a dump is.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Standing {
+    pub state: Option<Option<State>>,
+    pub power: Option<Option<Power>>,
+    pub powerplay_state: Option<Option<PowerplayState>>,
+}
+
 /// What a system write did to the row it was for
 ///
 /// Read out of the upsert itself rather than queried afterwards: the

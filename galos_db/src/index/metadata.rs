@@ -49,10 +49,18 @@ pub(super) const NAMES_SELECT: &str = "SELECT address, name, \
 /// Only factions with a row in `factions` are carried: `system_factions`
 /// holds ids EDDN has reported but never named, which the client can neither
 /// name nor filter by.
+///
+/// The three weekly columns hold `'None'` where an arrival said there is
+/// none, which is a distinction for merging a row and not one a table row
+/// can carry, so it reads as [`None`] beside a system nothing has said
+/// anything about. See `galos_index::accumulate::report`.
 const POPULATED_SELECT: &str = "SELECT address, name, \
      ST_X(position) AS x, ST_Y(position) AS y, ST_Z(position) AS z, \
      population, security, government, allegiance, \
      primary_economy, secondary_economy, body_count, non_body_count, \
+     NULLIF(state, 'None') AS state, \
+     NULLIF(controlling_power, 'None') AS power, \
+     NULLIF(powerplay_state, 'None') AS powerplay_state, \
      COALESCE( \
          (SELECT array_agg(sf.faction_id) FROM system_factions sf \
           WHERE sf.system_address = systems.address \
@@ -470,6 +478,9 @@ async fn populated_of(
                 factions: row.try_get("factions")?,
                 body_count: row.try_get("body_count")?,
                 non_body_count: row.try_get("non_body_count")?,
+                state: row.try_get("state")?,
+                power: row.try_get("power")?,
+                powerplay_state: row.try_get("powerplay_state")?,
             })
         })
         .collect()
@@ -1357,6 +1368,63 @@ mod tests {
                 "the barycenters are in heap order",
             );
         }
+
+        db.done().await;
+    }
+
+    /// The populated table carries the three weekly columns, and a `'None'`
+    /// an arrival wrote reads as nothing rather than failing the read: the
+    /// enums it decodes into have no variant for it.
+    #[async_std::test]
+    async fn the_populated_table_reads_a_systems_standing() {
+        use elite_journal::prelude::{Power, PowerplayState, State};
+        use galos_index::prelude::{SystemName, SystemReport};
+
+        let Some(db) = Scratch::new().await else { return };
+        let (held, emptied) = (900_000_081_i64, 900_000_082_i64);
+        let report = |address, standing: bool| SystemReport {
+            name: Some(SystemName::new(format!("Test Standing {address}"))),
+            position: Some(elite_journal::system::Coordinate {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            }),
+            population: Some(1_000),
+            state: Some(standing.then_some(State::Boom)),
+            power: Some(standing.then_some(Power::ZeminaTorval)),
+            powerplay_state: Some(
+                standing.then_some(PowerplayState::Stronghold),
+            ),
+            ..SystemReport::new(address, chrono::Utc::now())
+        };
+        let mut conn = db.acquire().await.expect("a connection");
+        for (address, standing) in [(held, true), (emptied, false)] {
+            System::report(&mut conn, &report(address, standing), "test")
+                .await
+                .expect("the system should write");
+        }
+        drop(conn);
+
+        let mut rows = populated_of(&db, Some(&[held, emptied]))
+            .await
+            .expect("the populated table should read");
+        rows.sort_by_key(|it| it.address);
+        let weekly: Vec<_> = rows
+            .iter()
+            .map(|it| (it.state.is_some(), it.power, it.powerplay_state))
+            .collect();
+        assert_eq!(
+            weekly,
+            vec![
+                (
+                    true,
+                    Some(Power::ZeminaTorval),
+                    Some(PowerplayState::Stronghold),
+                ),
+                (false, None, None),
+            ],
+        );
+        assert!(matches!(rows[0].state, Some(State::Boom)));
 
         db.done().await;
     }

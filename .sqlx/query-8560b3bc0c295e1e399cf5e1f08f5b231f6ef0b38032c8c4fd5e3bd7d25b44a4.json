@@ -46,7 +46,8 @@
                 "TechnologicalLeap",
                 "Terrorism",
                 "TradeWar",
-                "War"
+                "War",
+                "None"
               ]
             }
           }
@@ -103,7 +104,8 @@
                 "TechnologicalLeap",
                 "Terrorism",
                 "TradeWar",
-                "War"
+                "War",
+                "None"
               ]
             }
           }

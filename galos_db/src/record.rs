@@ -393,7 +393,7 @@ async fn write(
             .await?
         }
 
-        // An arrival under the ship's own power, which says the same six
+        // An arrival under the ship's own power, which says the same nine
         // political columns a `Location` does and carries no body and no
         // station.
         Event::FsdJump(e) => {

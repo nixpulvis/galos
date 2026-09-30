@@ -28,7 +28,8 @@
                 "Prison",
                 "PrisonColony",
                 "Theocracy",
-                "Megaconstruction"
+                "Megaconstruction",
+                "PrivateOwnership"
               ]
             }
           }
@@ -139,7 +140,9 @@
                                 "Terraforming",
                                 "Tourism",
                                 "Undefined",
-                                "Rescue"
+                                "Rescue",
+                                "PrivateEnterprise",
+                                "Repair"
                               ]
                             }
                           }

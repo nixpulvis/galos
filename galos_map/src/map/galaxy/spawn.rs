@@ -30,7 +30,9 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use big_space::prelude::*;
 use chrono::Utc;
-use elite_journal::{Allegiance, Government, system::Security};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
 use galos_index::core::aggregate::TempBucket;
 use galos_index::prelude::CellSystem;
 use galos_photometry::Temperature;
@@ -299,12 +301,20 @@ impl Hue {
     }
 }
 
-/// Determains what color to draw in system view mode.
+/// Which reading the map view colors each inhabited system by
 #[derive(Resource, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColorBy {
     Allegiance,
     Government,
     Security,
+    /// The primary economy
+    Economy,
+    /// The controlling faction's state
+    State,
+    /// The controlling power
+    Power,
+    /// Where the system stands in Powerplay
+    PowerplayState,
 }
 
 /// Whether systems are named
@@ -1383,19 +1393,16 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
 
 impl ColorBy {
     /// Which color a star is drawn in
+    ///
+    /// Through the bucket its readings count in, so a mark and a cell's
+    /// histogram are painted by the one mapping, [`ColorBy::hue_of`].
     pub(crate) fn hue(self, system: &System) -> Hue {
-        let politics = system.politics.as_ref();
-        match self {
-            ColorBy::Allegiance => {
-                Hue::allegiance(politics.and_then(|p| p.allegiance))
-            }
-            ColorBy::Government => {
-                Hue::government(politics.and_then(|p| p.government))
-            }
-            ColorBy::Security => {
-                Hue::security(politics.and_then(|p| p.security))
-            }
-        }
+        let readings = system
+            .politics
+            .as_ref()
+            .map(|politics| politics.readings)
+            .unwrap_or_default();
+        self.hue_of(self.bucket(&readings))
     }
 }
 
@@ -1501,6 +1508,125 @@ impl Hue {
             Some(Security::Low) => Hue::Green,
             Some(Security::Anarchy) | None => Hue::Red,
         }
+    }
+
+    /// The color a primary economy is drawn in. See [`Hue::allegiance`].
+    ///
+    /// By what the economy works with: the land green, raw material orange,
+    /// manufacture yellow, technology cyan, services blue, arms and prisons
+    /// red, and tourism magenta.
+    pub(crate) fn economy(economy: Option<Economy>) -> Hue {
+        match economy {
+            Some(Economy::Agriculture | Economy::Terraforming) => Hue::Green,
+            Some(Economy::Extraction | Economy::Refinery) => Hue::Orange,
+            Some(Economy::Industrial | Economy::Colony) => Hue::Yellow,
+            Some(Economy::HighTech) => Hue::Cyan,
+            Some(
+                Economy::Service
+                | Economy::Carrier
+                | Economy::Rescue
+                | Economy::Repair
+                | Economy::PrivateEnterprise,
+            ) => Hue::Blue,
+            Some(Economy::Military | Economy::Prison) => Hue::Red,
+            Some(Economy::Tourism) => Hue::Magenta,
+            Some(Economy::Undefined | Economy::None) | None => Hue::Grey,
+        }
+    }
+
+    /// The color the controlling faction's state is drawn in. See
+    /// [`Hue::allegiance`].
+    ///
+    /// By kind: fighting red, unrest orange, disaster magenta, a slump
+    /// yellow, rivalry between factions blue, a faction on the move cyan and
+    /// good times green. No state is gray, and is most of the galaxy.
+    pub(crate) fn state(state: Option<State>) -> Hue {
+        match state {
+            Some(State::War | State::CivilWar | State::Election) => Hue::Red,
+            Some(
+                State::CivilUnrest
+                | State::Lockdown
+                | State::PirateAttack
+                | State::Terrorism
+                | State::Revolution,
+            ) => Hue::Orange,
+            Some(
+                State::Blight
+                | State::Drought
+                | State::Famine
+                | State::Outbreak
+                | State::NaturalDisaster
+                | State::InfrastructureFailure,
+            ) => Hue::Magenta,
+            Some(State::Bust) => Hue::Yellow,
+            Some(State::ColdWar | State::TradeWar) => Hue::Blue,
+            Some(State::Expansion | State::Retreat | State::Colonisation) => {
+                Hue::Cyan
+            }
+            Some(
+                State::Boom
+                | State::Investment
+                | State::CivilLiberty
+                | State::PublicHoliday
+                | State::TechnologicalLeap
+                | State::HistoricEvent,
+            ) => Hue::Green,
+            Some(State::None) | None => Hue::Grey,
+        }
+    }
+
+    /// The color a controlling power is drawn in: its allegiance's. See
+    /// [`Hue::allegiance`].
+    ///
+    /// Thirteen powers are more than the map has colors, and a power's
+    /// allegiance is the grouping a reader already knows them by. Each is
+    /// still hidden and soloed on its own in the key.
+    pub(crate) fn power(power: Option<Power>) -> Hue {
+        Hue::allegiance(power.map(power_allegiance))
+    }
+
+    /// The color a Powerplay standing is drawn in. See [`Hue::allegiance`].
+    ///
+    /// Up the ladder the way security runs, a firmer hold bluer: a stronghold
+    /// or a home system blue, a fortified or controlled one cyan, an exploited
+    /// one green. Unclaimed and prepared yellow, contested red, turmoil
+    /// orange, and outside every power's reach gray.
+    pub(crate) fn powerplay_state(state: Option<PowerplayState>) -> Hue {
+        match state {
+            Some(PowerplayState::Stronghold | PowerplayState::HomeSystem) => {
+                Hue::Blue
+            }
+            Some(PowerplayState::Fortified | PowerplayState::Controlled) => {
+                Hue::Cyan
+            }
+            Some(PowerplayState::Exploited) => Hue::Green,
+            Some(
+                PowerplayState::Unoccupied
+                | PowerplayState::InPrepareRadius
+                | PowerplayState::Prepared,
+            ) => Hue::Yellow,
+            Some(PowerplayState::Contested) => Hue::Red,
+            Some(PowerplayState::Turmoil) => Hue::Orange,
+            None => Hue::Grey,
+        }
+    }
+}
+
+/// The allegiance a power answers to
+pub(crate) fn power_allegiance(power: Power) -> Allegiance {
+    match power {
+        Power::FeliciaWinters | Power::JeromeArcher | Power::ZacharyHudson => {
+            Allegiance::Federation
+        }
+        Power::AislingDuval
+        | Power::ArissaLavignyDuval
+        | Power::DentonPatreus
+        | Power::ZeminaTorval => Allegiance::Empire,
+        Power::EdmundMahon | Power::NakatoKaine => Allegiance::Alliance,
+        Power::ArchonDelaine
+        | Power::LiYongRui
+        | Power::PranavAntal
+        | Power::YuriGrom => Allegiance::Independent,
     }
 }
 

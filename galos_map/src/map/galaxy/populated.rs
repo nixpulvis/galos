@@ -168,6 +168,9 @@ mod tests {
             factions: Vec::new(),
             body_count: None,
             non_body_count: None,
+            state: None,
+            power: None,
+            powerplay_state: None,
         }
     }
 

@@ -17,13 +17,14 @@
 //! never reconstructed from a sum — a summed population says somebody lives
 //! under a cell and never how many systems do.
 //!
-//! The political histograms ride here rather than in their own record because
-//! they have the same support: only a system on the populated table has an
-//! allegiance, a government or a security rating to count. They are counts and
-//! not fractions, because a count composes exactly and a `u8` share of a total
-//! does not — merging two shares needs their weights back, and the rounding
-//! accumulates through every level of the rollup until [`Inhabited::remove`]
-//! stops being the inverse of [`Inhabited::merge`].
+//! The histograms ride here rather than in their own record because they
+//! have the same support: only a system on the populated table has an
+//! allegiance, a government, a security rating, an economy, a state or a
+//! power to count. They are counts and not fractions, because a count
+//! composes exactly and a `u8` share of a total does not — merging two shares
+//! needs their weights back, and the rounding accumulates through every level
+//! of the rollup until [`Inhabited::remove`] stops being the inverse of
+//! [`Inhabited::merge`].
 //!
 //! What the counts are *worth* is not stored. A view that wants unaligned
 //! systems to weigh less than aligned ones applies its gain where it draws,
@@ -41,11 +42,13 @@ use crate::core::geometry::{CellId, CellMap};
 use crate::core::moments::Moments;
 use crate::records::PopulatedSystem;
 use crate::tree::index::Index;
-use elite_journal::prelude::{Allegiance, Government, Security};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
 
-/// A political reading a histogram counts in buckets: one a variant, plus
-/// bucket zero for a system nothing has reported it of — security excepted,
-/// where nothing on record is anarchy; see its impl.
+/// A reading a histogram counts in buckets: one a variant, plus bucket zero
+/// for a system nothing has reported it of — security excepted, where nothing
+/// on record is anarchy; see its impl.
 ///
 /// Zero is not the same fact as the variant `None`, which is the game saying
 /// a populated system has none: both draw grey and the two are kept apart
@@ -53,9 +56,9 @@ use elite_journal::prelude::{Allegiance, Government, Security};
 ///
 /// A trait because the readings are `elite_journal`'s types, which take no
 /// inherent methods here. Each impl is a `match` and never a comparison:
-/// `Allegiance` carries a hand-written `PartialEq` under which
-/// `None != None`, so `==` answers falsely for the one variant a histogram
-/// most needs to place.
+/// `Allegiance`, `Economy` and `State` carry a hand-written `PartialEq` under
+/// which `None != None`, so `==` answers falsely for the one variant a
+/// histogram most needs to place.
 pub trait Bucketed: Sized {
     /// How many buckets, the unknown at zero included.
     const BUCKETS: usize;
@@ -181,6 +184,255 @@ impl Bucketed for Security {
     }
 }
 
+impl Bucketed for Economy {
+    const BUCKETS: usize = 18;
+
+    fn bucket(of: Option<Economy>) -> usize {
+        match of {
+            None => 0,
+            Some(Economy::Agriculture) => 1,
+            Some(Economy::Colony) => 2,
+            Some(Economy::Extraction) => 3,
+            Some(Economy::HighTech) => 4,
+            Some(Economy::Industrial) => 5,
+            Some(Economy::Military) => 6,
+            Some(Economy::Refinery) => 7,
+            Some(Economy::Service) => 8,
+            Some(Economy::Terraforming) => 9,
+            Some(Economy::Tourism) => 10,
+            Some(Economy::Carrier) => 11,
+            Some(Economy::Prison) => 12,
+            Some(Economy::Rescue) => 13,
+            Some(Economy::PrivateEnterprise) => 14,
+            Some(Economy::Repair) => 15,
+            Some(Economy::Undefined) => 16,
+            Some(Economy::None) => 17,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<Economy> {
+        match bucket {
+            1 => Some(Economy::Agriculture),
+            2 => Some(Economy::Colony),
+            3 => Some(Economy::Extraction),
+            4 => Some(Economy::HighTech),
+            5 => Some(Economy::Industrial),
+            6 => Some(Economy::Military),
+            7 => Some(Economy::Refinery),
+            8 => Some(Economy::Service),
+            9 => Some(Economy::Terraforming),
+            10 => Some(Economy::Tourism),
+            11 => Some(Economy::Carrier),
+            12 => Some(Economy::Prison),
+            13 => Some(Economy::Rescue),
+            14 => Some(Economy::PrivateEnterprise),
+            15 => Some(Economy::Repair),
+            16 => Some(Economy::Undefined),
+            17 => Some(Economy::None),
+            _ => None,
+        }
+    }
+}
+
+/// The controlling faction's state. [`State::None`] is the game saying the
+/// faction is in none, which is the commonest reading and not the same fact
+/// as nothing on record.
+impl Bucketed for State {
+    const BUCKETS: usize = 28;
+
+    fn bucket(of: Option<State>) -> usize {
+        match of {
+            None => 0,
+            Some(State::Blight) => 1,
+            Some(State::Boom) => 2,
+            Some(State::Bust) => 3,
+            Some(State::CivilLiberty) => 4,
+            Some(State::CivilUnrest) => 5,
+            Some(State::CivilWar) => 6,
+            Some(State::ColdWar) => 7,
+            Some(State::Colonisation) => 8,
+            Some(State::Drought) => 9,
+            Some(State::Election) => 10,
+            Some(State::Expansion) => 11,
+            Some(State::Famine) => 12,
+            Some(State::HistoricEvent) => 13,
+            Some(State::InfrastructureFailure) => 14,
+            Some(State::Investment) => 15,
+            Some(State::Lockdown) => 16,
+            Some(State::NaturalDisaster) => 17,
+            Some(State::Outbreak) => 18,
+            Some(State::PirateAttack) => 19,
+            Some(State::PublicHoliday) => 20,
+            Some(State::Retreat) => 21,
+            Some(State::Revolution) => 22,
+            Some(State::TechnologicalLeap) => 23,
+            Some(State::Terrorism) => 24,
+            Some(State::TradeWar) => 25,
+            Some(State::War) => 26,
+            Some(State::None) => 27,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<State> {
+        match bucket {
+            1 => Some(State::Blight),
+            2 => Some(State::Boom),
+            3 => Some(State::Bust),
+            4 => Some(State::CivilLiberty),
+            5 => Some(State::CivilUnrest),
+            6 => Some(State::CivilWar),
+            7 => Some(State::ColdWar),
+            8 => Some(State::Colonisation),
+            9 => Some(State::Drought),
+            10 => Some(State::Election),
+            11 => Some(State::Expansion),
+            12 => Some(State::Famine),
+            13 => Some(State::HistoricEvent),
+            14 => Some(State::InfrastructureFailure),
+            15 => Some(State::Investment),
+            16 => Some(State::Lockdown),
+            17 => Some(State::NaturalDisaster),
+            18 => Some(State::Outbreak),
+            19 => Some(State::PirateAttack),
+            20 => Some(State::PublicHoliday),
+            21 => Some(State::Retreat),
+            22 => Some(State::Revolution),
+            23 => Some(State::TechnologicalLeap),
+            24 => Some(State::Terrorism),
+            25 => Some(State::TradeWar),
+            26 => Some(State::War),
+            27 => Some(State::None),
+            _ => None,
+        }
+    }
+}
+
+/// The controlling power. No variant says a system has none, so bucket zero
+/// is both nothing on record and no power holding it.
+impl Bucketed for Power {
+    const BUCKETS: usize = 14;
+
+    fn bucket(of: Option<Power>) -> usize {
+        match of {
+            None => 0,
+            Some(Power::AislingDuval) => 1,
+            Some(Power::ArchonDelaine) => 2,
+            Some(Power::ArissaLavignyDuval) => 3,
+            Some(Power::DentonPatreus) => 4,
+            Some(Power::EdmundMahon) => 5,
+            Some(Power::FeliciaWinters) => 6,
+            Some(Power::JeromeArcher) => 7,
+            Some(Power::LiYongRui) => 8,
+            Some(Power::NakatoKaine) => 9,
+            Some(Power::PranavAntal) => 10,
+            Some(Power::YuriGrom) => 11,
+            Some(Power::ZacharyHudson) => 12,
+            Some(Power::ZeminaTorval) => 13,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<Power> {
+        match bucket {
+            1 => Some(Power::AislingDuval),
+            2 => Some(Power::ArchonDelaine),
+            3 => Some(Power::ArissaLavignyDuval),
+            4 => Some(Power::DentonPatreus),
+            5 => Some(Power::EdmundMahon),
+            6 => Some(Power::FeliciaWinters),
+            7 => Some(Power::JeromeArcher),
+            8 => Some(Power::LiYongRui),
+            9 => Some(Power::NakatoKaine),
+            10 => Some(Power::PranavAntal),
+            11 => Some(Power::YuriGrom),
+            12 => Some(Power::ZacharyHudson),
+            13 => Some(Power::ZeminaTorval),
+            _ => None,
+        }
+    }
+}
+
+/// Where a system stands in Powerplay. Like [`Power`], bucket zero is both
+/// nothing on record and outside every power's reach.
+impl Bucketed for PowerplayState {
+    const BUCKETS: usize = 11;
+
+    fn bucket(of: Option<PowerplayState>) -> usize {
+        match of {
+            None => 0,
+            Some(PowerplayState::InPrepareRadius) => 1,
+            Some(PowerplayState::Prepared) => 2,
+            Some(PowerplayState::Exploited) => 3,
+            Some(PowerplayState::Contested) => 4,
+            Some(PowerplayState::Controlled) => 5,
+            Some(PowerplayState::Turmoil) => 6,
+            Some(PowerplayState::HomeSystem) => 7,
+            Some(PowerplayState::Unoccupied) => 8,
+            Some(PowerplayState::Fortified) => 9,
+            Some(PowerplayState::Stronghold) => 10,
+        }
+    }
+
+    fn at(bucket: usize) -> Option<PowerplayState> {
+        match bucket {
+            1 => Some(PowerplayState::InPrepareRadius),
+            2 => Some(PowerplayState::Prepared),
+            3 => Some(PowerplayState::Exploited),
+            4 => Some(PowerplayState::Contested),
+            5 => Some(PowerplayState::Controlled),
+            6 => Some(PowerplayState::Turmoil),
+            7 => Some(PowerplayState::HomeSystem),
+            8 => Some(PowerplayState::Unoccupied),
+            9 => Some(PowerplayState::Fortified),
+            10 => Some(PowerplayState::Stronghold),
+            _ => None,
+        }
+    }
+}
+
+/// Every reading one inhabited system is counted by, as the populated table
+/// holds them
+///
+/// [`Default`] is nothing on record along any of them.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Readings {
+    pub allegiance: Option<Allegiance>,
+    pub government: Option<Government>,
+    pub security: Option<Security>,
+    /// The primary economy; the secondary is what a system trades in
+    /// besides, and is not what it is colored by.
+    pub economy: Option<Economy>,
+    pub state: Option<State>,
+    pub power: Option<Power>,
+    pub powerplay_state: Option<PowerplayState>,
+}
+
+impl Readings {
+    /// The readings off a populated table's row
+    pub fn of(row: &PopulatedSystem) -> Readings {
+        Readings {
+            allegiance: row.allegiance,
+            government: row.government,
+            security: row.security,
+            economy: row.primary_economy,
+            state: row.state,
+            power: row.power,
+            powerplay_state: row.powerplay_state,
+        }
+    }
+}
+
+/// Where each axis's buckets start in [`Inhabited`]'s one histogram, in the
+/// order [`Readings`] lists them.
+const ALLEGIANCE: usize = 0;
+const GOVERNMENT: usize = ALLEGIANCE + Allegiance::BUCKETS;
+const SECURITY: usize = GOVERNMENT + Government::BUCKETS;
+const ECONOMY: usize = SECURITY + Security::BUCKETS;
+const STATE: usize = ECONOMY + Economy::BUCKETS;
+const POWER: usize = STATE + State::BUCKETS;
+const POWERPLAY_STATE: usize = POWER + Power::BUCKETS;
+/// Every axis's buckets, end to end.
+const BUCKETS: usize = POWERPLAY_STATE + PowerplayState::BUCKETS;
+
 /// What a cell carries about the inhabited systems in its whole subtree.
 ///
 /// Built from single systems with [`of_system`](Self::of_system), rolled up
@@ -196,30 +448,31 @@ impl Bucketed for Security {
 ///
 /// [`Default`] is [`ZERO`](Self::ZERO): a record of nobody is the identity of
 /// [`merge`](Self::merge), so the two cannot mean different things.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Inhabited {
     /// How many systems in the subtree anybody lives in.
     count: u64,
     /// Position moments in that weight, one unit a system: the centroid the
     /// political field splats from and the spread of its footprint.
     settled: Moments,
-    /// Inhabited systems per allegiance bucket. Sums to `count`.
-    allegiance: [u32; Allegiance::BUCKETS],
-    /// Inhabited systems per government bucket. Sums to `count`.
-    government: [u32; Government::BUCKETS],
-    /// Inhabited systems per security bucket. Sums to `count`.
-    security: [u32; Security::BUCKETS],
+    /// Inhabited systems per bucket of every axis, the axes end to end at the
+    /// offsets above. Each axis's run sums to `count`.
+    ///
+    /// One array rather than one an axis, so a merge and a removal are one
+    /// loop each whatever the axes are.
+    buckets: [u32; BUCKETS],
+}
+
+impl Default for Inhabited {
+    fn default() -> Inhabited {
+        Inhabited::ZERO
+    }
 }
 
 impl Inhabited {
     /// The empty record, the identity of [`merge`](Self::merge).
-    pub const ZERO: Inhabited = Inhabited {
-        count: 0,
-        settled: Moments::ZERO,
-        allegiance: [0; Allegiance::BUCKETS],
-        government: [0; Government::BUCKETS],
-        security: [0; Security::BUCKETS],
-    };
+    pub const ZERO: Inhabited =
+        Inhabited { count: 0, settled: Moments::ZERO, buckets: [0; BUCKETS] };
 
     /// One inhabited system's contribution: one unit of weight at its
     /// position, and one count in each axis's bucket.
@@ -228,48 +481,30 @@ impl Inhabited {
     /// here — `population > 0` — because the weight is what makes the centroid
     /// the colonies' own, and an empty system contributing would pull it back
     /// toward the count centroid this exists to differ from.
-    pub fn of_system(
-        position: [f64; 3],
-        allegiance: Option<Allegiance>,
-        government: Option<Government>,
-        security: Option<Security>,
-    ) -> Inhabited {
-        let mut a = [0; Allegiance::BUCKETS];
-        a[Allegiance::bucket(allegiance)] = 1;
-        let mut g = [0; Government::BUCKETS];
-        g[Government::bucket(government)] = 1;
-        let mut s = [0; Security::BUCKETS];
-        s[Security::bucket(security)] = 1;
-        Inhabited {
-            count: 1,
-            settled: Moments::point(1.0, position),
-            allegiance: a,
-            government: g,
-            security: s,
-        }
+    pub fn of_system(position: [f64; 3], readings: Readings) -> Inhabited {
+        let mut buckets = [0; BUCKETS];
+        buckets[ALLEGIANCE + Allegiance::bucket(readings.allegiance)] = 1;
+        buckets[GOVERNMENT + Government::bucket(readings.government)] = 1;
+        buckets[SECURITY + Security::bucket(readings.security)] = 1;
+        buckets[ECONOMY + Economy::bucket(readings.economy)] = 1;
+        buckets[STATE + State::bucket(readings.state)] = 1;
+        buckets[POWER + Power::bucket(readings.power)] = 1;
+        buckets[POWERPLAY_STATE
+            + PowerplayState::bucket(readings.powerplay_state)] = 1;
+        Inhabited { count: 1, settled: Moments::point(1.0, position), buckets }
     }
 
     /// Roll two records into one. Commutative and associative, so a subtree
     /// rolls up the same however its children are ordered.
     pub fn merge(self, other: Inhabited) -> Inhabited {
-        let mut allegiance = self.allegiance;
-        let mut government = self.government;
-        let mut security = self.security;
-        for (a, o) in allegiance.iter_mut().zip(other.allegiance) {
+        let mut buckets = self.buckets;
+        for (a, o) in buckets.iter_mut().zip(other.buckets) {
             *a += o;
-        }
-        for (g, o) in government.iter_mut().zip(other.government) {
-            *g += o;
-        }
-        for (s, o) in security.iter_mut().zip(other.security) {
-            *s += o;
         }
         Inhabited {
             count: self.count + other.count,
             settled: self.settled.merge(other.settled),
-            allegiance,
-            government,
-            security,
+            buckets,
         }
     }
 
@@ -280,24 +515,14 @@ impl Inhabited {
     /// Every field subtracts exactly, being the inverse of
     /// [`merge`](Self::merge), the moments included.
     pub fn remove(self, slice: Inhabited) -> Inhabited {
-        let mut allegiance = self.allegiance;
-        let mut government = self.government;
-        let mut security = self.security;
-        for (a, s) in allegiance.iter_mut().zip(slice.allegiance) {
+        let mut buckets = self.buckets;
+        for (a, s) in buckets.iter_mut().zip(slice.buckets) {
             *a -= s;
-        }
-        for (g, s) in government.iter_mut().zip(slice.government) {
-            *g -= s;
-        }
-        for (x, s) in security.iter_mut().zip(slice.security) {
-            *x -= s;
         }
         Inhabited {
             count: self.count - slice.count,
             settled: self.settled.remove(slice.settled),
-            allegiance,
-            government,
-            security,
+            buckets,
         }
     }
 
@@ -324,21 +549,46 @@ impl Inhabited {
         self.settled.rms_radius()
     }
 
+    /// One axis's run of the histogram, `B::BUCKETS` long from `at`
+    fn run<B: Bucketed>(&self, at: usize) -> &[u32] {
+        &self.buckets[at..at + B::BUCKETS]
+    }
+
     /// Inhabited systems per allegiance bucket, which a political view resolves
     /// its colour from. Index with [`Allegiance::bucket`](Bucketed::bucket), name with
-    /// [`Allegiance::at`](Bucketed::at).
-    pub fn allegiance(&self) -> &[u32; Allegiance::BUCKETS] {
-        &self.allegiance
+    /// [`Allegiance::at`](Bucketed::at). Every axis below is read the same way.
+    pub fn allegiance(&self) -> &[u32] {
+        self.run::<Allegiance>(ALLEGIANCE)
     }
 
     /// Inhabited systems per government bucket.
-    pub fn government(&self) -> &[u32; Government::BUCKETS] {
-        &self.government
+    pub fn government(&self) -> &[u32] {
+        self.run::<Government>(GOVERNMENT)
     }
 
     /// Inhabited systems per security bucket.
-    pub fn security(&self) -> &[u32; Security::BUCKETS] {
-        &self.security
+    pub fn security(&self) -> &[u32] {
+        self.run::<Security>(SECURITY)
+    }
+
+    /// Inhabited systems per primary economy bucket.
+    pub fn economy(&self) -> &[u32] {
+        self.run::<Economy>(ECONOMY)
+    }
+
+    /// Inhabited systems per controlling faction state bucket.
+    pub fn state(&self) -> &[u32] {
+        self.run::<State>(STATE)
+    }
+
+    /// Inhabited systems per controlling power bucket.
+    pub fn power(&self) -> &[u32] {
+        self.run::<Power>(POWER)
+    }
+
+    /// Inhabited systems per Powerplay state bucket.
+    pub fn powerplay_state(&self) -> &[u32] {
+        self.run::<PowerplayState>(POWERPLAY_STATE)
     }
 }
 
@@ -395,12 +645,7 @@ impl Inhabitance {
                 row.position[1] as f64,
                 row.position[2] as f64,
             ];
-            let one = Inhabited::of_system(
-                position,
-                row.allegiance,
-                row.government,
-                row.security,
-            );
+            let one = Inhabited::of_system(position, Readings::of(row));
             index.descend(position, |id| {
                 let at = held.entry(id).or_insert(Inhabited::ZERO);
                 *at = at.merge(one);
@@ -460,11 +705,14 @@ mod tests {
             factions: Vec::new(),
             body_count: None,
             non_body_count: None,
+            state: None,
+            power: None,
+            powerplay_state: None,
         }
     }
 
     fn of(at: [f64; 3], allegiance: Option<Allegiance>) -> Inhabited {
-        Inhabited::of_system(at, allegiance, None, None)
+        Inhabited::of_system(at, Readings { allegiance, ..Readings::default() })
     }
 
     #[test]
@@ -477,9 +725,46 @@ mod tests {
             a.allegiance()[Allegiance::bucket(Some(Allegiance::Empire))],
             1
         );
-        assert_eq!(a.allegiance().iter().sum::<u32>(), 1);
-        assert_eq!(a.government().iter().sum::<u32>(), 1);
-        assert_eq!(a.security().iter().sum::<u32>(), 1);
+        for run in [
+            a.allegiance(),
+            a.government(),
+            a.security(),
+            a.economy(),
+            a.state(),
+            a.power(),
+            a.powerplay_state(),
+        ] {
+            assert_eq!(run.iter().sum::<u32>(), 1);
+        }
+    }
+
+    /// Every reading on a row counts in its own axis's bucket, so no axis's
+    /// run of the one histogram reads another's.
+    #[test]
+    fn every_reading_lands_on_its_own_axis() {
+        let a = Inhabited::of_system(
+            [0.0; 3],
+            Readings::of(&PopulatedSystem {
+                primary_economy: Some(Economy::HighTech),
+                state: Some(State::Boom),
+                power: Some(Power::ZeminaTorval),
+                powerplay_state: Some(PowerplayState::Stronghold),
+                ..row(1, [0.0; 3], 1, Some(Allegiance::Empire))
+            }),
+        );
+        assert_eq!(
+            a.allegiance()[Allegiance::bucket(Some(Allegiance::Empire))],
+            1
+        );
+        assert_eq!(a.government()[Government::bucket(None)], 1);
+        assert_eq!(a.economy()[Economy::bucket(Some(Economy::HighTech))], 1);
+        assert_eq!(a.state()[State::bucket(Some(State::Boom))], 1);
+        assert_eq!(a.power()[Power::bucket(Some(Power::ZeminaTorval))], 1);
+        assert_eq!(
+            a.powerplay_state()
+                [PowerplayState::bucket(Some(PowerplayState::Stronghold))],
+            1
+        );
     }
 
     /// Every bucket names exactly the value that counts in it, and the widths
@@ -494,6 +779,10 @@ mod tests {
         round_trips::<Allegiance>();
         round_trips::<Government>();
         round_trips::<Security>();
+        round_trips::<Economy>();
+        round_trips::<State>();
+        round_trips::<Power>();
+        round_trips::<PowerplayState>();
     }
 
     /// The game saying "no allegiance" is not the same fact as nothing having
@@ -561,6 +850,7 @@ mod tests {
         assert_eq!(residual.allegiance(), rest.allegiance());
         assert_eq!(residual.government(), rest.government());
         assert_eq!(residual.security(), rest.security());
+        assert_eq!(residual.state(), rest.state());
         assert!(close3(residual.centroid().unwrap(), rest.centroid().unwrap()));
         assert!(close(residual.spread(), rest.spread()));
     }

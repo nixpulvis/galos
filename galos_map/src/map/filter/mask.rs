@@ -1,9 +1,9 @@
 //! What the user has asked not to see, by the color a system is drawn in
 //!
-//! Every color of every political axis is a toggle, and a toggled one hides
-//! the systems drawn in it. The mask is kept on the index's own buckets
-//! ([`Bucketed`]) rather than on [`Hue`]: seven governments share red, and each
-//! has to be hidden on its own.
+//! Every color of every axis is a toggle, and a toggled one hides the systems
+//! drawn in it. The mask is kept on the index's own buckets ([`Bucketed`])
+//! rather than on [`Hue`]: seven governments share red, and each has to be
+//! hidden on its own.
 //!
 //! **Only the axis the map is colored by applies.** Hiding the prisons and
 //! then coloring by security shows every security rating, the prisons among
@@ -17,41 +17,32 @@
 //! see, and the mask cuts into that, as a span does; see
 //! [`crate::map::filter::Filters::admits`].
 //!
-//! A new axis is a variant of [`ColorBy`] and an arm in each `match` below,
-//! and a layout in [`super::key`]: the mask, the key and the field all walk
+//! A new axis is a run of [`Inhabited`]'s histogram, a variant of
+//! [`ColorBy`] and an arm in each `match` below, a [`Hue`] mapping and a
+//! layout in [`super::key`]: the mask, the key and the field all walk
 //! [`ColorBy::ALL`], so none of them has a list of its own to keep up.
 
 use crate::map::galaxy::spawn::{ColorBy, Hue};
-use elite_journal::{Allegiance, Government, system::Security};
-use galos_index::read::inhabited::{Bucketed, Inhabited};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
+use galos_index::read::inhabited::{Bucketed, Inhabited, Readings};
 use galos_index::records::PopulatedSystem;
 
-/// A system's political readings, by the bucket each counts in
+/// A system's readings, by the bucket each counts in along every axis
 ///
 /// What the mask asks about a system, in the index's own terms, so a system
 /// on the map, a payload point joined against the populated table and a cell's
 /// histogram are all read by the one numbering. [`None`] where a candidate
 /// carries one of these is a system nobody lives in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Buckets {
-    allegiance: u8,
-    government: u8,
-    security: u8,
-}
+pub(crate) struct Buckets([u8; ColorBy::ALL.len()]);
 
 impl Buckets {
-    /// The buckets three readings count in
-    pub(crate) fn of(
-        allegiance: Option<Allegiance>,
-        government: Option<Government>,
-        security: Option<Security>,
-    ) -> Buckets {
-        // The largest axis has eighteen buckets, which a byte holds.
-        Buckets {
-            allegiance: Allegiance::bucket(allegiance) as u8,
-            government: Government::bucket(government) as u8,
-            security: Security::bucket(security) as u8,
-        }
+    /// The buckets a system's readings count in
+    pub(crate) fn of(readings: &Readings) -> Buckets {
+        // No axis has more than 32 buckets, which a byte holds.
+        Buckets(ColorBy::ALL.map(|axis| axis.bucket(readings) as u8))
     }
 
     /// The buckets a populated table's row counts in, where anybody lives there
@@ -60,53 +51,94 @@ impl Buckets {
     /// row the histograms leave out is one the mask reads as uninhabited too
     /// and the field and the marks cannot disagree about which it is.
     pub(crate) fn of_row(row: &PopulatedSystem) -> Option<Buckets> {
-        (row.population > 0)
-            .then(|| Buckets::of(row.allegiance, row.government, row.security))
+        (row.population > 0).then(|| Buckets::of(&Readings::of(row)))
     }
 
     /// The bucket this system counts in along `axis`
     pub(crate) fn on(self, axis: ColorBy) -> usize {
-        usize::from(match axis {
-            ColorBy::Allegiance => self.allegiance,
-            ColorBy::Government => self.government,
-            ColorBy::Security => self.security,
-        })
+        usize::from(self.0[axis.slot()])
     }
 }
 
+/// Every axis's buckets fit a [`Mask`] word with a bit to spare, which
+/// [`Mask::invert`]'s shift needs.
+const _: () = {
+    let mut at = 0;
+    while at < ColorBy::ALL.len() {
+        assert!(ColorBy::ALL[at].buckets() < 32);
+        at += 1;
+    }
+};
+
 impl ColorBy {
     /// Every axis the map can be colored by, in the order the key tabs them
-    pub const ALL: [ColorBy; 3] =
-        [ColorBy::Allegiance, ColorBy::Government, ColorBy::Security];
+    pub const ALL: [ColorBy; 7] = [
+        ColorBy::Allegiance,
+        ColorBy::Government,
+        ColorBy::Security,
+        ColorBy::Economy,
+        ColorBy::State,
+        ColorBy::Power,
+        ColorBy::PowerplayState,
+    ];
 
     /// Where this axis stands in [`Self::ALL`], which is where its bits are
     /// kept in a [`Mask`]
-    fn slot(self) -> usize {
+    const fn slot(self) -> usize {
         match self {
             ColorBy::Allegiance => 0,
             ColorBy::Government => 1,
             ColorBy::Security => 2,
+            ColorBy::Economy => 3,
+            ColorBy::State => 4,
+            ColorBy::Power => 5,
+            ColorBy::PowerplayState => 6,
         }
     }
 
     /// How many buckets this axis counts in, the unreported one included
-    pub fn buckets(self) -> usize {
+    pub const fn buckets(self) -> usize {
         match self {
             ColorBy::Allegiance => Allegiance::BUCKETS,
             ColorBy::Government => Government::BUCKETS,
             ColorBy::Security => Security::BUCKETS,
+            ColorBy::Economy => Economy::BUCKETS,
+            ColorBy::State => State::BUCKETS,
+            ColorBy::Power => Power::BUCKETS,
+            ColorBy::PowerplayState => PowerplayState::BUCKETS,
+        }
+    }
+
+    /// The bucket a system reading `readings` counts in along this axis
+    pub(crate) fn bucket(self, readings: &Readings) -> usize {
+        match self {
+            ColorBy::Allegiance => Allegiance::bucket(readings.allegiance),
+            ColorBy::Government => Government::bucket(readings.government),
+            ColorBy::Security => Security::bucket(readings.security),
+            ColorBy::Economy => Economy::bucket(readings.economy),
+            ColorBy::State => State::bucket(readings.state),
+            ColorBy::Power => Power::bucket(readings.power),
+            ColorBy::PowerplayState => {
+                PowerplayState::bucket(readings.powerplay_state)
+            }
         }
     }
 
     /// The color a bucket of this axis is drawn in
     ///
-    /// Through the very mapping a mark is painted by, so the key and the map
-    /// cannot disagree about what a color means.
+    /// The one mapping a mark, a cell and a key row are all painted by, so
+    /// the key and the map cannot disagree about what a color means.
     pub(crate) fn hue_of(self, bucket: usize) -> Hue {
         match self {
             ColorBy::Allegiance => Hue::allegiance(Bucketed::at(bucket)),
             ColorBy::Government => Hue::government(Bucketed::at(bucket)),
             ColorBy::Security => Hue::security(Bucketed::at(bucket)),
+            ColorBy::Economy => Hue::economy(Bucketed::at(bucket)),
+            ColorBy::State => Hue::state(Bucketed::at(bucket)),
+            ColorBy::Power => Hue::power(Bucketed::at(bucket)),
+            ColorBy::PowerplayState => {
+                Hue::powerplay_state(Bucketed::at(bucket))
+            }
         }
     }
 
@@ -116,6 +148,10 @@ impl ColorBy {
             ColorBy::Allegiance => held.allegiance(),
             ColorBy::Government => held.government(),
             ColorBy::Security => held.security(),
+            ColorBy::Economy => held.economy(),
+            ColorBy::State => held.state(),
+            ColorBy::Power => held.power(),
+            ColorBy::PowerplayState => held.powerplay_state(),
         }
     }
 
@@ -125,13 +161,17 @@ impl ColorBy {
             ColorBy::Allegiance => "Allegiance",
             ColorBy::Government => "Government",
             ColorBy::Security => "Security",
+            ColorBy::Economy => "Economy",
+            ColorBy::State => "State",
+            ColorBy::Power => "Power",
+            ColorBy::PowerplayState => "Powerplay",
         }
     }
 }
 
 /// Which buckets of every axis are hidden, and which axis that is asked along
 ///
-/// A bit a bucket, one word an axis: the largest axis is eighteen buckets.
+/// A bit a bucket, one word an axis: the largest axis is twenty-eight buckets.
 /// Only the words of the axis the map is colored by ([`Self::drawn`]) are
 /// asked; the others are kept for when the map is colored by theirs.
 ///
@@ -350,11 +390,12 @@ mod tests {
     use super::*;
 
     fn federal(government: Government, security: Security) -> Buckets {
-        Buckets::of(
-            Some(Allegiance::Federation),
-            Some(government),
-            Some(security),
-        )
+        Buckets::of(&Readings {
+            allegiance: Some(Allegiance::Federation),
+            government: Some(government),
+            security: Some(security),
+            ..Readings::default()
+        })
     }
 
     fn bucket_of<T: Bucketed>(value: T) -> usize {
@@ -373,11 +414,12 @@ mod tests {
         assert!(
             !mask.admits(Some(federal(Government::Democracy, Security::High)))
         );
-        assert!(mask.admits(Some(Buckets::of(
-            Some(Allegiance::Empire),
-            Some(Government::Democracy),
-            Some(Security::High),
-        ))));
+        assert!(mask.admits(Some(Buckets::of(&Readings {
+            allegiance: Some(Allegiance::Empire),
+            government: Some(Government::Democracy),
+            security: Some(Security::High),
+            ..Readings::default()
+        }))));
         assert!(mask.admits(None), "nobody lives there, so nothing hid it");
     }
 
@@ -398,6 +440,26 @@ mod tests {
         assert!(
             mask.admits(Some(federal(Government::Democracy, Security::High)))
         );
+    }
+
+    /// A hidden state hides the systems in it once the map is colored by
+    /// state, and the other readings of those systems do not come into it
+    #[test]
+    fn a_hidden_state_hides_its_systems_along_state() {
+        let mut mask = Mask::default();
+        mask.set(ColorBy::State, [bucket_of(State::War)], true);
+        let at = |state| {
+            Buckets::of(&Readings {
+                allegiance: Some(Allegiance::Federation),
+                state: Some(state),
+                ..Readings::default()
+            })
+        };
+
+        assert!(mask.admits(Some(at(State::War))), "drawn by allegiance");
+        mask.draw(Some(ColorBy::State));
+        assert!(!mask.admits(Some(at(State::War))));
+        assert!(mask.admits(Some(at(State::Boom))));
     }
 
     /// Uninhabited applies whichever axis is drawn, being a value of none
@@ -429,7 +491,7 @@ mod tests {
         let mut mask = Mask::default();
         mask.set_uninhabited(true);
         assert!(!mask.admits(None));
-        assert!(mask.admits(Some(Buckets::of(None, None, None))));
+        assert!(mask.admits(Some(Buckets::of(&Readings::default()))));
     }
 
     /// Solo shows one value of an axis and hides the rest, empty space

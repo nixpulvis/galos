@@ -25,6 +25,14 @@
 //!   reason.
 //! - The stamp holds at the newest of the two either way, so a message
 //!   delivered late does not put the reading back to when it was sent.
+//! - For the three columns that go stale by the week — the controlling
+//!   faction's state, the controlling power and the Powerplay standing —
+//!   "there is none" is a reading in its own right and merges like one. An
+//!   arrival states all three whether or not the system has them, so a
+//!   newer arrival that names no state or no power takes last week's off,
+//!   and an older one does not fill in a column a newer one emptied. What
+//!   does not speak to them at all (a scan, a docking, a dump without them)
+//!   leaves them as every other blank does. See [`SystemReport::state`].
 //!
 //! It is not enough to take the later report. EDDN carries messages from
 //! commanders in no order at all, a journal directory holds sessions restored
@@ -47,12 +55,15 @@
 //! hand them straight to [`crate::accumulate::merge`]. A `BodyReport` would be
 //! a shape with one source and nothing to reconcile.
 
+use crate::accumulate::merge;
 use crate::core::name::SystemName;
 use crate::records::PopulatedSystem;
 use chrono::{DateTime, Utc};
 use elite_journal::entry::route::Destination;
 use elite_journal::entry::{Entry, Event};
-use elite_journal::prelude::{Allegiance, Economy, Government, Security};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
 use elite_journal::system::Coordinate;
 
 /// A system as one report describes it, and as everything reported so far
@@ -65,7 +76,7 @@ use elite_journal::system::Coordinate;
 ///
 /// Every column is optional because every column is something a particular
 /// report may not mention. A scan names a system and places it and says
-/// nothing about who runs it; an arrival says all six political columns; a
+/// nothing about who runs it; an arrival says all nine political columns; a
 /// honk says how much there is to find and nothing else. The address is the
 /// exception: a report nothing can key is not a report.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +119,28 @@ pub struct SystemReport {
     /// what [`crate::records::derive::lit`] falls back to when a system has no
     /// scanned star — which is two thirds of the galaxy.
     pub star_class: Option<String>,
+
+    /// The controlling faction's state, the controlling power and the
+    /// system's Powerplay standing: the three columns that go stale by the
+    /// week.
+    ///
+    /// Each is two options deep, because for these "said there is none" is a
+    /// reading and "said nothing" is not. The outer [`None`] is a report
+    /// that does not speak to the column — a scan, a docking, a dump that
+    /// does not carry it — and leaves what stands like any other blank. An
+    /// inner [`None`] is a report that states the column and states it
+    /// empty: an arrival whose controlling faction is in no state, or that
+    /// names no controlling power. That one is merged as a reading, so it
+    /// takes the column off a system a newer arrival says has lost it rather
+    /// than leaving last week's there for good.
+    ///
+    /// The state is never `Some(Some(State::None))`: the game's empty state
+    /// is the inner [`None`], which is one spelling of one fact and keeps
+    /// `State`'s peculiar equality (its `None` is unequal to itself) out of
+    /// a report's.
+    pub state: Option<Option<State>>,
+    pub power: Option<Option<Power>>,
+    pub powerplay_state: Option<Option<PowerplayState>>,
 }
 
 impl SystemReport {
@@ -127,6 +160,9 @@ impl SystemReport {
             body_count: None,
             non_body_count: None,
             star_class: None,
+            state: None,
+            power: None,
+            powerplay_state: None,
         }
     }
 
@@ -267,7 +303,14 @@ impl SystemReport {
     }
 
     /// A system as an arrival event states it, which is in full.
-    fn arrival(
+    ///
+    /// In full including the three weekly columns: an arrival names its
+    /// controlling faction and that faction's state, and names a
+    /// controlling power and a Powerplay standing wherever the system has
+    /// them. So a controlling faction in no state, no controlling faction at
+    /// all, and a power or standing left out are each stated as none —
+    /// which is what takes a lapsed state or a lost system off the row.
+    pub fn arrival(
         at: DateTime<Utc>,
         system: &elite_journal::system::System,
     ) -> SystemReport {
@@ -280,6 +323,11 @@ impl SystemReport {
             allegiance: system.allegiance,
             primary_economy: system.economy,
             secondary_economy: system.second_economy,
+            state: Some(stated(
+                system.controlling_faction.as_ref().and_then(|it| it.state),
+            )),
+            power: Some(system.controlling_power),
+            powerplay_state: Some(system.powerplay_state),
             ..SystemReport::new(system.address, at)
         }
     }
@@ -327,6 +375,11 @@ impl SystemReport {
         fill(&mut self.primary_economy, said.primary_economy, newer);
         fill(&mut self.secondary_economy, said.secondary_economy, newer);
         fill(&mut self.star_class, said.star_class, newer);
+        // A stated "none" is a reading here, so a newer arrival that names
+        // no state or no power clears the column; see the field.
+        fill(&mut self.state, said.state, newer);
+        fill(&mut self.power, said.power, newer);
+        fill(&mut self.powerplay_state, said.powerplay_state, newer);
 
         // The two that cannot go stale, and so are not weighed by the stamps
         // at all. A system does not gain or lose bodies, and a timestamp
@@ -386,8 +439,52 @@ impl SystemReport {
             factions: Vec::new(),
             body_count: self.body_count,
             non_body_count: self.non_body_count,
+            // A table row cannot tell "none" from "never said", so both are
+            // [`None`] there. What that costs is answered by
+            // [`SystemReport::populated_over`].
+            state: self.state.flatten(),
+            power: self.power.flatten(),
+            powerplay_state: self.powerplay_state.flatten(),
         })
     }
+
+    /// [`SystemReport::populated`] laid over the row a table already
+    /// publishes for this system, `stood`.
+    ///
+    /// [`merge::populated_over`] with the report as the newer, which is the
+    /// rule, and one step before it that only a report can take. A table
+    /// row states its three weekly columns whole — it has no way to say it
+    /// never heard of a power — so where this report does not speak to one
+    /// of them, what stands is carried into the row before it is laid down.
+    /// Where it does speak, "none" included, the report's reading is the
+    /// row's.
+    pub fn populated_over(
+        &self,
+        stood: Option<&PopulatedSystem>,
+    ) -> Option<PopulatedSystem> {
+        let mut said = self.populated()?;
+        let Some(stood) = stood else { return Some(said) };
+        if self.state.is_none() {
+            said.state = stood.state;
+        }
+        if self.power.is_none() {
+            said.power = stood.power;
+        }
+        if self.powerplay_state.is_none() {
+            said.powerplay_state = stood.powerplay_state;
+        }
+        Some(merge::populated_over(stood, said, true))
+    }
+}
+
+/// A state as a report holds it: the game's empty state is no state.
+///
+/// Every source spells the faction that is in no state its own way — the
+/// journal `""` or `"None"`, spansh a missing key or `null`, EDSM `"None"` —
+/// and all of them arrive as either [`None`] or [`State::None`]. This makes
+/// the two one, so a state is either a real one or [`None`].
+pub fn stated(state: Option<State>) -> Option<State> {
+    state.filter(|it| !matches!(it, State::None))
 }
 
 /// One column, filled as the merge rule says.
@@ -398,5 +495,161 @@ impl SystemReport {
 fn fill<T>(held: &mut Option<T>, said: Option<T>, newer: bool) {
     if said.is_some() && (newer || held.is_none()) {
         *held = said;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use elite_journal::faction::Faction;
+    use elite_journal::system::System as JournalSystem;
+
+    fn at(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_790_000_000 + secs, 0).unwrap()
+    }
+
+    /// An arrival in a populated system, placed and named.
+    fn arrival(
+        when: i64,
+        state: Option<State>,
+        power: Option<Power>,
+        powerplay_state: Option<PowerplayState>,
+    ) -> SystemReport {
+        let mut system = JournalSystem::new(1, "Somewhere");
+        system.pos = Some(Coordinate { x: 1.0, y: 2.0, z: 3.0 });
+        system.population = Some(1_000);
+        system.controlling_faction =
+            Some(Faction { name: "Somebody".into(), state });
+        system.controlling_power = power;
+        system.powerplay_state = powerplay_state;
+        SystemReport::arrival(at(when), &system)
+    }
+
+    /// A report that names the system and says nothing of who runs it.
+    fn scan(when: i64) -> SystemReport {
+        SystemReport {
+            name: Some(SystemName::new("Somewhere")),
+            ..SystemReport::new(1, at(when))
+        }
+    }
+
+    fn held() -> SystemReport {
+        arrival(
+            0,
+            Some(State::Boom),
+            Some(Power::NakatoKaine),
+            Some(PowerplayState::Fortified),
+        )
+    }
+
+    /// The three weekly columns, as a report holds them.
+    type Standing = (
+        Option<Option<State>>,
+        Option<Option<Power>>,
+        Option<Option<PowerplayState>>,
+    );
+
+    fn standing(report: &SystemReport) -> Standing {
+        (report.state, report.power, report.powerplay_state)
+    }
+
+    /// An arrival states all three, and states an empty one as none — the
+    /// game's empty state included.
+    #[test]
+    fn an_arrival_states_the_standing_in_full() {
+        assert_eq!(
+            standing(&held()),
+            (
+                Some(Some(State::Boom)),
+                Some(Some(Power::NakatoKaine)),
+                Some(Some(PowerplayState::Fortified)),
+            ),
+        );
+        assert_eq!(
+            standing(&arrival(0, Some(State::None), None, None)),
+            (Some(None), Some(None), Some(None)),
+        );
+
+        let mut unpopulated = JournalSystem::new(1, "Somewhere");
+        unpopulated.pos = Some(Coordinate { x: 1.0, y: 2.0, z: 3.0 });
+        assert_eq!(
+            standing(&SystemReport::arrival(at(0), &unpopulated)),
+            (Some(None), Some(None), Some(None)),
+            "no controlling faction is a faction in no state",
+        );
+        assert_eq!(standing(&scan(0)), (None, None, None));
+    }
+
+    /// A newer arrival that says there is none takes the standing off.
+    #[test]
+    fn a_newer_none_clears() {
+        let mut merged = held();
+        merged.over(arrival(60, None, None, None));
+        assert_eq!(standing(&merged), (Some(None), Some(None), Some(None)));
+    }
+
+    /// A newer report that does not speak to the standing leaves it.
+    #[test]
+    fn a_newer_silence_keeps() {
+        let mut merged = held();
+        merged.over(scan(60));
+        assert_eq!(standing(&merged), standing(&held()));
+    }
+
+    /// An older reading overrides neither a newer reading nor a newer none,
+    /// and still fills what nothing has said.
+    #[test]
+    fn an_older_reading_only_fills_the_unsaid() {
+        let mut newer = arrival(
+            60,
+            Some(State::War),
+            Some(Power::EdmundMahon),
+            Some(PowerplayState::Exploited),
+        );
+        let kept = standing(&newer);
+        newer.over(held());
+        assert_eq!(standing(&newer), kept, "an older reading overrode");
+
+        let mut emptied = arrival(60, None, None, None);
+        emptied.over(held());
+        assert_eq!(
+            standing(&emptied),
+            (Some(None), Some(None), Some(None)),
+            "an older reading filled what a newer one emptied",
+        );
+
+        let mut unsaid = scan(60);
+        unsaid.over(held());
+        assert_eq!(standing(&unsaid), standing(&held()));
+    }
+
+    /// A published row carries what the report does not speak to and
+    /// takes what it does, "none" included.
+    #[test]
+    fn a_report_over_a_row_keeps_only_the_unspoken() {
+        let stood = held().populated().expect("a populated row");
+        assert_eq!(stood.power, Some(Power::NakatoKaine));
+
+        let emptied = arrival(60, None, None, None);
+        let row = emptied.populated_over(Some(&stood)).expect("a row");
+        assert_eq!(
+            (row.state, row.power, row.powerplay_state),
+            (None, None, None),
+            "an arrival saying none left the old standing",
+        );
+
+        // A dump carrying the population and nothing of the standing.
+        let silent = SystemReport {
+            position: Some(Coordinate { x: 1.0, y: 2.0, z: 3.0 }),
+            population: Some(2_000),
+            ..scan(60)
+        };
+        let row = silent.populated_over(Some(&stood)).expect("a row");
+        assert_eq!(row.population, 2_000);
+        assert_eq!(
+            (row.state, row.power, row.powerplay_state),
+            (stood.state, stood.power, stood.powerplay_state),
+            "a report silent on the standing took it off",
+        );
     }
 }

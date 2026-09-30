@@ -420,7 +420,15 @@ impl Reading {
 /// accumulator directly. Two of these that had drifted apart would be two
 /// directories that disagree about the political columns of every system in
 /// the galaxy.
+///
+/// The dump names a controlling faction for every system anybody lives in,
+/// and where it does it states the system's standing whole: the faction's
+/// state, and a controlling power and Powerplay standing wherever there are
+/// any. So a named faction with no state, or no power beside it, is a
+/// reading of none. Where it names no faction the dump says nothing of the
+/// three, and nothing is what the report says.
 fn reported(system: spansh::System) -> SystemReport {
+    let standing = system.controlling_faction.is_some();
     SystemReport {
         name: Some(SystemName::new(system.name)),
         position: Some(system.coords),
@@ -431,6 +439,9 @@ fn reported(system: spansh::System) -> SystemReport {
         primary_economy: system.primary_economy,
         secondary_economy: system.secondary_economy,
         body_count: system.body_count,
+        state: system.controlling_faction.map(|faction| faction.state),
+        power: standing.then_some(system.controlling_power),
+        powerplay_state: standing.then_some(system.power_state),
         ..SystemReport::new(system.id64, system.update_time)
     }
 }

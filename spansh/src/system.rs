@@ -14,7 +14,8 @@
 //! The dump carries more than the journal has anywhere to put: a body's
 //! `rings`, `belts`, `signals`, `reserveLevel`, `atmosphereComposition`,
 //! `timestamps` and `stations`, and a system's `stations`, `factions`,
-//! `powers` and `thargoidWar`. Those are read past.
+//! `powers`, the Powerplay progress figures and `thargoidWar`. Those are
+//! read past. Of the controlling faction only its state is read.
 
 use crate::class_of;
 use chrono::{DateTime, Utc};
@@ -28,6 +29,7 @@ use elite_journal::entry::incremental::exploration::{
     Scan, ScanBaryCentre, ScanTarget,
 };
 use elite_journal::entry::{Entry, Event};
+use elite_journal::prelude::{Power, PowerplayState, State};
 use elite_journal::system::{Coordinate, Economy, Security};
 use elite_journal::{Allegiance, Government};
 use serde::Deserialize;
@@ -122,6 +124,27 @@ pub struct System {
     /// brief file, which lists none.
     #[serde(default)]
     pub bodies: Vec<Body>,
+
+    /// Who holds the system, where anybody does. Only in the full file,
+    /// and only for a populated system.
+    pub controlling_faction: Option<ControllingFaction>,
+    /// The power holding the system. Absent where none does.
+    pub controlling_power: Option<Power>,
+    /// The system's Powerplay standing. Absent, or `null`, where no power
+    /// has a hand in it.
+    #[serde(default)]
+    pub power_state: Option<PowerplayState>,
+}
+
+/// The one thing read off a system's controlling faction: its state.
+///
+/// The dump writes a faction in no state three ways -- `"None"`, `null`,
+/// and the key left out, which is what most controlling factions in no
+/// state get -- and all three read as [`None`].
+#[derive(Clone, Debug, Deserialize)]
+pub struct ControllingFaction {
+    #[serde(deserialize_with = "null_is_none", default)]
+    pub state: Option<State>,
 }
 
 /// Which of the three kinds of thing a [`Body`] is.

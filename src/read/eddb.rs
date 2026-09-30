@@ -84,6 +84,13 @@ impl Eddb {
                 continue;
             };
 
+            // EDDB's power and standing are the first Powerplay's, and a
+            // blank is not taken as "none": the site shut before the
+            // second, so a blank from it says nothing about a system now.
+            // What it names is a reading, stamped with the row's own time.
+            // It has no column for the controlling faction's state.
+            let power = system.controlling_power().map(Some);
+            let powerplay_state = system.powerplay_state().map(Some);
             let landed = sink
                 .system(
                     &SystemReport {
@@ -98,6 +105,8 @@ impl Eddb {
                         government: system.government,
                         allegiance: system.allegiance,
                         primary_economy: system.primary_economy,
+                        power,
+                        powerplay_state,
                         ..SystemReport::new(address as i64, system.updated_at)
                     },
                     "EDDB dump",

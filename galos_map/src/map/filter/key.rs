@@ -1,12 +1,14 @@
 //! How the color key groups its rows: a top tier an axis, and groups under it
 //!
 //! The key does not list every value flat. Allegiance leads with the three
-//! powers and folds the rest under Other; government groups by the color each
-//! is drawn in, seven of them sharing red; security is five values and lists
-//! them. Only the allegiance split is written by hand. The government and
-//! security groups are built by walking every bucket through the mapping a
-//! mark is painted by ([`ColorBy::hue_of`]), so the key and the map cannot
-//! disagree about which color means what.
+//! powers and folds the rest under Other; government, economy and state
+//! group by the color each is drawn in, seven governments sharing red; a
+//! controlling power groups under the allegiance it answers to; security and
+//! Powerplay standing are a handful of values each and list them. Only the
+//! allegiance split and the two lists' orders are written by hand. The
+//! groups are built by walking every bucket through the mapping a mark is
+//! painted by ([`ColorBy::hue_of`]), so the key and the map cannot disagree
+//! about which color means what.
 //!
 //! Model, not drawing. The Filter tab draws these as rows, the color row as
 //! one chip a tier and the mini legend as one line a tier; all three read the
@@ -14,7 +16,9 @@
 
 use super::mask::Mask;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
-use elite_journal::{Allegiance, Government, system::Security};
+use elite_journal::prelude::{
+    Allegiance, Economy, Government, Power, PowerplayState, Security, State,
+};
 use galos_index::read::inhabited::{Bucketed, Inhabited};
 
 /// Whether Independent stands beside the three powers rather than under
@@ -143,8 +147,12 @@ impl Tier {
 pub fn tiers(axis: ColorBy) -> Vec<Tier> {
     match axis {
         ColorBy::Allegiance => allegiance(),
-        ColorBy::Government => by_hue(axis, &GOVERNMENT_HUES),
+        ColorBy::Government => by_hue(axis, &GOVERNMENT_HUES, hue_name),
         ColorBy::Security => items(axis).into_iter().map(Tier::Item).collect(),
+        ColorBy::Economy => by_hue(axis, &ECONOMY_HUES, hue_name),
+        ColorBy::State => by_hue(axis, &STATE_HUES, hue_name),
+        ColorBy::Power => by_hue(axis, &POWER_HUES, power_bloc),
+        ColorBy::PowerplayState => in_order(axis, &POWERPLAY_ORDER),
     }
 }
 
@@ -177,6 +185,52 @@ const GOVERNMENT_HUES: [Hue; 8] = [
     Hue::Green,
     Hue::Magenta,
     Hue::Grey,
+];
+
+/// The order an economy's colors stand in: from the ground up, the land and
+/// what is dug out of it before what is made of it and what is sold
+const ECONOMY_HUES: [Hue; 8] = [
+    Hue::Green,
+    Hue::Orange,
+    Hue::Yellow,
+    Hue::Cyan,
+    Hue::Blue,
+    Hue::Red,
+    Hue::Magenta,
+    Hue::Grey,
+];
+
+/// The order a state's colors stand in: the trouble first, the good times
+/// after, and no state at all last
+const STATE_HUES: [Hue; 8] = [
+    Hue::Red,
+    Hue::Orange,
+    Hue::Magenta,
+    Hue::Yellow,
+    Hue::Blue,
+    Hue::Cyan,
+    Hue::Green,
+    Hue::Grey,
+];
+
+/// The order a power's colors stand in, which are its allegiance's: the
+/// three superpowers as allegiance leads with them, then the independents
+const POWER_HUES: [Hue; 5] =
+    [Hue::Red, Hue::Cyan, Hue::Green, Hue::Yellow, Hue::Grey];
+
+/// The order Powerplay standings are listed in: down the ladder of a hold,
+/// then the fights over one
+const POWERPLAY_ORDER: [PowerplayState; 10] = [
+    PowerplayState::Stronghold,
+    PowerplayState::HomeSystem,
+    PowerplayState::Fortified,
+    PowerplayState::Controlled,
+    PowerplayState::Exploited,
+    PowerplayState::Unoccupied,
+    PowerplayState::Prepared,
+    PowerplayState::InPrepareRadius,
+    PowerplayState::Contested,
+    PowerplayState::Turmoil,
 ];
 
 /// Every value of `axis`, one item each, in bucket order
@@ -236,11 +290,16 @@ pub fn held_tiers(axis: ColorBy, held: Option<&Inhabited>) -> Vec<Tier> {
         .collect()
 }
 
-/// `axis`'s values grouped by the color each is drawn in, in `order`
+/// `axis`'s values grouped by the color each is drawn in, in `order`, each
+/// group headed by what `name` calls its color
 ///
 /// A color only one value is drawn in is that value's own row rather than a
 /// group of one.
-fn by_hue(axis: ColorBy, order: &[Hue]) -> Vec<Tier> {
+fn by_hue(
+    axis: ColorBy,
+    order: &[Hue],
+    name: fn(Hue) -> &'static str,
+) -> Vec<Tier> {
     let values = items(axis);
     order
         .iter()
@@ -255,7 +314,7 @@ fn by_hue(axis: ColorBy, order: &[Hue]) -> Vec<Tier> {
                 0 => None,
                 1 => members.pop().map(Tier::Item),
                 _ => Some(Tier::Group {
-                    name: hue_name(*hue),
+                    name: name(*hue),
                     hue: Some(*hue),
                     collapsible: false,
                     items: members,
@@ -263,6 +322,26 @@ fn by_hue(axis: ColorBy, order: &[Hue]) -> Vec<Tier> {
             }
         })
         .collect()
+}
+
+/// `axis`'s values one row each, `order` first and the named bucket zero
+/// after, as nothing on record is
+fn in_order<T: Bucketed + Copy>(axis: ColorBy, order: &[T]) -> Vec<Tier> {
+    let all = items(axis);
+    order
+        .iter()
+        .map(|value| T::bucket(Some(*value)))
+        .chain(std::iter::once(0))
+        .map(|bucket| Tier::Item(item_of(&all, bucket)))
+        .collect()
+}
+
+/// The item of `all` counting `bucket`
+fn item_of(all: &[Item], bucket: usize) -> Item {
+    all.iter()
+        .find(|item| item.buckets.contains(&bucket))
+        .cloned()
+        .expect("every bucket has an item")
 }
 
 /// The three powers, and everything else under Other
@@ -283,13 +362,8 @@ fn allegiance() -> Vec<Tier> {
         Allegiance::None,
     ];
     let all = items(axis);
-    let find = |value: Allegiance| {
-        let bucket = Allegiance::bucket(Some(value));
-        all.iter()
-            .find(|item| item.buckets.contains(&bucket))
-            .cloned()
-            .expect("every allegiance has an item")
-    };
+    let find =
+        |value: Allegiance| item_of(&all, Allegiance::bucket(Some(value)));
     let mut tiers: Vec<Tier> =
         top.iter().map(|value| Tier::Item(find(*value))).collect();
     tiers.push(Tier::Group {
@@ -323,11 +397,23 @@ fn hue_name(hue: Hue) -> &'static str {
     }
 }
 
+/// What a power's color is called, as its group's header says it: the
+/// allegiance every power drawn in it answers to
+fn power_bloc(hue: Hue) -> &'static str {
+    match hue {
+        Hue::Red => "Federation",
+        Hue::Cyan => "Empire",
+        Hue::Green => "Alliance",
+        Hue::Yellow => "Independent",
+        _ => hue_name(hue),
+    }
+}
+
 /// What a bucket's value is called, as a row says it
 ///
 /// Nothing for the unreported bucket, which has no row of its own; see
 /// [`Item`].
-fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
+pub(crate) fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
     match axis {
         ColorBy::Allegiance => match Allegiance::at(bucket) {
             Some(Allegiance::Alliance) => "Alliance",
@@ -371,12 +457,95 @@ fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
             Some(Security::Anarchy) => "Anarchy",
             None => "",
         },
+        ColorBy::Economy => match Economy::at(bucket) {
+            Some(Economy::Agriculture) => "Agriculture",
+            Some(Economy::Colony) => "Colony",
+            Some(Economy::Extraction) => "Extraction",
+            Some(Economy::HighTech) => "High Tech",
+            Some(Economy::Industrial) => "Industrial",
+            Some(Economy::Military) => "Military",
+            Some(Economy::Refinery) => "Refinery",
+            Some(Economy::Service) => "Service",
+            Some(Economy::Terraforming) => "Terraforming",
+            Some(Economy::Tourism) => "Tourism",
+            Some(Economy::Carrier) => "Carrier",
+            Some(Economy::Prison) => "Prison",
+            Some(Economy::Rescue) => "Rescue",
+            Some(Economy::PrivateEnterprise) => "Private Enterprise",
+            Some(Economy::Repair) => "Repair",
+            Some(Economy::Undefined) => "Undefined",
+            Some(Economy::None) => "No economy",
+            None => "",
+        },
+        ColorBy::State => match State::at(bucket) {
+            Some(State::Blight) => "Blight",
+            Some(State::Boom) => "Boom",
+            Some(State::Bust) => "Bust",
+            Some(State::CivilLiberty) => "Civil Liberty",
+            Some(State::CivilUnrest) => "Civil Unrest",
+            Some(State::CivilWar) => "Civil War",
+            Some(State::ColdWar) => "Cold War",
+            Some(State::Colonisation) => "Colonisation",
+            Some(State::Drought) => "Drought",
+            Some(State::Election) => "Election",
+            Some(State::Expansion) => "Expansion",
+            Some(State::Famine) => "Famine",
+            Some(State::HistoricEvent) => "Historic Event",
+            Some(State::InfrastructureFailure) => "Infrastructure Failure",
+            Some(State::Investment) => "Investment",
+            Some(State::Lockdown) => "Lockdown",
+            Some(State::NaturalDisaster) => "Natural Disaster",
+            Some(State::Outbreak) => "Outbreak",
+            Some(State::PirateAttack) => "Pirate Attack",
+            Some(State::PublicHoliday) => "Public Holiday",
+            Some(State::Retreat) => "Retreat",
+            Some(State::Revolution) => "Revolution",
+            Some(State::TechnologicalLeap) => "Technological Leap",
+            Some(State::Terrorism) => "Terrorism",
+            Some(State::TradeWar) => "Trade War",
+            Some(State::War) => "War",
+            Some(State::None) => "No state",
+            None => "",
+        },
+        // Bucket zero is named along the two Powerplay axes: no power holding
+        // a system is a reading, and there is no variant of its own to fold
+        // it into.
+        ColorBy::Power => match Power::at(bucket) {
+            Some(Power::AislingDuval) => "Aisling Duval",
+            Some(Power::ArchonDelaine) => "Archon Delaine",
+            Some(Power::ArissaLavignyDuval) => "Arissa Lavigny-Duval",
+            Some(Power::DentonPatreus) => "Denton Patreus",
+            Some(Power::EdmundMahon) => "Edmund Mahon",
+            Some(Power::FeliciaWinters) => "Felicia Winters",
+            Some(Power::JeromeArcher) => "Jerome Archer",
+            Some(Power::LiYongRui) => "Li Yong-Rui",
+            Some(Power::NakatoKaine) => "Nakato Kaine",
+            Some(Power::PranavAntal) => "Pranav Antal",
+            Some(Power::YuriGrom) => "Yuri Grom",
+            Some(Power::ZacharyHudson) => "Zachary Hudson",
+            Some(Power::ZeminaTorval) => "Zemina Torval",
+            None => "No power",
+        },
+        ColorBy::PowerplayState => match PowerplayState::at(bucket) {
+            Some(PowerplayState::InPrepareRadius) => "In Prepare Radius",
+            Some(PowerplayState::Prepared) => "Prepared",
+            Some(PowerplayState::Exploited) => "Exploited",
+            Some(PowerplayState::Contested) => "Contested",
+            Some(PowerplayState::Controlled) => "Controlled",
+            Some(PowerplayState::Turmoil) => "Turmoil",
+            Some(PowerplayState::HomeSystem) => "Home System",
+            Some(PowerplayState::Unoccupied) => "Unoccupied",
+            Some(PowerplayState::Fortified) => "Fortified",
+            Some(PowerplayState::Stronghold) => "Stronghold",
+            None => "Not in Powerplay",
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use galos_index::read::inhabited::Readings;
 
     /// Every bucket of every axis stands in exactly one row, so there is no
     /// color the key cannot hide and none it hides twice
@@ -467,15 +636,36 @@ mod tests {
         assert_eq!(rows[3].items()[0].hue, Hue::Red);
     }
 
+    /// A power is listed under the allegiance it answers to, and no power
+    /// holding a system is a row of its own
+    #[test]
+    fn power_groups_under_its_allegiance() {
+        let tiers = tiers(ColorBy::Power);
+        let names: Vec<&str> = tiers.iter().map(Tier::name).collect();
+        assert_eq!(
+            names,
+            ["Federation", "Empire", "Alliance", "Independent", "No power"]
+        );
+        let members: Vec<&str> =
+            tiers[0].items().iter().map(|item| item.name).collect();
+        assert_eq!(
+            members,
+            ["Felicia Winters", "Jerome Archer", "Zachary Hudson"]
+        );
+    }
+
     /// A value no colony holds is not listed, and a group it leaves with
     /// one member is that member's own row
     #[test]
     fn a_value_no_colony_holds_is_not_listed() {
         let held = Inhabited::of_system(
             [0.; 3],
-            Some(Allegiance::Federation),
-            Some(Government::Democracy),
-            Some(Security::High),
+            Readings {
+                allegiance: Some(Allegiance::Federation),
+                government: Some(Government::Democracy),
+                security: Some(Security::High),
+                ..Readings::default()
+            },
         );
         let rows = held_tiers(ColorBy::Government, Some(&held));
         assert_eq!(

@@ -3,7 +3,9 @@
 
 use crate::map::camera::MoveCamera;
 use crate::map::filter::Filter;
-use crate::map::galaxy::System;
+use crate::map::filter::key::value_name;
+use crate::map::galaxy::spawn::ColorBy;
+use crate::map::galaxy::{Politics, System};
 use crate::map::index::Factions;
 use crate::ui::MARGIN;
 use crate::ui::panels::fields::{
@@ -77,15 +79,22 @@ pub(super) fn described(
             field(
                 ui,
                 "Allegiance",
-                named(&politics.and_then(|p| p.allegiance)),
+                named(&politics.and_then(|p| p.readings.allegiance)),
             );
             field(
                 ui,
                 "Government",
-                named(&politics.and_then(|p| p.government)),
+                named(&politics.and_then(|p| p.readings.government)),
             );
-            field(ui, "Security", named(&politics.and_then(|p| p.security)));
+            field(
+                ui,
+                "Security",
+                named(&politics.and_then(|p| p.readings.security)),
+            );
             economies(ui, &politics.and_then(|p| p.economies));
+            field(ui, "State", reading(politics, ColorBy::State));
+            field(ui, "Power", reading(politics, ColorBy::Power));
+            field(ui, "Powerplay", reading(politics, ColorBy::PowerplayState));
             // Unknown for the same systems the magnitude is: the moment rides
             // on the payload point, and one built off the names table has none.
             field(
@@ -119,6 +128,18 @@ pub(super) fn described(
             ui.ctx().copy_text(system.name.to_string());
         }
     });
+}
+
+/// What the color key calls a system's reading along `axis`, unknown where
+/// nothing is on record
+fn reading(politics: Option<&Politics>, axis: ColorBy) -> String {
+    let name = politics.map_or("", |politics| {
+        value_name(axis, axis.bucket(&politics.readings))
+    });
+    match name {
+        "" => UNKNOWN.into(),
+        name => name.into(),
+    }
 }
 
 /// Metres in a solar radius

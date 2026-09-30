@@ -463,6 +463,69 @@ mod tests {
         }
     }
 
+    /// And every value the standing may have: the controlling faction's
+    /// state, the controlling power and the Powerplay standing, each off
+    /// the list the schema closes it with. Refused, each is a populated
+    /// system lost whole, which is the worst place to lose one.
+    #[test]
+    fn every_standing_a_system_may_have_reads() {
+        let galaxy = schema::galaxy();
+        let listed = |path: &[&str]| -> Vec<String> {
+            let mut node = &galaxy["properties"];
+            for step in path {
+                node = &node[*step];
+            }
+            node["enum"]
+                .as_array()
+                .expect("an inline list")
+                .iter()
+                .filter_map(|it| it.as_str())
+                .map(str::to_owned)
+                .collect()
+        };
+        let read = |field: &str, value: String| {
+            let line = format!(
+                r#"{{"id64":1,"name":"N","coords":{{"x":0,"y":0,"z":0}},
+                   "date":"2020-01-01T00:00:00Z","{field}":{value}}}"#,
+            );
+            serde_json::from_str::<System>(&line)
+                .unwrap_or_else(|err| panic!("{field} = {value}: {err}"))
+        };
+
+        let states = listed(&["factions", "items", "properties", "state"]);
+        assert!(states.contains(&"Civil Unrest".to_owned()), "{states:?}");
+        for state in states {
+            let system =
+                read("controllingFaction", format!(r#"{{"state":"{state}"}}"#));
+            let faction = system.controlling_faction.expect("the faction");
+            assert_eq!(
+                faction.state.is_none(),
+                state == "None",
+                "{state} read as {:?}",
+                faction.state,
+            );
+        }
+        // The spelling most controlling factions in no state get.
+        let quiet = read("controllingFaction", "{}".to_owned());
+        assert!(
+            quiet.controlling_faction.expect("the faction").state.is_none()
+        );
+
+        let powers =
+            listed(&["powerConflictProgress", "items", "properties", "power"]);
+        assert!(powers.len() >= 12, "{powers:?}");
+        for power in powers {
+            let system = read("controllingPower", format!(r#""{power}""#));
+            assert!(system.controlling_power.is_some(), "{power}");
+        }
+
+        for standing in schema::system_enum("powerState") {
+            let system = read("powerState", format!(r#""{standing}""#));
+            assert!(system.power_state.is_some(), "{standing}");
+        }
+        assert!(read("powerState", "null".to_owned()).power_state.is_none());
+    }
+
     /// And every value a *body* may have, over the two the dump states
     /// in prose and this translates rather than stores.
     ///

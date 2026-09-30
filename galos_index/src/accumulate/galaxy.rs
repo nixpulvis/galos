@@ -408,6 +408,19 @@ impl Galaxy {
         self.systems.get(&address)?.populated()
     }
 
+    /// [`Self::populated_of`] laid over `stood`, the row a table already
+    /// publishes for the system.
+    ///
+    /// [`SystemReport::populated_over`], which knows which columns the
+    /// events said nothing about and a projected row does not.
+    pub fn populated_over(
+        &self,
+        address: i64,
+        stood: Option<&PopulatedSystem>,
+    ) -> Option<PopulatedSystem> {
+        self.systems.get(&address)?.populated_over(stood)
+    }
+
     /// One system's photometry and place, by the same fallback chain the
     /// published build uses.
     ///
