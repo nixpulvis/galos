@@ -531,12 +531,14 @@ fn by_class(
 /// — the map opening on one, or a payload freed and wanted again.
 ///
 /// Where a filter is asked, or star class draws each cell by class
-/// ([`strata`]), every marked cell is held whole. The filters promote
-/// systems out of magnitude order — a faction is a handful of systems
-/// anywhere in a payload — and a class sample reaches as far down it as the
-/// faintest class the cell holds, so a prefix is the one thing that cannot
-/// answer either. A cell the frame draws from is still read to its prefix
-/// first, so the frame fills in evenly; see [`reads`].
+/// ([`strata`]), marked cells are held whole. The filters promote systems
+/// out of magnitude order — a faction is a handful of systems anywhere in a
+/// payload — and a class sample reaches as far down it as the faintest
+/// class the cell holds, so a prefix is the one thing that cannot answer
+/// either. Under a filter admitting nothing but rows of the populated table
+/// it is only the cells holding a row; see [`Whole::Rows`]. A cell the
+/// frame draws from is still read to its prefix first, so the frame fills
+/// in evenly; see [`reads`].
 pub(crate) fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
@@ -545,6 +547,7 @@ pub(crate) fn fetch(
     view_mode: Res<View>,
     scale_population: Res<ScalePopulation>,
     color_by: Res<ColorBy>,
+    populated_order: Res<crate::map::galaxy::populated::PopulatedOrder>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
 ) {
@@ -560,6 +563,7 @@ pub(crate) fn fetch(
         && !view_mode.is_changed()
         && !scale_population.is_changed()
         && !color_by.is_changed()
+        && !populated_order.is_changed()
     {
         return;
     }
@@ -584,11 +588,16 @@ pub(crate) fn fetch(
     // Which marked cells are wanted whole: every one under a filter
     // narrowing the map, the systems it admits standing anywhere in a
     // payload's magnitude order and [`reconcile`] drawing them first out of
-    // whatever of it is held; and the ones that draw along star class,
-    // drawing every class in its proportion.
+    // whatever of it is held — or where all it admits is rows of the
+    // populated table, every one holding a row; and the ones that draw
+    // along star class, drawing every class in its proportion.
+    let by_class = by_class(*color_by, &planned.0.mode, by_population);
     let whole = if filters.asking() {
-        Whole::Every
-    } else if by_class(*color_by, &planned.0.mode, by_population) {
+        match filters.admits_only_rows() {
+            true => Whole::Rows { by_class },
+            false => Whole::Every,
+        }
+    } else if by_class {
         Whole::Drawing
     } else {
         Whole::None
@@ -612,6 +621,7 @@ pub(crate) fn fetch(
             |slice, id| share.wanted(slice, id),
             |id| resident.0.cell(id).map_or(0, |held| held.points.len()),
             whole,
+            |id| populated_order.holds_a_row(id),
             real,
         )
     };
@@ -625,12 +635,14 @@ pub(crate) fn fetch(
 ///
 /// `wanted` is how many of a cell's `slice` the frame draws, `held` how many
 /// of its points the map holds, `whole` which marked cells the draw wants
-/// held whole, and `real` whether this is the photometric sky.
+/// held whole, `rows` whether a cell holds a row of the populated table
+/// ([`Whole::Rows`]), and `real` whether this is the photometric sky.
 fn reads(
     marks: &[galos_index::read::walk::MarkRef],
     wanted: impl Fn(usize, CellId) -> usize,
     held: impl Fn(CellId) -> usize,
     whole: Whole,
+    rows: impl Fn(CellId) -> bool,
     real: bool,
 ) -> Vec<(CellId, usize)> {
     let mut asking = Vec::new();
@@ -652,9 +664,11 @@ fn reads(
         let drawn = wanted(slice, id);
         let draws = drawn > 0 || real;
         let prefix = (drawn * READ_SLACK).max(READ_LEAST).min(slice);
+        let sampled = draws && slice <= prefix * WHOLE_REACH;
         let whole = match whole {
             Whole::None => false,
-            Whole::Drawing => draws && slice <= prefix * WHOLE_REACH,
+            Whole::Drawing => sampled,
+            Whole::Rows { by_class } => (by_class && sampled) || rows(id),
             Whole::Every => true,
         };
         // **Held whole, a cell that draws is read whole, but not first.** It is
@@ -696,6 +710,19 @@ enum Whole {
     /// sample reaches as far down a payload as its faintest class, and a
     /// cell that draws nothing samples nothing.
     Drawing,
+    /// Every one holding a row of the populated table, under a filter that
+    /// admits nothing else ([`Filters::admits_only_rows`]), and along star
+    /// class the ones [`Self::Drawing`] reads whole besides.
+    ///
+    /// **A cell with no row holds nothing to find.** Read whole under every
+    /// filter, the uninhabited hidden at nine thousand light years back
+    /// read 16.2 million points over `.index/full` to draw 6,431 colonies,
+    /// 13.2 million of them out of the 12,799 cells of 15,431 without one
+    /// colony in them, and the view took eighty frames of the verdict
+    /// budget to weigh them.
+    ///
+    /// [`Filters::admits_only_rows`]: crate::map::filter::Filters::admits_only_rows
+    Rows { by_class: bool },
     /// Every one, under a filter: see [`fetch`].
     Every,
 }
@@ -3573,12 +3600,26 @@ mod tests {
 
         let coarse_at_prefix = |id: CellId| if id == coarse { 40 } else { 0 };
         assert_eq!(
-            reads(&marks, wanted, coarse_at_prefix, Whole::Every, false),
+            reads(
+                &marks,
+                wanted,
+                coarse_at_prefix,
+                Whole::Every,
+                |_| true,
+                false
+            ),
             vec![(fine, 40), (coarse, 5_000)],
             "a cell was read whole while another's prefix waited"
         );
         assert_eq!(
-            reads(&marks, wanted, coarse_at_prefix, Whole::None, false),
+            reads(
+                &marks,
+                wanted,
+                coarse_at_prefix,
+                Whole::None,
+                |_| true,
+                false
+            ),
             vec![(fine, 40)],
             "unfiltered, a prefix is all a cell is read to"
         );
@@ -3586,11 +3627,14 @@ mod tests {
         // The way there changed and the loaded set did not: once every
         // prefix is in, every marked cell is read whole, and then nothing.
         assert_eq!(
-            reads(&marks, wanted, |_| 40, Whole::Every, false),
+            reads(&marks, wanted, |_| 40, Whole::Every, |_| true, false),
             vec![(coarse, 5_000), (fine, 4_000)]
         );
         let whole = |id: CellId| if id == coarse { 5_000 } else { 4_000 };
-        assert!(reads(&marks, wanted, whole, Whole::Every, false).is_empty());
+        assert!(
+            reads(&marks, wanted, whole, Whole::Every, |_| true, false)
+                .is_empty()
+        );
     }
 
     /// Filtered, the cells that draw are read the whole way before a cell
@@ -3614,19 +3658,26 @@ mod tests {
         let wanted = |_: usize, id: CellId| if id == draws { 10 } else { 0 };
 
         assert_eq!(
-            reads(&marks, wanted, |_| 0, Whole::Every, false),
+            reads(&marks, wanted, |_| 0, Whole::Every, |_| true, false),
             vec![(draws, 40), (idle, 800)],
             "a cell that draws nothing was read to a prefix, or read first"
         );
         let draws_at_prefix = |id: CellId| if id == draws { 40 } else { 0 };
         assert_eq!(
-            reads(&marks, wanted, draws_at_prefix, Whole::Every, false),
+            reads(
+                &marks,
+                wanted,
+                draws_at_prefix,
+                Whole::Every,
+                |_| true,
+                false
+            ),
             vec![(draws, 5_000), (idle, 800)],
             "the rest of a drawing cell waited on a cell that draws nothing"
         );
         // Unfiltered, the idle cell is read to the least a cell is read to.
         assert_eq!(
-            reads(&marks, wanted, |_| 0, Whole::None, false),
+            reads(&marks, wanted, |_| 0, Whole::None, |_| true, false),
             vec![(draws, 40), (idle, READ_LEAST)],
         );
         // Along star class, a drawing cell is read whole the same way where
@@ -3635,14 +3686,80 @@ mod tests {
         let sampling = |_: usize, id: CellId| if id == draws { 200 } else { 0 };
         let at_its_prefix = |id: CellId| if id == draws { 800 } else { 0 };
         assert_eq!(
-            reads(&marks, sampling, at_its_prefix, Whole::Drawing, false),
+            reads(
+                &marks,
+                sampling,
+                at_its_prefix,
+                Whole::Drawing,
+                |_| true,
+                false
+            ),
             vec![(draws, 5_000), (idle, READ_LEAST)],
         );
         assert_eq!(
-            reads(&marks, wanted, draws_at_prefix, Whole::Drawing, false),
+            reads(
+                &marks,
+                wanted,
+                draws_at_prefix,
+                Whole::Drawing,
+                |_| true,
+                false
+            ),
             vec![(idle, READ_LEAST)],
             "ten marks of five thousand were read whole"
         );
+    }
+
+    /// Under a filter admitting only rows of the populated table, a cell
+    /// holding none is read as an unfiltered frame reads it, and one holding
+    /// any is read whole
+    ///
+    /// Read whole regardless, the uninhabited hidden at nine thousand light
+    /// years back held 16.2 million points over `.index/full` where 3.4
+    /// million held every colony, and took eighty frames to weigh them. Read
+    /// to a prefix where a row stands, a colony past it is never drawn.
+    #[test]
+    fn a_filter_of_rows_reads_whole_only_what_holds_a_row() {
+        let at = |x: f64, level: u8| CellId::of_point([x, 0.0, 0.0], level);
+        let (draws, idle) = (at(1_000.0, 6), at(-1_000.0, 6));
+        let (draws_rowless, idle_rowless) = (at(9_000.0, 6), at(-9_000.0, 6));
+        let mark = |id: CellId| galos_index::read::walk::MarkRef {
+            id,
+            slice: 5_000,
+            at: id.bounds().center(),
+        };
+        let marks = [draws, idle, draws_rowless, idle_rowless].map(mark);
+        let wanted =
+            |_: usize, id: CellId| match id == draws || id == draws_rowless {
+                true => 200,
+                false => 0,
+            };
+        let rows = |id: CellId| id == draws || id == idle;
+        // Every prefix in hand, so what is asked is what is read whole.
+        let prefix = |id: CellId| match id == draws || id == draws_rowless {
+            true => 800,
+            false => READ_LEAST,
+        };
+        let asked = |by_class| {
+            let mut asked = reads(
+                &marks,
+                wanted,
+                prefix,
+                Whole::Rows { by_class },
+                rows,
+                false,
+            );
+            asked.sort();
+            asked
+        };
+        let mut holding = vec![(draws, 5_000), (idle, 5_000)];
+        holding.sort();
+        assert_eq!(asked(false), holding);
+        // Along star class a drawing cell is sampled whole besides, row or
+        // none, as unfiltered.
+        holding.push((draws_rowless, 5_000));
+        holding.sort();
+        assert_eq!(asked(true), holding);
     }
 
     /// The walk does not drop what the user has picked out

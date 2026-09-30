@@ -322,7 +322,7 @@ impl Mask {
     ///
     /// Never along an axis that colors every system, which has no
     /// uninhabited systems to set apart.
-    fn hides_empty(&self) -> bool {
+    pub(crate) fn hides_empty(&self) -> bool {
         self.uninhabited
             && self.empty_drawn
             && !self.drawn.is_some_and(ColorBy::every_system)

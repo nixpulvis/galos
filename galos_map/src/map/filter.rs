@@ -1198,6 +1198,25 @@ impl Filters {
             .any(|active| matches!(active.filter, Filter::Recency { .. }))
     }
 
+    /// Whether everything these filters admit is a row of the populated
+    /// table
+    ///
+    /// So where the table has no row, nothing is admitted, and a cell
+    /// holding none need not be read to find out; see
+    /// [`crate::map::galaxy::walk::fetch`]. Two ways to be sure of it: the
+    /// mask hiding the systems nobody lives in, which every system without
+    /// a row is, or every filter picking systems out being a faction, which
+    /// only a row names. Anything else asked only narrows what those admit.
+    /// A route or a hand-picked set names systems anywhere, and a mask along
+    /// star class hides stars, not rows; and a mask not drawn hides nothing.
+    pub(crate) fn admits_only_rows(&self) -> bool {
+        let mut picking = self.picking().peekable();
+        (self.mask.drawn().is_some() && self.mask.hides_empty())
+            || (picking.peek().is_some()
+                && picking
+                    .all(|filter| matches!(filter, Filter::Faction { .. })))
+    }
+
     /// The filters that pick systems out, which is every kind that does not
     /// narrow
     ///
@@ -1911,6 +1930,78 @@ mod tests {
                 .iter()
                 .any(|filter| matches!(filter, Filter::Recency { .. })),
         );
+    }
+
+    /// What says a cell with no row of the populated table holds nothing
+    /// admitted says so only where nothing rowless can be admitted, and
+    /// does say so under the uninhabited hidden and under factions
+    ///
+    /// Said where a rowless system can be admitted, a cell holding one is
+    /// read to its prefix and the system is never drawn; not said, every
+    /// marked cell is read whole — 16.2 million points over `.index/full`
+    /// at nine thousand light years back, against 3.4 million.
+    #[test]
+    fn only_what_admits_no_rowless_system_answers_off_the_rows() {
+        let nobody = Populated::default();
+        let rowless =
+            Candidate::off_the_table(42, &nobody, Some(now()), StarKind::G);
+        let hiding = |along: Option<ColorBy>| {
+            let mut filters = Filters::default();
+            filters.edit_mask(|mask| {
+                mask.draw(along);
+                mask.set_uninhabited(true);
+            });
+            filters
+        };
+        let asking = |asked: Vec<Filter>| {
+            let mut filters = Filters::default();
+            for filter in asked {
+                filters.add(filter);
+            }
+            filters
+        };
+        let picked =
+            || Filter::Systems { label: "Picked".into(), systems: vec![42] };
+        let cases = [
+            ("uninhabited hidden", hiding(Some(ColorBy::Allegiance)), true),
+            ("a faction", asking(vec![faction(7)]), true),
+            ("a faction in a span", asking(vec![faction(7), within(60)]), true),
+            (
+                "a set, the hiding undrawn",
+                {
+                    let mut filters = hiding(None);
+                    filters.add(picked());
+                    filters
+                },
+                false,
+            ),
+            (
+                "M stars hidden, and the uninhabited",
+                {
+                    let mut filters = hiding(Some(ColorBy::StarClass));
+                    filters.edit_mask(|mask| {
+                        mask.toggle(
+                            ColorBy::StarClass,
+                            &[usize::from(StarKind::M.code())],
+                        );
+                    });
+                    filters
+                },
+                false,
+            ),
+            ("a faction or a set", asking(vec![faction(7), picked()]), false),
+            ("a set", asking(vec![picked()]), false),
+            ("a span", asking(vec![within(60)]), false),
+        ];
+        for (asked, filters, only_rows) in cases {
+            assert!(filters.asking(), "{asked} asked nothing");
+            assert_eq!(filters.admits_only_rows(), only_rows, "{asked}");
+            assert_eq!(
+                filters.admits(&rowless, now()),
+                !only_rows,
+                "{asked}: the rowless system"
+            );
+        }
     }
 
     /// A question nobody has asked is answered by nothing at all

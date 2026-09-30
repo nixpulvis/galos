@@ -30,6 +30,7 @@
 use crate::map::galaxy::MapSet;
 use crate::map::index::{Populated, ResidentIndex};
 use bevy::prelude::*;
+use galos_index::core::geometry::MAX_LEVEL;
 use galos_index::prelude::CellId;
 
 pub fn plugin(app: &mut App) {
@@ -66,6 +67,10 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource, Default)]
 pub struct PopulatedOrder {
     order: Vec<Stands>,
+    /// Where every row of the table stands in the tree, ascending: its
+    /// deepest cell's Morton key carried down to [`MAX_LEVEL`], so a cell's
+    /// rows are one run of it. See [`Self::holds_a_row`].
+    rows: Vec<u64>,
 }
 
 /// One populated system as a draw wants it: where it stands, what to
@@ -87,6 +92,20 @@ impl PopulatedOrder {
     /// Every populated system, busiest first.
     pub fn order(&self) -> &[Stands] {
         &self.order
+    }
+
+    /// Whether `id` holds any row of the populated table
+    ///
+    /// What says a cell cannot hold anything a filter admits, where
+    /// everything it admits is a row
+    /// ([`crate::map::filter::Filters::admits_only_rows`]), so the cell
+    /// need not be read whole to find it. A binary search: the rows under
+    /// a cell are the keys sharing its own as their prefix.
+    pub fn holds_a_row(&self, id: CellId) -> bool {
+        let shift = 3 * u32::from(MAX_LEVEL - id.level);
+        let first = id.morton() << shift;
+        let at = self.rows.partition_point(|&key| key < first);
+        self.rows.get(at).is_some_and(|&key| key >> shift == id.morton())
     }
 
     /// How many systems anybody lives in.
@@ -116,10 +135,10 @@ pub(crate) fn gather(
     // draw wants out of this is the order, and re-reading the count off
     // the table costs a hash lookup it never needs.
     let mut order: Vec<(u64, Stands)> = Vec::new();
+    // And where every row stands, an empty one too: a filter can admit a
+    // row by its factions whether or not anybody lives there.
+    let mut rows: Vec<u64> = Vec::with_capacity(populated.0.len());
     for system in populated.0.values() {
-        if system.population == 0 {
-            continue;
-        }
         let at = [
             f64::from(system.position[0]),
             f64::from(system.position[1]),
@@ -127,6 +146,12 @@ pub(crate) fn gather(
         ];
         let mut deepest = CellId::ROOT;
         index.0.descend(at, |id| deepest = id);
+        rows.push(
+            deepest.morton() << (3 * u32::from(MAX_LEVEL - deepest.level)),
+        );
+        if system.population == 0 {
+            continue;
+        }
         order.push((
             system.population,
             Stands { address: system.address, at, deepest },
@@ -137,9 +162,10 @@ pub(crate) fn gather(
     });
     let order: Vec<Stands> =
         order.into_iter().map(|(_, stands)| stands).collect();
+    rows.sort_unstable();
 
     debug!(systems = order.len(), "gathered who lives where");
-    *cells = PopulatedOrder { order };
+    *cells = PopulatedOrder { order, rows };
 }
 
 #[cfg(test)]
@@ -269,6 +295,38 @@ mod tests {
         let order: Vec<i64> =
             held.order().iter().map(|stands| stands.address).collect();
         assert_eq!(order, &[2]);
+    }
+
+    /// A cell holds a row where any row stands in it, at any depth above the
+    /// row's own cell, an empty row as much as a busy one; and a cell beside
+    /// them holds none
+    ///
+    /// Answered wrongly, a cell holding what a filter admits is read to a
+    /// prefix and the colonies past it are never drawn, or a cell with
+    /// nothing is read whole for nothing.
+    #[test]
+    fn a_cell_holds_the_rows_standing_in_it() {
+        let app = gathered(vec![
+            lived_in(1, [100., 0., 100.], 0),
+            lived_in(2, [900., 0., 900.], 7),
+            lived_in(3, [930., 0., 900.], 70),
+        ]);
+        let held = app.world().resource::<PopulatedOrder>();
+        let index = &app.world().resource::<ResidentIndex>().0;
+        // Every cell of the tree on the way down to each, which is what the
+        // walk can mark.
+        for at in [[100., 0., 100.], [900., 0., 900.], [930., 0., 900.]] {
+            let mut path = Vec::new();
+            index.descend(at, |id| path.push(id));
+            assert!(path.len() > 2, "the tree is too shallow to test");
+            for cell in path {
+                assert!(held.holds_a_row(cell), "{cell:?} held no row");
+            }
+        }
+        for at in [[100., 0., -900.], [-900., 0., 900.], [500., 0., 500.]] {
+            let cell = CellId::of_point(at, 8);
+            assert!(!held.holds_a_row(cell), "{cell:?} held a row");
+        }
     }
 
     /// Nothing is gathered twice when the tables have not moved: it is a
