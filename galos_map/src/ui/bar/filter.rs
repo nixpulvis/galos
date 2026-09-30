@@ -2,7 +2,7 @@
 //! control over how lately a system was updated
 
 use crate::map::filter::key::{Hidden, Item, Tier, held_tiers};
-use crate::map::filter::mask::Mask;
+use crate::map::filter::mask::{Held, Mask};
 use crate::map::filter::{
     DimTo, FactionResults, Filter, Filters, Lookup, LookupNote, Resolving,
     SPANS, Standstill, Watch,
@@ -21,8 +21,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::{Response, Ui};
-use galos_index::prelude::CellId;
-use galos_index::read::inhabited::Inhabited;
+use galos_index::prelude::{CellId, StarKind};
 use galos_index::records::Faction as DbFaction;
 
 /// The name the time control's own `Ui` is spelled out under
@@ -115,17 +114,22 @@ pub(crate) struct ColorKey<'w, 's> {
 }
 
 impl ColorKey<'_, '_> {
-    /// The root's colonies, and how many systems nobody lives in
+    /// What the galaxy holds to count the key's values in, and how many
+    /// systems nobody lives in
     ///
     /// The root histograms are resident, so asking every frame costs nothing.
-    pub(in crate::ui) fn counted(&self) -> (Option<&Inhabited>, u64) {
-        let held = self.settled.0.get(CellId::ROOT);
-        let stellar = self
-            .index
+    /// [`None`] while the colonies are still being read.
+    pub(in crate::ui) fn counted(&self) -> (Option<Held>, u64) {
+        let root = self.index.0.get(CellId::ROOT);
+        let stellar = root.map_or(0, |cell| cell.aggregate.count());
+        let stars =
+            root.map_or([0; StarKind::COUNT], |cell| *cell.aggregate.kinds());
+        let held = self
+            .settled
             .0
             .get(CellId::ROOT)
-            .map_or(0, |cell| cell.aggregate.count());
-        let peopled = held.map_or(0, Inhabited::count);
+            .map(|colonies| Held { colonies: *colonies, stars });
+        let peopled = held.map_or(0, |held| held.colonies.count());
         (held, stellar.saturating_sub(peopled))
     }
 }
@@ -254,7 +258,6 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
     if filter.active.mask().drawn().is_some() {
         let mut axis = *filter.key.color_by;
         let (held, empty) = filter.key.counted();
-        let held = held.copied();
         let asked = key(
             ui,
             filter.active.mask(),
@@ -284,24 +287,34 @@ pub(super) fn filter_body(ui: &mut Ui, filter: &mut FilterBar) {
 /// Answers what a click asked of the mask, carried out by the caller since
 /// the rows are drawn from the mask it changes.
 ///
-/// `held` is the galaxy's colonies, whatever has been counted of them, and
+/// `held` is what the galaxy holds, whatever has been counted of it, and
 /// `empty` how many systems nobody lives in; `other_open` whether Other is
 /// unfolded.
 pub(super) fn key(
     ui: &mut Ui,
     mask: &Mask,
     axis: &mut ColorBy,
-    held: Option<&Inhabited>,
+    held: Option<&Held>,
     empty: u64,
     other_open: &mut bool,
 ) -> Option<Keyed> {
     ui.add_space(FIELD_GAP);
-    // Wrapped, so a narrower bar folds the seven axes onto a second line
+    // Wrapped, so a narrower bar folds the eight axes onto a second line
     // rather than running them off its edge.
     ui.horizontal_wrapped(|ui| {
         for offered in ColorBy::ALL {
             let text =
                 egui::RichText::new(offered.name().to_uppercase()).small();
+            // Star class is not offered while only colonies are drawn; see
+            // `crate::map::filter::follow_color_by`.
+            if offered.every_system() && !mask.draws_uninhabited() {
+                ui.add(egui::Label::new(text.weak().strikethrough()))
+                    .on_hover_text(
+                        "Star class colors every system, and only colonies \
+                         are drawn while scaling with population",
+                    );
+                continue;
+            }
             let text = if offered == *axis {
                 text.strong().underline()
             } else {
@@ -460,46 +473,11 @@ pub(super) fn key(
     });
 
     // Under a hairline, being no value of the axis: the same systems whichever
-    // axis is out.
+    // political axis is out. Star class has no such row, every system having
+    // a star.
     ui.separator();
-    if mask.draws_uninhabited() {
-        let (row, _) = key_line(
-            ui,
-            "key-uninhabited",
-            gutter,
-            &Swatch::uninhabited(mask),
-            named(
-                "Uninhabited",
-                if mask.hides_uninhabited() {
-                    Hidden::All
-                } else {
-                    Hidden::None
-                },
-            ),
-            None,
-            held.map(|_| thousands(empty)),
-        );
-        // Said on the row, beside the gray value of every axis it could be
-        // taken for: those are colonies with nothing on record, and these
-        // are systems nobody lives in at all.
-        let row = row.on_hover_text(
-            "Systems nobody lives in. Colonies with no allegiance, government \
-             or security on record are the gray row above.",
-        );
-        if row.clicked() {
-            asked = Some(Keyed::Uninhabited);
-        }
-    } else {
-        // Said rather than left out without a word: a row that was there
-        // and is gone reads as the key having lost it.
-        ui.label(
-            egui::RichText::new(
-                "Uninhabited systems are not drawn while scaling with \
-                 population",
-            )
-            .small()
-            .weak(),
-        );
+    if !axis.every_system() {
+        asked = uninhabited_row(ui, mask, gutter, held, empty).or(asked);
     }
 
     ui.horizontal(|ui| {
@@ -530,6 +508,50 @@ pub(super) fn key(
     asked
 }
 
+/// The systems nobody lives in, under a political axis's values: a toggle
+/// where they are drawn, and a word on why they are not where they are not
+fn uninhabited_row(
+    ui: &mut Ui,
+    mask: &Mask,
+    gutter: f32,
+    held: Option<&Held>,
+    empty: u64,
+) -> Option<Keyed> {
+    if !mask.draws_uninhabited() {
+        // Said rather than left out without a word: a row that was there
+        // and is gone reads as the key having lost it.
+        ui.label(
+            egui::RichText::new(
+                "Uninhabited systems are not drawn while scaling with \
+                 population",
+            )
+            .small()
+            .weak(),
+        );
+        return None;
+    }
+    let (row, _) = key_line(
+        ui,
+        "key-uninhabited",
+        gutter,
+        &Swatch::uninhabited(mask),
+        named(
+            "Uninhabited",
+            if mask.hides_uninhabited() { Hidden::All } else { Hidden::None },
+        ),
+        None,
+        held.map(|_| thousands(empty)),
+    );
+    // Said on the row, beside the gray value of every axis it could be taken
+    // for: those are colonies with nothing on record, and these are systems
+    // nobody lives in at all.
+    let row = row.on_hover_text(
+        "Systems nobody lives in. Colonies with no allegiance, government or \
+         security on record are the gray row above.",
+    );
+    row.clicked().then_some(Keyed::Uninhabited)
+}
+
 /// A value's name, struck through and muted where it is wholly hidden
 fn named(name: &str, hidden: Hidden) -> egui::RichText {
     let text = egui::RichText::new(name);
@@ -547,7 +569,7 @@ fn item_row(
     item: &Item,
     axis: ColorBy,
     mask: &Mask,
-    held: Option<&Inhabited>,
+    held: Option<&Held>,
 ) -> Response {
     let hidden = item.hidden(axis, mask);
     key_line(

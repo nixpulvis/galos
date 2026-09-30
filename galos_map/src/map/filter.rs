@@ -50,6 +50,7 @@ use bevy::ecs::system::SystemParam;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use chrono::{DateTime, Duration, Utc};
+use galos_index::prelude::StarKind;
 use galos_index::records::Faction as DbFaction;
 use galos_route::graph::{Drive, Routing, Tuning};
 
@@ -94,17 +95,27 @@ pub fn plugin(app: &mut App) {
 /// the mask is ignored there and kept for when the map view comes back. And
 /// reading the sky as populations draws no system nobody lives in, so the
 /// uninhabited flag is ignored and kept the same way.
+///
+/// Nor is star class offered while the sky is read as populations: the
+/// colonies it draws come off the populated table with no payload point
+/// behind them, so no star, and the field over them is the colonies' alone,
+/// whose histograms carry none either. The coloring goes back to allegiance
+/// rather than drawing every colony gray.
+///
 /// Through [`Filters::edit_mask`], so the change is counted as one to what
 /// the filters admit and every pass holding a verdict asks again.
 pub(crate) fn follow_color_by(
-    color_by: Res<crate::map::galaxy::spawn::ColorBy>,
+    mut color_by: ResMut<crate::map::galaxy::spawn::ColorBy>,
     view: Res<crate::map::paint::sizing::View>,
     population: Res<crate::map::paint::sizing::ScalePopulation>,
     mut filters: ResMut<Filters>,
 ) {
+    let empty = !crate::map::paint::sizing::by_population(&view, &population);
+    if !empty && color_by.every_system() {
+        *color_by = crate::map::galaxy::spawn::ColorBy::Allegiance;
+    }
     let drawn =
         (*view == crate::map::paint::sizing::View::Map).then_some(*color_by);
-    let empty = !crate::map::paint::sizing::by_population(&view, &population);
     let mask = filters.mask();
     if mask.drawn() != drawn || mask.draws_uninhabited() != empty {
         filters.edit_mask(|mask| {
@@ -320,12 +331,12 @@ pub enum Filter {
 
 /// The whole of what a filter asks about a system
 ///
-/// Four facts: which factions are present, what the address is, when the
-/// system was last heard from, and what it reads politically. A [`System`]
-/// answers all four, and so does a payload point joined against
-/// [`crate::map::index::Populated`] — which is what lets the LOD draw ask what
-/// the filters admit before it builds anything, and choose the systems it
-/// draws by the answer. See [`crate::map::galaxy::walk`].
+/// Five facts: which factions are present, what the address is, when the
+/// system was last heard from, what it reads politically and what star it
+/// arrives at. A [`System`] answers all five, and so does a payload point
+/// joined against [`crate::map::index::Populated`] — which is what lets the
+/// LOD draw ask what the filters admit before it builds anything, and choose
+/// the systems it draws by the answer. See [`crate::map::galaxy::walk`].
 pub(crate) struct Candidate<'a> {
     pub address: i64,
     /// The factions present, by id, empty for an ungoverned system
@@ -335,10 +346,13 @@ pub(crate) struct Candidate<'a> {
     /// The buckets its politics count in, [`None`] for a system nobody
     /// lives in
     pub politics: Option<Buckets>,
+    /// Its arrival star, [`StarKind::Unknown`] where no payload point says
+    pub kind: StarKind,
 }
 
 impl<'a> Candidate<'a> {
-    /// What the populated table says of `address`, and the moment beside it
+    /// What the populated table says of `address`, and the moment and star
+    /// beside it
     ///
     /// One place for the join, so a payload point and a system chosen off the
     /// table cannot read the table two ways.
@@ -346,6 +360,7 @@ impl<'a> Candidate<'a> {
         address: i64,
         populated: &'a Populated,
         updated_at: Option<DateTime<Utc>>,
+        kind: StarKind,
     ) -> Candidate<'a> {
         let row = populated.get(address);
         Candidate {
@@ -353,6 +368,7 @@ impl<'a> Candidate<'a> {
             factions: row.map_or(&[], |row| row.factions.as_slice()),
             updated_at,
             politics: row.and_then(Buckets::of_row),
+            kind,
         }
     }
 }
@@ -911,7 +927,7 @@ impl Prepared<'_> {
         candidate: &Candidate,
         now: DateTime<Utc>,
     ) -> bool {
-        if !self.filters.mask.admits(candidate.politics) {
+        if !self.filters.mask.admits(candidate.politics, candidate.kind) {
             return false;
         }
         let mut picked = None;
@@ -1079,7 +1095,7 @@ impl Filters {
         candidate: &Candidate,
         now: DateTime<Utc>,
     ) -> bool {
-        if !self.mask.admits(candidate.politics) {
+        if !self.mask.admits(candidate.politics, candidate.kind) {
             return false;
         }
         // Nothing while no filter picks systems out, which is what says a span

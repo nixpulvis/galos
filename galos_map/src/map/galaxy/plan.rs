@@ -29,7 +29,9 @@ use crate::map::paint::sizing::View;
 use crate::map::schedule::MapSet;
 use bevy::math::DVec3;
 use bevy::prelude::*;
-use galos_index::prelude::{CellId, Mode, Moments, Needed, View as Viewpoint};
+use galos_index::prelude::{
+    CellId, Mode, Moments, Needed, StarKind, View as Viewpoint,
+};
 use galos_index::read::inhabited::Inhabited;
 
 pub fn plugin(app: &mut App) {
@@ -90,6 +92,9 @@ pub struct Accounted {
     pub mass: Moments,
     /// What they carry politically, for the colonies'.
     pub inhabited: Inhabited,
+    /// Their arrival stars, by [`StarKind::code`], for the star channel's
+    /// residual when the map is colored by star class
+    pub kinds: [u32; StarKind::COUNT],
 }
 
 impl Accounted {
@@ -97,10 +102,18 @@ impl Accounted {
     ///
     /// `political` is the system's reading where it is on the populated table
     /// and somebody lives in it, and [`None`] otherwise — the same
-    /// `population > 0` the rest of the map tells inhabited by.
-    pub fn took(&mut self, position: [f64; 3], political: Option<Inhabited>) {
+    /// `population > 0` the rest of the map tells inhabited by. `kind` is its
+    /// arrival star as its payload point carries it, [`StarKind::Unknown`]
+    /// for one drawn off the populated table with no point behind it.
+    pub fn took(
+        &mut self,
+        position: [f64; 3],
+        kind: StarKind,
+        political: Option<Inhabited>,
+    ) {
         self.count += 1;
         self.mass = self.mass.merge(Moments::point(1.0, position));
+        self.kinds[usize::from(kind.code())] += 1;
         if let Some(one) = political {
             self.inhabited = self.inhabited.merge(one);
         }

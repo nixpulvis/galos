@@ -605,7 +605,7 @@ pub(super) fn state_bar(
                     // no color to name; what it hides is kept for when it is.
                     if filter.active.mask().drawn().is_some() {
                         let axis = *filter.key.color_by;
-                        let held = filter.key.counted().0.copied();
+                        let held = filter.key.counted().0;
                         let (keyed, keying) = color_row(
                             ui,
                             &filter.active,

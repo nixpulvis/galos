@@ -26,23 +26,25 @@ use crate::map::galaxy::spawn::{ColorBy, Hue};
 use elite_journal::prelude::{
     Allegiance, Economy, Government, Power, PowerplayState, Security, State,
 };
+use galos_index::prelude::StarKind;
 use galos_index::read::inhabited::{Bucketed, Inhabited, Readings};
 use galos_index::records::PopulatedSystem;
 
-/// A system's readings, by the bucket each counts in along every axis
+/// A colony's readings, by the bucket each counts in along every political
+/// axis
 ///
 /// What the mask asks about a system, in the index's own terms, so a system
 /// on the map, a payload point joined against the populated table and a cell's
 /// histogram are all read by the one numbering. [`None`] where a candidate
 /// carries one of these is a system nobody lives in.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Buckets([u8; ColorBy::ALL.len()]);
+pub(crate) struct Buckets([u8; ColorBy::POLITICAL.len()]);
 
 impl Buckets {
     /// The buckets a system's readings count in
     pub(crate) fn of(readings: &Readings) -> Buckets {
         // No axis has more than 32 buckets, which a byte holds.
-        Buckets(ColorBy::ALL.map(|axis| axis.bucket(readings) as u8))
+        Buckets(ColorBy::POLITICAL.map(|axis| axis.bucket(readings) as u8))
     }
 
     /// The buckets a populated table's row counts in, where anybody lives there
@@ -54,10 +56,22 @@ impl Buckets {
         (row.population > 0).then(|| Buckets::of(&Readings::of(row)))
     }
 
-    /// The bucket this system counts in along `axis`
+    /// The bucket this system counts in along a political `axis`
     pub(crate) fn on(self, axis: ColorBy) -> usize {
         usize::from(self.0[axis.slot()])
     }
+}
+
+/// What the key counts each value of an axis in: the galaxy's colonies along
+/// a political axis, and every system's star along star class
+///
+/// Owned, the root's being a copy a frame: the key is drawn from a
+/// parameter it also writes the coloring through.
+#[derive(Copy, Clone)]
+pub(crate) struct Held {
+    pub(crate) colonies: Inhabited,
+    /// Systems by [`StarKind::code`], the root cell's
+    pub(crate) stars: [u32; StarKind::COUNT],
 }
 
 /// Every axis's buckets fit a [`Mask`] word with a bit to spare, which
@@ -72,7 +86,20 @@ const _: () = {
 
 impl ColorBy {
     /// Every axis the map can be colored by, in the order the key tabs them
-    pub const ALL: [ColorBy; 7] = [
+    pub const ALL: [ColorBy; 8] = [
+        ColorBy::Allegiance,
+        ColorBy::Government,
+        ColorBy::Security,
+        ColorBy::Economy,
+        ColorBy::State,
+        ColorBy::Power,
+        ColorBy::PowerplayState,
+        ColorBy::StarClass,
+    ];
+
+    /// The axes read off a colony's populated columns, which are the first
+    /// of [`Self::ALL`] and the ones a [`Buckets`] holds
+    pub const POLITICAL: [ColorBy; 7] = [
         ColorBy::Allegiance,
         ColorBy::Government,
         ColorBy::Security,
@@ -82,8 +109,19 @@ impl ColorBy {
         ColorBy::PowerplayState,
     ];
 
+    /// Whether this axis colors every system rather than the colonies alone
+    ///
+    /// Star class, read off a system's payload point rather than its
+    /// populated row: every system has a star, so there is no uninhabited
+    /// gray for the axis to leave, and the uninhabited flag says nothing
+    /// about it.
+    pub const fn every_system(self) -> bool {
+        matches!(self, ColorBy::StarClass)
+    }
+
     /// Where this axis stands in [`Self::ALL`], which is where its bits are
-    /// kept in a [`Mask`]
+    /// kept in a [`Mask`] and, for a political axis, its bucket in a
+    /// [`Buckets`]
     const fn slot(self) -> usize {
         match self {
             ColorBy::Allegiance => 0,
@@ -93,6 +131,7 @@ impl ColorBy {
             ColorBy::State => 4,
             ColorBy::Power => 5,
             ColorBy::PowerplayState => 6,
+            ColorBy::StarClass => 7,
         }
     }
 
@@ -106,10 +145,15 @@ impl ColorBy {
             ColorBy::State => State::BUCKETS,
             ColorBy::Power => Power::BUCKETS,
             ColorBy::PowerplayState => PowerplayState::BUCKETS,
+            ColorBy::StarClass => StarKind::COUNT,
         }
     }
 
     /// The bucket a system reading `readings` counts in along this axis
+    ///
+    /// Zero along star class, whose bucket is no populated reading but the
+    /// [`StarKind::code`] of the system's payload point: [`ColorBy::hue`]
+    /// and [`Mask::admits`] read the kind itself, and nothing asks this.
     pub(crate) fn bucket(self, readings: &Readings) -> usize {
         match self {
             ColorBy::Allegiance => Allegiance::bucket(readings.allegiance),
@@ -121,6 +165,7 @@ impl ColorBy {
             ColorBy::PowerplayState => {
                 PowerplayState::bucket(readings.powerplay_state)
             }
+            ColorBy::StarClass => 0,
         }
     }
 
@@ -139,10 +184,16 @@ impl ColorBy {
             ColorBy::PowerplayState => {
                 Hue::powerplay_state(Bucketed::at(bucket))
             }
+            ColorBy::StarClass => Hue::star(StarKind::from_code(bucket as u8)),
         }
     }
 
     /// A cell's colonies counted along this axis, bucket by bucket
+    ///
+    /// Nothing along star class: a colony's histogram carries no star, and
+    /// the cell's stars are its aggregate's, [`Aggregate::kinds`].
+    ///
+    /// [`Aggregate::kinds`]: galos_index::core::aggregate::Aggregate::kinds
     pub(crate) fn counts(self, held: &Inhabited) -> &[u32] {
         match self {
             ColorBy::Allegiance => held.allegiance(),
@@ -152,6 +203,15 @@ impl ColorBy {
             ColorBy::State => held.state(),
             ColorBy::Power => held.power(),
             ColorBy::PowerplayState => held.powerplay_state(),
+            ColorBy::StarClass => &[],
+        }
+    }
+
+    /// What the key counts along this axis, bucket by bucket
+    pub(crate) fn counted(self, held: &Held) -> &[u32] {
+        match self {
+            ColorBy::StarClass => &held.stars,
+            _ => self.counts(&held.colonies),
         }
     }
 
@@ -165,6 +225,7 @@ impl ColorBy {
             ColorBy::State => "State",
             ColorBy::Power => "Power",
             ColorBy::PowerplayState => "Powerplay",
+            ColorBy::StarClass => "Star class",
         }
     }
 }
@@ -243,8 +304,13 @@ impl Mask {
     }
 
     /// Whether the uninhabited flag is cutting anything off the map
+    ///
+    /// Never along an axis that colors every system, which has no
+    /// uninhabited systems to set apart.
     fn hides_empty(&self) -> bool {
-        self.uninhabited && self.empty_drawn
+        self.uninhabited
+            && self.empty_drawn
+            && !self.drawn.is_some_and(ColorBy::every_system)
     }
 
     /// Whether the mask is cutting anything off the map: anything hidden
@@ -267,12 +333,21 @@ impl Mask {
         self.drawn = axis;
     }
 
-    /// Whether a system reading `politics` is let through
+    /// Whether a system reading `politics` and arriving at a `kind` of star
+    /// is let through
     ///
-    /// [`None`] is a system nobody lives in, which only the uninhabited flag
-    /// says anything about.
-    pub(crate) fn admits(&self, politics: Option<Buckets>) -> bool {
+    /// [`None`] is a system nobody lives in, which along a political axis
+    /// only the uninhabited flag says anything about. Star class asks the
+    /// kind of every system alike.
+    pub(crate) fn admits(
+        &self,
+        politics: Option<Buckets>,
+        kind: StarKind,
+    ) -> bool {
         let Some(drawn) = self.drawn else { return true };
+        if drawn.every_system() {
+            return !self.hides(drawn, usize::from(kind.code()));
+        }
         match politics {
             None => !self.hides_empty(),
             Some(buckets) => !self.hides(drawn, buckets.on(drawn)),
@@ -327,20 +402,26 @@ impl Mask {
     }
 
     /// Show `buckets` of `axis` and nothing else of it, the systems nobody
-    /// lives in included
+    /// lives in included where the axis is a political one
     ///
     /// The other axes are left as they were. Soloing an allegiance is asking
-    /// to see only it, not to forget which governments were hidden.
+    /// to see only it, not to forget which governments were hidden; and
+    /// soloing a star is not asking to hide empty space from the allegiances.
     pub fn solo(&mut self, axis: ColorBy, buckets: &[usize]) {
         self.set(axis, 0..axis.buckets(), true);
         self.set(axis, buckets.iter().copied(), false);
-        self.uninhabited = true;
+        if !axis.every_system() {
+            self.uninhabited = true;
+        }
     }
 
-    /// Show every bucket of `axis`, and the systems nobody lives in
+    /// Show every bucket of `axis`, and the systems nobody lives in where
+    /// the axis is a political one
     pub fn show_all(&mut self, axis: ColorBy) {
         self.hidden[axis.slot()] = 0;
-        self.uninhabited = false;
+        if !axis.every_system() {
+            self.uninhabited = false;
+        }
     }
 
     /// Hide every bucket of `axis`, leaving the systems nobody lives in as
@@ -389,6 +470,10 @@ impl Keeps {
 mod tests {
     use super::*;
 
+    /// The star a political test's systems arrive at, which no political
+    /// axis asks about
+    const NO_STAR: StarKind = StarKind::Unknown;
+
     fn federal(government: Government, security: Security) -> Buckets {
         Buckets::of(&Readings {
             allegiance: Some(Allegiance::Federation),
@@ -411,16 +496,23 @@ mod tests {
             [bucket_of(Allegiance::Federation)],
             true,
         );
+        assert!(!mask.admits(
+            Some(federal(Government::Democracy, Security::High)),
+            NO_STAR
+        ));
+        assert!(mask.admits(
+            Some(Buckets::of(&Readings {
+                allegiance: Some(Allegiance::Empire),
+                government: Some(Government::Democracy),
+                security: Some(Security::High),
+                ..Readings::default()
+            })),
+            NO_STAR
+        ));
         assert!(
-            !mask.admits(Some(federal(Government::Democracy, Security::High)))
+            mask.admits(None, NO_STAR),
+            "nobody lives there, so nothing hid it"
         );
-        assert!(mask.admits(Some(Buckets::of(&Readings {
-            allegiance: Some(Allegiance::Empire),
-            government: Some(Government::Democracy),
-            security: Some(Security::High),
-            ..Readings::default()
-        }))));
-        assert!(mask.admits(None), "nobody lives there, so nothing hid it");
     }
 
     /// Hiding a government hides nothing while the map is colored by
@@ -432,14 +524,15 @@ mod tests {
         let prison = federal(Government::Prison, Security::High);
 
         mask.draw(Some(ColorBy::Security));
-        assert!(mask.admits(Some(prison)));
+        assert!(mask.admits(Some(prison), NO_STAR));
         assert!(!mask.narrows(), "a hidden prison narrowed a security map");
 
         mask.draw(Some(ColorBy::Government));
-        assert!(!mask.admits(Some(prison)));
-        assert!(
-            mask.admits(Some(federal(Government::Democracy, Security::High)))
-        );
+        assert!(!mask.admits(Some(prison), NO_STAR));
+        assert!(mask.admits(
+            Some(federal(Government::Democracy, Security::High)),
+            NO_STAR
+        ));
     }
 
     /// A hidden state hides the systems in it once the map is colored by
@@ -456,20 +549,50 @@ mod tests {
             })
         };
 
-        assert!(mask.admits(Some(at(State::War))), "drawn by allegiance");
+        assert!(
+            mask.admits(Some(at(State::War)), NO_STAR),
+            "drawn by allegiance"
+        );
         mask.draw(Some(ColorBy::State));
-        assert!(!mask.admits(Some(at(State::War))));
-        assert!(mask.admits(Some(at(State::Boom))));
+        assert!(!mask.admits(Some(at(State::War)), NO_STAR));
+        assert!(mask.admits(Some(at(State::Boom)), NO_STAR));
     }
 
-    /// Uninhabited applies whichever axis is drawn, being a value of none
+    /// Star class asks every system's star, the systems nobody lives in
+    /// among them, and the uninhabited flag says nothing along it
     #[test]
-    fn uninhabited_applies_along_every_axis() {
+    fn star_class_asks_every_systems_star() {
         let mut mask = Mask::default();
         mask.set_uninhabited(true);
-        for axis in ColorBy::ALL {
+        mask.set(ColorBy::StarClass, [usize::from(StarKind::M.code())], true);
+        mask.draw(Some(ColorBy::StarClass));
+
+        assert!(!mask.admits(None, StarKind::M), "an empty M dwarf");
+        assert!(mask.admits(None, StarKind::G), "an empty G star");
+        let colony = Buckets::of(&Readings::default());
+        assert!(!mask.admits(Some(colony), StarKind::M), "a colony at an M");
+        assert_eq!(mask.keeps_uninhabited(), 1.);
+
+        // And soloing a star leaves empty space as the allegiances had it.
+        mask.set_uninhabited(false);
+        mask.solo(ColorBy::StarClass, &[usize::from(StarKind::K.code())]);
+        assert!(!mask.hides_uninhabited());
+        assert!(mask.admits(None, StarKind::K));
+        assert!(!mask.admits(None, StarKind::G));
+    }
+
+    /// Uninhabited applies whichever political axis is drawn, being a value
+    /// of none
+    #[test]
+    fn uninhabited_applies_along_every_political_axis() {
+        let mut mask = Mask::default();
+        mask.set_uninhabited(true);
+        for axis in ColorBy::POLITICAL {
             mask.draw(Some(axis));
-            assert!(!mask.admits(None), "{axis:?} let empty space through");
+            assert!(
+                !mask.admits(None, NO_STAR),
+                "{axis:?} let empty space through"
+            );
         }
     }
 
@@ -490,8 +613,8 @@ mod tests {
     fn uninhabited_hides_only_the_systems_nobody_lives_in() {
         let mut mask = Mask::default();
         mask.set_uninhabited(true);
-        assert!(!mask.admits(None));
-        assert!(mask.admits(Some(Buckets::of(&Readings::default()))));
+        assert!(!mask.admits(None, NO_STAR));
+        assert!(mask.admits(Some(Buckets::of(&Readings::default())), NO_STAR));
     }
 
     /// Solo shows one value of an axis and hides the rest, empty space
@@ -574,11 +697,15 @@ mod tests {
 
         mask.draw(None);
         assert!(!mask.narrows());
-        assert!(mask.admits(Some(prison)) && mask.admits(None));
+        assert!(
+            mask.admits(Some(prison), NO_STAR) && mask.admits(None, NO_STAR)
+        );
         assert_eq!(mask.keeps_uninhabited(), 1.);
 
         mask.draw(Some(ColorBy::Government));
-        assert!(!mask.admits(Some(prison)) && !mask.admits(None));
+        assert!(
+            !mask.admits(Some(prison), NO_STAR) && !mask.admits(None, NO_STAR)
+        );
     }
 
     /// A map drawing no uninhabited system ignores the flag hiding them, and
@@ -589,7 +716,7 @@ mod tests {
         mask.set_uninhabited(true);
         mask.draw_uninhabited(false);
         assert!(!mask.narrows());
-        assert!(mask.admits(None));
+        assert!(mask.admits(None, NO_STAR));
         assert_eq!(mask.keeps_uninhabited(), 1.);
         assert!(mask.hides_uninhabited(), "the flag was forgotten");
 
@@ -601,6 +728,6 @@ mod tests {
         assert!(mask.narrows(), "a hidden color stopped hiding");
 
         mask.draw_uninhabited(true);
-        assert!(!mask.admits(None));
+        assert!(!mask.admits(None, NO_STAR));
     }
 }

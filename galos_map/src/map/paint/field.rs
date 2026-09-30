@@ -499,7 +499,8 @@ pub(crate) fn build_field(
             // [`crate::map::galaxy::spawn::Hue::light`].
             View::Map => {
                 let tone = color_by.hue(system);
-                let level = crate::map::paint::glow::mark_light(
+                let level = crate::map::paint::glow::system_light(
+                    *color_by,
                     tone,
                     system.population() > 0,
                     &gains,

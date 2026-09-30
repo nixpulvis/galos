@@ -38,7 +38,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use chrono::{DateTime, Utc};
-use galos_index::prelude::{CellId, CellSystem, Part, Stamp};
+use galos_index::prelude::{CellId, CellSystem, Part, Stamp, StarKind};
 use galos_index::read::inhabited::{Inhabited, Readings};
 use galos_index::read::resident::Resident;
 use galos_index::read::screen::{Crowded, Empty, Share};
@@ -950,6 +950,7 @@ fn candidate<'a>(
         point.id64 as i64,
         populated,
         DateTime::from_timestamp(point.updated_at as i64, 0),
+        point.kind,
     )
 }
 
@@ -1096,7 +1097,12 @@ fn choose_populated(
         }
         if filters.asking()
             && !filters.admits(
-                &Candidate::off_the_table(stands.address, populated, None),
+                &Candidate::off_the_table(
+                    stands.address,
+                    populated,
+                    None,
+                    StarKind::Unknown,
+                ),
                 now,
             )
             && !fill
@@ -1520,11 +1526,11 @@ pub(crate) fn reconcile(
     // One buffer for every cell's take rather than one allocation apiece:
     // a wide view walks thousands of cells a frame, and the indices taken are
     // a share's worth each.
-    // What a cell draws: an address, where it stands, and the payload
-    // index it was named by. Taken rather than walked lazily, the order
-    // it is taken in being the one thing the two draws of this pass
-    // disagree about.
-    let mut taken: Vec<(i64, [f64; 3], u32)> = Vec::new();
+    // What a cell draws: an address, where it stands, the payload index it
+    // was named by and the star it arrives at. Taken rather than walked
+    // lazily, the order it is taken in being the one thing the two draws of
+    // this pass disagree about.
+    let mut taken: Vec<(i64, [f64; 3], u32, StarKind)> = Vec::new();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`crate::map::galaxy::spawn::PendingSpawns`].
@@ -1653,7 +1659,12 @@ pub(crate) fn reconcile(
                 {
                     continue;
                 }
-                taken.push((point.id64 as i64, point.position, index as u32));
+                taken.push((
+                    point.id64 as i64,
+                    point.position,
+                    index as u32,
+                    point.kind,
+                ));
             }
         }
         // What this cell's marks account for, so [`crate::map::paint::glow`] can lay the
@@ -1663,7 +1674,7 @@ pub(crate) fn reconcile(
         // cut again per point by the bubble just below.
         let mut took = Accounted::default();
         let mut round = 0u32;
-        for &(address, pos, index) in &taken {
+        for &(address, pos, index, kind) in &taken {
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
@@ -1681,6 +1692,7 @@ pub(crate) fn reconcile(
             // the walk decides, and the spawn catches up under it.
             took.took(
                 pos,
+                kind,
                 populated
                     .get(address)
                     .filter(|system| system.population > 0)
@@ -1779,8 +1791,12 @@ pub(crate) fn reconcile(
                 .entered();
         for &(id, address, at) in &choice.booked {
             took_all += 1;
+            // No payload point behind a pick off the table, so no star: the
+            // star axis is not offered while the population scale draws
+            // these; see `follow_color_by`.
             drawn.0.entry(id).or_default().took(
                 at,
+                StarKind::Unknown,
                 populated.get(address).map(|system| {
                     Inhabited::of_system(at, Readings::of(system))
                 }),

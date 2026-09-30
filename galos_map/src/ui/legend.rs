@@ -208,12 +208,12 @@ const LEGEND_SWATCH: f32 = 10.;
 /// interface is hidden. `hint` says whether the line saying what a chip does
 /// is wanted under it, which it is only where a chip can be clicked.
 ///
-/// `held` is the galaxy's colonies, for which values there are lines for.
+/// `held` is what the galaxy holds, for which values there are lines for.
 pub(crate) fn legend(
     ui: &mut Ui,
     filters: &Filters,
     axis: ColorBy,
-    held: Option<&galos_index::read::inhabited::Inhabited>,
+    held: Option<&crate::map::filter::mask::Held>,
     hint: bool,
 ) {
     let mask = filters.mask();
@@ -240,7 +240,7 @@ pub(crate) fn legend(
             }
         });
     }
-    if mask.draws_uninhabited() {
+    if mask.draws_uninhabited() && !axis.every_system() {
         ui.horizontal(|ui| {
             Swatch::uninhabited(mask).paint(ui, LEGEND_SWATCH);
             let text = egui::RichText::new("Uninhabited");

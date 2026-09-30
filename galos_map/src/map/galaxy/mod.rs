@@ -275,7 +275,7 @@ impl System {
 
     /// The whole of what the filters ask about this system
     ///
-    /// The same four facts a payload point can answer, so a system on the map
+    /// The same five facts a payload point can answer, so a system on the map
     /// and a point the LOD draw is weighing are put to one predicate rather
     /// than to two that could drift apart. See [`filter::Candidate`].
     pub(crate) fn candidate(&self) -> crate::map::filter::Candidate<'_> {
@@ -289,6 +289,11 @@ impl System {
                 .filter(|politics| politics.population > 0)
                 .map(|politics| {
                     crate::map::filter::mask::Buckets::of(&politics.readings)
+                }),
+            kind: self
+                .indexed
+                .map_or(galos_index::prelude::StarKind::Unknown, |point| {
+                    point.kind
                 }),
         }
     }

@@ -335,7 +335,7 @@ pub(crate) fn chrome(
         // No key over a map in no colors, the realistic view, nor where it
         // was switched off.
         if toggles.legend.0 && filter.active.mask().drawn().is_some() {
-            let held = filter.key.counted().0.copied();
+            let held = filter.key.counted().0;
             hide::bare_legend(
                 ctx,
                 &filter.active,

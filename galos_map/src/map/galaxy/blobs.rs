@@ -881,17 +881,30 @@ pub(crate) fn weigh_blobs(
             }
             false => blob.count,
         };
-        let light = average_mark(held, stands_for, *color_by, &gains);
         let mask = filtering.filters.mask();
-        let (kept_light, kept) = match mask.narrows() {
-            true => averaged(
+        // Along star class a merged mark stands for its whole subtree's
+        // stars, which are the cell's aggregate's and not its colonies'.
+        let stars = color_by
+            .every_system()
+            .then(|| index.0.get(blob.id).map(|cell| *cell.aggregate.kinds()))
+            .flatten();
+        let weighed = |keeps| match &stars {
+            Some(kinds) => averaged_stars(kinds, stands_for, &gains, keeps),
+            None => averaged(
                 held,
                 stands_for,
                 *color_by,
                 &gains,
-                mask.keeps(*color_by),
+                keeps,
                 mask.keeps_uninhabited(),
             ),
+        };
+        let light = match &stars {
+            Some(_) => weighed(crate::map::filter::mask::Keeps::ALL).0,
+            None => average_mark(held, stands_for, *color_by, &gains),
+        };
+        let (kept_light, kept) = match mask.narrows() {
+            true => weighed(mask.keeps(*color_by)),
             false => (light, 1.),
         };
         Mark {
@@ -1091,6 +1104,37 @@ fn averaged(
         * alone
         * uninhabited;
     kept += alone * uninhabited;
+    let whole = count.max(1) as f32;
+    (light / whole, kept / whole)
+}
+
+/// [`averaged`] along star class: every system a mark of the star its cell's
+/// aggregate counts it at, each kind counted at what `keeps` lets through
+///
+/// No uninhabited remainder, every system having a kind, [`StarKind::Unknown`]
+/// among them.
+///
+/// [`StarKind::Unknown`]: galos_index::prelude::StarKind::Unknown
+fn averaged_stars(
+    kinds: &[u32; galos_index::prelude::StarKind::COUNT],
+    count: u64,
+    gains: &crate::map::paint::glow::Gains,
+    keeps: crate::map::filter::mask::Keeps,
+) -> (Vec3, f32) {
+    let mut light = Vec3::ZERO;
+    let mut kept = 0.0f32;
+    for (code, systems) in kinds.iter().enumerate() {
+        if *systems == 0 {
+            continue;
+        }
+        let hue = crate::map::galaxy::spawn::ColorBy::StarClass.hue_of(code);
+        let share = keeps.of(code);
+        light += hue.light()
+            * crate::map::paint::glow::star_light(hue, gains)
+            * *systems as f32
+            * share;
+        kept += *systems as f32 * share;
+    }
     let whole = count.max(1) as f32;
     (light / whole, kept / whole)
 }

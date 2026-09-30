@@ -92,6 +92,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
 use bevy::tasks::ComputeTaskPool;
+use galos_index::prelude::StarKind;
 use galos_index::read::inhabited::Inhabited;
 use galos_index::tree::cell::UNIFORM_SPAN;
 
@@ -315,6 +316,23 @@ pub struct Gains {
     /// [`faint`](Self::faint) either way — as its own mark, and as the
     /// field's stand-in for it.
     pub backdrop: f32,
+    /// How much harder the crowd of stars nothing has recorded is held down
+    /// along star class than the crowd of scanned stars over it
+    ///
+    /// Star class's [`backdrop`](Self::backdrop): the scanned stars are its
+    /// colonies, drawn at a full mark, and the unscanned its empty sky at
+    /// [`faint`](Self::faint). Derived the same way by [`settle_gains`], so
+    /// the two reach the same brightness where the scanned are dense — for a
+    /// scanned share `s`, `faint · (1/s - 1)`, two unscanned stars weighed
+    /// against a scanned one where `backdrop` weighs forty empty systems
+    /// against a colony.
+    ///
+    /// The scanned crowd itself is held down by `backdrop`, as the empty sky
+    /// is on the political axes, being that same sky: at the colonies' own
+    /// [`crowd`](Self::crowd), seventy-six million scanned stars drew the
+    /// core and every arm pure white, and at a quarter of a mark with the
+    /// backdrop's pivot they drew nothing brighter than the gray.
+    pub unscanned: f32,
 }
 
 impl Default for Gains {
@@ -329,6 +347,9 @@ impl Default for Gains {
             // reads the directory actually in front of the map: one system
             // in forty-four is inhabited, so forty-three are not.
             backdrop: faint * 43.,
+            // Off the share `.index/full` measures: 124 million of 200
+            // million systems have no star on record.
+            unscanned: faint * 1.6,
         }
     }
 }
@@ -722,6 +743,37 @@ pub(crate) fn mark_light(hue: Hue, peopled: bool, gains: &Gains) -> f32 {
     share * gains.mark
 }
 
+/// What one system is worth along star class, in linear light
+///
+/// A star nothing has recorded at the level a system nobody lives in is laid
+/// at along every other axis ([`Gains::faint`]), so the unscanned two thirds
+/// of the sky keep the brightness the backdrop has always had. A star on
+/// record is worth what a colony with no politics on record is
+/// ([`Gains::unaligned`]): enough over the unscanned that the color reads,
+/// and nowhere near a colony with a reading, since the axis is every system
+/// and not a few thousand picked out of them.
+pub(crate) fn star_light(hue: Hue, gains: &Gains) -> f32 {
+    let share = match hue {
+        Hue::Grey => gains.faint,
+        _ => gains.unaligned,
+    };
+    share * gains.mark
+}
+
+/// What one system is worth along `color_by`, in linear light: a mark's
+/// level, and the light laid in its place
+pub(crate) fn system_light(
+    color_by: ColorBy,
+    hue: Hue,
+    peopled: bool,
+    gains: &Gains,
+) -> f32 {
+    match color_by.every_system() {
+        true => star_light(hue, gains),
+        false => mark_light(hue, peopled, gains),
+    }
+}
+
 /// Put the field's mesh and its additive material up
 fn spawn_glow(
     mut commands: Commands,
@@ -787,6 +839,15 @@ fn settle_gains(
         let empty = (stellar - peopled) as f64 / peopled as f64;
         gains.backdrop = gains.faint * empty as f32;
     }
+    let unknown = index
+        .0
+        .get(galos_index::prelude::CellId::ROOT)
+        .map_or(0, |cell| u64::from(cell.aggregate.kinds()[0]));
+    let scanned = stellar.saturating_sub(unknown);
+    if unknown > 0 && scanned > 0 {
+        gains.unscanned =
+            gains.faint * (unknown as f64 / scanned as f64) as f32;
+    }
 }
 
 /// What a cell's political histogram comes to: the light it lays down, summed
@@ -822,6 +883,34 @@ fn composition(
         light += hue.light() * w;
         weight += w;
     });
+    (light, weight)
+}
+
+/// What a cell's stars come to along star class: the light they lay down,
+/// premultiplied, and how many systems' worth that is, both in shares of
+/// [`Gains::mark`] as [`composition`]'s are
+///
+/// `kinds` is by [`StarKind::code`], the cell's aggregate less what is drawn
+/// as itself, and `keeps` the color mask's say along star class. The field
+/// hands this the scanned stars alone and lays the unscanned as a channel of
+/// their own.
+pub(crate) fn starlight(
+    kinds: &[u32; StarKind::COUNT],
+    gains: &Gains,
+    keeps: Keeps,
+) -> (Vec3, f32) {
+    let mut light = Vec3::ZERO;
+    let mut weight = 0.0;
+    for (code, count) in kinds.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        let hue = ColorBy::StarClass.hue_of(code);
+        let w = *count as f32 * star_light(hue, gains) / gains.mark
+            * keeps.of(code);
+        light += hue.light() * w;
+        weight += w;
+    }
     (light, weight)
 }
 
@@ -1176,6 +1265,88 @@ fn build_glow(
                 let spent = |share: f32| share + (1. - share) * dim;
 
                 let mass = cell.aggregate.mass().remove(taken.mass);
+
+                // Star class stands for every system alike, so the two
+                // channels split the cell by its stars rather than by who
+                // lives there: the unscanned are its backdrop, neutral, and
+                // the scanned its colonies, in the color their kinds come to
+                // and compressed about the colonies' pivot. Both crowds are
+                // the sky's, held down by [`Gains::backdrop`] and the
+                // unscanned by [`Gains::unscanned`] under that. Both at the
+                // cell's own moments, there being no weighting of the scanned
+                // apart; the colonies' kinds are among these, and a political
+                // channel as well would count them twice.
+                if color_by.every_system() {
+                    let mut kinds = *cell.aggregate.kinds();
+                    for (kind, drawn) in kinds.iter_mut().zip(taken.kinds) {
+                        *kind = kind.saturating_sub(drawn);
+                    }
+                    let unscanned = u64::from(std::mem::take(&mut kinds[0]));
+                    let scanned: u64 =
+                        kinds.iter().map(|n| u64::from(*n)).sum();
+                    let Some(at) = mass.centroid().filter(|at| in_reach(*at))
+                    else {
+                        continue;
+                    };
+                    let spread = (mass.rms_radius() * FLATTENED)
+                        .max(covered(mass.rms_radius()));
+                    let keeps = mask.keeps(*color_by);
+                    let share = filtering.filters.admitted_share(
+                        aged,
+                        held_named.whole(),
+                        count,
+                    );
+                    if unscanned > 0 {
+                        let systems = unscanned as f32 * carried;
+                        let light = Vec3::splat(
+                            systems * gains.faint * gains.mark * MARK_AREA,
+                        );
+                        if let Some(lit) = quads.deposit(
+                            orbit,
+                            cot_half_fov,
+                            viewport,
+                            half,
+                            at,
+                            spread,
+                            light,
+                            systems * MARK_AREA,
+                            gains.crowd * gains.backdrop * gains.unscanned,
+                            PIVOT,
+                            spent(share * keeps.of(0)),
+                            room(at),
+                        ) {
+                            counted.backdrop += 1;
+                            counted.took(lit);
+                        }
+                    }
+                    if scanned > 0 {
+                        let whole = starlight(&kinds, &gains, Keeps::ALL);
+                        let kept = match mask.narrows() {
+                            true => starlight(&kinds, &gains, keeps),
+                            false => whole,
+                        };
+                        let (mix, admitted) =
+                            let_through(whole, kept, share, dim);
+                        if let Some(lit) = quads.deposit(
+                            orbit,
+                            cot_half_fov,
+                            viewport,
+                            half,
+                            at,
+                            spread,
+                            mix * carried * gains.mark * MARK_AREA,
+                            scanned as f32 * carried * MARK_AREA,
+                            gains.crowd * gains.backdrop,
+                            COLONY_PIVOT,
+                            admitted,
+                            room(at),
+                        ) {
+                            counted.colonies += 1;
+                            counted.took(lit);
+                        }
+                    }
+                    continue;
+                }
                 if empty > 0
                     && !populated_only
                     && let Some(at) = mass.centroid()
@@ -2217,6 +2388,7 @@ mod exposure {
                         count: cell.aggregate.count(),
                         mass: cell.aggregate.mass(),
                         inhabited: settled.get(id).copied().unwrap_or_default(),
+                        kinds: *cell.aggregate.kinds(),
                     },
                 );
             }

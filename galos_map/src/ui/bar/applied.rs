@@ -5,7 +5,7 @@
 //! the trip, and each section with a row standing for all of it.
 
 use crate::map::filter::key::{held_tiers, hidden_values};
-use crate::map::filter::mask::Mask;
+use crate::map::filter::mask::{Held, Mask};
 use crate::map::filter::{Filter, Filters, Plotted};
 use crate::map::galaxy::InReach;
 use crate::map::galaxy::spawn::ColorBy;
@@ -50,12 +50,12 @@ const CHIP: f32 = 13.;
 /// Answers what a click asked of the mask, carried out by the caller since
 /// the chips are drawn from it, and whether the key was asked for.
 ///
-/// `held` is the galaxy's colonies, for which values there are chips for.
+/// `held` is what the galaxy holds, for which values there are chips for.
 pub(super) fn color_row(
     ui: &mut Ui,
     filters: &Filters,
     axis: ColorBy,
-    held: Option<&galos_index::read::inhabited::Inhabited>,
+    held: Option<&Held>,
     popover: bool,
 ) -> (Option<Keyed>, bool) {
     let mask = filters.mask();
@@ -99,8 +99,9 @@ pub(super) fn color_row(
             }
         }
         // Not where the map draws no system nobody lives in: the sky read as
-        // populations. The chip would toggle nothing.
-        if mask.draws_uninhabited() {
+        // populations, and star class, which has none to set apart. The chip
+        // would toggle nothing.
+        if mask.draws_uninhabited() && !axis.every_system() {
             ui.add_space(ui.spacing().item_spacing.x);
             if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
                 asked = Some(Keyed::Uninhabited);
@@ -160,14 +161,16 @@ pub(super) fn color_row(
 /// is saying something is hidden
 ///
 /// The values hidden along the axis being drawn, the systems nobody lives in
-/// counting as one of them. Nothing about the other axes: what they hide
-/// hides nothing while this one is drawn.
+/// counting as one of them along a political axis. Nothing about the other
+/// axes: what they hide hides nothing while this one is drawn.
 pub(super) fn color_summary(
     axis: ColorBy,
     mask: &Mask,
-    held: Option<&galos_index::read::inhabited::Inhabited>,
+    held: Option<&Held>,
 ) -> (String, bool) {
-    let empty = mask.draws_uninhabited() && mask.hides_uninhabited();
+    let empty = mask.draws_uninhabited()
+        && mask.hides_uninhabited()
+        && !axis.every_system();
     let here = hidden_values(axis, mask, held) + usize::from(empty);
     match here {
         0 => ("all".to_owned(), false),

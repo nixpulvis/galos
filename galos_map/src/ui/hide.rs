@@ -122,7 +122,7 @@ pub(super) fn bare_legend(
     ctx: &Context,
     filters: &Filters,
     axis: ColorBy,
-    held: Option<&galos_index::read::inhabited::Inhabited>,
+    held: Option<&crate::map::filter::mask::Held>,
 ) {
     zone("bare-legend").fixed_pos(egui::pos2(MARGIN, MARGIN * 2. + EYE)).show(
         ctx,

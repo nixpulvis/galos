@@ -14,12 +14,14 @@
 //! one chip a tier and the mini legend as one line a tier; all three read the
 //! same list.
 
+use super::mask::Held;
 use super::mask::Mask;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use elite_journal::prelude::{
     Allegiance, Economy, Government, Power, PowerplayState, Security, State,
 };
-use galos_index::read::inhabited::{Bucketed, Inhabited};
+use galos_index::prelude::StarKind;
+use galos_index::read::inhabited::Bucketed;
 
 /// Whether Independent stands beside the three powers rather than under
 /// Other
@@ -42,9 +44,9 @@ pub struct Item {
 }
 
 impl Item {
-    /// How many of `held`'s colonies this counts, summed over its buckets
-    pub fn count(&self, axis: ColorBy, held: &Inhabited) -> u64 {
-        let counts = axis.counts(held);
+    /// How many of `held`'s systems this counts, summed over its buckets
+    pub fn count(&self, axis: ColorBy, held: &Held) -> u64 {
+        let counts = axis.counted(held);
         self.buckets.iter().map(|bucket| u64::from(counts[*bucket])).sum()
     }
 
@@ -137,8 +139,8 @@ impl Tier {
         )
     }
 
-    /// How many of `held`'s colonies it counts
-    pub fn count(&self, axis: ColorBy, held: &Inhabited) -> u64 {
+    /// How many of `held`'s systems it counts
+    pub fn count(&self, axis: ColorBy, held: &Held) -> u64 {
         self.items().iter().map(|item| item.count(axis, held)).sum()
     }
 }
@@ -153,23 +155,33 @@ pub fn tiers(axis: ColorBy) -> Vec<Tier> {
         ColorBy::State => by_hue(axis, &STATE_HUES, hue_name),
         ColorBy::Power => by_hue(axis, &POWER_HUES, power_bloc),
         ColorBy::PowerplayState => in_order(axis, &POWERPLAY_ORDER),
+        ColorBy::StarClass => by_hue(axis, &STAR_HUES, star_group),
     }
 }
 
 /// How many values `mask` hides along `axis`, as the color row's summary
 /// counts them: the values the key lists for `held`, so one it leaves out is
 /// not counted as hidden. See [`held_tiers`].
-pub fn hidden_values(
-    axis: ColorBy,
-    mask: &Mask,
-    held: Option<&Inhabited>,
-) -> usize {
+pub fn hidden_values(axis: ColorBy, mask: &Mask, held: Option<&Held>) -> usize {
     held_tiers(axis, held)
         .iter()
         .flat_map(|tier| tier.items().to_vec())
         .filter(|item| item.hidden(axis, mask) == Hidden::All)
         .count()
 }
+
+/// The order a star's colors stand in: the main sequence hot to cool, then
+/// what cannot be scooped, and nothing on record last
+const STAR_HUES: [Hue; 8] = [
+    Hue::Blue,
+    Hue::Cyan,
+    Hue::Yellow,
+    Hue::Orange,
+    Hue::Red,
+    Hue::Magenta,
+    Hue::Green,
+    Hue::Grey,
+];
 
 /// The order a government's colors stand in, which is the order the key
 /// lists them
@@ -265,9 +277,9 @@ fn items(axis: ColorBy) -> Vec<Item> {
 /// engineer's base — and never a whole system's, so along government five of
 /// the seventeen come to nothing, and a row that counts nothing is a toggle
 /// that does nothing. A group left with one member is that member's own row,
-/// and one left with none goes. `held` is the galaxy's colonies, [`None`]
-/// while they are still being read, when every value is listed.
-pub fn held_tiers(axis: ColorBy, held: Option<&Inhabited>) -> Vec<Tier> {
+/// and one left with none goes. `held` is what the galaxy holds, [`None`]
+/// while its colonies are still being read, when every value is listed.
+pub fn held_tiers(axis: ColorBy, held: Option<&Held>) -> Vec<Tier> {
     let Some(held) = held else { return tiers(axis) };
     tiers(axis)
         .into_iter()
@@ -409,6 +421,18 @@ fn power_bloc(hue: Hue) -> &'static str {
     }
 }
 
+/// What a star's color is called, as its group's header says it: the
+/// classes or the kind of thing every star drawn in it is
+fn star_group(hue: Hue) -> &'static str {
+    match hue {
+        Hue::Blue => "O and B",
+        Hue::Cyan => "A and F",
+        Hue::Magenta => "Remnants",
+        Hue::Green => "Other stars",
+        _ => hue_name(hue),
+    }
+}
+
 /// What a bucket's value is called, as a row says it
 ///
 /// Nothing for the unreported bucket, which has no row of its own; see
@@ -539,6 +563,26 @@ pub(crate) fn value_name(axis: ColorBy, bucket: usize) -> &'static str {
             Some(PowerplayState::Stronghold) => "Stronghold",
             None => "Not in Powerplay",
         },
+        // Bucket zero is named: nothing on record is a row of its own, every
+        // system having some bucket along this axis.
+        ColorBy::StarClass => match StarKind::from_code(bucket as u8) {
+            StarKind::O => "Class O",
+            StarKind::B => "Class B",
+            StarKind::A => "Class A",
+            StarKind::F => "Class F",
+            StarKind::G => "Class G",
+            StarKind::K => "Class K",
+            StarKind::M => "Class M",
+            StarKind::BrownDwarf => "Brown Dwarf",
+            StarKind::WhiteDwarf => "White Dwarf",
+            StarKind::Neutron => "Neutron Star",
+            StarKind::BlackHole => "Black Hole",
+            StarKind::Carbon => "Carbon Star",
+            StarKind::WolfRayet => "Wolf-Rayet",
+            StarKind::Forming => "Forming Star",
+            StarKind::Other => "Unusual Star",
+            StarKind::Unknown => "Unknown",
+        },
     }
 }
 
@@ -658,7 +702,7 @@ mod tests {
     /// one member is that member's own row
     #[test]
     fn a_value_no_colony_holds_is_not_listed() {
-        let held = Inhabited::of_system(
+        let colonies = galos_index::read::inhabited::Inhabited::of_system(
             [0.; 3],
             Readings {
                 allegiance: Some(Allegiance::Federation),
@@ -667,6 +711,7 @@ mod tests {
                 ..Readings::default()
             },
         );
+        let held = Held { colonies, stars: [0; StarKind::COUNT] };
         let rows = held_tiers(ColorBy::Government, Some(&held));
         assert_eq!(
             rows,

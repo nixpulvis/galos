@@ -34,7 +34,7 @@ use elite_journal::prelude::{
     Allegiance, Economy, Government, Power, PowerplayState, Security, State,
 };
 use galos_index::core::aggregate::TempBucket;
-use galos_index::prelude::CellSystem;
+use galos_index::prelude::{CellSystem, StarKind};
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
 use galos_route::graph::{Drive, Routing, Tuning};
@@ -301,7 +301,11 @@ impl Hue {
     }
 }
 
-/// Which reading the map view colors each inhabited system by
+/// Which reading the map view colors each system by
+///
+/// Every axis but star class reads a colony's populated columns and leaves
+/// the systems nobody lives in gray; star class reads every system's
+/// arrival star.
 #[derive(Resource, Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ColorBy {
     Allegiance,
@@ -315,6 +319,8 @@ pub enum ColorBy {
     Power,
     /// Where the system stands in Powerplay
     PowerplayState,
+    /// The kind of star a ship arrives at, every system's
+    StarClass,
 }
 
 /// Whether systems are named
@@ -1394,9 +1400,15 @@ fn placement(system: &System, grid: &Grid) -> (CellCoord, Transform) {
 impl ColorBy {
     /// Which color a star is drawn in
     ///
-    /// Through the bucket its readings count in, so a mark and a cell's
-    /// histogram are painted by the one mapping, [`ColorBy::hue_of`].
+    /// Through the bucket it counts in, so a mark and a cell's histogram are
+    /// painted by the one mapping, [`ColorBy::hue_of`]. Along star class
+    /// that is the kind its payload point carries, unknown for a system built
+    /// with no point behind it.
     pub(crate) fn hue(self, system: &System) -> Hue {
+        if self.every_system() {
+            let kind = system.indexed.map_or(StarKind::Unknown, |at| at.kind);
+            return self.hue_of(usize::from(kind.code()));
+        }
         let readings = system
             .politics
             .as_ref()
@@ -1608,6 +1620,34 @@ impl Hue {
             Some(PowerplayState::Contested) => Hue::Red,
             Some(PowerplayState::Turmoil) => Hue::Orange,
             None => Hue::Grey,
+        }
+    }
+
+    /// The color a system's arrival star is drawn in. See
+    /// [`Hue::allegiance`].
+    ///
+    /// The main sequence runs through the colors the stars themselves shade
+    /// through, hot to cool: O and B blue, A and F cyan, G yellow, K orange
+    /// and M red. Which is also every star a fuel scoop can use. What cannot
+    /// be scooped is the other two: what is left of a star magenta, and the
+    /// rest of the sky's oddities green. Nothing on record is gray, and is
+    /// most of the galaxy.
+    pub(crate) fn star(kind: StarKind) -> Hue {
+        match kind {
+            StarKind::O | StarKind::B => Hue::Blue,
+            StarKind::A | StarKind::F => Hue::Cyan,
+            StarKind::G => Hue::Yellow,
+            StarKind::K => Hue::Orange,
+            StarKind::M => Hue::Red,
+            StarKind::WhiteDwarf | StarKind::Neutron | StarKind::BlackHole => {
+                Hue::Magenta
+            }
+            StarKind::BrownDwarf
+            | StarKind::Carbon
+            | StarKind::WolfRayet
+            | StarKind::Forming
+            | StarKind::Other => Hue::Green,
+            StarKind::Unknown => Hue::Grey,
         }
     }
 }

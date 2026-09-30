@@ -121,6 +121,20 @@ it; alt, ctrl or command clicking one shows it alone. Uninhabited systems have
 a row of their own. A system's panel names its state, power and standing
 beside its politics.
 
+Star class is the one coloring of every system rather than of the colonies:
+each system in the color of the star a ship arrives at, the main sequence
+through the colors those stars shade through — O and B blue, A and F cyan,
+G yellow, K orange, M red, every one of them a star a fuel scoop can use —
+then what cannot be scooped, remnants magenta and the rest green, and
+nothing on record gray. A scanned star is drawn as a colony is on the other
+colorings, at a full mark in its color, and an unscanned one as the empty
+sky is, faint and neutral and held down so the three fifths of the galaxy
+nobody has scanned cannot bury the rest. It has no Uninhabited row, and is
+not offered while scaling with population, which draws the colonies alone
+and knows none of their stars. The far field reads it off each cell's count
+of its stars by kind, which an index written before that count arrived
+gains with `galos index migrate`.
+
 Only the coloring on screen is filtered: hide the prisons and color by
 security, and every security rating is shown, the prisons among them. Each
 coloring remembers what it hides, so going back to government hides the
