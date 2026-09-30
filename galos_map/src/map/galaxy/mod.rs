@@ -747,20 +747,7 @@ pub(crate) fn reach_with_camera(
     }
     let Ok(camera) = camera.single() else { return };
 
-    // The margin here rather than inside `framed`, which answers what the
-    // camera takes in and would be answering something else with room left
-    // over folded into it. How far short of that to stop is the spyglass's to
-    // say.
-    let seen =
-        crate::map::camera::framed(camera.target_radius, lens.single().ok());
-    let inside = seen * (100 - FOLLOW_MARGIN) as f32 / 100.;
-    // No least. The reach is what the camera can see, and a camera standing on
-    // one system can see a fraction of a light year: held off at
-    // [`Spyglass::FLOOR`] the sky within five light years was drawn however
-    // far in the camera came, so flying into Sol left Alpha Centauri on the
-    // map. Only the galaxy's own edge bounds it, past which a wider reach asks
-    // for exactly the same systems.
-    let reach = inside.min(Spyglass::CEILING);
+    let reach = followed(camera.target_radius, lens.single().ok());
 
     // Only where it moved. Nothing watches this resource for changes today,
     // and writing the same number every frame is how that stops being true
@@ -768,6 +755,23 @@ pub(crate) fn reach_with_camera(
     if spyglass.radius != reach {
         spyglass.radius = reach;
     }
+}
+
+/// The reach [`reach_with_camera`] takes for a camera stood `radius` back.
+pub(crate) fn followed(radius: f32, lens: Option<&Projection>) -> f32 {
+    // The margin here rather than inside `framed`, which answers what the
+    // camera takes in and would be answering something else with room left
+    // over folded into it. How far short of that to stop is the spyglass's to
+    // say.
+    let seen = crate::map::camera::framed(radius, lens);
+    let inside = seen * (100 - FOLLOW_MARGIN) as f32 / 100.;
+    // No least. The reach is what the camera can see, and a camera standing on
+    // one system can see a fraction of a light year: held off at
+    // [`Spyglass::FLOOR`] the sky within five light years was drawn however
+    // far in the camera came, so flying into Sol left Alpha Centauri on the
+    // map. Only the galaxy's own edge bounds it, past which a wider reach asks
+    // for exactly the same systems.
+    inside.min(Spyglass::CEILING)
 }
 
 impl System {

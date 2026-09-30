@@ -52,7 +52,7 @@ struct Descent<'w, 's> {
 pub(crate) mod shot;
 
 pub fn plugin(app: &mut App) {
-    // Throwaway: the scripted capture, only when GALOS_SHOT names a file.
+    // The scripted capture, only when GALOS_SHOT names a file.
     app.add_plugins(shot::plugin);
     app.add_plugins(FrameTimeDiagnosticsPlugin::default());
     app.init_resource::<ShowDiagnostics>();

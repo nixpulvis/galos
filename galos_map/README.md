@@ -1,6 +1,7 @@
 # Galos Map
-![Galos Starmap Demo](./demo.gif)
-![Galos Galaxy Zoom](./galaxy.png)
+![The galaxy from above, the core at the top](./galaxy.png)
+![The stars around Sol, named](./local.png)
+<img src="./demo.gif" width="100%" alt="A flight from the whole galaxy down into the Sol system">
 
 The map is pointed at one directory, and reads no database of its own.
 `--index DIR` is the index `galos ingest -i DIR` writes, and
@@ -278,3 +279,25 @@ profiles nothing. Leave it unset, or keep `info` in whatever it says.
 
 A release build is the one to read. The dev profile is `opt-level = 1` with
 its dependencies at 3, which is playable but is not what the numbers mean.
+
+## The pictures above
+
+`media.sh` makes all three, through the same shot driver `profile.sh`
+flies, all seen from galactic north: `galaxy.png` is the whole galaxy from
+above, `local.png` the stars within a few tens of light years of Sol with
+their names, and `demo.gif` a flight from the galaxy down into the Sol
+system, ending on the planets out to Mars, with the names coming on inside
+8 light years. The flight is recorded a frame at a time and put together by
+ffmpeg, which has to be on the path. The camera and the window's size are
+the script's, so a run on any display comes out the same size; what is
+drawn is whatever the index holds, `.index/full` unless `-i` names another.
+
+```sh
+galos_map/media.sh                     # all three, written beside the script
+galos_map/media.sh demo                # the animation alone
+galos_map/media.sh -o /tmp galaxy      # somewhere else, to compare first
+```
+
+The map opens a window for each and closes it when done. It is a capture of
+the screen, so the display has to be awake: asleep, the frames come out
+black. On macOS the script wakes it and holds it awake with `caffeinate`.
