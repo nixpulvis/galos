@@ -558,6 +558,10 @@ pub(crate) fn fetch(
     let Some(view) = crate::map::galaxy::plan::view(orbit, camera) else {
         return;
     };
+    // Whether a filter narrows the map, which wants every marked cell held
+    // whole: the systems it admits can stand anywhere in a payload's
+    // magnitude order, and [`reconcile`] draws them first out of whatever of
+    // it is held.
     let whole = filters.asking();
     // What the draw will spread over. Off the plan alone — a mark carries
     // its own slice — which is what lets the share be struck here as well
@@ -571,48 +575,97 @@ pub(crate) fn fetch(
     // arithmetic over every marked cell, and the asking that follows it. A
     // still view asks for nothing and pays the first of them anyway, which is
     // what a capture has to be able to see.
-    let asking: Vec<(CellId, usize)> = {
+    let asking = {
         let _zone = info_span!("missing cells").entered();
-        let mut asking = Vec::new();
-        for mark in &planned.0.marks {
-            // Past the clamp there is nothing to test for: the walk is
-            // clamped to the reach itself, so a cell it marks is a cell
-            // the bubble touches. See [`galos_index::Reach`].
-            let id = mark.id;
-            let slice = mark.slice as usize;
-            // **The sky reads a cell whole.** Which of a cell draws is
-            // decided per star against the exposure's floor
-            // ([`reconcile`]), and a star's magnitude is a fact only its
-            // payload point carries — so a prefix sized off a share is a
-            // cell whose fainter half cannot be weighed at all. It is what
-            // left 33 of the 184 naked-eye stars in a frustum undrawn: not
-            // rationed away, never read. The walk has already dropped every
-            // subtree that cannot clear the floor, so the cells reaching
-            // here are few and what they hold is what the sky is made of.
-            let drawn = share.wanted(slice, id);
-            let want = if whole || real {
-                slice
-            } else {
-                (drawn * READ_SLACK).max(READ_LEAST).min(slice)
-            };
-            if want == 0 {
-                continue;
-            }
-            let held = resident.0.cell(id).map_or(0, |held| held.points.len());
-            if held >= want {
-                continue;
-            }
-            asking.push((rank(id, drawn > 0 || whole || real), id, want));
-        }
-        asking.sort_unstable_by_key(|&(rank, _, _)| rank);
-        asking.into_iter().map(|(_, id, want)| (id, want)).collect()
+        reads(
+            &planned.0.marks,
+            |slice, id| share.wanted(slice, id),
+            |id| resident.0.cell(id).map_or(0, |held| held.points.len()),
+            whole,
+            real,
+        )
     };
     let _zone = info_span!("cell tasks", missing = asking.len()).entered();
     tasks.ask(asking);
     tasks.send(&transport);
 }
 
-/// Where a cell stands in the queue, lowest first
+/// What [`fetch`] asks for: each marked cell not held to what the frame
+/// wants, and how much of it, most wanted first
+///
+/// `wanted` is how many of a cell's `slice` the frame draws, `held` how many
+/// of its points the map holds, `whole` whether a filter wants every marked
+/// cell held whole, and `real` whether this is the photometric sky.
+fn reads(
+    marks: &[galos_index::read::walk::MarkRef],
+    wanted: impl Fn(usize, CellId) -> usize,
+    held: impl Fn(CellId) -> usize,
+    whole: bool,
+    real: bool,
+) -> Vec<(CellId, usize)> {
+    let mut asking = Vec::new();
+    for mark in marks {
+        // Past the clamp there is nothing to test for: the walk is clamped
+        // to the reach itself, so a cell it marks is a cell the bubble
+        // touches. See [`galos_index::Reach`].
+        let id = mark.id;
+        let slice = mark.slice as usize;
+        // **The sky reads a cell whole.** Which of a cell draws is decided
+        // per star against the exposure's floor ([`reconcile`]), and a
+        // star's magnitude is a fact only its payload point carries — so a
+        // prefix sized off a share is a cell whose fainter half cannot be
+        // weighed at all. It is what left 33 of the 184 naked-eye stars in
+        // a frustum undrawn: not rationed away, never read. The walk has
+        // already dropped every subtree that cannot clear the floor, so the
+        // cells reaching here are few and what they hold is what the sky is
+        // made of.
+        let drawn = wanted(slice, id);
+        let prefix = if real {
+            slice
+        } else {
+            (drawn * READ_SLACK).max(READ_LEAST).min(slice)
+        };
+        let held = held(id);
+        // **Filtered, a cell is still read whole, but not first.** Every
+        // marked cell is read to the prefix an unfiltered frame would read,
+        // in the order an unfiltered frame reads them, and only then is any
+        // of them read the rest of the way. What is held once the queue
+        // drains is what it always was, every marked cell whole; what
+        // changed is the way there. Read whole from the first, the reads
+        // were thousands of points apiece and each cell drew nothing until
+        // its own landed, so the view filled in a tile at a time where
+        // unfiltered it fills evenly all over.
+        let (want, stage) = if held < prefix {
+            (prefix, Stage::Prefix)
+        } else if whole && held < slice {
+            (slice, Stage::Whole)
+        } else {
+            continue;
+        };
+        // Every cell's prefix before any cell's rest; see [`Stage`].
+        asking.push(((stage, rank(id, drawn > 0 || real)), id, want));
+    }
+    asking.sort_unstable_by_key(|&(rank, _, _)| rank);
+    asking.into_iter().map(|(_, id, want)| (id, want)).collect()
+}
+
+/// Which of a cell's two reads is being asked for, in the order the queue
+/// takes them
+///
+/// **Every cell's prefix before any cell's rest.** A filtered frame holds
+/// every marked cell whole, and a whole read is thousands of points; asked
+/// for first, they kept the prefixes that draw the frame waiting behind
+/// them, and the view filled in a cell at a time.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    /// What an unfiltered frame reads of the cell: the share it draws, with
+    /// [`READ_SLACK`] over it and [`READ_LEAST`] under it
+    Prefix,
+    /// The rest of the cell, which a filter narrowing the map wants held
+    Whole,
+}
+
+/// Where a cell stands in the queue, lowest first, within a [`Stage`]
 ///
 /// **The cells that draw a mark this frame before the ones that do not.**
 /// Every marked cell in reach is read to [`READ_LEAST`] whatever its share,
@@ -2537,6 +2590,47 @@ mod tests {
             .collect();
         addresses.sort();
         addresses
+    }
+
+    /// A filtered frame reads every marked cell's prefix before any cell the
+    /// rest of the way, and still ends with every cell held whole
+    ///
+    /// Read whole from the first, a coarse cell's thousands of points went
+    /// ahead of a fine cell's few dozen, and the view filled in a cell at a
+    /// time.
+    #[test]
+    fn a_filtered_frame_reads_every_prefix_before_any_cell_whole() {
+        let coarse = CellId::of_point([0.0, 0.0, 0.0], 3);
+        let fine = CellId::of_point([900.0, 0.0, 900.0], 5);
+        let mark = |id: CellId, slice: u32| galos_index::read::walk::MarkRef {
+            id,
+            slice,
+            at: id.bounds().center(),
+        };
+        let marks = [mark(coarse, 5_000), mark(fine, 4_000)];
+        // Ten drawn apiece, so a prefix of forty.
+        let wanted = |_: usize, _: CellId| 10;
+
+        let coarse_at_prefix = |id: CellId| if id == coarse { 40 } else { 0 };
+        assert_eq!(
+            reads(&marks, wanted, coarse_at_prefix, true, false),
+            vec![(fine, 40), (coarse, 5_000)],
+            "a cell was read whole while another's prefix waited"
+        );
+        assert_eq!(
+            reads(&marks, wanted, coarse_at_prefix, false, false),
+            vec![(fine, 40)],
+            "unfiltered, a prefix is all a cell is read to"
+        );
+
+        // The way there changed and the loaded set did not: once every
+        // prefix is in, every marked cell is read whole, and then nothing.
+        assert_eq!(
+            reads(&marks, wanted, |_| 40, true, false),
+            vec![(coarse, 5_000), (fine, 4_000)]
+        );
+        let whole = |id: CellId| if id == coarse { 5_000 } else { 4_000 };
+        assert!(reads(&marks, wanted, whole, true, false).is_empty());
     }
 
     /// The walk does not drop what the user has picked out
