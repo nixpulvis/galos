@@ -460,7 +460,7 @@ fn select_on_click(
 ///
 /// Seconds. Long enough to be reached without hurrying, short enough that
 /// two deliberate clicks on the same system are not read as one gesture.
-const DOUBLE_CLICK: f32 = 0.4;
+pub(crate) const DOUBLE_CLICK: f32 = 0.4;
 
 /// Fly the camera to whatever the user double clicks
 ///
@@ -529,18 +529,25 @@ fn fly_on_double_click(
 ///
 /// What was clicked rather than which system it was, since a body is
 /// something to be aimed at as much as the system holding it is, and the two
-/// have nothing in common to be named by but being entities on the map.
-#[derive(Default)]
-struct LastClick(Option<(Entity, f32)>);
+/// have nothing in common to be named by but being entities on the map. Off
+/// the map, whatever else a click lands on is told apart by, as the rose's
+/// pieces are.
+pub(crate) struct LastClick<K = Entity>(Option<(K, f32)>);
 
-impl LastClick {
+impl<K> Default for LastClick<K> {
+    fn default() -> Self {
+        LastClick(None)
+    }
+}
+
+impl<K: PartialEq> LastClick<K> {
     /// Whether a click on `what` at `now` is the second of a pair
     ///
     /// A double is spent as soon as it is answered, so a third click starts
     /// counting afresh rather than making a second pair with the second.
-    fn doubled(&mut self, what: Entity, now: f32) -> bool {
-        let doubled = matches!(self.0, Some((clicked, when))
-            if clicked == what && now - when <= DOUBLE_CLICK);
+    pub(crate) fn doubled(&mut self, what: K, now: f32) -> bool {
+        let doubled = matches!(&self.0, Some((clicked, when))
+            if *clicked == what && now - when <= DOUBLE_CLICK);
         self.0 = if doubled { None } else { Some((what, now)) };
         doubled
     }

@@ -108,23 +108,29 @@ settings pane, under General beside the grid's. The rose is
 Everything picked out is marked on the rose. The needle is as long as the
 card is wide, so the rose is read as a sphere, drawn at the scale the dashed
 ring says. Something near enough to lie inside that sphere is a circle where
-it is, to scale. Something further off is a small head pointing in at the
-hub, its bearing from the middle of the view, which says which way to turn
-for it: it lands where the way to the thing meets the sphere — on the ring
-for something level with the view's middle, at the needle's head for
-something straight above, and between for everything between. Each is
-painted in its star's color — the color key's hue on the map, the star's own
-tint in the realistic view — so the marks tell apart which is which.
+it is, to scale, standing on the card by a line down or up to it, the way the
+ship's scanner stands its contacts on its disc. Something further off is a
+small head pointing in at the hub, its bearing from the middle of the view,
+which says which way to turn for it: it lands where the way to the thing
+meets the sphere — on the ring for something level with the view's middle,
+at the needle's head for something straight above, and between for
+everything between — and gets a bar behind it for each tenfold further off,
+up to three. Each is painted in its star's color — the color key's hue on
+the map, the star's own tint in the realistic view — so the marks tell apart
+which is which.
 
 The rose answers the pointer. Clicking a point turns the camera to face along
-that axis and keeps its pitch, and clicking a mark turns the camera to look
-straight at what it marks, which then stands in the middle of the screen.
-Clicking `+Y` looks straight down onto the plane and `-Y` straight up from
-under it. Clicking the hub looks straight down, and clicking it again goes
-back to the pitch it was clicked from. Every turn eases, as a drag does.
-Hovering over a piece of the rose says what it does in the line under the
-scale bar. Over the hub, that line gives where the view is centred, and over
-the bar, how wide the whole view is. The view's centre is no longer written
+that axis and keeps its pitch. Clicking a mark turns the camera to look
+straight at what it marks, which then stands in the middle of the screen,
+and pulls the camera back until it is in view (never in); double-clicking a
+mark flies there. Clicking `+Y` looks straight down onto the plane and `-Y`
+straight up from under it. Clicking the hub looks straight down, and clicking
+it again goes back to the pitch it was clicked from. Every turn eases, as a
+drag does. Hovering over a piece of the rose says what it does in the line
+under the scale bar. Over a mark, that line gives its name, how far off it
+is, how far over or under the card, and its bearing clockwise from the core
+(`+Z`). Over the hub, it gives where the view is centred, and over the bar,
+how wide the whole view is. The view's centre is no longer written
 at the middle of the view by default; "Show Center Position" in the settings
 pane puts it back.
 

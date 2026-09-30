@@ -62,15 +62,20 @@
 //! painted in. The needle is a diameter as long as the card's, so the rose
 //! is a sphere drawn by three of its diameters, at the scale the ring says.
 //! A thing near enough to lie inside that sphere is a circle where it is, to
-//! scale. One beyond it is a bearing: a head pointing in at the hub where the
-//! way to it meets the sphere, as a chart marks the bearing to a light — on
-//! the ring for something level with the middle of the view, at the needle's
-//! head for something straight over it, and between for everything between.
-//! Either way it turns with the rose, and something ahead or behind lands on
-//! the near or far half and is drawn as strongly as that half is. A bearing
-//! turned end on is a ring on the hub, hollow, so it is not taken for a
-//! circle standing in the middle. Most use where the thing is off the screen,
-//! which is where nothing else on the map says which way it went.
+//! scale, stood on the card by a line down or up to it as a ship's scanner
+//! stands its contacts on its disc, which says how far over or under the
+//! plane it is where a place drawn flat on the screen cannot. One beyond it
+//! is a bearing: a head pointing in at the hub where the way to it meets the
+//! sphere, as a chart marks the bearing to a light — on the ring for
+//! something level with the middle of the view, at the needle's head for
+//! something straight over it, and between for everything between — barred
+//! behind once for each tenfold further off, so one just out of reach and
+//! one across the galaxy are not the same mark. Either way it turns with the
+//! rose, and something ahead or behind lands on the near or far half and is
+//! drawn as strongly as that half is. A bearing turned end on is a ring on
+//! the hub, hollow, so it is not taken for a circle standing in the middle.
+//! Most use where the thing is off the screen, which is where nothing else
+//! on the map says which way it went.
 //!
 //! The star's color rather than the selection's, since every bearing is on
 //! something selected and the selection's blue would say only that. The
@@ -83,25 +88,31 @@
 //! Dragging the rose would only do what dragging the sky already does. What
 //! the rose has that the sky does not is its fixed axes and its scale, so
 //! that is what it answers with. Clicked, a way turns the camera to face
-//! along it, keeping the pitch; a bearing turns it, pitch and all, to look
-//! straight at what it bears on, which then stands in the middle of the
-//! screen, beyond the middle of the view and still what the camera orbits;
-//! the needle's ends look straight down from `+Y` and straight up from
-//! `-Y`; and the hub looks straight down, and back to the pitch it was
-//! clicked from. Every one of them writes the target the camera eases to, so
-//! a click is a turn and not a jump.
+//! along it, keeping the pitch; a mark turns it, pitch and all, to look
+//! straight at what it marks, which then stands in the middle of the screen,
+//! beyond the middle of the view and still what the camera orbits, and
+//! stands the camera back until the view takes it in, never nearer; clicked
+//! twice, a mark is flown to, as a star on the map is; the needle's ends
+//! look straight down from `+Y` and straight up from `-Y`; and the hub looks
+//! straight down, and back to the pitch it was clicked from. Every one of
+//! them writes the target the camera eases to, so a click is a turn and not
+//! a jump.
 //!
 //! Pointed at, a piece says what it is for in the line under the bar, in
-//! place of the bar's length: what a click will do, what a bearing is on and
-//! how far off, how wide the whole view is for the bar itself, and for the
-//! hub where the view is. That last was said at the middle of the view, over
-//! the one place the user is looking; said here, it is there when it is
-//! wanted and nowhere when it is not, and the middle's is off by default.
+//! place of the bar's length: what a click will do, what a mark is on and
+//! where — how far, how far over or under the card, and its bearing round
+//! it — how wide the whole view is for the bar itself, and for the hub where
+//! the view is. That last was said at the middle of the view, over the one
+//! place the user is looking; said here, it is there when it is wanted and
+//! nowhere when it is not, and the middle's is off by default.
 
 use crate::map::bodies::spawn::Entered;
-use crate::map::camera::{OPENS_AT, OrbitCamera, PITCH_LIMIT, framed};
+use crate::map::camera::{
+    MoveCamera, OPENS_AT, OrbitCamera, PITCH_LIMIT, framed, stand_back,
+};
 use crate::map::galaxy::Addresses;
 use crate::map::galaxy::System;
+use crate::map::galaxy::spawn::LastClick;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::grid::{Handover, LINE, READS, RulerUnit, said_in};
 use crate::map::labels::GROUND;
@@ -518,6 +529,54 @@ fn placed(off: Vec3) -> (Vec3, f32) {
     (off.clamp_length_max(CARD), circle)
 }
 
+/// How many marks a bearing is drawn with at most: its head, and a bar
+/// behind it for each tenfold after the first
+const DECADES: usize = 4;
+
+/// How far apart a bearing's bars stand behind its head, in pixels
+const BARRED: f32 = 3.;
+
+/// How many marks the bearing on a thing `reach` of the rose's pixels off is
+/// drawn with
+///
+/// **A bearing says how far, to a power of ten.** Past the card's edge every
+/// thing was one head, so a system just out of the rose's reach and one
+/// across the galaxy said the same. The head is one mark, out to ten times
+/// the card, and each tenfold past that bars it once more, to [`DECADES`]:
+/// countable at a glance, where a head grown longer by the log of the
+/// distance is read only against another. What the distance is exactly is
+/// said under the bar while the mark is pointed at.
+fn decades(reach: f32) -> usize {
+    let past = (reach / CARD).max(1.).log10().floor() as usize;
+    (past + 1).min(DECADES)
+}
+
+/// Where a thing `off` light years from the middle of the view is, said
+/// under the bar: how far, how far over or under the card, and its bearing
+/// round the card
+///
+/// The bearing is a chart's: in whole degrees, clockwise seen from `+Y`,
+/// from `+Z` — the galactic core, which is how the game's own map is laid
+/// with its top toward it, and so `+X` is 090. Over or under is along `Y`,
+/// as the circle's line down or up to the card is; see [`draw_rose`]. Left
+/// out, each, where there is none of it to speak of: level with the card, or
+/// straight over or under the middle.
+fn whereabouts(off: DVec3, unit: DistanceUnit) -> String {
+    let scale = space::LIGHT_YEAR / unit.metres;
+    let away = off.length();
+    let mut said_of = vec![said(away * scale, unit)];
+    let slight = away * 1e-3;
+    if off.y.abs() > slight {
+        let over = if off.y > 0. { "over" } else { "under" };
+        said_of.push(format!("{} {over}", said(off.y.abs() * scale, unit)));
+    }
+    if off.x.hypot(off.z) > slight {
+        let turn = off.x.atan2(off.z).to_degrees().rem_euclid(360.);
+        said_of.push(format!("{:03.0}°", turn.round() % 360.));
+    }
+    said_of.join(", ")
+}
+
 /// How near straight up or down a pitch is to count as there, in radians
 ///
 /// A pitch is eased toward what is asked of it and never quite lands, and a
@@ -529,12 +588,22 @@ const SQUARE: f32 = 1e-2;
 /// Only ever the target, which the camera eases toward as it does after a
 /// drag, so a click is a turn rather than a jump. `before` is the pitch a
 /// look straight down was taken from, which the hub goes back to; `bearings`
-/// the way to each thing picked out, as [`Aim::Bearing`] counts them.
+/// where each thing picked out is from the middle of the view, in light
+/// years, as [`Aim::Bearing`] counts them; and `lens` what the camera sees
+/// through, which says how far back takes a thing in.
+///
+/// **A mark clicked is looked at, and in view.** Turned to, a thing stands in
+/// the middle of the screen however far off it is, and further off than the
+/// view takes in it is a point nothing is drawn at. So the camera stands back
+/// until the view takes it in ([`stand_back`]), as far as it has to and no
+/// further. Never in: a view wide enough already is the user's, and a click
+/// asking where something is has no business narrowing it.
 fn act(
     aim: Aim,
     orbit: &mut OrbitCamera,
     before: &mut Option<f32>,
-    bearings: &[Option<Vec3>],
+    bearings: &[Option<DVec3>],
+    lens: Option<&Projection>,
 ) {
     let pitch = orbit.target_pitch;
     let overhead = pitch <= -PITCH_LIMIT + SQUARE;
@@ -549,13 +618,16 @@ fn act(
             }
         }
         Aim::Bearing(index) => {
-            let Some(way) = bearings.get(index).copied().flatten() else {
+            let Some(off) = bearings.get(index).copied().flatten() else {
                 return;
             };
+            let Some(way) = off.as_vec3().try_normalize() else { return };
             if let Some(yaw) = facing(way, orbit.target_yaw) {
                 orbit.target_yaw = yaw;
             }
             orbit.target_pitch = pointing(way);
+            let back = stand_back(off.length() as f32, lens);
+            orbit.target_radius = orbit.target_radius.max(back);
         }
         Aim::Needle(north) => {
             if between {
@@ -618,6 +690,10 @@ pub(crate) fn draw_rose(
     mut held: Local<Option<Aim>>,
     // The pitch a look straight down was taken from.
     mut before: Local<Option<f32>>,
+    // The click a second one on the same piece would make a double of.
+    mut last: Local<LastClick<Aim>>,
+    time: Res<Time<Real>>,
+    mut flights: MessageWriter<MoveCamera>,
 ) -> Result {
     if !showing.0 {
         *held = None;
@@ -772,14 +848,15 @@ pub(crate) fn draw_rose(
             Some((off, star_color(system, *view, *color_by)))
         })
         .collect();
-    // The mark bearing on `way`: where on the sphere it lands, and a head
+    // The mark bearing on `off`: where on the sphere it lands, and a head
     // standing out past there, flat on the screen as the needle's is and
-    // pointing in at the hub. Its three corners, and how much of it is
-    // head: a point turned end on lands on the hub with no way in to point
-    // along, and is a ring there instead, hollow so it is not taken for a
-    // thing standing in the middle of the view.
-    let bearing_mark = |way: Vec3| {
-        let way = way.normalize_or(Vec3::NEG_Z);
+    // pointing in at the hub, barred behind once for each tenfold further
+    // off ([`decades`]). The head's three corners, each bar's two ends, and
+    // how much of it is head: a point turned end on lands on the hub with no
+    // way in to point along, and is a ring there instead, hollow so it is
+    // not taken for a thing standing in the middle of the view.
+    let bearing_mark = |off: Vec3| {
+        let way = off.normalize_or(Vec3::NEG_Z);
         let on = at(way * CARD);
         let out = flat(way);
         let headed = smoothstep(0.15, 0.35, out.length());
@@ -788,7 +865,13 @@ pub(crate) fn draw_rose(
             (egui::vec2(out.x, out.y), egui::vec2(-out.y, out.x) * BEARING.y);
         let tip = on + out * CLEAR;
         let back = tip + out * BEARING.x;
-        (on, [tip, back + side, back - side], headed)
+        let bars: Vec<[egui::Pos2; 2]> = (1..decades(off.length()))
+            .map(|bar| {
+                let at = back + out * (BARRED * bar as f32);
+                [at + side, at - side]
+            })
+            .collect();
+        (on, [tip, back + side, back - side], bars, headed)
     };
 
     // What the pointer can be over, most wanted first; see [`aimed`]. A name
@@ -814,9 +897,14 @@ pub(crate) fn draw_rose(
                 egui::Rect::from_center_size(at(on), egui::Vec2::splat(REACH));
             let rect = match circle >= 0.5 {
                 true => spot,
-                false => egui::Rect::from_points(&bearing_mark(*off).1)
-                    .union(spot)
-                    .expand(CLEAR),
+                false => {
+                    let (_, head, bars, _) = bearing_mark(*off);
+                    let ends: Vec<egui::Pos2> = head
+                        .into_iter()
+                        .chain(bars.into_iter().flatten())
+                        .collect();
+                    egui::Rect::from_points(&ends).union(spot).expand(CLEAR)
+                }
             };
             pieces.push((Aim::Bearing(index), rect));
         }
@@ -934,20 +1022,40 @@ pub(crate) fn draw_rose(
             false => FAR + (1. - FAR) * nearness,
         };
         let color = |share: f32| color32(going(color, share));
+        // A circle stands on the card by a line down or up to it, as a
+        // ship's scanner stands its contacts on its disc: where it is over
+        // the plane and how far over, which a place drawn flat on the screen
+        // cannot say apart from how far behind it is. Its foot is a dot on
+        // the card, and nothing where it is level with it.
         if circle > 0. {
+            let foot = Vec3::new(spot.x, 0., spot.z);
+            let stalk = color(share * circle * EXTENDED);
+            if (at(spot) - at(foot)).length() > BEARING.y {
+                painter.line_segment(
+                    [at(foot), at(spot)],
+                    egui::Stroke::new(STROKE, stalk),
+                );
+                painter.circle_filled(at(foot), STROKE * 1.5, stalk);
+            }
             painter.circle_filled(at(spot), BEARING.y, color(share * circle));
         }
         if circle >= 1. {
             return;
         }
         let share = share * (1. - circle);
-        let (on, head, headed) = bearing_mark(off);
+        let (on, head, bars, headed) = bearing_mark(off);
         if headed > 0. {
             painter.add(egui::Shape::convex_polygon(
                 head.to_vec(),
                 color(share * headed),
                 egui::Stroke::NONE,
             ));
+            for bar in bars {
+                painter.line_segment(
+                    bar,
+                    egui::Stroke::new(BOLD, color(share * headed)),
+                );
+            }
         }
         if headed < 1. {
             painter.circle_stroke(
@@ -1100,8 +1208,7 @@ pub(crate) fn draw_rose(
             .get(index)
             .map(|picked| {
                 let off = picked.position() - center;
-                let away = off.length() * space::LIGHT_YEAR / unit.metres;
-                format!("{} {}", picked.name(), said(away, unit))
+                format!("{} {}", picked.name(), whereabouts(off, unit))
             })
             .unwrap_or_default(),
         None => format!("{} {}", ticked(length, length), unit.mark),
@@ -1112,11 +1219,21 @@ pub(crate) fn draw_rose(
     painter.galley(egui::pos2(left, bar + GAP), galley, lettered(1.));
 
     if let Some(aim) = clicked {
-        let ways: Vec<Option<Vec3>> = bearings
-            .iter()
-            .map(|bearing| bearing.and_then(|(off, _)| off.try_normalize()))
+        let offs: Vec<Option<DVec3>> = (0..selection.len())
+            .map(|index| selection.get(index).map(|it| it.position() - center))
             .collect();
-        act(aim, &mut orbit, &mut before, &ways);
+        act(aim, &mut orbit, &mut before, &offs, lens);
+        // And a mark clicked twice is flown to, as a star on the map is; see
+        // `fly_on_double_click`.
+        if last.doubled(aim, time.elapsed_secs())
+            && let Aim::Bearing(index) = aim
+            && let Some(picked) = selection.get(index)
+        {
+            flights.write(MoveCamera {
+                position: Some(picked.position()),
+                framing: None,
+            });
+        }
     }
 
     Ok(())
@@ -1178,7 +1295,7 @@ mod tests {
     fn a_way_is_faced_along() {
         for (way, said) in WAYS {
             let mut orbit = OrbitCamera::default();
-            act(Aim::Way(index_of(way)), &mut orbit, &mut None, &[]);
+            act(Aim::Way(index_of(way)), &mut orbit, &mut None, &[], None);
             orbit.yaw = orbit.target_yaw;
             assert!(
                 orbit.heading().distance(way) < 1e-5,
@@ -1224,10 +1341,10 @@ mod tests {
         let mut before = None;
         orbit.target_pitch = -0.7;
 
-        act(Aim::Hub, &mut orbit, &mut before, &[]);
+        act(Aim::Hub, &mut orbit, &mut before, &[], None);
         assert_eq!(orbit.target_pitch, -PITCH_LIMIT);
 
-        act(Aim::Hub, &mut orbit, &mut before, &[]);
+        act(Aim::Hub, &mut orbit, &mut before, &[], None);
         assert_eq!(orbit.target_pitch, -0.7);
     }
 
@@ -1238,7 +1355,7 @@ mod tests {
         let mut orbit = OrbitCamera::default();
         orbit.target_pitch = -PITCH_LIMIT;
 
-        act(Aim::Hub, &mut orbit, &mut None, &[]);
+        act(Aim::Hub, &mut orbit, &mut None, &[], None);
         assert_eq!(orbit.target_pitch, -OPENS_AT);
     }
 
@@ -1250,11 +1367,11 @@ mod tests {
         let mut before = None;
         orbit.target_pitch = -0.4;
 
-        act(Aim::Needle(false), &mut orbit, &mut before, &[]);
+        act(Aim::Needle(false), &mut orbit, &mut before, &[], None);
         assert_eq!(orbit.target_pitch, PITCH_LIMIT);
-        act(Aim::Needle(true), &mut orbit, &mut before, &[]);
+        act(Aim::Needle(true), &mut orbit, &mut before, &[], None);
         assert_eq!(orbit.target_pitch, -PITCH_LIMIT);
-        act(Aim::Hub, &mut orbit, &mut before, &[]);
+        act(Aim::Hub, &mut orbit, &mut before, &[], None);
         assert_eq!(orbit.target_pitch, -0.4);
     }
 
@@ -1309,21 +1426,94 @@ mod tests {
             Vec3::new(0., -1., 0.),
         ] {
             let way = way.normalize();
+            let off = Some(way.as_dvec3() * 0.5);
             let mut orbit = OrbitCamera::default();
-            act(Aim::Bearing(1), &mut orbit, &mut None, &[None, Some(way)]);
+            act(Aim::Bearing(1), &mut orbit, &mut None, &[None, off], None);
             let ahead =
                 turned(orbit.target_yaw, orbit.target_pitch) * Vec3::NEG_Z;
             // Straight down is as far as a pitch goes, a hair short of it.
             assert!(ahead.distance(way) < 2e-3, "{way} is not ahead: {ahead}");
         }
 
-        let way = Vec3::new(-2., 3., 1.).normalize();
+        let off = Some(DVec3::new(-2., 3., 1.));
         let mut orbit = OrbitCamera::default();
-        act(Aim::Bearing(1), &mut orbit, &mut None, &[None, Some(way)]);
-        let (yaw, pitch) = (orbit.target_yaw, orbit.target_pitch);
-        act(Aim::Bearing(0), &mut orbit, &mut None, &[None, Some(way)]);
-        act(Aim::Bearing(5), &mut orbit, &mut None, &[None, Some(way)]);
-        assert_eq!((orbit.target_yaw, orbit.target_pitch), (yaw, pitch));
+        act(Aim::Bearing(1), &mut orbit, &mut None, &[None, off], None);
+        let turned_to = (orbit.target_yaw, orbit.target_pitch);
+        let back = orbit.target_radius;
+        act(Aim::Bearing(0), &mut orbit, &mut None, &[None, off], None);
+        act(Aim::Bearing(5), &mut orbit, &mut None, &[None, off], None);
+        assert_eq!((orbit.target_yaw, orbit.target_pitch), turned_to);
+        assert_eq!(orbit.target_radius, back);
+    }
+
+    /// A mark clicked stands the camera back until the view takes in what
+    /// it marks, and never brings it in
+    ///
+    /// Turned to and no further, a thing further off than the view reaches
+    /// stood in the middle of the screen with nothing drawn at it.
+    #[test]
+    fn a_mark_clicked_is_taken_into_view() {
+        use crate::map::camera::framed;
+
+        let off = DVec3::new(300., 40., -500.);
+        let mut orbit = OrbitCamera::stood_back(50.);
+        act(Aim::Bearing(0), &mut orbit, &mut None, &[Some(off)], None);
+        let takes_in = framed(orbit.target_radius, None);
+        assert!(
+            takes_in >= off.length() as f32,
+            "stood {} back, taking in {takes_in} of {}",
+            orbit.target_radius,
+            off.length(),
+        );
+        // Not a light year further than it has to: stood back to take it in.
+        assert_eq!(orbit.target_radius, stand_back(off.length() as f32, None));
+
+        // Already wide enough, the view is left as the user has it.
+        let mut orbit = OrbitCamera::stood_back(50_000.);
+        act(Aim::Bearing(0), &mut orbit, &mut None, &[Some(off)], None);
+        assert_eq!(orbit.target_radius, 50_000.);
+    }
+
+    /// A bearing is barred once more for each tenfold further off past the
+    /// rose's reach, and no more than [`DECADES`] marks in all
+    #[test]
+    fn a_bearing_counts_its_powers_of_ten() {
+        let marks = |times: f32| decades(CARD * times);
+        assert_eq!(marks(1.01), 1);
+        assert_eq!(marks(9.9), 1);
+        assert_eq!(marks(10.1), 2);
+        assert_eq!(marks(150.), 3);
+        assert_eq!(marks(2_000.), 4);
+        assert_eq!(marks(1e9), DECADES);
+    }
+
+    /// Pointed at, a mark says how far, how far over or under the card, and
+    /// its bearing round it, clockwise from the core
+    #[test]
+    fn a_mark_says_where_it_is() {
+        let years = DistanceUnit { metres: space::LIGHT_YEAR, mark: "Ly" };
+        // Alpha Centauri from Sol: over toward the core and to `+X`.
+        assert_eq!(
+            whereabouts(DVec3::new(3.03, -0.09, 3.16), years),
+            "4.38 Ly, 0.0900 Ly under, 044°"
+        );
+        assert_eq!(
+            whereabouts(DVec3::new(-10., 5., 0.), years),
+            "11.2 Ly, 5.00 Ly over, 270°"
+        );
+        assert_eq!(
+            whereabouts(DVec3::new(0., 0., -2.), years),
+            "2.00 Ly, 180°"
+        );
+        assert_eq!(
+            whereabouts(DVec3::new(0., 7., 0.), years),
+            "7.00 Ly, 7.00 Ly over"
+        );
+        // A hair west of the core rounds to it, not to 360.
+        assert_eq!(
+            whereabouts(DVec3::new(-0.001, 0., 1.), years),
+            "1.00 Ly, 000°"
+        );
     }
 
     /// Where two pieces overlap, the one laid out first has the pointer
