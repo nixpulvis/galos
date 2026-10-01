@@ -101,16 +101,17 @@
 //! Pointed at, a piece says what it is for in the line under the bar, in
 //! place of the bar's length: what a click will do, what a mark is on and
 //! where — how far, how far over or under the card, and its bearing round
-//! it — the spyglass's radius for the bar itself, and for the hub where
-//! the view is. That last was said at the middle of the view, over the one
-//! place the user is looking; said here, it is there when it is wanted and
-//! nowhere when it is not, and the middle's is off by default.
+//! it — and for the hub where the view is. That last was said at the middle
+//! of the view, over the one place the user is looking; said here, it is
+//! there when it is wanted and nowhere when it is not, and the middle's is
+//! off by default. The bar itself is read and not pointed at: the length
+//! under it is all it says.
 
 use crate::map::bodies::spawn::Entered;
 use crate::map::camera::{
     MoveCamera, OPENS_AT, OrbitCamera, PITCH_LIMIT, framed, stand_back,
 };
-use crate::map::galaxy::{Addresses, Spyglass, System};
+use crate::map::galaxy::{Addresses, System};
 use crate::map::galaxy::spawn::LastClick;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::grid::{Handover, LINE, READS, RulerUnit, said_in};
@@ -377,20 +378,9 @@ pub(crate) enum Aim {
     Needle(bool),
     /// The hub: where the view is, and straight down onto it and back
     Hub,
-    /// The scale bar: how far the spyglass reaches
-    Scale,
     /// The mark bearing on the thing in this place of the [`Selection`]: what
     /// it is and how far off, and a turn to look straight at it
     Bearing(usize),
-}
-
-impl Aim {
-    /// Whether a click on it does anything
-    ///
-    /// All but the bar, which is read and not worked.
-    fn works(self) -> bool {
-        self != Aim::Scale
-    }
 }
 
 /// Which piece of the rose `at` is over, of `pieces` laid out first come
@@ -399,7 +389,7 @@ impl Aim {
 /// The pieces overlap where the rose is turned so two of them land together:
 /// a bearing on the tip of a way, the needle's name beside a way's. The one
 /// laid out first takes the pointer, which is the order the rose builds them
-/// in: the hub, the bearings, the needle, the ways, the bar.
+/// in: the hub, the bearings, the needle, the ways.
 fn aimed(pieces: &[(Aim, egui::Rect)], at: egui::Pos2) -> Option<Aim> {
     pieces.iter().find(|(_, rect)| rect.contains(at)).map(|(aim, _)| *aim)
 }
@@ -453,7 +443,7 @@ fn pointed(
     let clicked = released
         .then(|| held.take())
         .flatten()
-        .filter(|aim| Some(*aim) == under && aim.works());
+        .filter(|aim| Some(*aim) == under);
     (lit, clicked)
 }
 
@@ -643,7 +633,6 @@ fn act(
             }
             orbit.target_pitch = -PITCH_LIMIT;
         }
-        Aim::Scale => {}
     }
 }
 
@@ -675,11 +664,8 @@ pub(crate) fn draw_rose(
     mut contexts: EguiContexts,
     showing: Res<ShowRose>,
     mut cameras: Query<(&mut OrbitCamera, &Camera, Option<&Projection>)>,
-    // The unit the rose is said in and where it is said from, as the grid's
-    // own numbers are.
-    (changing, asked): (Res<Handover>, Res<RulerUnit>),
-    // How far the spyglass reaches, which the scale bar says pointed at.
-    spyglass: Res<Spyglass>,
+    changing: Res<Handover>,
+    asked: Res<RulerUnit>,
     selection: Res<Selection>,
     holding: Res<Entered>,
     systems: Query<&System>,
@@ -923,14 +909,6 @@ pub(crate) fn draw_rose(
             pieces.push((Aim::Way(index), rect));
         }
     }
-    pieces.push((
-        Aim::Scale,
-        egui::Rect::from_min_max(
-            egui::pos2(ends[0], bar - END),
-            egui::pos2(ends[1], bar + GAP + READS),
-        )
-        .expand(CLEAR),
-    ));
 
     // Which of them the pointer is over, where it is the rose's to have.
     // Not while it is over some other piece of the chrome, which stands over
@@ -969,9 +947,7 @@ pub(crate) fn draw_rose(
             .show(ctx, |ui| {
                 ui.allocate_exact_size(rect.size(), egui::Sense::click());
             });
-        if lit.is_some_and(Aim::works) {
-            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     let is_lit = |aim: Aim| lit == Some(aim);
 
@@ -1193,20 +1169,13 @@ pub(crate) fn draw_rose(
     }
 
     // Under the bar, the length it spans — or, while a piece of the rose is
-    // pointed at, what that piece has to say: where the view is, how far
-    // the spyglass reaches, what a bearing is on, or what a click will do.
+    // pointed at, what that piece has to say: where the view is, what a
+    // bearing is on, or what a click will do.
     // Under its middle, which is under the hub, so it stands still however
     // the ring grows; and kept on the screen, a place in the galaxy being
     // wider than the room the corner leaves to the right of the hub.
     let reading = match lit {
         Some(Aim::Hub) => format!("{} {}", told(looking, step), unit.mark),
-        Some(Aim::Scale) => format!(
-            "Spyglass radius {}",
-            said(
-                f64::from(spyglass.radius) * space::LIGHT_YEAR / unit.metres,
-                unit
-            )
-        ),
         Some(Aim::Way(index)) => format!("Face {}", WAYS[index].1),
         Some(Aim::Needle(true)) => "Look down from +Y".to_owned(),
         Some(Aim::Needle(false)) => "Look up from -Y".to_owned(),
@@ -1579,14 +1548,6 @@ mod tests {
         let over = Some(Aim::Way(3));
         assert_eq!(pointed(&mut held, over, true, false, false), (None, None));
         assert_eq!(pointed(&mut held, over, false, false, true), (over, None));
-    }
-
-    /// The bar is read and not worked
-    #[test]
-    fn the_bar_is_not_clicked() {
-        let mut held = None;
-        let bar = Some(Aim::Scale);
-        assert_eq!(pointed(&mut held, bar, false, true, true), (bar, None));
     }
 
     /// A length is said to three figures, in its unit

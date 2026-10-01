@@ -129,10 +129,9 @@ it again goes back to the pitch it was clicked from. Every turn eases, as a
 drag does. Hovering over a piece of the rose says what it does in the line
 under the scale bar. Over a mark, that line gives its name, how far off it
 is, how far over or under the card, and its bearing clockwise from the core
-(`+Z`). Over the hub, it gives where the view is centred, and over the bar,
-the spyglass's radius. The view's centre is no longer written at the middle
-of the view by default; "Show Center Position" in the settings pane puts it
-back.
+(`+Z`). Over the hub, it gives where the view is centred. The view's centre
+is no longer written at the middle of the view by default; "Show Center
+Position" in the settings pane puts it back.
 
 ## The color key
 
