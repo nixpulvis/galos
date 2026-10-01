@@ -545,7 +545,8 @@ mod tests {
     /// A merged mark standing `at`, of a cell at `level`.
     fn blob(at: [f64; 3], level: u8) -> Blob {
         Blob {
-            light: Vec3::splat(0.1),
+            through: Vec3::splat(0.1),
+            dimmed: Vec3::ZERO,
             fade: 1.,
             id: CellId::of_point(at, level),
             count: 1_240,
@@ -859,24 +860,33 @@ impl Mark {
         }
     }
 
-    /// The light it is drawn at and how far it is faded, where what the
-    /// filters exclude is drawn at `dim`
+    /// How far it is faded, where what the filters exclude is drawn at
+    /// `dim`
     ///
     /// **What its systems' own marks would come to**: each at full where
     /// the filters and the mask both let it through, and at the dim
-    /// otherwise, the two taken as independent. So the mark is
-    /// `dim · light + share · (1 - dim) · kept_light`, handed back as a
-    /// color and a fade whose product is that — the fade being what the
-    /// realistic view, which paints no color, dims a merged mark by. With
-    /// nothing masked it is `light` at `share + (1 - share) · dim`, which
-    /// is what a merged mark was drawn at before there was a mask.
-    pub(crate) fn drawn(&self, dim: f32) -> (Vec3, f32) {
-        let lit = self.share * (1. - dim);
-        let fade = dim + lit * self.kept;
-        if fade <= 0. {
-            return (self.light, 0.);
-        }
-        ((self.light * dim + self.kept_light * lit) / fade, fade)
+    /// otherwise, the two taken as independent — `share · kept + dim · (1 -
+    /// share · kept)`. What the realistic view, which paints no color, dims
+    /// a merged mark by, and what says whether it is drawn at all.
+    pub(crate) fn fade(&self, dim: f32) -> f32 {
+        let through = self.share * self.kept;
+        through + dim * (1. - through)
+    }
+
+    /// The light it lets through and the light the filters exclude, both at
+    /// full: the first drawn as is and the second into the dimmed target,
+    /// whose dim is spent after the curve
+    ///
+    /// `share · kept_light` and the rest of `light`, so the two sum to the
+    /// mark as it stands and with nothing masked the second is nothing.
+    /// Nothing excluded where the excluded are not drawn (`excluded`).
+    pub(crate) fn split(&self, excluded: bool) -> (Vec3, Vec3) {
+        let through = self.kept_light * self.share;
+        let dimmed = match excluded {
+            true => (self.light - through).max(Vec3::ZERO),
+            false => Vec3::ZERO,
+        };
+        (through, dimmed)
     }
 }
 
@@ -1197,7 +1207,7 @@ fn average_mark(
 /// A system not let through counts as no light rather than as not there:
 /// the average is still over every system the mark stands for, so a cell
 /// with half of it hidden is half as bright where it is let through, and
-/// [`Mark::drawn`] puts the dim back in for the rest.
+/// [`Mark::split`] lays the rest into the dimmed target.
 fn averaged(
     held: Option<&galos_index::read::inhabited::Inhabited>,
     count: u64,

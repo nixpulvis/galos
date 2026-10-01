@@ -30,7 +30,9 @@
 //! see, so no visibility test is asked to cover it.
 
 use crate::map::bodies::spawn::Strength;
-use crate::map::camera::{FIELD_LAYER, FIELD_ORDER, OrbitCamera, STAR_BLOOM};
+use crate::map::camera::{
+    CURVE_LAYER, FIELD_LAYER, FIELD_ORDER, OrbitCamera, STAR_BLOOM,
+};
 use crate::map::filter::{DimTo, Filtered};
 use crate::map::galaxy::System;
 use crate::map::galaxy::spawn::{
@@ -75,10 +77,19 @@ pub fn plugin(app: &mut App) {
 }
 
 /// The camera at the world origin that draws the field flat
+///
+/// Into the window in the realistic view, and into
+/// [`crate::map::paint::curve::FieldTargets::lit`] in the map view, which
+/// [`crate::map::paint::curve`] routes.
 #[derive(Component)]
-struct FieldCamera;
+pub(crate) struct FieldCamera;
 
-/// The mesh entity, so a view change can swap which material paints it
+/// The mark mesh, so a view change can swap which material paints it and
+/// which camera draws it
+///
+/// The realistic view's glints on [`FIELD_LAYER`], under the field camera's
+/// bloom; the map view's marks on [`CURVE_LAYER`], laid over the field
+/// after its curve rather than summed into it. See [`build_field`].
 #[derive(Component)]
 pub(crate) struct FieldMark;
 
@@ -214,10 +225,6 @@ fn spawn_field(
     mut images: ResMut<Assets<Image>>,
     sprite: Res<StarSprite>,
 ) {
-    // A degenerate mesh to begin with; `build_field` swaps in a fresh one
-    // holding the frame's stars each frame.
-    let mesh =
-        meshes.add(field_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     // The two marks are cut to a round profile, so a bare quad never shows as
     // a square. The map's is a disc: a flat solid dot, its fade in the alpha
     // for the blend over the galaxy. The realistic view's is the shared point
@@ -254,11 +261,16 @@ fn spawn_field(
         ..default()
     });
     commands.spawn((
-        Mesh3d(mesh),
+        Mesh3d(meshes.add(field_mesh(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))),
         MeshMaterial3d(solid.clone()),
         RenderLayers::layer(FIELD_LAYER),
-        // Every vertex is placed by hand each frame; there is no bound to cull
-        // against and the whole field is one draw regardless.
+        // Every vertex is placed by hand each frame; there is no bound to
+        // cull against and the whole field is one draw regardless.
         NoFrustumCulling,
         Transform::default(),
         Visibility::Visible,
@@ -311,7 +323,10 @@ fn tune_field(
     view: Res<View>,
     mut commands: Commands,
     field: Query<Entity, With<FieldCamera>>,
-    mut mark: Query<&mut MeshMaterial3d<StandardMaterial>, With<FieldMark>>,
+    mut mark: Query<
+        (&mut MeshMaterial3d<StandardMaterial>, &mut RenderLayers),
+        With<FieldMark>,
+    >,
     palette: Res<FieldMaterials>,
 ) {
     if !view.is_changed() {
@@ -331,11 +346,13 @@ fn tune_field(
             commands.entity(entity).remove::<Bloom>();
         }
     }
-    if let Ok(mut material) = mark.single_mut() {
+    for (mut material, mut layers) in &mut mark {
         let wanted = if realistic { &palette.glint } else { &palette.solid };
         if material.0 != *wanted {
             material.0 = wanted.clone();
         }
+        let layer = if realistic { FIELD_LAYER } else { CURVE_LAYER };
+        *layers = RenderLayers::layer(layer);
     }
 }
 
@@ -398,6 +415,7 @@ pub(crate) fn build_field(
     color_by: Res<ColorBy>,
     dim: Res<DimTo>,
     gains: Res<crate::map::paint::glow::Gains>,
+    exposing: crate::map::paint::curve::Exposing,
     blobs: Res<crate::map::galaxy::walk::Blobs>,
     mut field: Query<&mut Mesh3d, With<FieldMark>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -425,16 +443,19 @@ pub(crate) fn build_field(
         || color_by.is_changed()
         || dim.is_changed()
         || gains.is_changed()
+        || exposing.is_changed()
         || blobs.is_changed();
     if !changed && moved.last.is_some() && *moved.last == seen {
         return;
     }
     *moved.last = seen;
 
-    let mut positions: Vec<[f32; 3]> = Vec::new();
-    let mut uvs: Vec<[f32; 2]> = Vec::new();
-    let mut colors: Vec<[f32; 4]> = Vec::new();
-    let mut indices: Vec<u32> = Vec::new();
+    let mut marks = Marks::default();
+    // The map view's curve, which a mark is drawn through standing alone:
+    // laid over the field after the field's own curve, not summed into it,
+    // so a system drawn as itself reads as one over the crowd behind it at
+    // the level the curve gives one system, whatever that crowd comes to.
+    let exposed = exposing.marks();
     // Whether a mark may be painted under a pixel, which is the population
     // scale's to say; see [`floor`].
     let floor = floor(scale_population.0);
@@ -497,6 +518,10 @@ pub(crate) fn build_field(
             // discounted it twice, and a system nobody lives in came out at
             // nine ten-thousandths of a unit, which is black. See
             // [`crate::map::galaxy::spawn::Hue::light`].
+            //
+            // Through the curve on its own, then faded: a fade and the dim
+            // are what is left of the mark as it is seen, so they are spent
+            // on the display's light and not ahead of the curve.
             View::Map => {
                 let tone = color_by.hue(system);
                 let level = crate::map::paint::glow::system_light(
@@ -504,8 +529,8 @@ pub(crate) fn build_field(
                     tone,
                     system.population() > 0,
                     &gains,
-                ) * fade;
-                let c = tone.light() * level;
+                );
+                let c = exposed.through(tone.light() * level) * fade;
                 [c.x, c.y, c.z, 1.]
             }
             // A photometric glint: the blackbody tint at the energy the star's
@@ -536,7 +561,6 @@ pub(crate) fn build_field(
         // reads. A metre in front of it, clear of its near plane.
         let cx = at.x - half.x;
         let cy = half.y - at.y;
-        let base = positions.len() as u32;
         // **How much of the profile the quad shows, rather than the whole of
         // it stretched to fit.** [`crate::map::galaxy::spawn::star_psf`] cuts the Moffat
         // with its core at an eighth of the texture's half-width, so a quad
@@ -559,24 +583,7 @@ pub(crate) fn build_field(
             View::Map => (0., 1.),
             View::Realistic => (lo, hi),
         };
-        for (dx, dy, u, v) in [
-            (-radius, -radius, lo, hi),
-            (radius, -radius, hi, hi),
-            (radius, radius, hi, lo),
-            (-radius, radius, lo, lo),
-        ] {
-            positions.push([cx + dx, cy + dy, -1.]);
-            uvs.push([u, v]);
-            colors.push(color);
-        }
-        indices.extend_from_slice(&[
-            base,
-            base + 1,
-            base + 2,
-            base,
-            base + 2,
-            base + 3,
-        ]);
+        marks.quad(cx, cy, radius, (lo, hi), color);
     }
 
     // And the merged marks, which stand for a cell's whole contents rather
@@ -598,26 +605,35 @@ pub(crate) fn build_field(
         else {
             continue;
         };
+        let cx = at.x - half.x;
+        let cy = half.y - at.y;
         let radius = SMALLEST;
-        let color = match *view {
+        match *view {
             // The average of the marks it stands for, worked out once a
             // plan by [`crate::map::galaxy::blobs::Standing`] — the palette reaches a
             // merged mark, so a region's politics tint the marks over it
-            // and not only the field behind them. Grey where the walk has
+            // and not only the field behind them — the share the filters
+            // let through as is and the rest at the dim, each through the
+            // curve as the field's two targets are. Grey where the walk has
             // just moved and it has not been weighed yet; see
             // [`crate::map::galaxy::blobs::Standing::of`].
             View::Map => {
                 let grey = crate::map::galaxy::spawn::Hue::Grey;
-                let c = match blob.light.is_finite() {
-                    true => blob.light,
-                    false => {
+                let (through, excluded) = match blob.through.is_finite() {
+                    true => (blob.through, blob.dimmed),
+                    false => (
                         grey.light()
                             * crate::map::paint::glow::mark_light(
                                 grey, false, &gains,
-                            )
-                    }
-                } * blob.fade;
-                [c.x, c.y, c.z, 1.]
+                            ),
+                        Vec3::ZERO,
+                    ),
+                };
+                let c = exposed.through(through)
+                    + exposed.through(excluded) * dim.opacity();
+                if c.max_element() > 0. {
+                    marks.quad(cx, cy, radius, (0., 1.), [c.x, c.y, c.z, 1.]);
+                }
             }
             View::Realistic => {
                 // The brightest star the cell holds, drawn as itself: one
@@ -635,23 +651,52 @@ pub(crate) fn build_field(
                 };
                 let e = photometric_emissive(TempBucket::new(0), peak);
                 let fade = blob.fade;
-                [e.red * fade, e.green * fade, e.blue * fade, 1.]
+                let c = [e.red * fade, e.green * fade, e.blue * fade, 1.];
+                marks.quad(cx, cy, radius, (0., 1.), c);
             }
-        };
-        let cx = at.x - half.x;
-        let cy = half.y - at.y;
-        let base = positions.len() as u32;
-        for (dx, dy, u, v) in [
-            (-radius, -radius, 0., 1.),
-            (radius, -radius, 1., 1.),
-            (radius, radius, 1., 0.),
-            (-radius, radius, 0., 0.),
-        ] {
-            positions.push([cx + dx, cy + dy, -1.]);
-            uvs.push([u, v]);
-            colors.push(color);
         }
-        indices.extend_from_slice(&[
+    }
+
+    mesh3d.0 = meshes.add(field_mesh(
+        marks.positions,
+        marks.uvs,
+        marks.colors,
+        marks.indices,
+    ));
+}
+
+/// One mark mesh's quads, as the mesh wants them
+#[derive(Default)]
+struct Marks {
+    positions: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+impl Marks {
+    /// One mark `radius` about `(cx, cy)`, showing the texture from `lo` to
+    /// `hi` either way, in `color`.
+    fn quad(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        (lo, hi): (f32, f32),
+        color: [f32; 4],
+    ) {
+        let base = self.positions.len() as u32;
+        for (dx, dy, u, v) in [
+            (-radius, -radius, lo, hi),
+            (radius, -radius, hi, hi),
+            (radius, radius, hi, lo),
+            (-radius, radius, lo, lo),
+        ] {
+            self.positions.push([cx + dx, cy + dy, -1.]);
+            self.uvs.push([u, v]);
+            self.colors.push(color);
+        }
+        self.indices.extend_from_slice(&[
             base,
             base + 1,
             base + 2,
@@ -660,8 +705,6 @@ pub(crate) fn build_field(
             base + 3,
         ]);
     }
-
-    mesh3d.0 = meshes.add(field_mesh(positions, uvs, colors, indices));
 }
 
 /// Build the field's mesh from the frame's quads, as a fresh asset each frame

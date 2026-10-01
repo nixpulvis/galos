@@ -1136,7 +1136,8 @@ mod tests {
         app.world_mut()
             .resource_mut::<crate::map::galaxy::blobs::PointedBlob>()
             .0 = Some(crate::map::galaxy::walk::Blob {
-            light: Vec3::splat(0.1),
+            through: Vec3::splat(0.1),
+            dimmed: Vec3::ZERO,
             fade: 1.,
             id: galos_index::prelude::CellId::ROOT,
             count: 12,

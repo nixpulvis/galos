@@ -17,7 +17,7 @@ use crate::map::grid::{
     Bright, RulerUnit, ShowGrid, ShowMiddle, ShowNumbers, ShowPicked,
 };
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
-use crate::map::paint::glow::FieldExposure;
+use crate::map::paint::curve::{FieldCurve, FieldExposure};
 use crate::map::paint::sizing::{ScalePopulation, View};
 use crate::map::rose::ShowRose;
 use crate::ui::widgets::{VALUE_WIDTH, check, fill_width, value_box};
@@ -126,6 +126,7 @@ pub(crate) struct Settings<'w> {
     population_scale: ResMut<'w, ScalePopulation>,
     star_exposure: ResMut<'w, StarExposure>,
     field_exposure: ResMut<'w, FieldExposure>,
+    field_curve: ResMut<'w, FieldCurve>,
     star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
     poll: ResMut<'w, Poll>,
@@ -540,39 +541,30 @@ pub(super) fn settings_body(
             },
         );
         ui.add_space(FIELD_GAP);
-        // How many stops the field behind the marks is lifted by. The
-        // map is a political instrument at one setting and a picture of
-        // where anybody has been at another, and which of those a reader
-        // wants is theirs to say; the roll-off on the packed end goes on
-        // holding the core down either way. The marks are not on this
-        // dial, a drawn system being an object at a set brightness.
-        //
-        // **Three stops at the top, and the rail spends its length on
-        // what is below.** The field's own level is settled against
-        // the reach now (`glow::TILT`), so the dial is no longer
-        // carrying three stops of that on top of a reading — and read
-        // off the map, three stops over the rest is as bright as the
-        // galaxy is ever wanted. A rail that ran to eight spent more
-        // than half its travel past anything usable, which is a dial
-        // that cannot be set finely where it is actually set.
+        // How many stops the field and the marks over it are lifted ahead of
+        // the curve. The map is a political instrument at one setting and a
+        // picture of where anybody has been at another, and which of those
+        // a reader wants is theirs to say; the curve's shoulder goes on
+        // holding the core under white either way.
         titled(
             ui,
             "Field Exposure (EV)",
-            "How brightly the galaxy behind the marks is drawn",
+            "How brightly the galaxy is drawn: a gain on its light ahead of \
+             the curve below",
         );
         let mut field_ev = settings.field_exposure.0;
         fill_width(ui, VALUE_WIDTH);
         let slider = ui
             .horizontal(|ui| {
                 let rail = ui.add(
-                    egui::Slider::new(&mut field_ev, -9.0..=3.0)
+                    egui::Slider::new(&mut field_ev, -8.0..=8.0)
                         .step_by(0.25)
                         .show_value(false),
                 );
                 let typed = value_box(
                     ui,
                     egui::DragValue::new(&mut field_ev)
-                        .range(-9.0..=3.0)
+                        .range(-8.0..=8.0)
                         .speed(0.1)
                         .suffix(" EV"),
                 );
@@ -583,6 +575,34 @@ pub(super) fn settings_body(
         // mark the resource changed every frame.
         if slider.changed() && settings.field_exposure.0 != field_ev {
             settings.field_exposure.0 = field_ev;
+        }
+        ui.add_space(FIELD_GAP);
+        ui.horizontal(|ui| {
+            titled(
+                ui,
+                "Field Curve",
+                "How the galaxy's light reaches the display: stops of light \
+                 over an average system's mark across, display level up. \
+                 Drag a point to bend the curve through it",
+            );
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    let reset = ui
+                        .add_enabled(
+                            *settings.field_curve != FieldCurve::default(),
+                            egui::Button::new("Reset").small(),
+                        )
+                        .on_hover_text("Put the curve back where it rests");
+                    if reset.clicked() {
+                        *settings.field_curve = FieldCurve::default();
+                    }
+                },
+            );
+        });
+        let mut curve = *settings.field_curve;
+        if curve_editor(ui, &mut curve) && curve != *settings.field_curve {
+            *settings.field_curve = curve;
         }
     }
     if *settings.view == View::Realistic {
@@ -889,6 +909,103 @@ fn titled(ui: &mut Ui, said: &str, hint: &str) -> Response {
     ui.label(said).on_hover_text(hint)
 }
 
+/// How far either side of a mark the curve editor draws, in stops: past the
+/// first and last knots, so the toe and the hold either side show.
+const CURVE_SPAN: f32 = 16.;
+
+/// The field's curve as a graph, its knots dragged up and down
+///
+/// Stops of light over an average system's mark across, display level up,
+/// with that mark itself ruled. A knot is held between its neighbours as it is
+/// dragged ([`FieldCurve::set`]), so the curve can be bent and never turned
+/// back. Whether anything moved.
+fn curve_editor(ui: &mut Ui, curve: &mut FieldCurve) -> bool {
+    use crate::map::paint::curve::STOPS;
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width, (width * 0.45).clamp(80., 140.)),
+        egui::Sense::hover(),
+    );
+    let inner = rect.shrink(6.);
+    let at = |stops: f32, level: f32| {
+        egui::pos2(
+            egui::remap(stops, -CURVE_SPAN..=CURVE_SPAN, inner.x_range()),
+            egui::remap(level, 0.0..=1.0, inner.bottom()..=inner.top()),
+        )
+    };
+    let visuals = ui.visuals().clone();
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2., visuals.extreme_bg_color);
+    // A hairline for the rules and a heavier line for the curve itself.
+    const RULE: f32 = 1.;
+    const TRACE: f32 = 1.5;
+    let faint =
+        egui::Stroke::new(RULE, visuals.widgets.noninteractive.bg_stroke.color);
+    for stops in STOPS {
+        let x = at(stops, 0.).x;
+        let stroke = match stops == 0. {
+            true => egui::Stroke::new(RULE, visuals.weak_text_color()),
+            false => faint,
+        };
+        painter.line_segment(
+            [egui::pos2(x, inner.top()), egui::pos2(x, inner.bottom())],
+            stroke,
+        );
+    }
+    for level in [0.25, 0.5, 0.75] {
+        let y = at(0., level).y;
+        painter.line_segment(
+            [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
+            faint,
+        );
+    }
+    let steps = inner.width().max(2.) as usize;
+    let line: Vec<egui::Pos2> = (0..=steps)
+        .map(|step| {
+            let stops =
+                -CURVE_SPAN + 2. * CURVE_SPAN * step as f32 / steps as f32;
+            at(stops, curve.level(stops))
+        })
+        .collect();
+    painter.add(egui::Shape::line(
+        line,
+        egui::Stroke::new(TRACE, visuals.text_color()),
+    ));
+
+    let mut moved = false;
+    for (knot, &stops) in STOPS.iter().enumerate() {
+        let centre = at(stops, curve.levels[knot]);
+        let grip = egui::Rect::from_center_size(centre, egui::vec2(14., 14.));
+        let response = ui
+            .interact(
+                grip,
+                ui.id().with(("field curve", knot)),
+                egui::Sense::drag(),
+            )
+            .on_hover_text(format!(
+                "{:+} stops: level {:.2}",
+                stops, curve.levels[knot]
+            ));
+        if response.dragged()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            let level =
+                egui::remap(pointer.y, inner.bottom()..=inner.top(), 0.0..=1.0);
+            let before = curve.levels[knot];
+            curve.set(knot, level);
+            moved |= curve.levels[knot] != before;
+        }
+        let lit = response.hovered() || response.dragged();
+        painter.circle(
+            at(stops, curve.levels[knot]),
+            if lit { 5. } else { 4. },
+            if lit { visuals.selection.bg_fill } else { visuals.text_color() },
+            egui::Stroke::new(RULE, visuals.extreme_bg_color),
+        );
+    }
+    moved
+}
+
 /// Open a section, in the form or in the settings pane
 ///
 /// The rule is the break between one section and the next, and needs no
@@ -954,6 +1071,7 @@ mod tests {
         world.insert_resource(ScalePopulation(false));
         world.insert_resource(StarExposure::default());
         world.insert_resource(FieldExposure(0.));
+        world.insert_resource(FieldCurve::default());
         world.insert_resource(StarProfile::default());
         world.insert_resource(ShowNames(true));
         world.insert_resource(Poll(Some(10.)));
@@ -1036,6 +1154,7 @@ mod tests {
                 ("Spyglass", touched::<Spyglass>(&world)),
                 ("StarExposure", touched::<StarExposure>(&world)),
                 ("FieldExposure", touched::<FieldExposure>(&world)),
+                ("FieldCurve", touched::<FieldCurve>(&world)),
                 ("StarProfile", touched::<StarProfile>(&world)),
                 ("ShowNames", touched::<ShowNames>(&world)),
                 ("Poll", touched::<Poll>(&world)),

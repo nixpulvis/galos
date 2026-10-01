@@ -1091,6 +1091,28 @@ pub(crate) const FIELD_LAYER: usize = 5;
 /// camera is gone and this says what it is.
 pub(crate) const FIELD_ORDER: isize = 1;
 
+/// The render layer what the filters exclude is drawn on, in the map view
+///
+/// The field's twin: the excluded share of every splat, drawn by a camera of
+/// its own into a target of its own so the dim can be spent after the curve
+/// rather than ahead of it. See [`crate::map::paint::curve`].
+pub(crate) const DIMMED_LAYER: usize = 6;
+
+/// The render layer the field's two targets are brought onto the display on
+///
+/// One quad over the whole frame, drawn by the curve's own camera, and in
+/// the map view the marks, each already through the curve on its own and
+/// laid over the field.
+pub(crate) const CURVE_LAYER: usize = 7;
+
+/// The order the field's curve is drawn at, in the map view
+///
+/// Over the scene and under the annotations, where the field itself draws
+/// in the realistic view: in the map view the field's cameras draw into
+/// targets of their own at [`FIELD_ORDER`], and this is what lays those over
+/// the galaxy. After them, so it reads what they wrote this frame.
+pub(crate) const CURVE_ORDER: isize = 2;
+
 /// The render layer the annotations are drawn on
 ///
 /// Nothing 3D is held on it: every annotation is painted in screen space by
@@ -1102,16 +1124,16 @@ const ANNOTATIONS_LAYER: usize = 2;
 
 /// The order the annotations' camera draws at
 ///
-/// Last of the three: over the scene (0) and the star field ([`FIELD_ORDER`]),
-/// so the names, the rings, and the chrome egui draws above them land over the
-/// whole map rather than under what they annotate. Anything past the field's
-/// order would do; this is the next one up.
+/// Last: over the scene (0), the star field ([`FIELD_ORDER`]) and its curve
+/// ([`CURVE_ORDER`]), so the names, the rings, and the chrome egui draws
+/// above them land over the whole map rather than under what they annotate.
+/// Anything past the curve's order would do; this is the next one up.
 ///
 /// An order, not a layer. It reads the same as [`ANNOTATIONS_LAYER`] and says
 /// something else — a place in the stack, against a number nothing else is on
 /// — and the two being one thing is exactly the reading [`FIELD_ORDER`] was
 /// split out to stop.
-const ANNOTATIONS_ORDER: isize = 2;
+const ANNOTATIONS_ORDER: isize = 3;
 
 /// The camera the map's annotations are drawn over the galaxy by
 ///
@@ -1529,7 +1551,7 @@ mod tests {
             "the eye is not the only camera that tonemaps",
         );
         assert!(
-            camera.order > FIELD_ORDER,
+            camera.order > FIELD_ORDER && camera.order > CURVE_ORDER,
             "the annotations were drawn under the star field",
         );
     }

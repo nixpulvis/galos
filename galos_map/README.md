@@ -78,6 +78,23 @@ and the ruled plane's readouts — is projected to a pixel on the processor in
 [`src/map/screen.rs`](./src/map/screen.rs), and the cameras and the
 order they draw in [`src/map/camera.rs`](./src/map/camera.rs).
 
+The map view's marks and the glow behind them are one light: a system is
+worth the same whether it is drawn as its own mark or the glow stands in for
+it, and the glow is linear, a crowd worth the sum of its systems wherever it
+stands, so two star classes of the same count lay the same light. That runs
+over some thirty stops in one frame, so the glow is drawn into a target of
+its own and brought onto the display a pixel at a time through one curve
+([`src/map/paint/curve.rs`](./src/map/paint/curve.rs)), read in stops over
+an average system's mark along the axis drawn and held down as the reach
+widens. Each mark goes through the same curve on its own, at a set exposure,
+and is laid over the glow, so a system drawn as itself reads as one over the
+crowd behind it at every zoom. The settings pane, under the map view, sets
+it: Field Exposure slides the frame
+along the curve, and Field Curve is the curve itself, seven points dragged up
+and down with a monotone cubic through them. What the filters exclude is
+drawn into a second target and dimmed after the curve, so the Filtered
+Opacity dims the glow as far as it dims a mark.
+
 The galaxy is drawn the way round the game draws it. Its coordinates are
 left handed — seen from galactic north with the core at the top, `+X` is on
 the right — and the renderer is right handed, so the camera is mirrored

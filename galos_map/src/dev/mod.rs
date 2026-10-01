@@ -533,28 +533,33 @@ fn diagnostics(
                     pair(
                         ui,
                         "laid",
-                        &format!("{} / {}", glow.colonies, glow.backdrop),
-                        "Quads the political field laid this frame: the \
-                         colonies at their own centroid, and the systems \
-                         nobody lives in at the stellar one. A splat lays \
-                         one of each where it has both.",
+                        &format!(
+                            "{} / {} ({} dimmed)",
+                            glow.colonies, glow.backdrop, glow.dimmed
+                        ),
+                        "Quads the field laid this frame: the colonies at \
+                         their own centroid, and the systems nobody lives in \
+                         at the stellar one, and how many of them carried \
+                         light the filters exclude into the dimmed target.",
                     );
                     pair(
                         ui,
                         "deposited",
                         &format!("{:.2} / {:.2}", glow.light, glow.peak),
-                        "Linear light the political field laid down, and the \
-                         brightest peak any one splat was laid at. At the \
-                         ceiling everywhere it is a white sheet.",
+                        "Light the field let through, all told, and the \
+                         brightest peak any one splat was laid at, in average \
+                         marks: a peak's log2 is where it stands on the field \
+                         curve before the exposure moves it.",
                     );
                     pair(
                         ui,
                         "splat peak",
                         &format!("{:.4} / {:.4}", glow.faintest, glow.typical),
-                        "The faintest and the middling splat, in linear \
-                         light. The middling one is what the frame is made \
-                         of: near zero and the field is invisible however \
-                         bright the core over the bubble reads.",
+                        "The faintest and the middling splat, in average \
+                         marks. The middling one is what the frame is made \
+                         of: far down the curve's toe and the field is \
+                         invisible however bright the core over the bubble \
+                         reads.",
                     );
                     pair(
                         ui,

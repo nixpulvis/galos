@@ -268,9 +268,12 @@ pub struct Blobs(pub(crate) Vec<Blob>);
 /// One merged mark: where it stands and what it stands for.
 #[derive(Copy, Clone)]
 pub(crate) struct Blob {
-    /// The average of the marks it stands for, in linear light, and the
-    /// fade the filters leave it: see [`crate::map::galaxy::blobs::Standing`].
-    pub(crate) light: Vec3,
+    /// The light of the marks it stands for that the filters let through,
+    /// and of those they exclude, both at full and in linear light, and the
+    /// fade the realistic view dims it by: see
+    /// [`crate::map::galaxy::blobs::Standing`].
+    pub(crate) through: Vec3,
+    pub(crate) dimmed: Vec3,
     pub(crate) fade: f32,
     /// The cell it stands for, which is what names it: the system a merged
     /// mark is pointed at is read out of this cell's own payload. See
@@ -2732,20 +2735,23 @@ pub(crate) fn reconcile(
         // marks at full and 9,997 at the dim if it split, so the one mark
         // it is drawn as is worth their average — which leaves it at the
         // dim, without ever claiming the cell is empty. See
-        // [`crate::map::galaxy::blobs::Mark::drawn`].
+        // [`crate::map::galaxy::blobs::Mark::fade`] and
+        // [`crate::map::galaxy::blobs::Mark::split`].
         let dim = match fill {
             true => filtering.dim.opacity(),
             // Below the dim an excluded system is not drawn at all, so
             // neither is the share of a mark that stands for one.
             false => 0.,
         };
-        let (light, fade) = mark.drawn(dim);
+        let fade = mark.fade(dim);
         if fade <= 0. {
             continue;
         }
+        let (through, dimmed) = mark.split(dim > 0.);
         behind += stands_for;
         blobs.0.push(Blob {
-            light,
+            through,
+            dimmed,
             fade,
             id: blob.id,
             count: blob.count,
