@@ -888,8 +888,20 @@ pub(crate) fn weigh_blobs(
             .every_system()
             .then(|| index.0.get(blob.id).map(|cell| *cell.aggregate.kinds()))
             .flatten();
+        // What the axes not drawn let through, by share: the political ones
+        // of the colonies, and star class of every system.
+        let off = mask.off_axis(
+            held,
+            index.0.get(blob.id).map(|cell| cell.aggregate.kinds()),
+        );
         let weighed = |keeps| match &stars {
-            Some(kinds) => averaged_stars(kinds, stands_for, &gains, keeps),
+            Some(kinds) => {
+                let (light, kept) =
+                    averaged_stars(kinds, stands_for, &gains, keeps);
+                let colonies = held.map_or(0, |held| held.count());
+                let share = off.over(colonies, stands_for);
+                (light * share, kept * share)
+            }
             None => averaged(
                 held,
                 stands_for,
@@ -897,6 +909,7 @@ pub(crate) fn weigh_blobs(
                 &gains,
                 keeps,
                 mask.keeps_uninhabited(),
+                off,
             ),
         };
         let light = match &stars {
@@ -1059,13 +1072,14 @@ fn average_mark(
         gains,
         crate::map::filter::mask::Keeps::ALL,
         1.,
+        crate::map::filter::mask::OffAxis::ALL,
     )
     .0
 }
 
 /// [`average_mark`] with each bucket counted at what `keeps` lets through
-/// of it, and the systems nobody lives in at `uninhabited`, and the share of
-/// the count that comes to
+/// of it, and the systems nobody lives in at `uninhabited`, each channel at
+/// what `off` lets through of it, and the share of the count that comes to
 ///
 /// A system not let through counts as no light rather than as not there:
 /// the average is still over every system the mark stands for, so a cell
@@ -1078,6 +1092,7 @@ fn averaged(
     gains: &crate::map::paint::glow::Gains,
     keeps: crate::map::filter::mask::Keeps,
     uninhabited: f32,
+    off: crate::map::filter::mask::OffAxis,
 ) -> (Vec3, f32) {
     let mut light = Vec3::ZERO;
     let mut kept = 0.0f32;
@@ -1087,7 +1102,7 @@ fn averaged(
             held,
             color_by,
             |bucket, hue, systems| {
-                let share = keeps.of(bucket);
+                let share = keeps.of(bucket) * off.colonies;
                 light += hue.light()
                     * crate::map::paint::glow::mark_light(hue, true, gains)
                     * systems as f32
@@ -1102,8 +1117,9 @@ fn averaged(
     light += grey.light()
         * crate::map::paint::glow::mark_light(grey, false, gains)
         * alone
-        * uninhabited;
-    kept += alone * uninhabited;
+        * uninhabited
+        * off.backdrop;
+    kept += alone * uninhabited * off.backdrop;
     let whole = count.max(1) as f32;
     (light / whole, kept / whole)
 }

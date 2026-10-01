@@ -14,7 +14,9 @@
 //!
 //! The color mask ([`mask::Mask`]) narrows too, and is always there: one set
 //! of hidden colors an axis, edited in the color key ([`key`]) rather than
-//! added as a row.
+//! added as a row. Every axis hiding something applies, each standing under
+//! the bar as a row of chips: the color row for the axis drawn, and one
+//! beside it for each other.
 //!
 //! This is a layer over the map rather than a mode: the walk goes on loading
 //! the cells it marks and the camera stays where it is. Whether it despawns
@@ -85,16 +87,18 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-/// Ask the mask along the axis the map is colored by, as that changes, and
-/// not at all while it is not colored
+/// Tell the mask which axis the map is colored by, as that changes, and
+/// that it is not colored at all
 ///
-/// The key's tabs choose the coloring; this is what makes the choice the
-/// mask's too, so a color hidden along government stops hiding anything the
-/// moment the map is colored by security. The realistic view colors a star
-/// by its own light, so there is no color on screen for the key to name:
-/// the mask is ignored there and kept for when the map view comes back. And
-/// reading the sky as populations draws no system nobody lives in, so the
-/// uninhabited flag is ignored and kept the same way.
+/// The key's tabs choose the coloring; this is what tells the mask which of
+/// its axes is the color row's and which stand as rows of their own. A color
+/// hidden along government goes on hiding it once the map is colored by
+/// security, its row standing beside the color row. The realistic view
+/// colors a star by its own light, so there is no color row: every axis
+/// hiding something is a row of its own, and the uninhabited flag, the color
+/// row's chip, is kept for when the map view comes back. Reading the sky as
+/// populations draws no system nobody lives in, so the uninhabited flag is
+/// ignored and kept the same way, as is star class.
 ///
 /// Nor is star class offered while the sky is read as populations: the
 /// colonies it draws come off the populated table with no payload point
@@ -1207,11 +1211,12 @@ impl Filters {
     /// mask hiding the systems nobody lives in, which every system without
     /// a row is, or every filter picking systems out being a faction, which
     /// only a row names. Anything else asked only narrows what those admit.
-    /// A route or a hand-picked set names systems anywhere, and a mask along
-    /// star class hides stars, not rows; and a mask not drawn hides nothing.
+    /// A route or a hand-picked set names systems anywhere, a mask along
+    /// star class hides stars, not rows, and a political axis hides colonies
+    /// and lets empty space through.
     pub(crate) fn admits_only_rows(&self) -> bool {
         let mut picking = self.picking().peekable();
-        (self.mask.drawn().is_some() && self.mask.hides_empty())
+        self.mask.hides_empty()
             || (picking.peek().is_some()
                 && picking
                     .all(|filter| matches!(filter, Filter::Faction { .. })))
@@ -1220,13 +1225,13 @@ impl Filters {
     /// Whether what these filters admit is the sky with some colonies taken
     /// out of it
     ///
-    /// Only the mask asking, along a political axis and hiding some of it,
-    /// while the systems nobody lives in are drawn and let through. Those are
-    /// nearly every system, so a cell's brightest are what it admits whatever
-    /// the mask hides, and the map is drawn as it is unfiltered, the hidden
-    /// colonies dimmed or left out. Anything else admitted stands anywhere in
-    /// a payload's magnitude order, and is found by reading cells whole and
-    /// claiming it a patch of sky apiece; see
+    /// Only the mask asking, along political axes and hiding some of them,
+    /// while the systems nobody lives in are drawn and let through and no
+    /// star is hidden. Those are nearly every system, so a cell's brightest
+    /// are what it admits whatever the mask hides, and the map is drawn as it
+    /// is unfiltered, the hidden colonies dimmed or left out. Anything else
+    /// admitted stands anywhere in a payload's magnitude order, and is found
+    /// by reading cells whole and claiming it a patch of sky apiece; see
     /// [`crate::map::galaxy::walk::fetch`] and
     /// [`crate::map::galaxy::walk::reconcile`].
     ///
@@ -1238,9 +1243,9 @@ impl Filters {
     pub(crate) fn only_thins_colonies(&self) -> bool {
         self.mask.narrows()
             && !self.asked.iter().any(|active| active.enabled)
-            && self.mask.drawn().is_some_and(|axis| !axis.every_system())
+            && !self.mask.asks(crate::map::galaxy::spawn::ColorBy::StarClass)
             && self.mask.draws_uninhabited()
-            && !self.mask.hides_uninhabited()
+            && !self.mask.hides_empty()
     }
 
     /// The filters that pick systems out, which is every kind that does not
@@ -2030,8 +2035,8 @@ mod tests {
         }
     }
 
-    /// Only a mask hiding colonies along a political axis, the uninhabited
-    /// drawn and let through, draws as the unfiltered map does
+    /// Only a mask hiding colonies along political axes, drawn or not, the
+    /// uninhabited drawn and let through, draws as the unfiltered map does
     ///
     /// Anything else admitted has to be found anywhere in a cell's magnitude
     /// order. Taken for thinning, a faction's systems or a hidden sky would
@@ -2050,6 +2055,31 @@ mod tests {
         };
         let cases = [
             ("No state hidden", no_state(), true),
+            (
+                "No state hidden, colored by security",
+                {
+                    let mut filters = no_state();
+                    filters.edit_mask(|mask| {
+                        mask.draw(Some(ColorBy::Security));
+                    });
+                    filters
+                },
+                true,
+            ),
+            (
+                "and M stars, off the axis drawn",
+                {
+                    let mut filters = no_state();
+                    filters.edit_mask(|mask| {
+                        mask.toggle(
+                            ColorBy::StarClass,
+                            &[usize::from(StarKind::M.code())],
+                        );
+                    });
+                    filters
+                },
+                false,
+            ),
             (
                 "and the uninhabited",
                 {

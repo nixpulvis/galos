@@ -9,6 +9,7 @@
 use crate::map::bodies::Contents;
 use crate::map::camera::MoveCamera;
 use crate::map::filter::{Filter, Lookup, LookupNote};
+use crate::map::galaxy::spawn::ColorBy;
 use crate::map::route::frontier::Frontiers;
 use crate::map::route::{RouteSettings, Router};
 use crate::map::search::{Plot, Search, SearchNote, SearchResults};
@@ -602,24 +603,48 @@ pub(super) fn state_bar(
                     // never dragged. Its mini legend only while the key it
                     // stands for is not on screen to say the same. Not at all
                     // while the map is not colored, the realistic view having
-                    // no color to name; what it hides is kept for when it is.
-                    if filter.active.mask().drawn().is_some() {
-                        let axis = *filter.key.color_by;
-                        let held = filter.key.counted().0;
-                        let (keyed, keying) = color_row(
-                            ui,
-                            &filter.active,
-                            axis,
-                            held.as_ref(),
-                            !filter.key.state.out,
-                        );
+                    // no color to name.
+                    //
+                    // Then a row for each other axis hiding something, in the
+                    // same chips: what it hides is still hidden, and this is
+                    // what says so. Clicked, it asks for the map colored by
+                    // it, which brings its key up as the color row's.
+                    let colored = filter
+                        .active
+                        .mask()
+                        .drawn()
+                        .map(|_| *filter.key.color_by);
+                    let held = filter.key.counted().0;
+                    let others = ColorBy::ALL.into_iter().filter(|axis| {
+                        colored != Some(*axis)
+                            && filter.active.mask().hiding(*axis)
+                    });
+                    let rows: Vec<ColorBy> =
+                        colored.into_iter().chain(others).collect();
+                    for axis in rows {
+                        let drawn = colored == Some(axis);
+                        let (keyed, keying) = ui
+                            .push_id(axis.name(), |ui| {
+                                color_row(
+                                    ui,
+                                    &filter.active,
+                                    axis,
+                                    drawn,
+                                    held.as_ref(),
+                                    !filter.key.state.out,
+                                )
+                            })
+                            .inner;
                         if let Some(keyed) = keyed {
                             keyed.apply(
                                 filter.active.bypass_change_detection(),
                                 axis,
                             );
                         }
-                        filter.key.state.opening |= keying;
+                        if keying {
+                            filter.key.color_by.set_if_neq(axis);
+                            filter.key.state.opening = true;
+                        }
                     }
                     // Then the filters, and the selection under them. Both
                     // stand in the one column, so whichever is on top decides

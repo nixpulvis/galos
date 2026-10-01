@@ -171,21 +171,30 @@ which draws the colonies alone and knows none of their stars. The far field
 reads it off each cell's count of its stars by kind, which an index written
 before that count arrived gains with `galos index migrate`.
 
-Only the coloring on screen is filtered: hide the prisons and color by
-security, and every security rating is shown, the prisons among them. Each
-coloring remembers what it hides, so going back to government hides the
-prisons again. Uninhabited applies whichever coloring is out. It narrows
-whatever the filters pick out, and is drawn the way they are, at the Filtered
-Opacity setting, or not loaded at all at zero.
+Every coloring hiding something is filtered, not only the one on screen:
+hide High security, color by state and hide Expansion, and the map is the
+systems that are neither. Values of one coloring are either, High or Medium
+security, and colorings are both, that security and that state. A coloring
+that is not on screen says so in a row of its own under the color row, with
+the same swatches and `x`, so nothing is hidden with nothing to say why.
+Uninhabited belongs to the color row and applies along whichever political
+coloring is out; another coloring's row leaves empty systems alone, since
+they have no security or state to hide. It narrows whatever the filters pick
+out, and is drawn the way they are, at the Filtered Opacity setting, or not
+loaded at all at zero. Far off, a merged mark or the field knows each
+coloring's counts but not how they overlap, so it is drawn at the smallest
+share any of the other colorings lets through.
 
 With the form shut the key folds into the color row, the first row under the
 bar: a swatch a value to click, and a count of what is hidden with an `x`
 to show it all again. Hovering it names the colors; a click anywhere on it
-but a swatch or the `x` opens the whole key. While scaling with
-population only colonies are drawn, so Uninhabited leaves the key until it
-is off. The realistic view colors
-stars by their own light, so it shows no key and ignores what the key hides,
-keeping it for the map view.
+but a swatch or the `x` opens the whole key. Another coloring's row works the
+same way, and a click on it colors the map by it and opens its key. While
+scaling with population only colonies are drawn, so Uninhabited leaves the
+key until it is off, and a star class row says it is not applied in that
+view, the colonies carrying no star. The realistic view colors stars by
+their own light, so it shows no color row and keeps Uninhabited for the map
+view; every other coloring hiding something still applies, each with its row.
 `I`, or the eye under the gear, puts the interface away and leaves the rose
 and the key, in the top left, standing over the map. The key is
 [`src/map/filter/key.rs`](./src/map/filter/key.rs) and the mask it sets

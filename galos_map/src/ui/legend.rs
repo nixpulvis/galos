@@ -264,7 +264,7 @@ pub(crate) fn legend(
             }
         }
     }
-    if mask.draws_uninhabited() && !axis.every_system() {
+    if mask.draws_uninhabited() && mask.carries_uninhabited(axis) {
         ui.horizontal(|ui| {
             Swatch::uninhabited(mask).paint(ui, LEGEND_SWATCH);
             let text = egui::RichText::new("Uninhabited");

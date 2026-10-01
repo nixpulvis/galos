@@ -52,10 +52,23 @@ const CHIP: f32 = 13.;
 /// the chips are drawn from it, and whether the key was asked for.
 ///
 /// `held` is what the galaxy holds, for which values there are chips for.
+///
+/// **One row an axis hiding something, and this is each of them.** The
+/// axis the map is colored by is the color row, `drawn`, standing whether
+/// or not it hides anything. Every other axis hiding something stands under
+/// it in the same chips, since what it hides is still hidden: a security
+/// rating hidden and then the map colored by state is the systems neither
+/// hidden, and the security row is what says so. Its chips toggle along its
+/// own axis and its close shows it whole. Clicking the rest of it asks for
+/// the map colored by it, which is how its key is opened; not where the map
+/// is not colored, nor where the view cannot ask what it hides
+/// ([`Mask::suspended`]), the coloring having no say there. The systems
+/// nobody lives in are the color row's chip alone, being a value of no axis.
 pub(super) fn color_row(
     ui: &mut Ui,
     filters: &Filters,
     axis: ColorBy,
+    drawn: bool,
     held: Option<&Held>,
     popover: bool,
 ) -> (Option<Keyed>, bool) {
@@ -67,16 +80,22 @@ pub(super) fn color_row(
     // The whole row opens the key, not only its name. Answered before what
     // stands in it, so the chips and the close, answered over it, keep their
     // own clicks.
-    let whole = ui
-        .interact(
-            egui::Rect::from_min_size(
-                ui.cursor().min,
-                egui::vec2(ui.available_width(), height),
-            ),
-            ui.id().with("color-row"),
-            egui::Sense::click(),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let opens = drawn || (mask.drawn().is_some() && !mask.suspended(axis));
+    let whole = ui.interact(
+        egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(ui.available_width(), height),
+        ),
+        ui.id().with("color-row"),
+        match opens {
+            true => egui::Sense::click(),
+            false => egui::Sense::hover(),
+        },
+    );
+    let whole = match opens {
+        true => whole.on_hover_cursor(egui::CursorIcon::PointingHand),
+        false => whole,
+    };
     let opening = whole.clicked();
 
     let row = ui.horizontal(|ui| {
@@ -107,8 +126,9 @@ pub(super) fn color_row(
         }
         // Not where the map draws no system nobody lives in: the sky read as
         // populations, and star class, which has none to set apart. The chip
-        // would toggle nothing.
-        if mask.draws_uninhabited() && !axis.every_system() {
+        // would toggle nothing. Nor on another axis's row, the flag being
+        // the color row's.
+        if mask.draws_uninhabited() && mask.carries_uninhabited(axis) {
             ui.add_space(ui.spacing().item_spacing.x);
             if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
                 asked = Some(Keyed::Uninhabited);
@@ -127,7 +147,7 @@ pub(super) fn color_row(
                     ui.add_space(buttons_width(close, gap));
                 }
                 let text = egui::RichText::new(said);
-                let text = match hiding {
+                let text = match hiding && !mask.suspended(axis) {
                     true => text.color(attention(ui)),
                     false => text.weak(),
                 };
@@ -167,9 +187,11 @@ pub(super) fn color_row(
 /// What the color row's summary says of `mask` along `axis`, and whether it
 /// is saying something is hidden
 ///
-/// The values hidden along the axis being drawn, the systems nobody lives in
-/// counting as one of them along a political axis. Nothing about the other
-/// axes: what they hide hides nothing while this one is drawn.
+/// The values hidden along `axis`, the systems nobody lives in counting as
+/// one of them on the row that carries them. Nothing about the other axes,
+/// which say so on rows of their own. Where the view cannot ask what the
+/// axis hides it says that instead, its row standing so the hiding is not
+/// forgotten.
 pub(super) fn color_summary(
     axis: ColorBy,
     mask: &Mask,
@@ -177,10 +199,14 @@ pub(super) fn color_summary(
 ) -> (String, bool) {
     let empty = mask.draws_uninhabited()
         && mask.hides_uninhabited()
-        && !axis.every_system();
+        && mask.carries_uninhabited(axis);
     let here = hidden_values(axis, mask, held) + usize::from(empty);
     match here {
-        0 => ("all".to_owned(), false),
+        _ if !empty && !mask.hiding(axis) => ("all".to_owned(), false),
+        _ if mask.suspended(axis) => ("not in this view".to_owned(), true),
+        // Nothing wholly hidden and something hidden all the same: a value
+        // in part, or one the galaxy holds none of. Still a row to close.
+        0 => ("some hidden".to_owned(), true),
         here => (format!("{here} hidden"), true),
     }
 }
@@ -1343,13 +1369,13 @@ mod tests {
         );
     }
 
-    /// What is hidden along another axis is not counted: it hides nothing
-    /// while this one is drawn
+    /// A row counts what its own axis hides, and no other's: the others say
+    /// so on rows of their own
     ///
     /// Two prisons hidden while colored by government, and Independent
     /// hidden earlier under allegiance.
     #[test]
-    fn only_what_the_axis_drawn_hides_is_counted() {
+    fn a_row_counts_only_its_own_axis() {
         let mut mask = Mask::default();
         for name in ["Prison", "Prison Colony"] {
             mask.set(
@@ -1371,6 +1397,40 @@ mod tests {
         assert_eq!(
             color_summary(ColorBy::Security, &mask, None),
             ("all".to_owned(), false),
+        );
+    }
+
+    /// The uninhabited flag counts on the color row that carries it, and on
+    /// no other axis's row; a value hidden in part is still a row to close;
+    /// and star class says it is not asked while only colonies are drawn
+    #[test]
+    fn a_row_off_the_axis_drawn_says_what_it_can() {
+        let mut mask = Mask::default();
+        mask.draw(Some(ColorBy::State));
+        mask.set_uninhabited(true);
+        mask.set(ColorBy::Security, value(ColorBy::Security, "High"), true);
+        assert_eq!(
+            color_summary(ColorBy::Security, &mask, None),
+            ("1 hidden".to_owned(), true),
+        );
+        assert_eq!(
+            color_summary(ColorBy::State, &mask, None),
+            ("1 hidden".to_owned(), true),
+        );
+
+        let mut partly = Mask::default();
+        partly.draw(Some(ColorBy::State));
+        partly.set(ColorBy::Allegiance, [0], true);
+        assert_eq!(
+            color_summary(ColorBy::Allegiance, &partly, None),
+            ("some hidden".to_owned(), true),
+        );
+
+        mask.set(ColorBy::StarClass, [1], true);
+        mask.draw_uninhabited(false);
+        assert_eq!(
+            color_summary(ColorBy::StarClass, &mask, None),
+            ("not in this view".to_owned(), true),
         );
     }
 
@@ -1404,8 +1464,14 @@ mod tests {
         let pass = |input| {
             let mut answered = (None, false);
             let output = ctx.run_ui(input, |ui| {
-                answered =
-                    color_row(ui, &filters, ColorBy::Allegiance, None, false);
+                answered = color_row(
+                    ui,
+                    &filters,
+                    ColorBy::Allegiance,
+                    true,
+                    None,
+                    false,
+                );
             });
             (answered, output)
         };
@@ -1451,6 +1517,73 @@ mod tests {
         let ((asked, opening), _) = pass(click(chip.center()));
         assert!(asked.is_some(), "the chip toggled nothing");
         assert!(!opening, "and the key opened under it");
+    }
+
+    /// Another axis's row asks for the map colored by it when clicked, so
+    /// its key comes up, and offers no uninhabited chip; one the view cannot
+    /// ask about opens nothing
+    #[test]
+    fn another_axis_row_asks_for_its_coloring() {
+        let mut filters = Filters::default();
+        filters.edit_mask(|mask| {
+            mask.draw(Some(ColorBy::State));
+            mask.set(ColorBy::Security, value(ColorBy::Security, "High"), true);
+            mask.set(ColorBy::StarClass, [1], true);
+        });
+        let ctx = crate::testing::context();
+        let pass = |filters: &Filters, axis, input| {
+            let mut answered = (None, false);
+            let output = ctx.run_ui(input, |ui| {
+                answered = color_row(ui, filters, axis, false, None, false);
+            });
+            (answered, output)
+        };
+        let click = |at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            egui::RawInput {
+                events: vec![
+                    egui::Event::PointerMoved(at),
+                    button(true),
+                    button(false),
+                ],
+                ..Default::default()
+            }
+        };
+
+        // Placed, and a point well past its chips: the row's own room.
+        let (_, placed) =
+            pass(&filters, ColorBy::Security, egui::RawInput::default());
+        let chip = placed
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.rect.size() == egui::Vec2::splat(CHIP) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("a chip painted");
+        let room = egui::pos2(chip.left() + 300., chip.center().y);
+
+        let ((asked, opening), _) =
+            pass(&filters, ColorBy::Security, click(room));
+        assert!(opening, "a click on the row asked for nothing");
+        assert!(asked.is_none());
+
+        filters.edit_mask(|mask| mask.draw_uninhabited(false));
+        let ((_, opening), _) = pass(&filters, ColorBy::StarClass, click(room));
+        assert!(!opening, "a row the view cannot ask asked to color by it");
+
+        filters.edit_mask(|mask| mask.draw(None));
+        let ((_, opening), _) = pass(&filters, ColorBy::Security, click(room));
+        assert!(!opening, "an uncolored map was asked to color");
     }
 
     // Only the debug-only passes below use it: egui compiles its

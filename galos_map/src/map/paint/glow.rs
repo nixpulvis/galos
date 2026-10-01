@@ -1356,14 +1356,24 @@ fn build_glow(
                 // the systems themselves.
                 //
                 // The color mask's backdrop is all or nothing, uninhabited
-                // being one flag; its colonies are [`let_through`]'s.
+                // being one flag, less what star class lets through of it
+                // where the map is not colored by star class; its colonies
+                // are [`let_through`]'s, less what the axes not drawn let
+                // through of them ([`Mask::off_axis`]).
+                //
+                // [`Mask::off_axis`]: crate::map::filter::mask::Mask::off_axis
                 let held_named = named.admitted(splat.id);
                 let aged = cell.aggregate.aged();
+                let off = mask.off_axis(
+                    settled.0.get(splat.id),
+                    Some(cell.aggregate.kinds()),
+                );
                 let backdrop_share = filtering.filters.admitted_share(
                     aged,
                     held_named.alone,
                     count.saturating_sub(peopled),
-                ) * mask.keeps_uninhabited();
+                ) * mask.keeps_uninhabited()
+                    * off.backdrop;
                 let colony_share = filtering.filters.admitted_share(
                     aged,
                     held_named.populated,
@@ -1400,11 +1410,13 @@ fn build_glow(
                     let spread = (mass.rms_radius() * FLATTENED)
                         .max(covered(mass.rms_radius()));
                     let keeps = mask.keeps(*color_by);
+                    // The political axes hide colonies, which are among both
+                    // channels' stars and told apart in neither.
                     let share = filtering.filters.admitted_share(
                         aged,
                         held_named.whole(),
                         count,
-                    );
+                    ) * off.over(peopled, count);
                     if unscanned > 0 {
                         let systems = unscanned as f32 * carried;
                         let light = Vec3::splat(
@@ -1507,12 +1519,15 @@ fn build_glow(
                         Keeps::ALL,
                     );
                     let kept = match mask.narrows() {
-                        true => composition(
-                            &held,
-                            *color_by,
-                            gains.unaligned,
-                            mask.keeps(*color_by),
-                        ),
+                        true => {
+                            let (light, weight) = composition(
+                                &held,
+                                *color_by,
+                                gains.unaligned,
+                                mask.keeps(*color_by),
+                            );
+                            (light * off.colonies, weight * off.colonies)
+                        }
                         false => whole,
                     };
                     let (mix, admitted) =
