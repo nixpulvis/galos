@@ -332,16 +332,13 @@ pub(crate) fn chrome(
     // and nothing else. The strip above has its own switch and stays.
     if toggles.hidden.0 {
         hide::eye(ctx, egui::pos2(MARGIN, MARGIN), &mut toggles.hidden.0);
-        // No key over a map in no colors, the realistic view, nor where it
-        // was switched off.
-        if toggles.legend.0 && filter.active.mask().drawn().is_some() {
+        // The key over a map in colors, and over any map a line for each
+        // other axis hiding something; nothing where it was switched off.
+        if toggles.legend.0 {
             let held = filter.key.counted().0;
-            hide::bare_legend(
-                ctx,
-                &filter.active,
-                *filter.key.color_by,
-                held.as_ref(),
-            );
+            let colored =
+                filter.active.mask().drawn().map(|_| *filter.key.color_by);
+            hide::bare_legend(ctx, &filter.active, colored, held.as_ref());
         }
         settle_input(ctx, &mut over_ui, &mut keyboard, &mut press, &buttons);
         return Ok(());

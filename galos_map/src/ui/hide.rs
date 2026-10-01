@@ -4,7 +4,8 @@
 //! under the bar, the settings pane and the windows a row opens all go, and
 //! what stays is what the picture needs to be read by — the rose, and the
 //! color key bare in the corner the chrome stood in, since a map colored by
-//! allegiance with nothing to say which color is which is a map of colors.
+//! allegiance with nothing to say which color is which is a map of colors,
+//! and under it a line for each other coloring hiding something.
 //! The names, the grid and the
 //! time strip keep their own switches; this is not one more of those.
 //!
@@ -14,7 +15,8 @@
 
 use crate::map::filter::Filters;
 use crate::map::galaxy::spawn::ColorBy;
-use crate::ui::legend::legend;
+use crate::ui::bar::applied::color_summary;
+use crate::ui::legend::{attention, legend};
 use crate::ui::{MARGIN, zone};
 use bevy::prelude::*;
 use bevy_egui::egui;
@@ -118,19 +120,47 @@ fn paint_eye(
 /// looking. Frameless, over the picture rather than in a card on it, with
 /// the axis it is keyed on named over it. No line saying what a chip does:
 /// nothing here can be clicked.
+///
+/// Then a line for each other axis hiding something, named and saying what
+/// it hides as its row under the bar does: what it hides is still hidden,
+/// and with the bar put away this is what says so. `colored` is the axis
+/// the map is colored by, nothing in the realistic view, which has those
+/// lines alone.
 pub(super) fn bare_legend(
     ctx: &Context,
     filters: &Filters,
-    axis: ColorBy,
+    colored: Option<ColorBy>,
     held: Option<&crate::map::filter::mask::Held>,
 ) {
+    let mask = filters.mask();
+    let others = ColorBy::ALL
+        .into_iter()
+        .filter(|axis| Some(*axis) != colored && mask.hiding(*axis));
+    if colored.is_none() && others.clone().next().is_none() {
+        return;
+    }
+    let name = |axis: ColorBy| {
+        egui::RichText::new(axis.name().to_uppercase()).small().weak()
+    };
     zone("bare-legend").fixed_pos(egui::pos2(MARGIN, MARGIN * 2. + EYE)).show(
         ctx,
         |ui| {
-            ui.label(
-                egui::RichText::new(axis.name().to_uppercase()).small().weak(),
-            );
-            legend(ui, filters, axis, held, false);
+            if let Some(axis) = colored {
+                ui.label(name(axis));
+                legend(ui, filters, axis, held, false);
+                ui.add_space(ui.spacing().item_spacing.y);
+            }
+            for axis in others {
+                ui.horizontal(|ui| {
+                    ui.label(name(axis));
+                    let (said, hiding) = color_summary(axis, mask, held);
+                    let text = egui::RichText::new(said);
+                    ui.label(match hiding && !mask.suspended(axis) {
+                        true => text.color(attention(ui)),
+                        false => text.weak(),
+                    });
+                });
+            }
         },
     );
 }

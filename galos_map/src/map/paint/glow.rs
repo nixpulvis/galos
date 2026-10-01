@@ -1359,15 +1359,27 @@ fn build_glow(
                 // being one flag, less what star class lets through of it
                 // where the map is not colored by star class; its colonies
                 // are [`let_through`]'s, less what the axes not drawn let
-                // through of them ([`Mask::off_axis`]).
+                // through of them ([`Mask::off_axis`]). Those are asked of
+                // what is left once the marks have taken theirs, which is
+                // what this splat lays down: the near systems drawn as
+                // themselves are not the far ones' share.
                 //
                 // [`Mask::off_axis`]: crate::map::filter::mask::Mask::off_axis
                 let held_named = named.admitted(splat.id);
                 let aged = cell.aggregate.aged();
-                let off = mask.off_axis(
-                    settled.0.get(splat.id),
-                    Some(cell.aggregate.kinds()),
-                );
+                let colonies = settled.0.get(splat.id).map(|held| {
+                    if taken.inhabited.count() < held.count() {
+                        held.remove(taken.inhabited)
+                    } else {
+                        // Every colony under the cell is on the map as itself.
+                        Inhabited::ZERO
+                    }
+                });
+                let mut kinds = *cell.aggregate.kinds();
+                for (kind, drawn) in kinds.iter_mut().zip(taken.kinds) {
+                    *kind = kind.saturating_sub(drawn);
+                }
+                let off = mask.off_axis(colonies.as_ref(), Some(&kinds));
                 let backdrop_share = filtering.filters.admitted_share(
                     aged,
                     held_named.alone,
@@ -1396,10 +1408,6 @@ fn build_glow(
                 // apart; the colonies' kinds are among these, and a political
                 // channel as well would count them twice.
                 if color_by.every_system() {
-                    let mut kinds = *cell.aggregate.kinds();
-                    for (kind, drawn) in kinds.iter_mut().zip(taken.kinds) {
-                        *kind = kind.saturating_sub(drawn);
-                    }
                     let unscanned = u64::from(std::mem::take(&mut kinds[0]));
                     let scanned: u64 =
                         kinds.iter().map(|n| u64::from(*n)).sum();
@@ -1416,7 +1424,10 @@ fn build_glow(
                         aged,
                         held_named.whole(),
                         count,
-                    ) * off.over(peopled, count);
+                    ) * off.over(
+                        colonies.map_or(0, |held| held.count()),
+                        unscanned + scanned,
+                    );
                     if unscanned > 0 {
                         let systems = unscanned as f32 * carried;
                         let light = Vec3::splat(
@@ -1500,14 +1511,6 @@ fn build_glow(
                 // And the colonies, at their own. Absent where there are none,
                 // and never stood in for by the stellar centroid: that is how a
                 // colony is drawn where there is not one.
-                let colonies = settled.0.get(splat.id).map(|held| {
-                    if taken.inhabited.count() < held.count() {
-                        held.remove(taken.inhabited)
-                    } else {
-                        // Every colony under the cell is on the map as itself.
-                        Inhabited::ZERO
-                    }
-                });
                 if let Some(held) = colonies
                     && let Some(at) = held.centroid()
                     && in_reach(at)

@@ -912,8 +912,18 @@ pub(crate) fn weigh_blobs(
                 off,
             ),
         };
+        // The unfiltered light, which the mask's share takes no part of: what
+        // it hides is drawn dimmed from this, not left out of it.
         let light = match &stars {
-            Some(_) => weighed(crate::map::filter::mask::Keeps::ALL).0,
+            Some(kinds) => {
+                averaged_stars(
+                    kinds,
+                    stands_for,
+                    &gains,
+                    crate::map::filter::mask::Keeps::ALL,
+                )
+                .0
+            }
             None => average_mark(held, stands_for, *color_by, &gains),
         };
         let (kept_light, kept) = match mask.narrows() {

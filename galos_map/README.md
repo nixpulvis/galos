@@ -182,8 +182,9 @@ coloring is out; another coloring's row leaves empty systems alone, since
 they have no security or state to hide. It narrows whatever the filters pick
 out, and is drawn the way they are, at the Filtered Opacity setting, or not
 loaded at all at zero. Far off, a merged mark or the field knows each
-coloring's counts but not how they overlap, so it is drawn at the smallest
-share any of the other colorings lets through.
+coloring's counts but not how they overlap, so it takes them as independent
+and is drawn at the product of their shares, which comes to the same
+whichever coloring is on screen.
 
 With the form shut the key folds into the color row, the first row under the
 bar: a swatch a value to click, and a count of what is hidden with an `x`
@@ -196,7 +197,8 @@ view, the colonies carrying no star. The realistic view colors stars by
 their own light, so it shows no color row and keeps Uninhabited for the map
 view; every other coloring hiding something still applies, each with its row.
 `I`, or the eye under the gear, puts the interface away and leaves the rose
-and the key, in the top left, standing over the map. The key is
+and the key, in the top left, standing over the map, with a line under it for
+each other coloring hiding something, saying what it hides. The key is
 [`src/map/filter/key.rs`](./src/map/filter/key.rs) and the mask it sets
 [`src/map/filter/mask.rs`](./src/map/filter/mask.rs).
 

@@ -192,7 +192,7 @@ pub(super) fn color_row(
 /// which say so on rows of their own. Where the view cannot ask what the
 /// axis hides it says that instead, its row standing so the hiding is not
 /// forgotten.
-pub(super) fn color_summary(
+pub(in crate::ui) fn color_summary(
     axis: ColorBy,
     mask: &Mask,
     held: Option<&Held>,

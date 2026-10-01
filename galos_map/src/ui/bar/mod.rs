@@ -608,21 +608,23 @@ pub(super) fn state_bar(
                     // Then a row for each other axis hiding something, in the
                     // same chips: what it hides is still hidden, and this is
                     // what says so. Clicked, it asks for the map colored by
-                    // it, which brings its key up as the color row's.
+                    // it, which brings its key up as the color row's. Its mini
+                    // legend whether or not the form is out, the key on
+                    // screen being another axis's.
                     let colored = filter
                         .active
                         .mask()
                         .drawn()
                         .map(|_| *filter.key.color_by);
                     let held = filter.key.counted().0;
-                    let others = ColorBy::ALL.into_iter().filter(|axis| {
-                        colored != Some(*axis)
-                            && filter.active.mask().hiding(*axis)
-                    });
-                    let rows: Vec<ColorBy> =
-                        colored.into_iter().chain(others).collect();
-                    for axis in rows {
+                    let others = ColorBy::ALL
+                        .into_iter()
+                        .filter(move |axis| colored != Some(*axis));
+                    for axis in colored.into_iter().chain(others) {
                         let drawn = colored == Some(axis);
+                        if !drawn && !filter.active.mask().hiding(axis) {
+                            continue;
+                        }
                         let (keyed, keying) = ui
                             .push_id(axis.name(), |ui| {
                                 color_row(
@@ -631,7 +633,7 @@ pub(super) fn state_bar(
                                     axis,
                                     drawn,
                                     held.as_ref(),
-                                    !filter.key.state.out,
+                                    !drawn || !filter.key.state.out,
                                 )
                             })
                             .inner;

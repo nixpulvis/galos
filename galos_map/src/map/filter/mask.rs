@@ -373,7 +373,8 @@ impl Mask {
         self.hides_empty() || ColorBy::ALL.iter().any(|axis| self.asks(*axis))
     }
 
-    /// The axis the mask is asked along, nothing in the realistic view
+    /// The axis the map is colored by, whose row carries the uninhabited
+    /// flag; nothing in the realistic view
     pub fn drawn(&self) -> Option<ColorBy> {
         self.drawn
     }
@@ -437,11 +438,11 @@ impl Mask {
     /// **A cell counts each axis on its own, so it cannot say how many of
     /// its systems pass two at once.** A cell with half its colonies High
     /// security and half in Expansion may hold none that are both or every
-    /// one. Each axis is asked for its own share and the smallest is taken,
-    /// which is an upper bound on the truth, as
-    /// [`crate::map::filter::Filters::admitted_share`] takes for a faction
-    /// and a span; the draw then takes it with the drawn axis's own
-    /// [`Self::keeps`] as independent.
+    /// one. Each axis is taken as independent of the others, its share
+    /// multiplied in, as the draw multiplies in the drawn axis's own
+    /// [`Self::keeps`]. Every axis counted the same way is what keeps the
+    /// picture from changing with the coloring: whichever axis is drawn,
+    /// the shares multiplied are the same ones.
     ///
     /// `colonies` is the cell's histogram, for the political axes, and
     /// `stars` its aggregate's systems by [`StarKind::code`], for star
@@ -473,18 +474,18 @@ impl Mask {
             match axis.every_system() {
                 true => {
                     if let Some(stars) = stars {
-                        off.backdrop = off.backdrop.min(kept(axis, stars));
+                        off.backdrop *= kept(axis, stars);
                     }
                 }
                 false => {
                     if let Some(colonies) = colonies {
                         let share = kept(axis, axis.counts(colonies));
-                        off.colonies = off.colonies.min(share);
+                        off.colonies *= share;
                     }
                 }
             }
         }
-        off.colonies = off.colonies.min(off.backdrop);
+        off.colonies *= off.backdrop;
         off
     }
 
@@ -779,11 +780,10 @@ mod tests {
         assert!(!mask.hides_uninhabited(), "the color row's close");
     }
 
-    /// A cell keeps what each axis not drawn lets through of it, the
-    /// smallest share standing for them all, and its backdrop only what
-    /// star class does
+    /// A cell keeps what each axis not drawn lets through of it, the shares
+    /// multiplied, and its backdrop only what star class does
     #[test]
-    fn a_cell_keeps_the_smallest_share_off_the_axis_drawn() {
+    fn a_cell_keeps_the_product_of_the_shares_off_the_axis_drawn() {
         use galos_index::read::inhabited::Inhabited;
         let colony = |security, state| {
             Inhabited::of_system(
@@ -806,7 +806,7 @@ mod tests {
             true,
         );
         let off = mask.off_axis(Some(&cell), None);
-        assert_eq!(off.colonies, 0.5, "state's half, under security's 3/4");
+        assert_eq!(off.colonies, 0.375, "security's 3/4 of state's half");
         assert_eq!(off.backdrop, 1.);
 
         // The axis drawn is the key's to keep, not a share.
@@ -818,8 +818,59 @@ mod tests {
         stars[usize::from(StarKind::G.code())] = 1;
         mask.set(ColorBy::StarClass, [usize::from(StarKind::M.code())], true);
         let off = mask.off_axis(Some(&cell), Some(&stars));
-        assert_eq!((off.colonies, off.backdrop), (0.25, 0.25));
-        assert_eq!(off.over(1, 4), 0.25);
+        assert_eq!((off.colonies, off.backdrop), (0.1875, 0.25));
+        assert_eq!(off.over(1, 4), 0.234375);
+    }
+
+    /// What a cell keeps of its colonies comes to the same whichever of the
+    /// axes hiding something the map is colored by
+    ///
+    /// Three axes keeping a quarter, a half and three quarters. Taking the
+    /// smallest of the axes not drawn came to 3/16 colored by security and
+    /// 1/8 colored by allegiance, so recoloring dimmed the far sky.
+    #[test]
+    fn a_cell_keeps_the_same_share_whichever_axis_is_drawn() {
+        use galos_index::read::inhabited::Inhabited;
+        let colony = |allegiance, security, state| {
+            Inhabited::of_system(
+                [0.; 3],
+                Readings {
+                    allegiance: Some(allegiance),
+                    security: Some(security),
+                    state: Some(state),
+                    ..Readings::default()
+                },
+            )
+        };
+        let cell = colony(Allegiance::Federation, Security::High, State::Boom)
+            .merge(colony(Allegiance::Empire, Security::Low, State::Boom))
+            .merge(colony(Allegiance::Federation, Security::Low, State::War))
+            .merge(colony(Allegiance::Federation, Security::Low, State::War));
+        let mut mask = Mask::default();
+        mask.set(
+            ColorBy::Allegiance,
+            [bucket_of(Allegiance::Federation)],
+            true,
+        );
+        mask.set(ColorBy::Security, [bucket_of(Security::High)], true);
+        mask.set(ColorBy::State, [bucket_of(State::Boom)], true);
+
+        let kept = |mask: &mut Mask, drawn: ColorBy| {
+            mask.draw(Some(drawn));
+            let counts = drawn.counts(&cell);
+            let whole: u32 = counts.iter().sum();
+            let keeps = mask.keeps(drawn);
+            let on_axis = counts
+                .iter()
+                .enumerate()
+                .map(|(bucket, count)| *count as f32 * keeps.of(bucket))
+                .sum::<f32>()
+                / whole as f32;
+            on_axis * mask.off_axis(Some(&cell), None).colonies
+        };
+        for drawn in [ColorBy::Allegiance, ColorBy::Security, ColorBy::State] {
+            assert_eq!(kept(&mut mask, drawn), 0.09375, "colored by {drawn:?}");
+        }
     }
 
     /// Star class asks every system's star, the systems nobody lives in
