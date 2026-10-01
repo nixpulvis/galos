@@ -229,7 +229,7 @@ pub(super) fn admitted(
     // Everywhere else the systems are a set, in no order but the one this
     // list puts them in, and how far off they are from where the camera is
     // looking is both what orders them and what says why.
-    let mut order: Vec<(&System, Option<f64>)> = if filter.ordered() {
+    let mut order: Vec<Stop> = if filter.ordered() {
         let mut legs = Vec::with_capacity(systems.len());
         let mut left = None;
         for system in systems {
@@ -578,31 +578,39 @@ fn flying(legs: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
 /// a trip: a list that is not a trip's is one list.
 ///
 /// The stop a leg lands on is the stop the next sets out from and stands in
-/// the joined list once, so every leg after the first begins on the one
-/// before's last.
+/// the joined list once, so a leg that begins on the one before's last
+/// takes one stop fewer than it names. A leg that begins anywhere else —
+/// the leg between them still being walked — has every stop of its own in
+/// the list, as [`crate::ui::bar::applied::as_one`] joins them.
 ///
 /// Here rather than in the drawing because the copying wants it too, and a
 /// list drawn in one grouping and copied in another would be two answers to
 /// the one question.
 fn by_leg<'a, 'l>(
-    order: &'a [(&'a System, Option<f64>)],
+    order: &'a [Stop<'a>],
     legs: &'l [Filter],
-) -> Vec<(Option<&'l Filter>, &'a [(&'a System, Option<f64>)])> {
+) -> Vec<(Option<&'l Filter>, &'a [Stop<'a>])> {
     if legs.is_empty() {
         return vec![(None, order)];
     }
 
     let mut groups = Vec::with_capacity(legs.len());
     let mut at = 0;
+    let mut last: Option<&i64> = None;
     for leg in legs {
         let Filter::Route { systems: hops, .. } = leg else { continue };
-        let takes = hops.len().saturating_sub(usize::from(at > 0));
+        let takes =
+            hops.len().saturating_sub(usize::from(last == hops.first()));
         let Some(stops) = order.get(at..at + takes) else { break };
         groups.push((Some(leg), stops));
         at += takes;
+        last = hops.last().or(last);
     }
     groups
 }
+
+/// A stop in a panel's list: the system, and the distance its line ends in
+type Stop<'a> = (&'a System, Option<f64>);
 
 /// A list of systems as text, one to a line, as the panel draws them
 ///
@@ -611,7 +619,7 @@ fn by_leg<'a, 'l>(
 /// far off it is from the camera otherwise. Set apart by a tab, so what is
 /// pasted into a spreadsheet lands in two columns and what is pasted anywhere
 /// else still reads as one line about one system.
-fn as_text(order: &[(&System, Option<f64>)], legs: &[Filter]) -> String {
+fn as_text(order: &[Stop], legs: &[Filter]) -> String {
     let mut said: Vec<String> = Vec::new();
     for (named, stops) in by_leg(order, legs) {
         // A trip's legs are named and their stops drawn in under them, so the
@@ -1308,6 +1316,75 @@ mod tests {
         // And the seam once: the first leg lands on Test 3, the second sets
         // out from it.
         assert_eq!(said.iter().filter(|line| *line == "TEST 3").count(), 1);
+    }
+
+    /// A trip whose middle leg is still out lists every landed stop
+    ///
+    /// The joined trip is what has landed, so the legs the panel groups it
+    /// under have to be the same ones. Handed every leg, the panel gave the
+    /// unlanded one stops that were the next leg's, and ran off the end of
+    /// the list before the last leg had any.
+    #[test]
+    fn a_trip_with_a_leg_still_out_lists_every_landed_stop() {
+        let held = [
+            placed(1, [0., 0., 0.]),
+            placed(2, [5., 0., 0.]),
+            placed(3, [10., 0., 0.]),
+            placed(4, [15., 0., 0.]),
+            placed(5, [20., 0., 0.]),
+            placed(6, [25., 0., 0.]),
+        ];
+        let leg = |label: &str, systems: Vec<i64>| Filter::Route {
+            label: label.to_owned(),
+            systems,
+            range: "12".to_owned(),
+            trip: Some("A -> C -> D -> F".to_owned()),
+            drive: Drive::Unaided,
+            how: Routing::default(),
+            tune: Tuning::default(),
+        };
+        let mut filters = crate::map::filter::Filters::default();
+        filters.add(leg("FIRST LEG", vec![1, 2, 3]));
+        filters.searching(1, leg("MIDDLE LEG", vec![3, 4]));
+        filters.add(leg("LAST LEG", vec![4, 5, 6]));
+
+        let (joined, legs) = crate::ui::bar::applied::trip_now(
+            &leg("FIRST LEG", vec![1, 2, 3]),
+            &filters,
+        )
+        .expect("the trip has landed legs");
+
+        let said = crate::testing::words(|ui| {
+            admitted(
+                ui,
+                &joined,
+                &legs,
+                Some(&held),
+                None,
+                0,
+                None,
+                &galos_route::Boosts::absent(),
+                &StarClasses::default(),
+                Some(DVec3::ZERO),
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+                &mut None,
+            );
+        });
+        let at = |what: &str| {
+            said.iter()
+                .position(|line| line.starts_with(what))
+                .unwrap_or_else(|| panic!("{what} was painted: {said:?}"))
+        };
+
+        assert!(!said.iter().any(|line| line.starts_with("MIDDLE LEG")));
+        assert!(at("FIRST LEG") < at("TEST 1"));
+        assert!(at("TEST 3") < at("LAST LEG"));
+        assert!(at("LAST LEG") < at("TEST 4"));
+        assert!(at("TEST 4") < at("TEST 5"));
+        assert!(at("TEST 5") < at("TEST 6"));
     }
 
     /// The list copied is the list drawn, a system to a line

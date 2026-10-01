@@ -403,9 +403,8 @@ pub(super) fn applied(
         // The trip as one route, which is what a panel about it is about. Its
         // legs are what it is made of and each has a panel of its own.
         Some((FilterAction::Describe, Section::Trip { stops, .. }, rows)) => {
-            let legs: Vec<Filter> = rows
-                .iter()
-                .filter_map(|index| filters.get(*index))
+            let legs: Vec<Filter> = landed_legs(&rows, filters)
+                .into_iter()
                 .map(|active| active.filter.clone())
                 .collect();
             ask.described =
@@ -500,15 +499,15 @@ pub(crate) fn as_one(
         _ => None,
     }?;
 
-    // What has landed, and only that. A leg still being searched — or one
-    // stopped, or one with no route to be found — has a row carrying the two
-    // ends it was asked between, and joining those in would have the trip run
-    // through a jump nobody flew. The row over it already says how many legs
-    // are still out; see [`crate::ui::panels`]'s summary.
+    // What has landed, and only that; see [`landed_legs`]. The stop a leg
+    // lands on is the stop the next sets out from and is joined in once —
+    // but only where it is: with a leg between them still out, the next
+    // landed leg sets out from somewhere else, and every one of its stops
+    // is a stop of the trip.
     let mut systems: Vec<i64> = Vec::new();
-    for leg in legs.iter().filter(|leg| leg.landed()) {
+    for leg in landed_legs(rows, filters) {
         let Filter::Route { systems: hops, .. } = &leg.filter else { continue };
-        let seam = usize::from(!systems.is_empty());
+        let seam = usize::from(systems.last() == hops.first());
         systems.extend(hops.iter().skip(seam));
     }
     if systems.len() < 2 {
@@ -526,7 +525,30 @@ pub(crate) fn as_one(
     })
 }
 
-/// A trip's panel as its legs now stand, and the legs it is made of
+/// The legs of a trip that have landed, in the order they are flown
+///
+/// What has landed, and only that. A leg still being searched — or one
+/// stopped, or one with no route to be found — has a row carrying the two
+/// ends it was asked between, and joining those in would have the trip run
+/// through a jump nobody flew. The row over it already says how many legs
+/// are still out; see [`crate::ui::panels`]'s summary.
+///
+/// One list for both [`as_one`], which joins these, and the panel, which
+/// groups the joined stops under these. Handing the panel every leg while
+/// the stops were only the landed ones' had it slice the stops by a leg
+/// they never included, putting stops under the wrong names and dropping
+/// the rest once it ran off the end.
+fn landed_legs<'f>(
+    rows: &[usize],
+    filters: &'f Filters,
+) -> Vec<&'f crate::map::filter::Entry> {
+    rows.iter()
+        .filter_map(|index| filters.get(*index))
+        .filter(|leg| leg.landed())
+        .collect()
+}
+
+/// A trip's panel as its legs now stand, and the landed legs it is made of
 ///
 /// **A trip is plotted a leg at a time, so a panel opened before the last
 /// of them lands describes a route that is not finished.** It used to
@@ -546,9 +568,8 @@ pub(crate) fn trip_now(
     let trip = filter.trip()?;
     let section = Section::of(filter)?;
     let rows = section.rows(filters);
-    let legs: Vec<Filter> = rows
-        .iter()
-        .filter_map(|index| filters.get(*index))
+    let legs: Vec<Filter> = landed_legs(&rows, filters)
+        .into_iter()
         .map(|active| active.filter.clone())
         .collect();
 
@@ -2516,12 +2537,13 @@ mod tests {
         let trip = stops.join(ARROW);
         // A leg's two ends are fixed and what it flies between them is the
         // answer: the ask carries the ends alone, which is how the row is
-        // found again when the answer lands.
+        // found again when the answer lands. Each leg sets out from the one
+        // before's last stop, as a trip's legs do.
         let leg = |at: usize, hops: i64| {
             let start = 100 * at as i64;
             let mut systems = vec![start];
             systems.extend((1..hops).map(|k| start + k));
-            systems.push(start + 99);
+            systems.push(start + 100);
             Filter::Route {
                 label: format!("{}{ARROW}{}", stops[at], stops[at + 1]),
                 systems,
