@@ -591,10 +591,12 @@ pub(crate) fn fetch(
     // whatever of it is held — or where all it admits is rows of the
     // populated table, every one holding a row; and the ones that draw
     // along star class, drawing every class in its proportion. Not under a
-    // mask that only thins the colonies, which admits a cell's brightest
-    // as the unfiltered map does; see [`Filters::only_thins_colonies`].
+    // mask that only thins the sky, which admits what the unfiltered map
+    // draws with some of it taken out: a cell's brightest less a few
+    // colonies, or a class sample less its hidden classes; see
+    // [`Filters::only_thins`].
     let by_class = by_class(*color_by, &planned.0.mode, by_population);
-    let whole = if filters.asking() && !filters.only_thins_colonies() {
+    let whole = if filters.asking() && !filters.only_thins() {
         match filters.admits_only_rows() {
             true => Whole::Rows { by_class },
             false => Whole::Every,
@@ -1965,14 +1967,14 @@ pub(crate) fn reconcile(
     // queueing them is a slot of the spawn budget spent on a system that
     // cannot land and rebuilt again next frame.
     let fill = !asking || filtering.excluded_are_drawn();
-    // Whether the mask only thins the colonies out of the sky, which is then
-    // drawn as it is unfiltered rather than claimed; see
-    // [`Filters::only_thins_colonies`].
-    let thins = filtering.filters.only_thins_colonies();
+    // Whether the mask only thins the sky, which is then drawn as it is
+    // unfiltered rather than claimed; see [`Filters::only_thins`].
+    let thins = filtering.filters.only_thins();
     // And where what it thins is still drawn, dimmed, the order is the
-    // payload's own and there is nothing to weigh: which of the drawn are
-    // dimmed is asked of the drawn alone ([`crate::map::filter`]). Weighed,
-    // every resident point was walked for a list admitting nearly all of it.
+    // unfiltered draw's own — the payload's, or star class's strata — and
+    // there is nothing to weigh: which of the drawn are dimmed is asked of
+    // the drawn alone ([`crate::map::filter`]). Weighed, every resident
+    // point was walked for a list admitting most of it.
     let unweighed = thins && fill;
     orders.hold(cut.0, asking && !unweighed);
     // Whether a cell's budget is spent on the systems with a population, which is
@@ -2048,8 +2050,8 @@ pub(crate) fn reconcile(
     // arm's colonies stand apart and are drawn every one; the core's pile
     // up and are one mark to a patch. The excluded, where the dim draws
     // them, fill what the cell's share leaves, as before. Not where the mask
-    // only thins the colonies: what it admits is nearly every system, and
-    // claimed, every one of them was a candidate.
+    // only thins the sky: what it admits is most of what the share draws,
+    // and claimed, every point of every cell was a candidate.
     let narrowed = asking && !thins && limit.is_none() && !by_population;
     // Whether what is on the map claims first: only while the view the
     // last claims were made under still stands; see [`claim_admitted`].
@@ -3450,6 +3452,83 @@ mod tests {
             drawing(true, 0.),
             sky - 15,
             "below the dim, only the hidden colonies are left out"
+        );
+    }
+
+    /// A key hiding star classes, the map colored by star class, draws the
+    /// class sample the unfiltered map draws, the hidden left out of it only
+    /// below the dim
+    ///
+    /// The reported trouble: hiding the unknown stars was taken for a filter,
+    /// every marked cell read whole and every point of the sky claimed a
+    /// patch of it, and the frames sank and the view never finished loading.
+    /// Here each cell is a pile on one spot, which claimed would be one mark.
+    #[test]
+    fn a_key_hiding_star_classes_draws_the_unfiltered_sample() {
+        use crate::map::filter::{DimTo, Filters};
+
+        let drawing = |hide: bool, dim: f32| {
+            let mut app = walking();
+            let mut marks = Vec::new();
+            for (n, place) in [[20., 0., 0.], [0., 20., 0.], [-20., 0., 0.]]
+                .into_iter()
+                .enumerate()
+            {
+                let id = CellId::of_point(place, 12);
+                // Every other one unscanned, the rest M stars.
+                let points: Vec<CellSystem> = (1..=100)
+                    .map(|k| CellSystem {
+                        position: place,
+                        kind: match k % 2 {
+                            0 => StarKind::Unknown,
+                            _ => StarKind::M,
+                        },
+                        ..point(n as u64 * 1_000 + k)
+                    })
+                    .collect();
+                marks.push(galos_index::read::walk::MarkRef {
+                    id,
+                    slice: points.len() as u32,
+                    at: place,
+                });
+                app.world_mut()
+                    .resource_mut::<ResidentCells>()
+                    .0
+                    .insert(id, points);
+            }
+            app.insert_resource(Planned(galos_index::prelude::Needed {
+                mode: galos_index::prelude::Mode::Shell,
+                marks,
+                blobs: Vec::new(),
+                splats: Vec::new(),
+            }));
+            app.insert_resource(ColorBy::StarClass);
+            app.insert_resource(DimTo(dim));
+            app.world_mut().resource_mut::<Filters>().edit_mask(|mask| {
+                mask.draw(Some(ColorBy::StarClass));
+                if hide {
+                    mask.set(
+                        ColorBy::StarClass,
+                        [usize::from(StarKind::Unknown.code())],
+                        true,
+                    );
+                }
+            });
+            app.update();
+            app.world().resource::<PendingSpawns>().queued()
+        };
+
+        let sky = drawing(false, 0.5);
+        assert_eq!(sky, 300, "the unfiltered sample was not drawn whole");
+        assert_eq!(
+            drawing(true, 0.5),
+            sky,
+            "dimmed, the hidden class is drawn where the sample has it"
+        );
+        assert_eq!(
+            drawing(true, 0.),
+            sky / 2,
+            "below the dim, only the hidden class is left out"
         );
     }
 

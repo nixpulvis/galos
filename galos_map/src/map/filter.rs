@@ -1222,16 +1222,20 @@ impl Filters {
                     .all(|filter| matches!(filter, Filter::Faction { .. })))
     }
 
-    /// Whether what these filters admit is the sky with some colonies taken
-    /// out of it
+    /// Whether what these filters admit is the sky as it is drawn unfiltered,
+    /// with some of it taken out
     ///
-    /// Only the mask asking, along political axes and hiding some of them,
-    /// while the systems nobody lives in are drawn and let through and no
-    /// star is hidden. Those are nearly every system, so a cell's brightest
-    /// are what it admits whatever the mask hides, and the map is drawn as it
-    /// is unfiltered, the hidden colonies dimmed or left out. Anything else
-    /// admitted stands anywhere in a payload's magnitude order, and is found
-    /// by reading cells whole and claiming it a patch of sky apiece; see
+    /// Only the mask asking, while the systems nobody lives in are drawn and
+    /// let through, hiding colonies along political axes and stars only
+    /// along star class while the map is colored by it. Hidden colonies are
+    /// a sliver of nearly every system, so a cell's brightest are what it
+    /// admits whatever the mask hides. Hidden classes are whole strata of
+    /// the class sample star class already draws each cell by
+    /// ([`crate::map::galaxy::walk`]'s `strata`), so the sample with them
+    /// taken out is what it admits. Either way the map is drawn as it is
+    /// unfiltered, the hidden dimmed or left out. Anything else admitted
+    /// stands anywhere in a payload's magnitude order, and is found by
+    /// reading cells whole and claiming it a patch of sky apiece; see
     /// [`crate::map::galaxy::walk::fetch`] and
     /// [`crate::map::galaxy::walk::reconcile`].
     ///
@@ -1240,10 +1244,17 @@ impl Filters {
     /// whole and put every point of them to the claim, which grew with each
     /// read that landed: measured over `.index/full`, frames went from 25 ms
     /// to over 450 in the four hundred after the click, and had not settled.
-    pub(crate) fn only_thins_colonies(&self) -> bool {
+    /// Hiding the unknown stars along star class did the same.
+    ///
+    /// A star class hidden while another axis is drawn is not this: that
+    /// draw is brightest first, and the classes it keeps may stand anywhere
+    /// down a payload.
+    pub(crate) fn only_thins(&self) -> bool {
+        use crate::map::galaxy::spawn::ColorBy;
         self.mask.narrows()
             && !self.asked.iter().any(|active| active.enabled)
-            && !self.mask.asks(crate::map::galaxy::spawn::ColorBy::StarClass)
+            && (!self.mask.asks(ColorBy::StarClass)
+                || self.mask.drawn() == Some(ColorBy::StarClass))
             && self.mask.draws_uninhabited()
             && !self.mask.hides_empty()
     }
@@ -2035,8 +2046,9 @@ mod tests {
         }
     }
 
-    /// Only a mask hiding colonies along political axes, drawn or not, the
-    /// uninhabited drawn and let through, draws as the unfiltered map does
+    /// Only a mask hiding colonies along political axes, drawn or not, or
+    /// stars along star class while it is drawn, the uninhabited drawn and
+    /// let through, draws as the unfiltered map does
     ///
     /// Anything else admitted has to be found anywhere in a cell's magnitude
     /// order. Taken for thinning, a faction's systems or a hidden sky would
@@ -2044,7 +2056,7 @@ mod tests {
     /// whole and claims every point of them, which hiding No state at thirty
     /// thousand light years back took from 25 ms frames to over 450.
     #[test]
-    fn only_a_mask_hiding_colonies_thins_the_sky() {
+    fn only_a_mask_hiding_what_the_draw_samples_thins_the_sky() {
         let no_state = || {
             let mut filters = Filters::default();
             filters.edit_mask(|mask| {
@@ -2108,9 +2120,9 @@ mod tests {
                 false,
             ),
             (
-                "M stars hidden",
+                "M stars hidden, colored by star class",
                 {
-                    let mut filters = Filters::default();
+                    let mut filters = no_state();
                     filters.edit_mask(|mask| {
                         mask.draw(Some(ColorBy::StarClass));
                         mask.toggle(
@@ -2120,12 +2132,28 @@ mod tests {
                     });
                     filters
                 },
+                true,
+            ),
+            (
+                "M stars hidden, while only colonies are drawn",
+                {
+                    let mut filters = no_state();
+                    filters.edit_mask(|mask| {
+                        mask.draw(Some(ColorBy::StarClass));
+                        mask.toggle(
+                            ColorBy::StarClass,
+                            &[usize::from(StarKind::M.code())],
+                        );
+                        mask.draw_uninhabited(false);
+                    });
+                    filters
+                },
                 false,
             ),
         ];
         for (asked, filters, thins) in cases {
             assert!(filters.asking(), "{asked} asked nothing");
-            assert_eq!(filters.only_thins_colonies(), thins, "{asked}");
+            assert_eq!(filters.only_thins(), thins, "{asked}");
         }
 
         // Along a political axis with nothing hidden there is nothing to thin,
@@ -2133,7 +2161,7 @@ mod tests {
         let mut colored = Filters::default();
         colored.edit_mask(|mask| mask.draw(Some(ColorBy::State)));
         assert!(!colored.asking());
-        assert!(!colored.only_thins_colonies(), "nothing hidden");
+        assert!(!colored.only_thins(), "nothing hidden");
     }
 
     /// A question nobody has asked is answered by nothing at all
