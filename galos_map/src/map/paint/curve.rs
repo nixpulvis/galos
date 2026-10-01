@@ -8,12 +8,14 @@
 //! over the galaxy through one curve:
 //!
 //! - **The dial** ([`FieldExposure`]) is a gain, in stops, on the light
-//!   before the curve reads it, and **the tilt** ([`RESTS_AT`]) a gain the
-//!   reach sets, so the frame holds its level as the camera comes in.
+//!   before the curve reads it, and **the tilt** ([`EVEN_AT`]) a gain the
+//!   reach sets on the field alone, so the field holds its level under the
+//!   marks as the camera comes in and goes out.
 //! - **The curve** ([`FieldCurve`]) takes a pixel's light, in stops over an
 //!   average system's mark ([`Gains::average`]), to a display level: a
-//!   monotone cubic through knots the settings drag up and down, linear in
-//!   the light under the first and held over the last.
+//!   cubic through knots the settings drag up and down, running one way
+//!   only between each two of them, linear in the light under the first and
+//!   held over the last.
 //! - **The dim** is spent after it, on the excluded target as a whole, so a
 //!   filter dims the field as far as it dims a mark.
 //!
@@ -143,9 +145,11 @@ pub(crate) const STOPS: [f32; KNOTS] = [-8., -4., 0., 4., 8., 12., 16.];
 /// The field's curve: a display level for every light the field lays
 ///
 /// One level a knot, sRGB-encoded so equal steps are equal to the eye, at
-/// [`STOPS`]. Between the knots a monotone cubic, so dragging one bends the
-/// curve smoothly through it and never turns it back on itself; under the
-/// first, linear in the light down to black; over the last, held.
+/// [`STOPS`], each anywhere in the display's range. Between the knots a
+/// cubic that runs one way only from one knot to the next, so dragging one
+/// bends the curve smoothly through it — past its neighbours too, to a peak
+/// or a trough — and never overshoots a knot; under the first, linear in
+/// the light down to black; over the last, held.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct FieldCurve {
     pub levels: [f32; KNOTS],
@@ -158,12 +162,12 @@ impl Default for FieldCurve {
 }
 
 impl FieldCurve {
-    /// Move knot `knot` to `level`, held between its neighbours so the curve
-    /// never falls as the light rises.
+    /// Move knot `knot` to `level`, held to the display's range and to
+    /// nothing else: a knot may be dragged past its neighbours, and the
+    /// curve then falls between them, which is a reading the curve is free
+    /// to give — a band of the field picked out, or a crowd let fall away.
     pub(crate) fn set(&mut self, knot: usize, level: f32) {
-        let low = if knot == 0 { 0. } else { self.levels[knot - 1] };
-        let high = if knot + 1 == KNOTS { 1. } else { self.levels[knot + 1] };
-        self.levels[knot] = level.clamp(low, high);
+        self.levels[knot] = level.clamp(0., 1.);
     }
 
     /// The curve's slope through each knot, in levels a stop
@@ -171,7 +175,10 @@ impl FieldCurve {
     /// Fritsch and Carlson's: the mean of the two secants either side, nought
     /// where they disagree in sign or either is flat, and held inside the
     /// circle of radius three that keeps a cubic from overshooting its knots.
-    /// Nought at the last knot, so the curve comes into its hold flat.
+    /// So each span runs one way only, from one knot's level to the next's,
+    /// and a knot dragged past its neighbour is a peak or a trough the curve
+    /// turns flat at rather than a wiggle that overshoots it. Nought at the
+    /// last knot, so the curve comes into its hold flat.
     fn tangents(&self) -> [f32; KNOTS] {
         let mut secant = [0f32; KNOTS - 1];
         for k in 0..KNOTS - 1 {
@@ -582,29 +589,40 @@ fn set_curve(
 mod tests {
     use super::*;
 
-    /// The curve never falls as the light rises, wherever its knots are
-    /// dragged: a cubic through knots that rise can still dip between two of
-    /// them, and a field drawn through a dip is a contour of black across
-    /// the brightest crowd.
+    /// Every span of the curve runs one way only, from one knot's level to
+    /// the next's, wherever the knots are dragged — a peak and a trough
+    /// included. A cubic through knots can overshoot them, and a field drawn
+    /// through an overshoot is a band brighter or darker than any knot asked
+    /// for, past white or under black at the ends of the range.
     #[test]
-    fn the_curve_never_turns_back() {
+    fn every_span_runs_between_its_knots() {
         let curves = [
             FieldCurve::default(),
             FieldCurve { levels: [0., 0., 0.9, 0.9, 0.91, 1., 1.] },
             FieldCurve { levels: [0.3, 0.31, 0.32, 0.95, 0.96, 0.97, 0.98] },
             FieldCurve { levels: [0., 0.01, 0.02, 0.03, 0.04, 0.05, 1.] },
+            FieldCurve { levels: [0.1, 0.9, 0.05, 1., 0., 0.6, 0.2] },
+            FieldCurve { levels: [1., 0.8, 0.6, 0.4, 0.2, 0.1, 0.] },
         ];
         for curve in curves {
-            let mut last = f32::MIN;
-            for step in 0..=2000 {
-                let stops = -20. + step as f32 * 0.02;
-                let level = curve.level(stops);
-                assert!(
-                    level >= last - 1e-6,
-                    "{curve:?} fell from {last} to {level} at {stops} stops"
-                );
-                assert!((0. ..=1.).contains(&level), "{level} at {stops}");
-                last = level;
+            for span in 0..KNOTS - 1 {
+                let (a, b) = (curve.levels[span], curve.levels[span + 1]);
+                let mut last = a;
+                for step in 0..=200 {
+                    let stops = STOPS[span]
+                        + (STOPS[span + 1] - STOPS[span]) * step as f32 / 200.;
+                    let level = curve.level(stops);
+                    assert!(
+                        level >= a.min(b) - 1e-5 && level <= a.max(b) + 1e-5,
+                        "{curve:?} left {a}..{b} for {level} at {stops} stops"
+                    );
+                    assert!(
+                        (level - last) * (b - a) >= -1e-5,
+                        "{curve:?} turned back from {last} to {level} at \
+                         {stops} stops"
+                    );
+                    last = level;
+                }
             }
         }
     }
@@ -653,14 +671,17 @@ mod tests {
         }
     }
 
-    /// A knot dragged past a neighbour is stopped at it
+    /// A knot drags past its neighbours either way, and is held only to the
+    /// display's range
     #[test]
-    fn a_knot_is_held_between_its_neighbours() {
+    fn a_knot_drags_past_its_neighbours() {
         let mut curve = FieldCurve::default();
         curve.set(3, 0.99);
-        assert_eq!(curve.levels[3], curve.levels[4]);
-        curve.set(3, -1.);
-        assert_eq!(curve.levels[3], curve.levels[2]);
+        assert_eq!(curve.levels[3], 0.99);
+        assert!(curve.levels[3] > curve.levels[4]);
+        curve.set(3, 0.01);
+        assert_eq!(curve.levels[3], 0.01);
+        assert!(curve.levels[3] < curve.levels[2]);
         curve.set(0, -1.);
         assert_eq!(curve.levels[0], 0.);
         curve.set(KNOTS - 1, 2.);

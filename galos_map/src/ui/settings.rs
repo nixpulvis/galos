@@ -916,9 +916,9 @@ const CURVE_SPAN: f32 = 16.;
 /// The field's curve as a graph, its knots dragged up and down
 ///
 /// Stops of light over an average system's mark across, display level up,
-/// with that mark itself ruled. A knot is held between its neighbours as it is
-/// dragged ([`FieldCurve::set`]), so the curve can be bent and never turned
-/// back. Whether anything moved.
+/// with that mark itself ruled. A knot is dragged anywhere in the display's
+/// range, past its neighbours too ([`FieldCurve::set`]). Whether anything
+/// moved.
 fn curve_editor(ui: &mut Ui, curve: &mut FieldCurve) -> bool {
     use crate::map::paint::curve::STOPS;
     let width = ui.available_width();
