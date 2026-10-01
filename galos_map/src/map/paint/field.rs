@@ -599,7 +599,18 @@ pub(crate) fn build_field(
     // would say the density with size — which is the one thing the map must
     // say with *how many marks there are*. The crowd behind it is
     // [`crate::map::paint::glow`]'s to draw.
-    for blob in &blobs.0 {
+    //
+    // `GALOS_NO_BLOBS=1` leaves them out, which is the bisect for the
+    // lattice a wide view shows in the dense disc: a filled cell's centroid
+    // is about its box centre and the merged cells under one patch of sky are
+    // one level, so their marks stand on a regular grid. If the grid goes
+    // with this set, it is theirs and not the glow's. See `TODO.md`.
+    let blobs: &[crate::map::galaxy::walk::Blob] =
+        match std::env::var("GALOS_NO_BLOBS") {
+            Ok(_) => &[],
+            Err(_) => &blobs.0,
+        };
+    for blob in blobs {
         let position = DVec3::from(blob.at);
         let Some(at) = screen_position(orbit, cot_half_fov, viewport, position)
         else {

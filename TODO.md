@@ -105,6 +105,43 @@ Measured over `.index/full`; see the commit that queued the payload reads.
 - 71 clippy warnings in galos_map, most of them the argument counts above
   and complex types; a few collapsible `if`s.
 
+## Merged marks stand on a lattice
+
+A wide view shows a regular grid of specks over the dense disc. The
+suspect is the merged marks, not the glow: a cell whose contents fit in
+`MERGE_PX` (4 px) is drawn as one `SMALLEST` (0.75 px) mark at its count
+centroid (`paint/field.rs`, the blob loop). A filled cell's centroid is about
+its box centre, and the merged cells under one patch of sky are one level, so
+the marks sit on a lattice 2–4 px apart. The glow's lattice is at `SPLIT_PX`
+with sigma half a cell, a 1.4 % ripple, and is not it.
+
+- **Confirm first.** `GALOS_NO_BLOBS=1` leaves the blobs out of the field. If
+  the grid goes, it is theirs.
+- **Draw a blob at the system it stands for**, not the centroid. `blobs.rs`
+  already says a merged mark is its brightest system, the head of the cell's
+  own payload, since slices are magnitude-ordered. Jittering the centroid was
+  ruled out: it draws a mark where no system is.
+  - Index format 5: the `Cell` record gains the head's position, `[f32; 3]`,
+    12 bytes on 262 (~4.6 %, ~2.5 MB on `.index/full`'s 204,466 cells).
+    `f32` is thousandths of a light year at galaxy coordinates.
+  - No per-frame cost: `index.bin` is read whole, and `BlobRef::at` is
+    already carried off the aggregate; it takes its value from the new field.
+    The merge test and the walk's binning keep the centroid.
+  - A migration step, not a rebuild, as 4 was: read each cell's payload head.
+    Bump `INDEX_VERSION`, add the step to `ops::upgrade::rewrite`.
+  - The build and incremental ingest (`accumulate/merge`) set it wherever a
+    cell's slice is written, or it goes stale.
+  - A split hands over in place: the parent's slice draws as marks once it
+    splits, and its head first, so the speck does not move.
+  - By population a blob stands for the busiest system instead. Not carried;
+    another 12 bytes a cell, and blobs are drawn the same there either way.
+- **Then maybe antialias the speck.** At a 0.75 px radius a mark lights one
+  pixel or four depending on its sub-pixel phase. A quad of at least ~1 px
+  with brightness scaled by `(SMALLEST / r)²` keeps the light and loses the
+  shimmer. After the lattice is gone, to see whether it is still wanted.
+- Not wanted: fading blobs where they tile and leaving the density to the
+  glow; the number of marks is what says the density.
+
 ## Smoother while moving
 
 Measured with Tracy over `.index/full` in the running map, after systems
