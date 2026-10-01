@@ -64,6 +64,13 @@ const CHIP: f32 = 13.;
 /// is not colored, nor where the view cannot ask what it hides
 /// ([`Mask::suspended`]), the coloring having no say there. The systems
 /// nobody lives in are the color row's chip alone, being a value of no axis.
+///
+/// Keyed by `place` in the bar's one column, as every other row of it is,
+/// and not by its axis: the rows come and go as the axes stop hiding
+/// things, and the row that moves up into one that went must take its ids
+/// along with its rectangle. See [`row_of`]. Not in a `push_id` of its own
+/// either, which would register a widget at the row's rect under whatever
+/// it was salted with.
 pub(super) fn color_row(
     ui: &mut Ui,
     filters: &Filters,
@@ -71,11 +78,15 @@ pub(super) fn color_row(
     drawn: bool,
     held: Option<&Held>,
     popover: bool,
+    place: &mut usize,
 ) -> (Option<Keyed>, bool) {
     let mask = filters.mask();
     let mut asked = None;
     let height = ui.text_style_height(&egui::TextStyle::Body)
         + (ROW_PADDING + ROW_MARGIN) * 2.;
+    // By place in the bar, as the rows below it are keyed. See [`row_of`].
+    let of = ("bar-row", *place);
+    *place += 1;
 
     // The whole row opens the key, not only its name. Answered before what
     // stands in it, so the chips and the close, answered over it, keep their
@@ -86,7 +97,7 @@ pub(super) fn color_row(
             ui.cursor().min,
             egui::vec2(ui.available_width(), height),
         ),
-        ui.id().with("color-row"),
+        ui.id().with(of),
         match opens {
             true => egui::Sense::click(),
             false => egui::Sense::hover(),
@@ -98,66 +109,86 @@ pub(super) fn color_row(
     };
     let opening = whole.clicked();
 
-    let row = ui.horizontal(|ui| {
-        ui.set_min_height(height);
-        ui.add_space(ROW_PADDING);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(axis.name().to_uppercase()).small().weak(),
-            )
-            .selectable(false),
-        );
-        // Answered over the chip once painted, the swatch itself only
-        // sensing the pointer.
-        let chip = |ui: &mut Ui, swatch: Swatch, id| {
-            let painted = swatch.paint(ui, CHIP);
-            ui.interact(painted.rect, ui.id().with(id), egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-        };
-        for (place, tier) in held_tiers(axis, held).iter().enumerate() {
-            if chip(
-                ui,
-                Swatch::of_tier(tier, axis, mask),
-                ("color-chip", place),
-            ) {
-                asked = Some(Keyed::clicked(ui, tier.buckets()));
-            }
-        }
-        // Not where the map draws no system nobody lives in: the sky read as
-        // populations, and star class, which has none to set apart. The chip
-        // would toggle nothing. Nor on another axis's row, the flag being
-        // the color row's.
-        if mask.draws_uninhabited() && mask.carries_uninhabited(axis) {
-            ui.add_space(ui.spacing().item_spacing.x);
-            if chip(ui, Swatch::uninhabited(mask), ("color-chip", usize::MAX)) {
-                asked = Some(Keyed::Uninhabited);
-            }
-        }
-        let (said, hiding) = color_summary(axis, mask, held);
-        // The mark that shows everything again, where anything is hidden:
-        // the close every filter row ends with, standing where theirs do.
-        let close = hiding.then(|| lay_out_close(ui));
-        ui.with_layout(
-            egui::Layout::right_to_left(egui::Align::Center),
-            |ui| {
+    // What stands in the row in a `Ui` of its own, under the row's id rather
+    // than the count it was drawn at: a horizontal's child, and the labels in
+    // it, are otherwise numbered by how many widgets came before, so a row
+    // above going away renumbers them inside a rect that kept its place,
+    // which egui warns of. The scope's own rect is the row's, keyed by place.
+    let row = ui.scope_builder(
+        egui::UiBuilder::new().id(ui.id().with((of, "color-row"))),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(height);
                 ui.add_space(ROW_PADDING);
-                if let Some(close) = &close {
-                    let gap = ui.spacing().item_spacing.x;
-                    ui.add_space(buttons_width(close, gap));
-                }
-                let text = egui::RichText::new(said);
-                let text = match hiding && !mask.suspended(axis) {
-                    true => text.color(attention(ui)),
-                    false => text.weak(),
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(axis.name().to_uppercase())
+                            .small()
+                            .weak(),
+                    )
+                    .selectable(false),
+                );
+                // Answered over the chip once painted, the swatch itself only
+                // sensing the pointer.
+                let chip = |ui: &mut Ui, swatch: Swatch, id| {
+                    let painted = swatch.paint(ui, CHIP);
+                    ui.interact(
+                        painted.rect,
+                        ui.id().with((of, "color-chip", id)),
+                        egui::Sense::click(),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
                 };
-                ui.add(egui::Label::new(text).selectable(false));
-            },
-        );
-        close
-    });
+                for (which, tier) in held_tiers(axis, held).iter().enumerate() {
+                    if chip(ui, Swatch::of_tier(tier, axis, mask), which) {
+                        asked = Some(Keyed::clicked(ui, tier.buckets()));
+                    }
+                }
+                // Not where the map draws no system nobody lives in: the sky read as
+                // populations, and star class, which has none to set apart. The chip
+                // would toggle nothing. Nor on another axis's row, the flag being
+                // the color row's.
+                if mask.draws_uninhabited() && mask.carries_uninhabited(axis) {
+                    ui.add_space(ui.spacing().item_spacing.x);
+                    if chip(ui, Swatch::uninhabited(mask), usize::MAX) {
+                        asked = Some(Keyed::Uninhabited);
+                    }
+                }
+                let (said, hiding) = color_summary(axis, mask, held);
+                // The mark that shows everything again, where anything is hidden:
+                // the close every filter row ends with, standing where theirs do.
+                let close = hiding.then(|| lay_out_close(ui));
+                // Keyed by the row too: it comes after the chips, and an axis with
+                // another number of them would number it, and the label in it, apart
+                // from the row that stood here before at the same right-hand rect.
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .id(ui.id().with((of, "color-summary")))
+                        .layout(egui::Layout::right_to_left(
+                            egui::Align::Center,
+                        )),
+                    |ui| {
+                        ui.add_space(ROW_PADDING);
+                        if let Some(close) = &close {
+                            let gap = ui.spacing().item_spacing.x;
+                            ui.add_space(buttons_width(close, gap));
+                        }
+                        let text = egui::RichText::new(said);
+                        let text = match hiding && !mask.suspended(axis) {
+                            true => text.color(attention(ui)),
+                            false => text.weak(),
+                        };
+                        ui.add(egui::Label::new(text).selectable(false));
+                    },
+                );
+                close
+            })
+            .inner
+        },
+    );
     if let Some(close) = row.inner
-        && place_buttons(ui, row.response.rect, close, "color-row")
+        && place_buttons(ui, row.response.rect, close, of)
             .close
             .on_hover_text("Show every color again")
             .clicked()
@@ -168,9 +199,13 @@ pub(super) fn color_row(
     // Under the row, and in front of whatever the rows below it hold. Not
     // interactable, so a press lands on what it covers: it is a caption, and
     // it goes the moment the pointer leaves the row for what is under it.
+    //
+    // Keyed by axis rather than by place, being a layer of its own and not a
+    // row of the column: each legend keeps its own size, and a row taking
+    // another's place does not take over a legend drawn for another axis.
     let rect = row.response.rect;
     if popover && ui.rect_contains_pointer(rect) {
-        egui::Area::new(ui.id().with("color-legend"))
+        egui::Area::new(ui.id().with(("color-legend", axis.name())))
             .order(egui::Order::Tooltip)
             .fixed_pos(rect.left_bottom())
             .interactable(false)
@@ -1492,6 +1527,7 @@ mod tests {
                     true,
                     None,
                     false,
+                    &mut 0,
                 );
             });
             (answered, output)
@@ -1555,7 +1591,8 @@ mod tests {
         let pass = |filters: &Filters, axis, input| {
             let mut answered = (None, false);
             let output = ctx.run_ui(input, |ui| {
-                answered = color_row(ui, filters, axis, false, None, false);
+                answered =
+                    color_row(ui, filters, axis, false, None, false, &mut 0);
             });
             (answered, output)
         };

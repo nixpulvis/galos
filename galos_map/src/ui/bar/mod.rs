@@ -8,7 +8,8 @@
 
 use crate::map::bodies::Contents;
 use crate::map::camera::MoveCamera;
-use crate::map::filter::{Filter, Lookup, LookupNote};
+use crate::map::filter::mask::Held;
+use crate::map::filter::{Filter, Filters, Lookup, LookupNote};
 use crate::map::galaxy::spawn::ColorBy;
 use crate::map::route::frontier::Frontiers;
 use crate::map::route::{RouteSettings, Router};
@@ -596,57 +597,20 @@ pub(super) fn state_bar(
                     // rectangle that kept its place, which is what egui reads
                     // as a widget taking another's state.
                     let mut place = 0;
-                    // The colors first, drawn whether or not the form is out:
-                    // what the map is colored by is the first thing it takes
-                    // to read it, and the one row always standing. Off the
-                    // live filters rather than a held copy, being clicked and
-                    // never dragged. Its mini legend only while the key it
-                    // stands for is not on screen to say the same. Not at all
-                    // while the map is not colored, the realistic view having
-                    // no color to name.
-                    //
-                    // Then a row for each other axis hiding something, in the
-                    // same chips: what it hides is still hidden, and this is
-                    // what says so. Clicked, it asks for the map colored by
-                    // it, which brings its key up as the color row's. Its mini
-                    // legend whether or not the form is out, the key on
-                    // screen being another axis's.
-                    let colored = filter
-                        .active
-                        .mask()
-                        .drawn()
-                        .map(|_| *filter.key.color_by);
+                    // The colors first, drawn whether or not the form is out,
+                    // and counted in the one column with the rows under them.
+                    // See [`color_rows`].
                     let held = filter.key.counted().0;
-                    let others = ColorBy::ALL
-                        .into_iter()
-                        .filter(move |axis| colored != Some(*axis));
-                    for axis in colored.into_iter().chain(others) {
-                        let drawn = colored == Some(axis);
-                        if !drawn && !filter.active.mask().hiding(axis) {
-                            continue;
-                        }
-                        let (keyed, keying) = ui
-                            .push_id(axis.name(), |ui| {
-                                color_row(
-                                    ui,
-                                    &filter.active,
-                                    axis,
-                                    drawn,
-                                    held.as_ref(),
-                                    !drawn || !filter.key.state.out,
-                                )
-                            })
-                            .inner;
-                        if let Some(keyed) = keyed {
-                            keyed.apply(
-                                filter.active.bypass_change_detection(),
-                                axis,
-                            );
-                        }
-                        if keying {
-                            filter.key.color_by.set_if_neq(axis);
-                            filter.key.state.opening = true;
-                        }
+                    if let Some(axis) = color_rows(
+                        ui,
+                        filter.active.bypass_change_detection(),
+                        *filter.key.color_by,
+                        held.as_ref(),
+                        filter.key.state.out,
+                        &mut place,
+                    ) {
+                        filter.key.color_by.set_if_neq(axis);
+                        filter.key.state.opening = true;
                     }
                     // Then the filters, and the selection under them. Both
                     // stand in the one column, so whichever is on top decides
@@ -784,6 +748,66 @@ pub(super) fn state_bar(
     (rows.response.rect, rows.inner)
 }
 
+/// The color row, and a row under it for each other axis hiding something
+///
+/// The color row first, drawn whether or not the form is out: what the map
+/// is colored by is the first thing it takes to read it, and the one row
+/// always standing. Off the live filters rather than a held copy, being
+/// clicked and never dragged. Its mini legend only while the key it stands
+/// for is not on screen to say the same, which `key_out` says. Not at all
+/// while the map is not colored, the realistic view having no color to name.
+///
+/// Then a row for each other axis hiding something, in the same chips: what
+/// it hides is still hidden, and this is what says so. Clicked, it asks for
+/// the map colored by it, which brings its key up as the color row's. Its
+/// mini legend whether or not the form is out, the key on screen being
+/// another axis's.
+///
+/// Counted on `place` with the rows under them, and keyed by it rather than
+/// by axis. These rows come and go more than any: showing an axis whole
+/// takes its row away, and every row under it moves up into the rectangle
+/// it was drawn in. Keyed by axis, the row that moved would stand at that
+/// rectangle under a fresh id with the old one gone, which is what egui
+/// reads as a widget taking another's state. See [`rows::row_of`].
+///
+/// Answers the axis a row asked the map be colored by, for the caller to
+/// set and open the key on.
+fn color_rows(
+    ui: &mut Ui,
+    filters: &mut Filters,
+    color_by: ColorBy,
+    held: Option<&Held>,
+    key_out: bool,
+    place: &mut usize,
+) -> Option<ColorBy> {
+    let colored = filters.mask().drawn().map(|_| color_by);
+    let others =
+        ColorBy::ALL.into_iter().filter(move |axis| colored != Some(*axis));
+    let mut keying = None;
+    for axis in colored.into_iter().chain(others) {
+        let drawn = colored == Some(axis);
+        if !drawn && !filters.mask().hiding(axis) {
+            continue;
+        }
+        let (keyed, asked) = color_row(
+            ui,
+            filters,
+            axis,
+            drawn,
+            held,
+            !drawn || !key_out,
+            place,
+        );
+        if let Some(keyed) = keyed {
+            keyed.apply(filters, axis);
+        }
+        if asked {
+            keying = Some(axis);
+        }
+    }
+    keying
+}
+
 /// Let go of the box, the press that shut the form having not been a click
 ///
 /// The form is shut by a press. Egui lets go of the focus on a click, which is
@@ -896,7 +920,6 @@ pub(super) fn ask_box(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::filter::Filters;
 
     use crate::testing::words;
     use crate::ui::bar::filter::faction_list;
@@ -1244,6 +1267,50 @@ mod tests {
         let said = crate::testing::between_passes(
             draw_bar(&[], &["SOL", "BARNARD", "WOLF 359"], 2),
             draw_bar(&[], &["SOL", "BARNARD"], 2),
+        );
+
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// Showing one axis whole does not hand its row's place to the next
+    ///
+    /// Each axis hiding something stands as a row under the color row, so
+    /// showing one whole takes its row out of the middle of the column and
+    /// every row under it moves up into the rectangle it was drawn in. Keyed
+    /// by axis, the row that moved stood there under a fresh id with the old
+    /// one gone.
+    // Debug only: egui compiles `warn_if_rect_changes_id` out of a
+    // release build, so there is nothing to hear. See
+    // [`crate::testing::between_passes`].
+    #[cfg(debug_assertions)]
+    #[test]
+    fn showing_an_axis_whole_does_not_change_the_row_ids_under_it() {
+        let draw = |hiding: &'static [ColorBy]| {
+            move |ui: &mut Ui| {
+                let mut filters = Filters::default();
+                filters.edit_mask(|mask| {
+                    mask.draw(Some(ColorBy::State));
+                    for axis in hiding {
+                        mask.set(*axis, [1], true);
+                    }
+                });
+                filters.add(crate::ui::testing::faction(1));
+                let mut place = 0;
+                color_rows(
+                    ui,
+                    &mut filters,
+                    ColorBy::State,
+                    None,
+                    false,
+                    &mut place,
+                );
+                applied(ui, &mut filters, &mut Panels::default(), &mut place);
+            }
+        };
+
+        let said = crate::testing::between_passes(
+            draw(&[ColorBy::Security, ColorBy::StarClass]),
+            draw(&[ColorBy::StarClass]),
         );
 
         assert!(said.is_empty(), "{said:?}");
