@@ -1470,9 +1470,18 @@ fn claim_admitted(
 /// turning does not. The plan is *not* in it — which cells are marked
 /// decides only what each mark is booked against. See [`Crowded::about`]
 /// and [`book_populated`].
+///
+/// Whether the excluded are drawn at all is in it too: below the dim
+/// they are not chosen, and a choice left standing across the slider
+/// held them in the draw where nothing would build or evict them — the
+/// pass offering them again every frame and never settling — or, the
+/// other way, left them off the map until the camera moved. The table
+/// the choice is made from is not a value worth keeping here; a new one
+/// is caught by its change mark instead (see [`reconcile`]).
 #[derive(Default, PartialEq)]
 pub(crate) struct Against {
     filters: u32,
+    fill: bool,
     bubble: u64,
     about: [u64; 3],
     pitch: u64,
@@ -1560,9 +1569,10 @@ struct Settled {
 /// What the populated draw settles on: every mark it will make
 ///
 /// **Once a view, and not once a frame.** What this answers turns on
-/// the filters and on where the view is centred — not on the plan, and
-/// not on which way the camera is pointed, the lattice being reckoned
-/// about the centre (see [`Crowded::about`]). On a still view none of
+/// the filters, the dim, the table and where the view is centred — see
+/// [`Against`] — not on the plan, and not on which way the camera is
+/// pointed, the lattice being reckoned about the centre (see
+/// [`Crowded::about`]). On a still view none of
 /// it moves, and on a turning one none of it moves either, while the
 /// answer itself is a hundred and fifty thousand systems weighed
 /// against a lattice: measured over `.index/full` with the reach at
@@ -1571,6 +1581,16 @@ struct Settled {
 ///
 /// The cell each mark is booked against is *not* settled here, that one
 /// being a question about the plan; see [`book_populated`].
+///
+/// **What the filters admit claims the sky first.** Taken busiest first
+/// whatever the filters said, the excluded — busier, in the core, than
+/// the faction asked for — took the patches and the ceiling, and the
+/// admitted there were left to the field while dimmed marks of what
+/// nobody asked for stood in their place. So the admitted are offered
+/// the lattice and the ceiling first, and the excluded, still busiest
+/// first, only what they leave — and only while they are drawn at all
+/// (`fill`). The same order [`busiest_first`] and [`claim_admitted`]
+/// keep, and for the same reason.
 fn choose_populated(
     cells: &crate::map::galaxy::populated::PopulatedOrder,
     populated: &Populated,
@@ -1599,6 +1619,10 @@ fn choose_populated(
     // has nothing to do with cells, so there is nothing for the cells to
     // decide: the busiest are offered first and the sky settles what
     // fits.
+    //
+    // The excluded are put by as they are met, in that same order, for a
+    // second turn at what the admitted leave.
+    let mut excluded = Vec::new();
     for stands in cells.order() {
         if chosen.len() >= ceiling {
             break;
@@ -1620,9 +1644,20 @@ fn choose_populated(
                 ),
                 now,
             )
-            && !fill
         {
+            if fill {
+                excluded.push(stands);
+            }
             continue;
+        }
+        if !crowded.claim(stands.at) {
+            continue;
+        }
+        chosen.push((stands.address, stands.at, stands.deepest));
+    }
+    for stands in excluded {
+        if chosen.len() >= ceiling {
+            break;
         }
         if !crowded.claim(stands.at) {
             continue;
@@ -2021,6 +2056,7 @@ pub(crate) fn reconcile(
     let under = ClaimedUnder {
         against: Against {
             filters: filtering.filters.revision(),
+            fill,
             bubble: bubble.unwrap_or(f64::INFINITY).to_bits(),
             about: orbit.center().to_array().map(f64::to_bits),
             pitch: view.pixels_per_radian().to_bits(),
@@ -2420,19 +2456,22 @@ pub(crate) fn reconcile(
     // resident table rather than out of any payload.
     //
     // **Chosen once a plan.** What is chosen turns on the plan, the
-    // filters and where the eye stands — see [`Against`] — and a still
-    // view moves none of them; what a frame owes is to mark them wanted
-    // and offer whatever is not drawn yet. Measured over `.index/full`
-    // with the reach at five hundred light years, choosing afresh every
-    // frame was 69 ms of every settled frame.
+    // filters, the dim, the table and where the eye stands — see
+    // [`Against`] — and a still view moves none of them; what a frame owes
+    // is to mark them wanted and offer whatever is not drawn yet. Measured
+    // over `.index/full` with the reach at five hundred light years,
+    // choosing afresh every frame was 69 ms of every settled frame.
     if from_the_table {
         let key = Against {
             filters: filtering.filters.revision(),
+            fill,
             bubble: bubble.unwrap_or(f64::INFINITY).to_bits(),
             about: orbit.center().to_array().map(f64::to_bits),
             pitch: view.pixels_per_radian().to_bits(),
         };
-        let afresh = choice.against != key;
+        let afresh = choice.against != key
+            || populated.is_changed()
+            || populated_order.is_changed();
         if afresh {
             choice.against = key;
             choice.chosen = choose_populated(
@@ -2566,13 +2605,31 @@ pub(crate) fn reconcile(
     // reach is hidden by [`crate::map::galaxy::visibility`] and the line is cut
     // back to it by [`crate::map::route::trim`]; what this settles is
     // that the stop is there to be reached at all.
+    //
+    // **Below the dim, a stop the filters exclude is not wanted either.**
+    // The mask and a span narrow a route's stops as they narrow anything,
+    // and a stop built from its name has no update time for a recency to
+    // admit. [`crate::map::galaxy::spawn::spawn_systems`] refuses every one
+    // of those, so offered anyway each came back the next pass, kept the
+    // pass from settling and ran it whole every frame the route was up —
+    // and one already standing was held here against the dim's own rule
+    // that the excluded leave the map. Asked as spawn asks it, of the
+    // system as it would be built or as it stands.
     for &address in &routed {
         match existing.get(address) {
             Some(entity) => {
-                wanted_by.insert(entity);
+                let admitted = || {
+                    systems.get(entity).is_ok_and(|(_, system, _)| {
+                        asked_for.admit(system, wall)
+                    })
+                };
+                if fill || admitted() {
+                    wanted_by.insert(entity);
+                }
             }
             None => {
                 if let Some(system) = System::find(address, &populated, &names)
+                    && (fill || asked_for.admit(&system, wall))
                 {
                     pending.push(system, true, true, now);
                     wanting = true;
@@ -4280,6 +4337,234 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             0,
             "a cell that admits nothing was offered whole"
+        );
+    }
+
+    /// A populated table of `(address, at, population, factions)` rows
+    fn peopled_table(rows: &[(i64, [f64; 3], u64, Vec<i32>)]) -> Populated {
+        use galos_index::records::PopulatedSystem;
+
+        Populated(std::sync::Arc::new(
+            rows.iter()
+                .map(|(address, at, population, factions)| {
+                    (
+                        *address,
+                        PopulatedSystem {
+                            address: *address,
+                            name: format!("Home {address}").into(),
+                            position: at.map(|v| v as f32),
+                            population: *population,
+                            security: None,
+                            government: None,
+                            allegiance: None,
+                            primary_economy: None,
+                            secondary_economy: None,
+                            factions: factions.clone(),
+                            body_count: None,
+                            non_body_count: None,
+                            state: None,
+                            power: None,
+                            powerplay_state: None,
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        ))
+    }
+
+    /// A world read as populations over the rows of [`peopled_table`],
+    /// indexed where they stand and every cell of the index held and marked,
+    /// with one entity already standing for each row
+    fn peopled(rows: &[(i64, [f64; 3], u64, Vec<i32>)]) -> App {
+        use galos_index::prelude::{BuildParams, Snapshot};
+
+        let inputs: Vec<galos_index::prelude::System> = rows
+            .iter()
+            .map(|(address, at, ..)| galos_index::prelude::System {
+                id64: *address as u64,
+                position: *at,
+                absolute_magnitude: *address as f64,
+                temperature: 5000.,
+                age_bucket: 0,
+                updated_at: 0,
+                kind: galos_index::prelude::StarKind::G,
+            })
+            .collect();
+        let built = Snapshot::build(&inputs, &BuildParams::default());
+        let mut app = walking();
+        app.insert_resource(crate::map::index::ResidentIndex(
+            built.index.clone(),
+        ));
+        holding(&mut app, &built);
+        app.insert_resource(peopled_table(rows));
+        app.insert_resource(ScalePopulation(true));
+        for (address, ..) in rows {
+            app.world_mut().spawn(crate::map::galaxy::tests::system(*address));
+        }
+        app
+    }
+
+    /// The populated choice is made again when the dim crosses zero or the
+    /// table changes, the camera standing still
+    ///
+    /// The reported trouble: the choice was keyed on the filters and the
+    /// view alone. Taken to zero, the excluded colonies chosen at the dim
+    /// stayed chosen, so the ones standing were held against the dim's own
+    /// rule and never left; brought back up, the excluded never came back
+    /// until the camera moved. A new table, with a colony the filter now
+    /// admits, was not read either.
+    #[test]
+    fn the_populated_choice_follows_the_dim_and_the_table() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+
+        let rows = |admitting: i64| -> Vec<(i64, [f64; 3], u64, Vec<i32>)> {
+            (1..=4)
+                .map(|address| {
+                    let factions = match address == admitting {
+                        true => vec![9_999],
+                        false => Vec::new(),
+                    };
+                    (address, placed(address), 1_000 * address as u64, factions)
+                })
+                .collect()
+        };
+        let mut app = peopled(&rows(0));
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Faction { id: 9_999, name: "Nobody".into() });
+        app.insert_resource(DimTo(0.5));
+        app.update();
+        let dimmed = dropping(&mut app);
+        assert!(dimmed.len() < 4, "nothing excluded was drawn at the dim");
+
+        app.insert_resource(DimTo(0.));
+        app.update();
+        assert_eq!(
+            dropping(&mut app),
+            vec![1, 2, 3, 4],
+            "below the dim, the excluded chosen above it were kept"
+        );
+
+        app.insert_resource(DimTo(0.5));
+        app.update();
+        assert_eq!(
+            dropping(&mut app),
+            dimmed,
+            "back above the dim, the excluded were not drawn again"
+        );
+
+        app.insert_resource(DimTo(0.));
+        app.update();
+        app.insert_resource(peopled_table(&rows(4)));
+        app.update();
+        assert_eq!(
+            dropping(&mut app),
+            vec![1, 2, 3],
+            "the colony a new table admits was not chosen"
+        );
+    }
+
+    /// What the filters admit claims the lattice before what they exclude
+    ///
+    /// Two colonies on one spot, which is one mark's worth of sky. The busier
+    /// is excluded and drawn dimmed; the quieter is the faction's. Taken
+    /// busiest first, the excluded claimed the spot and the faction's colony
+    /// was dropped from its own filter's map.
+    #[test]
+    fn the_admitted_claim_the_population_lattice_first() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+
+        let spot = placed(1);
+        let mut app =
+            peopled(&[(1, spot, 2_000, Vec::new()), (2, spot, 1_000, vec![7])]);
+        app.world_mut()
+            .resource_mut::<Filters>()
+            .add(Filter::Faction { id: 7, name: "Ours".into() });
+        app.insert_resource(DimTo(0.5));
+        app.update();
+        assert_eq!(
+            dropping(&mut app),
+            vec![1],
+            "the excluded colony took the admitted one's patch"
+        );
+    }
+
+    /// A route's stop the filters exclude is neither offered nor held below
+    /// the dim
+    ///
+    /// The reported trouble: every stop was offered whatever the filters
+    /// said. Below the dim `spawn_systems` refuses an excluded one, so it was
+    /// offered again every frame and the pass never settled; and one already
+    /// standing was held, where the dim says the excluded leave the map.
+    #[test]
+    fn a_route_stop_the_filters_exclude_leaves_the_map_below_the_dim() {
+        use crate::map::filter::{DimTo, Filter, Filters};
+        use elite_journal::prelude::Allegiance;
+        use galos_index::read::inhabited::Bucketed;
+        use galos_index::records::NameEntry;
+
+        let names = Names::reaching(
+            (1..=3)
+                .map(|address| NameEntry {
+                    address,
+                    name: format!("Stop {address}").into(),
+                    position: [address as f32 * 10., 0., 0.],
+                })
+                .collect(),
+            Vec::new(),
+        );
+        // The first stop is nobody's; the other two are the Federation's,
+        // which the key hides.
+        let mut populated = peopled_table(&[
+            (1, [10., 0., 0.], 1, Vec::new()),
+            (2, [20., 0., 0.], 1, Vec::new()),
+            (3, [30., 0., 0.], 1, Vec::new()),
+        ]);
+        {
+            let rows = std::sync::Arc::get_mut(&mut populated.0)
+                .expect("the table is not shared yet");
+            for address in [2, 3] {
+                rows.get_mut(&address).expect("a row").allegiance =
+                    Some(Allegiance::Federation);
+            }
+        }
+        // The second stop already standing, the other two never built.
+        let standing = System::find(2, &populated, &names).expect("a stop");
+
+        let mut app = walking();
+        app.insert_resource(names);
+        app.insert_resource(populated);
+        app.world_mut().spawn(standing);
+        let mut filters = app.world_mut().resource_mut::<Filters>();
+        filters.add(Filter::Route {
+            label: "Stop 1 to Stop 3".into(),
+            systems: vec![1, 2, 3],
+            range: "10".into(),
+            trip: None,
+            drive: Drive::Unaided,
+            how: Routing::default(),
+            tune: Tuning::default(),
+        });
+        filters.edit_mask(|mask| {
+            mask.set(
+                ColorBy::Allegiance,
+                [Allegiance::bucket(Some(Allegiance::Federation))],
+                true,
+            )
+        });
+        app.insert_resource(DimTo(0.));
+
+        app.update();
+
+        assert_eq!(
+            dropping(&mut app),
+            vec![2],
+            "an excluded stop was held below the dim"
+        );
+        assert_eq!(
+            app.world().resource::<PendingSpawns>().queued(),
+            1,
+            "an excluded stop was offered below the dim"
         );
     }
 
