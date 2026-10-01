@@ -8,7 +8,7 @@
 //! in this cell*.
 //!
 //! **Without that the population scale drew the wrong sky.** A cell's
-//! payload is magnitude-ordered and read as a prefix sized for the mark
+//! payload is read as a prefix sized for the mark
 //! count, and one system in forty-four is populated, scattered anywhere
 //! through it — so picking the busiest out of the prefix picked the
 //! busiest of an arbitrary head of the cell. What that showed depended on
@@ -19,7 +19,7 @@
 //! two answers.
 //!
 //! `fetch`'s own doc had the rule and the population scale was not counted
-//! under it: *the filters promote systems out of magnitude order, so a
+//! under it: *the filters promote systems out of a payload's order, so a
 //! prefix is the one thing that cannot answer them*. Drawing by population
 //! is that same promotion.
 //!

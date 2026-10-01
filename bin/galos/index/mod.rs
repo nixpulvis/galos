@@ -164,8 +164,9 @@ pub(super) enum Command {
     /// what one run that had seen both feeds would hold.
     ///
     /// Both directories need the resume point beside them. Everything a
-    /// directory *serves* is a lossy projection — the payload downcasts
-    /// the magnitude, buckets the temperature and drops the age — so a
+    /// directory *serves* is a lossy projection — the photometry downcasts
+    /// the magnitude and buckets the temperature, the payload drops the
+    /// age — so a
     /// merge that read the directories rather than their resume points
     /// would coarsen every system it carried, and is refused instead.
     Merge {
@@ -224,14 +225,13 @@ pub(super) enum Command {
         bodies: bool,
     },
     /// Bring a directory's format forward, in place: its names chunks
-    /// folded into the mapped table, its payloads rewritten to the columns
-    /// this build reads, the star kinds counted into an index written
-    /// before its records had them, and the table itself brought to the
-    /// version this build writes.
+    /// folded into the mapped table, its tree raised again from the resume
+    /// point beside it where the format moved which systems a cell owns, and
+    /// the tables brought to the versions this build writes.
     ///
     /// One verb rather than three, because there is no order to choose
-    /// between: the chunks are older than the table, the table is read by
-    /// the payload rewrite, and a directory half forward is one the next
+    /// between: the chunks are older than the table, the table is carried
+    /// forward by the raise, and a directory half forward is one the next
     /// refusal names again. Idempotent, so running it on something already
     /// current costs a version read apiece.
     Migrate {
@@ -239,6 +239,10 @@ pub(super) enum Command {
         #[arg(short = 'i', long = "index", value_name = "DIR",
                env = "GALOS_INDEX", default_value = INDEX_DIR)]
         dir: PathBuf,
+        /// Its resume point, where `ingest --checkpoint` put it somewhere
+        /// other than `<DIR>.checkpoint`.
+        #[arg(long, value_name = "PATH")]
+        checkpoint: Option<PathBuf>,
     },
     /// Write the sector dictionary `galos_index::core::procedural` derives
     /// names through, learned from a built directory.
@@ -311,7 +315,9 @@ pub fn run(cli: Cli) -> ExitCode {
             sweep(&dir, bodies, apply, forced)
         }
         Command::Verify { dir, bodies } => verify(&dir, bodies),
-        Command::Migrate { dir } => migrate(&dir, forced),
+        Command::Migrate { dir, checkpoint } => {
+            migrate(&dir, checkpoint.as_deref(), forced)
+        }
         Command::Sectors { dir, out, force } => {
             sectors(&dir, out.as_deref(), force)
         }
@@ -747,60 +753,49 @@ fn size(bytes: u64) -> String {
 /// folded, a cell already columnar is left alone, `index.bin` is replaced
 /// once every cell is forward, and a table already at this version is not
 /// touched. The bodies, the sidecars and the tree's shape are unchanged.
-fn migrate(dir: &Path, forced: bool) {
+fn migrate(dir: &Path, checkpoint: Option<&Path>, forced: bool) {
     let lock = locked(dir, forced);
     if !fold_names(dir, &lock) {
         leave(Some(lock), 2);
     }
+    let checkpoint = galos::sink::index::Index::checkpoint(dir, checkpoint);
     let at = std::time::Instant::now();
-    // No stop flag of its own: a run cut short by a Ctrl-C leaves the
-    // directory in a state the next run takes up, `index.bin` being
-    // replaced only once every cell is forward.
+    // No stop flag of its own: a run cut short by a Ctrl-C leaves a
+    // directory with no index, which the next run raises again.
     let stop = || false;
     let mut said = |wrote: &galos_index::ops::upgrade::Rewrote| {
-        // The sweep first and the rewrite after it, which is the order they
-        // happen in: a line about cells while the scan record is still
-        // being read would be a line of zeroes.
-        match wrote.cells == 0 && wrote.kept == 0 {
-            true => {
-                eprint!("\r{} systems swept, {:.0?}", wrote.swept, at.elapsed())
-            }
-            false => eprint!(
-                "\r{} cells, {} systems, {} classed, {} already columnar, \
-                 {} counted for kinds, {:.0?}",
-                wrote.cells,
-                wrote.systems,
-                wrote.classed,
-                wrote.kept,
-                wrote.counted,
-                at.elapsed(),
-            ),
+        if wrote.systems == 0
+            && wrote.from < galos_index::codec::cells::format::INDEX_VERSION
+        {
+            eprintln!(
+                "index format version {}: raising the tree again from {}",
+                wrote.from,
+                checkpoint.display(),
+            );
         }
     };
 
     match galos_index::ops::upgrade::rewrite(
         dir,
+        &checkpoint,
         &galos::tables(),
         &stop,
         &mut said,
     ) {
         Ok(wrote) => {
-            eprintln!();
-            println!(
-                "{} cells rewritten, {} systems, {} of them classed, \
-                 {} already columnar, in {:.1?}",
-                wrote.cells,
-                wrote.systems,
-                wrote.classed,
-                wrote.kept,
-                at.elapsed(),
-            );
-            // Only where the index was written before it had star kinds.
-            if wrote.counted > 0 {
-                println!(
-                    "star kinds counted into the index off {} payloads",
-                    wrote.counted
-                );
+            match wrote.systems {
+                0 => println!(
+                    "the tree is already at version {}, in {:.1?}",
+                    wrote.from,
+                    at.elapsed(),
+                ),
+                systems => println!(
+                    "raised from version {} over {systems} systems into {} \
+                     cells, in {:.1?}",
+                    wrote.from,
+                    wrote.cells,
+                    at.elapsed(),
+                ),
             }
             // Only where there was a table to bring forward, which is a
             // directory built before its owner changed its shape.
@@ -810,7 +805,6 @@ fn migrate(dir: &Path, forced: bool) {
             names_forward(dir, &lock);
         }
         Err(err) => {
-            eprintln!();
             eprintln!("{}: {err}", dir.display());
             leave(Some(lock), 1);
         }
@@ -1334,11 +1328,18 @@ fn status(dir: &Path) {
         println!("  owned         {owned}  (MISMATCH: expected {systems})");
     }
     println!("  largest leaf  {largest_leaf} systems");
-    match root.aggregate.m_min() {
-        Some(m) => println!("  brightest     M_abs {m:.2}"),
-        None => println!("  brightest     none"),
+    // The light is the photometry sidecar's, beside the cells.
+    match galos_index::prelude::Lights::read(dir) {
+        Ok(lights) => {
+            let light = lights.root();
+            match light.m_min() {
+                Some(m) => println!("  brightest     M_abs {m:.2}"),
+                None => println!("  brightest     none"),
+            }
+            println!("  total flux    {:.3e}  (relative)", light.total_flux());
+        }
+        Err(e) => println!("  light         unreadable: {e}"),
     }
-    println!("  total flux    {:.3e}  (relative)", root.aggregate.total_flux());
 
     // On-disk footprint, straight off the filesystem.
     if let Ok(meta) =
@@ -1349,6 +1350,10 @@ fn status(dir: &Path) {
             &dir.join(galos_index::codec::layout::PAYLOAD_DIR),
         );
         print!(", {count} payload files ({:.2} MB)", mib(bytes));
+        let (count, bytes) = payload_footprint(
+            &dir.join(galos_index::codec::layout::PHOTOMETRY_DIR),
+        );
+        print!(", {count} light files ({:.2} MB)", mib(bytes));
         println!();
     }
 
@@ -1469,7 +1474,7 @@ fn diff(a: &Path, b: &Path, how: Compare) {
 
     let (verdict, shared) = cells(&left, &right, how.limit);
     let verdict = verdict
-        .and(aggregates(&shared))
+        .and(aggregates(a, b, &shared))
         .and(payloads(a, b, &shared, how.limit))
         .and(names(a, b, &how))
         .and(tables(a, b, &how));
@@ -1640,18 +1645,25 @@ fn cells(a: &Index, b: &Index, limit: usize) -> (Verdict, Vec<(Cell, Cell)>) {
 }
 
 /// The summed light, which is allowed to drift and not to move.
-fn aggregates(shared: &[(Cell, Cell)]) -> Verdict {
+///
+/// Off the photometry sidecar each directory keeps beside its cells.
+fn aggregates(a: &Path, b: &Path, shared: &[(Cell, Cell)]) -> Verdict {
     let at = std::time::Instant::now();
+    let lit = |dir: &Path| {
+        galos_index::prelude::Lights::read(dir)
+            .unwrap_or_else(|e| unreadable(dir, e))
+    };
+    let (ours, theirs) = (lit(a), lit(b));
     let mut worst = 0.0f64;
     let mut faintest = 0.0f32;
     for (left, right) in shared {
-        let (x, y) =
-            (left.aggregate.total_flux(), right.aggregate.total_flux());
+        let (left, right) = (ours.get(left.id), theirs.get(right.id));
+        let (x, y) = (left.total_flux(), right.total_flux());
         let scale = x.abs().max(y.abs());
         if scale > 0.0 {
             worst = worst.max((x - y).abs() / scale);
         }
-        match (left.aggregate.m_min(), right.aggregate.m_min()) {
+        match (left.m_min(), right.m_min()) {
             (Some(x), Some(y)) => faintest = faintest.max((x - y).abs()),
             (None, None) => {}
             // One cell owns something bright and the other owns nothing:
@@ -1683,7 +1695,7 @@ fn aggregates(shared: &[(Cell, Cell)]) -> Verdict {
 ///
 /// **This read 9.2 GB twice and rmp-decoded all of it twice** to answer a
 /// question two `stat`s answer for most cells: a payload is written whole
-/// by one writer version, sorted by magnitude, so equal content is equal
+/// by one writer version, in standing order, so equal content is equal
 /// bytes — the same argument [`tables`] makes, and the crate's own
 /// cross-build test (`cells::tests::assert_dirs_identical`) compares
 /// payloads by their bytes already.
@@ -1741,6 +1753,32 @@ fn payloads(
                     }
                     _ => false,
                 };
+                // And the light beside it, by its bytes too: a system that
+                // brightened stands where it stood, so its payload is the
+                // same file and only the light moved.
+                let lit = |dir: &Path| {
+                    let path =
+                        galos_index::codec::layout::lit_path(dir, cell.id);
+                    match std::fs::metadata(&path) {
+                        Ok(meta) => Some((path, meta.len())),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                        Err(e) => unreadable(dir, e),
+                    }
+                };
+                let lit_same = match (lit(a), lit(b)) {
+                    (None, None) => true,
+                    (Some((x, n)), Some((y, m))) => {
+                        n == m
+                            && same_bytes(&x, &y).unwrap_or_else(|(path, e)| {
+                                unreadable(side(&path, a, b), e)
+                            })
+                    }
+                    _ => false,
+                };
+                if !lit_same {
+                    differing.push(cell.id);
+                    continue;
+                }
                 if same {
                     continue;
                 }

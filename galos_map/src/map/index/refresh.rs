@@ -49,7 +49,9 @@ use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use galos_index::codec::names::Delta;
-use galos_index::prelude::{CellId, CellSystem, Index, Part, Stamp, Table};
+use galos_index::prelude::{
+    CellId, CellSystem, Index, Lit, Part, Stamp, Table,
+};
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
 use galos_index::records::{Faction, PopulatedSystem, SystemReach};
@@ -197,8 +199,8 @@ struct Refreshed {
     /// log's stamp. The common case, and the whole of what a publish that
     /// named something moves.
     delta: Option<(Delta, Option<Stamp>)>,
-    /// The payloads re-read, by cell
-    cells: Vec<(CellId, Vec<CellSystem>, Option<Stamp>)>,
+    /// The payloads re-read, by cell, with their light
+    cells: Vec<(CellId, Vec<CellSystem>, Vec<Lit>, Option<Stamp>)>,
 }
 
 impl Refreshed {
@@ -284,9 +286,12 @@ fn poll(
             }
         }
 
+        // The light with it, which is written before the index and so is at
+        // least as new as the cells it is read beside.
         let (index_moved, stamp) = moved(&source, Part::Index, index).await;
         if index_moved && let Ok(read) = source.index().await {
-            found.index = Some((read, stamp));
+            let lights = source.lights().await.unwrap_or_default();
+            found.index = Some((read.lit(&lights), stamp));
         }
 
         let (moved_it, stamp) =
@@ -338,7 +343,8 @@ fn poll(
         for (id, held) in cells {
             let (moved_it, stamp) = moved(&source, Part::Cell(id), held).await;
             if moved_it && let Ok(read) = source.payload(id).await {
-                found.cells.push((id, read, stamp));
+                let lit = source.lit(id, read.len()).await.unwrap_or_default();
+                found.cells.push((id, read, lit, stamp));
             }
         }
 
@@ -467,7 +473,7 @@ fn apply(
     // evictor took it again, and with the walk switched off nothing would ever
     // take it, leaving the payload and its stamp to be re-read every poll for
     // the life of the process.
-    for (id, points, stamp) in found.cells {
+    for (id, points, lit, stamp) in found.cells {
         if !resident.0.contains(id) {
             continue;
         }
@@ -477,6 +483,7 @@ fn apply(
             Some(&mut *republished),
             id,
             points,
+            lit,
         );
         held.holding(id, stamp);
     }
@@ -632,10 +639,11 @@ mod tests {
                 continue;
             }
             let stamp = block_on(source.stamp(Part::Cell(id))).expect("stat");
-            app.world_mut()
-                .resource_mut::<ResidentCells>()
-                .0
-                .insert(id, points.to_vec());
+            app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                id,
+                points.to_vec(),
+                block_on(source.lit(id, usize::MAX)).expect("light"),
+            );
             app.world_mut().resource_mut::<Stamps>().holding(id, stamp);
         }
         app

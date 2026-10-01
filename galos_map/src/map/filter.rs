@@ -1234,7 +1234,7 @@ impl Filters {
     /// ([`crate::map::galaxy::walk`]'s `strata`), so the sample with them
     /// taken out is what it admits. Either way the map is drawn as it is
     /// unfiltered, the hidden dimmed or left out. Anything else admitted
-    /// stands anywhere in a payload's magnitude order, and is found by
+    /// stands anywhere in a payload's standing order, and is found by
     /// reading cells whole and claiming it a patch of sky apiece; see
     /// [`crate::map::galaxy::walk::fetch`] and
     /// [`crate::map::galaxy::walk::reconcile`].
@@ -1247,8 +1247,8 @@ impl Filters {
     /// Hiding the unknown stars along star class did the same.
     ///
     /// A star class hidden while another axis is drawn is not this: that
-    /// draw is brightest first, and the classes it keeps may stand anywhere
-    /// down a payload.
+    /// draw is a sample along the other axis, and the classes it keeps may
+    /// stand anywhere down a payload.
     pub(crate) fn only_thins(&self) -> bool {
         use crate::map::galaxy::spawn::ColorBy;
         self.mask.narrows()

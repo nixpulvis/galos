@@ -19,9 +19,9 @@
 //! ## The resume point
 //!
 //! [`Checkpoint`], the same file and format the database-side builder
-//! writes: the served payload carries a downcast magnitude and a bucketed
-//! temperature, so the editable tree cannot be rebuilt from the directory it
-//! published.
+//! writes: the served photometry carries a downcast magnitude and a bucketed
+//! temperature and the payload drops the age, so the editable tree cannot be
+//! rebuilt from the directory it published.
 //!
 //! What differs is the cursor, which is what [`Provenance`] records. With a
 //! database under the run the cursor is a database clock, sampled *before* the
@@ -1252,7 +1252,7 @@ mod tests {
     /// A second run onto the same directory adds to it rather than replacing
     /// it
     ///
-    /// The resume point is how that works: the served payload carries a
+    /// The resume point is how that works: the served photometry carries a
     /// downcast magnitude and a bucketed temperature, so a sink that did not
     /// read the checkpoint back would publish the second run's systems as
     /// the entire galaxy.

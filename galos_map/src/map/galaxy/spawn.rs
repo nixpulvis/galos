@@ -33,7 +33,7 @@ use chrono::Utc;
 use elite_journal::prelude::{
     Allegiance, Economy, Government, Power, PowerplayState, Security, State,
 };
-use galos_index::core::aggregate::TempBucket;
+use galos_index::prelude::TempBucket;
 use galos_index::prelude::{CellSystem, StarKind};
 use galos_photometry::Temperature;
 use galos_photometry::psf::ProfileKind;
@@ -1093,8 +1093,9 @@ impl PendingSpawns {
 enum Job {
     /// Already built, by a path that had the whole row in hand.
     Built(System),
-    /// A payload point, still to be named and coloured.
-    Point(CellSystem),
+    /// A payload point, still to be named and coloured, and its light where
+    /// the sidecar had it.
+    Point(CellSystem, Option<galos_index::prelude::Lit>),
 }
 
 /// The systems being built off the main thread, a chunk a task
@@ -1186,7 +1187,7 @@ pub(crate) fn drain_spawns(
                     if point.id64 as i64 != address {
                         return None;
                     }
-                    Job::Point(*point)
+                    Job::Point(*point, held.lit_at(at as usize))
                 }
             };
             on_the_way.insert(address);
@@ -1205,8 +1206,8 @@ pub(crate) fn drain_spawns(
                             .into_iter()
                             .map(|job| match job {
                                 Job::Built(system) => system,
-                                Job::Point(point) => {
-                                    System::of(&point, &populated, &names)
+                                Job::Point(point, lit) => {
+                                    System::of(&point, lit, &populated, &names)
                                 }
                             })
                             .collect()
@@ -1836,6 +1837,7 @@ mod tests {
         System::build(
             address,
             [address as f64, 0., 0.],
+            None,
             None,
             &Populated::default(),
             &Names::default(),

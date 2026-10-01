@@ -751,7 +751,7 @@ pub(crate) fn splat(
 /// and six on `.index/full` against the colonies' seventeen, and spent from
 /// the scatter up it left a star that dropped out of the marks at under a
 /// hundredth of its mark's light by a tenth of the fill: a cell's brown
-/// dwarfs, last in its magnitude order, went out together a little way into
+/// dwarfs, last when a cell was ordered by magnitude, went out together a little way into
 /// a zoom and left a dark band where they stood. So a star-class crowd is
 /// held as a crowd of colonies is, and pressed to the backdrop across the
 /// band up to [`PACKED`], where the galaxy's crowds are.
@@ -2051,8 +2051,8 @@ mod tests {
     ///
     /// Held by the backdrop from the scatter up, a star dropped out of the
     /// marks at a three-hundred-and-sixtieth of its mark's light at a fifth
-    /// of the fill, and a slab of brown dwarfs, last in every cell's
-    /// magnitude order, went out together a little way into a zoom and left
+    /// of the fill, and a slab of brown dwarfs, last when every cell was
+    /// ordered by magnitude, went out together a little way into a zoom and left
     /// a dark band. The galaxy seen whole must not brighten for it.
     #[test]
     fn a_star_class_crowd_hands_off_as_colonies_and_packs_as_the_sky() {
@@ -2460,7 +2460,11 @@ mod exposure {
         let source = FsSource::new(dir);
         let (index, populated) = pollster::block_on(async {
             (
-                source.index().await.expect("the index should read"),
+                source
+                    .index()
+                    .await
+                    .expect("the index should read")
+                    .lit(&source.lights().await.unwrap_or_default()),
                 source.populated().await.unwrap_or_default(),
             )
         });
@@ -2877,7 +2881,11 @@ mod exposure {
         let (index, populated) = pollster::block_on(async {
             use galos_index::prelude::Source as _;
             (
-                source.index().await.expect("the index should read"),
+                source
+                    .index()
+                    .await
+                    .expect("the index should read")
+                    .lit(&source.lights().await.unwrap_or_default()),
                 source.populated().await.unwrap_or_default(),
             )
         });

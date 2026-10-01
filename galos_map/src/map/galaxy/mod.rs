@@ -7,9 +7,8 @@ use bevy::ecs::world::DeferredWorld;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 use chrono::{DateTime, Utc};
-use galos_index::core::aggregate::TempBucket;
-use galos_index::prelude::CellSystem;
 use galos_index::prelude::SystemName;
+use galos_index::prelude::{CellSystem, Lit, TempBucket};
 use galos_index::read::inhabited::Readings;
 use galos_index::records::{Economies, NameEntry, PopulatedSystem};
 use galos_photometry::ClassLight;
@@ -99,8 +98,8 @@ pub(crate) struct System {
     /// asked. Both are the map unable to say how far the system reaches, and
     /// both are drawn at [`bodies::STAND_IN`].
     pub(crate) reach: Option<f32>,
-    /// The cell payload's record of the system: the star's photometry for the
-    /// realistic view, and when the system was last updated for the filters
+    /// The cell payload's record of the system: when it was last updated and
+    /// what star a ship arrives at, for the filters
     ///
     /// [`None`] where the system was built from a path with no payload — a
     /// route's stops, a searched system flown to — which come off the jump
@@ -114,6 +113,12 @@ pub(crate) struct System {
     ///
     /// [`spawn::spawn_systems`]: crate::map::galaxy::spawn::spawn_systems
     pub(crate) indexed: Option<CellSystem>,
+    /// The star's light, as the photometry sidecar beside the payload has it:
+    /// what the realistic view draws the star by
+    ///
+    /// [`None`] wherever [`Self::indexed`] is, and where the directory had no
+    /// light on record for the point. Drawn at the default class then.
+    pub(crate) lit: Option<Lit>,
 }
 
 /// Which entity draws each system, by address
@@ -246,7 +251,7 @@ impl System {
     /// Which temperature bucket the star's blackbody tint falls in, at the
     /// default class's bucket where the index carried none.
     pub(crate) fn temp_bucket(&self) -> TempBucket {
-        self.indexed.map(|point| point.temp_bucket).unwrap_or_else(|| {
+        self.lit.map(|lit| lit.temp_bucket).unwrap_or_else(|| {
             TempBucket::of(ClassLight::DEFAULT.temperature.0)
         })
     }
@@ -299,19 +304,20 @@ impl System {
     }
 
     /// The combined absolute magnitude the index carries for this system, if it
-    /// was built from a payload point rather than a name lookup
+    /// was built from a payload point with its light beside it rather than a
+    /// name lookup
     ///
     /// The raw figure the realistic view reads, [`None`] rather than the
     /// default class, so a panel can say what the derivation actually assigned
     /// and a too-bright star can be told from a merely unscanned one.
     pub(crate) fn indexed_magnitude(&self) -> Option<f32> {
-        self.indexed.map(|point| point.magnitude)
+        self.lit.map(|lit| lit.magnitude)
     }
 
     /// A representative temperature for the star's tint bucket, if the index
     /// carried one, kelvin.
     pub(crate) fn indexed_temperature(&self) -> Option<f64> {
-        self.indexed.map(|point| point.temp_bucket.temperature())
+        self.lit.map(|lit| lit.temp_bucket.temperature())
     }
 }
 
@@ -789,6 +795,7 @@ impl System {
             non_body_count: None,
             reach: None,
             indexed: None,
+            lit: None,
         }
     }
 
@@ -802,11 +809,13 @@ impl System {
     ///
     /// `point` is the cell payload's record of the system, where one is behind
     /// it, and [`None`] on the paths that carry none — a route's stops, a
-    /// searched system flown to. See [`System::indexed`].
+    /// searched system flown to. See [`System::indexed`]. `lit` is its light
+    /// out of the sidecar beside the payload, on the same terms.
     pub(crate) fn build(
         address: i64,
         position: [f64; 3],
         point: Option<&CellSystem>,
+        lit: Option<Lit>,
         populated: &Populated,
         names: &Names,
     ) -> System {
@@ -828,6 +837,7 @@ impl System {
             // shell many times the orbits inside it.
             reach: names.reach(address),
             indexed: point.copied(),
+            lit: point.and(lit),
         }
     }
 
@@ -837,9 +847,11 @@ impl System {
     /// The position comes straight from the payload, in light years — finer
     /// than the names table's whole-light-year placement, and present for every
     /// system, named or not. The name and the political columns are the same
-    /// join a system named by hand gets, keyed by the point's id.
+    /// join a system named by hand gets, keyed by the point's id; the light is
+    /// the sidecar's row for the point, where it was read.
     pub(crate) fn of(
         point: &CellSystem,
+        lit: Option<Lit>,
         populated: &Populated,
         names: &Names,
     ) -> System {
@@ -847,6 +859,7 @@ impl System {
             point.id64 as i64,
             point.position,
             Some(point),
+            lit,
             populated,
             names,
         )
@@ -885,7 +898,14 @@ impl System {
         // The names table says where a system is and what it is called, and
         // nothing about when it was last heard from. A span excludes it until
         // its cell payload lands and the system is rebuilt from the point.
-        Some(System::build(address, [at.x, at.y, at.z], None, populated, names))
+        Some(System::build(
+            address,
+            [at.x, at.y, at.z],
+            None,
+            None,
+            populated,
+            names,
+        ))
     }
 }
 
@@ -909,6 +929,7 @@ pub(crate) mod tests {
             non_body_count: None,
             reach: None,
             indexed: None,
+            lit: None,
         }
     }
 
@@ -998,13 +1019,11 @@ pub(crate) mod tests {
     /// `system`, as a payload point updated at `at` would have built it
     ///
     /// A moment rides on the point, so a system is stamped by being given
-    /// one; its photometry is left at zero, which nothing stamped asks about.
+    /// one; it is given no light, which nothing stamped asks about.
     pub(crate) fn stamp(system: &mut System, at: DateTime<Utc>) {
         system.indexed = Some(CellSystem {
             id64: system.address as u64,
             position: system.position,
-            magnitude: 0.,
-            temp_bucket: TempBucket::new(0),
             updated_at: u32::try_from(at.timestamp())
                 .expect("a moment a payload can carry"),
             kind: galos_index::prelude::StarKind::Unknown,

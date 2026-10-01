@@ -7,6 +7,8 @@
 //! a record's layout is stated in. Then the files:
 //!
 //! - [`cells`]: the index file and a payload a cell.
+//! - [`lights`]: the photometry sidecar beside them, every cell's light and
+//!   each system's, which only the realistic view reads.
 //! - [`names`]: the names table, mapped and searched.
 //! - [`bodies`]: every system's insides, packed a shard to a file.
 //! - [`tables`]: the MessagePack tables beside the cells — the
@@ -27,6 +29,7 @@ pub mod bytes;
 pub mod cells;
 pub mod checkpoint;
 pub mod layout;
+pub mod lights;
 pub mod lock;
 pub mod names;
 pub mod parts;

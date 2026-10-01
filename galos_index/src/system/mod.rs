@@ -13,7 +13,7 @@ use crate::core::star::StarKind;
 use serde::{Deserialize, Serialize};
 
 /// One system as the index is built *from*: where it is, the photometry the
-/// ordering and the aggregates need, and when it was last updated, all at
+/// realistic view's sidecar is summed from, and when it was last updated, all at
 /// full precision.
 ///
 /// **One of two records of a system, and the one that is written.** The
@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 /// | | [`System`] | [`CellSystem`] |
 /// |---|---|---|
 /// | id, position, `updated_at`, star kind | kept | kept, unchanged |
-/// | absolute magnitude | `f64` | `f32` |
-/// | temperature | kelvin | its [`TempBucket`] |
+/// | absolute magnitude | `f64` | `f32`, in the photometry sidecar |
+/// | temperature | kelvin | its [`TempBucket`], in the photometry sidecar |
 /// | `age_bucket` | kept | dropped: the cell's aggregate counts it |
 /// | who holds it | the build, the live tree, the resume point | a cell's payload, and every reader |
 ///
@@ -40,10 +40,10 @@ use serde::{Deserialize, Serialize};
 /// day to test. The caller bins one from the other off one reading.
 ///
 /// What a [`CellSystem`] does not keep, and why the build cannot do without it:
-/// the `f64` magnitude, which a cell's flux is summed from and the payload
-/// is ordered by; the raw temperature, which the aggregate buckets itself;
-/// and `age_bucket`, which is binned against the clock the report was read
-/// at and cannot be worked out again from `updated_at` later.
+/// the `f64` magnitude, which a cell's flux is summed from; the raw
+/// temperature, which the photometry buckets itself; and `age_bucket`, which
+/// is binned against the clock the report was read at and cannot be worked
+/// out again from `updated_at` later.
 ///
 /// The record is written to disk as its own bytes, so it is `repr(C)` and
 /// sixty-four bytes: fifty-seven of fields and seven of padding after the
@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// [`CellSystem`]: crate::tree::cell::CellSystem
 /// [`CellSystem::of`]: crate::tree::cell::CellSystem::of
-/// [`TempBucket`]: crate::core::aggregate::TempBucket
+/// [`TempBucket`]: crate::core::photometry::TempBucket
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct System {

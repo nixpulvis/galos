@@ -265,8 +265,8 @@ pub struct SplatRef {
 /// inside one mark, so the marks it would draw are drawn as one.
 ///
 /// Needs no payload — a blob says how many systems it stands for, how bright
-/// the brightest of them is, and what their temperature and political mixes
-/// are, all off the resident aggregate. `blend` is the cross-level fade in
+/// the brightest of them is where the index was handed its lights, and what
+/// their political mixes are, all off the resident tree. `blend` is the cross-level fade in
 /// `0.0..=1.0`, the blob taking `1 - alpha` of the weight while what is
 /// beneath it takes the rest.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -389,7 +389,7 @@ impl Index {
     /// - a cell whose contents are no wider than `merge_px` is one mark —
     ///   [`BlobRef`], drawn off its aggregate, nothing read;
     /// - a cell wider than that is descended into, and its own slice draws —
-    ///   [`MarkRef`], the prefix of its magnitude order.
+    ///   [`MarkRef`], the prefix of its standing order.
     ///
     /// The two meet: at the frontier a cell's contents fall inside one mark,
     /// which is the blob. How many of a marked cell's systems draw is not
@@ -757,8 +757,6 @@ mod tests {
         count: u64,
         /// Which octants have children.
         child_mask: u8,
-        /// The brightest absolute magnitude under it.
-        m_min: f64,
     }
 
     /// A cell with the aggregate `held` describes.
@@ -770,8 +768,6 @@ mod tests {
                 let off = n as f64 * step - held.across / 2.0;
                 Aggregate::of_system(
                     [held.at[0] + off, held.at[1], held.at[2]],
-                    held.m_min,
-                    5000.0,
                     0,
                     crate::core::star::StarKind::Unknown,
                 )
@@ -786,9 +782,27 @@ mod tests {
         }
     }
 
+    /// The tree of `cells`, every subtree's brightest star at `m_min`: what
+    /// the photometric walk is told by the sidecar, which a test's cells do
+    /// not carry.
+    fn lit(cells: Vec<Cell>, m_min: f64) -> Index {
+        let lights: crate::tree::lights::Lights = cells
+            .iter()
+            .map(|cell| {
+                let light = crate::core::photometry::Photometry::of_system(
+                    cell.id.bounds().center(),
+                    m_min,
+                    5000.0,
+                );
+                (cell.id, light)
+            })
+            .collect();
+        Index::from_cells(cells).lit(&lights)
+    }
+
     /// A one-system cell at its own box's middle: what the field's tests
     /// want, where a count and a spread are beside the point.
-    fn cell(id: CellId, slice: u64, child_mask: u8, m_min: f64) -> Cell {
+    fn cell(id: CellId, slice: u64, child_mask: u8) -> Cell {
         holding(
             id,
             Ancestor {
@@ -797,7 +811,6 @@ mod tests {
                 slice,
                 count: 1,
                 child_mask,
-                m_min,
             },
         )
     }
@@ -810,7 +823,7 @@ mod tests {
     /// Their contents are stacked at [`HERE`], which is where everything the
     /// chain stands for is; how wide they come out is the roll-up's to say,
     /// off the children.
-    fn chain_to(target: CellId, m_min: f64, count: u64) -> Vec<Cell> {
+    fn chain_to(target: CellId, count: u64) -> Vec<Cell> {
         (0..target.level)
             .map(|level| {
                 let here = CellId::of_point(HERE, level);
@@ -823,7 +836,6 @@ mod tests {
                         slice: 1,
                         count,
                         child_mask: 1 << octant_of(next),
-                        m_min,
                     },
                 )
             })
@@ -845,7 +857,7 @@ mod tests {
         let parent = CellId::of_point(HERE, 13);
         let kids = parent.children();
         let whole = parent_slice + 2 * child_slice;
-        let mut cells = chain_to(parent, m_min, whole);
+        let mut cells = chain_to(parent, whole);
         cells.push(holding(
             parent,
             Ancestor {
@@ -854,7 +866,6 @@ mod tests {
                 slice: parent_slice,
                 count: whole,
                 child_mask: 0b0000_0011,
-                m_min,
             },
         ));
         for kid in [kids[0], kids[1]] {
@@ -866,11 +877,10 @@ mod tests {
                     slice: child_slice,
                     count: child_slice,
                     child_mask: 0,
-                    m_min,
                 },
             ));
         }
-        (Index::from_cells(cells), parent, [kids[0], kids[1]])
+        (lit(cells, m_min), parent, [kids[0], kids[1]])
     }
 
     fn eye_out(cell: CellId, out_ly: f64) -> View {
@@ -955,17 +965,15 @@ mod tests {
             let off = i as f64 * 0.5;
             agg = agg.merge(Aggregate::of_system(
                 [c[0] + off, c[1], c[2]],
-                4.0,
-                5000.0,
                 0,
                 crate::core::star::StarKind::Unknown,
             ));
         }
         let leaf =
             Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
-        let mut cells = chain_to(id, 4.0, 64);
+        let mut cells = chain_to(id, 64);
         cells.push(leaf);
-        let index = Index::from_cells(cells);
+        let index = lit(cells, 4.0);
 
         let far = eye_out(id, 60_000.0);
         let out = index.walk_screen(&far, None);
@@ -1000,8 +1008,6 @@ mod tests {
             let off = i as f64 * 0.2;
             agg = agg.merge(Aggregate::of_system(
                 [c[0] + off, c[1], c[2]],
-                4.0,
-                5000.0,
                 0,
                 crate::core::star::StarKind::Unknown,
             ));
@@ -1013,7 +1019,7 @@ mod tests {
             child_mask: 0,
             aggregate: agg,
         };
-        let mut cells = chain_to(id, 4.0, 512);
+        let mut cells = chain_to(id, 512);
         cells.push(leaf);
         let index = Index::from_cells(cells);
 
@@ -1080,9 +1086,9 @@ mod tests {
         let root = CellId::ROOT;
         let kids = root.children();
         let index = Index::from_cells(vec![
-            cell(root, 1, 0b0000_0011, 4.0),
-            cell(kids[0], 1, 0, 4.0),
-            cell(kids[1], 1, 0, 4.0),
+            cell(root, 1, 0b0000_0011),
+            cell(kids[0], 1, 0),
+            cell(kids[1], 1, 0),
         ]);
         // A distance that puts the root partway into its band, so root and
         // children both draw rather than one replacing the other outright.

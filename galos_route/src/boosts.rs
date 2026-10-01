@@ -367,6 +367,7 @@ mod tests {
         let rewrite = || {
             galos_index::ops::upgrade::rewrite(
                 dir.path(),
+                &galos_index::codec::layout::checkpoint_beside(dir.path()),
                 &tables,
                 &|| false,
                 &mut |_| {},

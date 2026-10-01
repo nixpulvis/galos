@@ -74,7 +74,7 @@ pub struct Planned(pub Needed);
 ///
 /// Written by [`crate::map::galaxy::walk::reconcile`], which is the only thing that
 /// knows the drawn set: the prefix is not a rank range, the filters having
-/// promoted systems out of magnitude order (see `drawn_first`).
+/// promoted systems out of the payload's order (see `drawn_first`).
 #[derive(Resource, Default)]
 pub struct Drawn(pub rustc_hash::FxHashMap<CellId, Accounted>);
 

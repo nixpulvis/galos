@@ -52,7 +52,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat,
 };
-use galos_index::core::aggregate::TempBucket;
+use galos_index::prelude::TempBucket;
 use galos_photometry::{Distance, Magnitude};
 
 pub fn plugin(app: &mut App) {

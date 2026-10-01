@@ -18,12 +18,12 @@
 //! ([`crate::map::galaxy::walk::Blobs`]) and this is the one place that reads the
 //! pointer against it.
 //!
-//! **What resolving one costs is one read, on the pointer resting.** A
-//! blob's cell owns the brightest of its own subtree — the tree's slices
-//! are magnitude-ordered from the root down — so the system a blob stands
-//! for is the head of the cell's own payload and nothing deeper has to be
-//! read for it. Cached by cell, since the pointer crossing a galaxy of
-//! merged marks would otherwise ask for one a frame.
+//! **What resolving one costs is two reads, on the pointer resting.** A
+//! blob stands for the brightest system its cell owns: the cell's light is
+//! read whole, five bytes a system, and its payload down to the brightest
+//! of it, and nothing deeper has to be read for it. Cached by cell, since
+//! the pointer crossing a galaxy of merged marks would otherwise ask for
+//! one a frame.
 
 use crate::map::camera::OrbitCamera;
 use crate::map::galaxy::walk::{Blob, Blobs};
@@ -37,7 +37,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
-use galos_index::prelude::{CellId, CellSystem};
+use galos_index::prelude::{CellId, CellSystem, Lit};
 use rustc_hash::FxHashMap;
 
 pub fn plugin(app: &mut App) {
@@ -134,7 +134,7 @@ fn ring_blob(
         crate::map::paint::sizing::by_population(&view, &scale_population);
     let said = match prominent
         .of(blob.id, by_population, &populated)
-        .map(|point| System::of(point, &populated, &names))
+        .map(|(point, lit)| System::of(point, lit, &populated, &names))
     {
         Some(system) => format!("{} · {} systems", system.name, blob.count),
         None => format!("{} systems", blob.count),
@@ -187,16 +187,58 @@ pub struct PointedBlob(pub Option<Blob>);
 /// pointer rests on it.
 #[derive(Resource, Default)]
 pub struct Prominent {
-    known: FxHashMap<CellId, Vec<CellSystem>>,
-    reading: FxHashMap<CellId, Task<Option<Vec<CellSystem>>>>,
+    known: FxHashMap<CellId, Read>,
+    reading: FxHashMap<CellId, Task<Option<Read>>>,
+}
+
+/// What was read of a cell to name its mark: the head of its payload, far
+/// enough down to reach the brightest system the cell owns, and that
+/// system's place in it.
+#[derive(Default)]
+struct Read {
+    points: Vec<CellSystem>,
+    lit: Vec<Lit>,
+    /// Which of `points` is the brightest of the cell's whole slice, where
+    /// the cell had light on record.
+    brightest: Option<usize>,
+}
+
+impl Read {
+    /// The cell's light whole, which is five bytes a system, and its payload
+    /// as far as the brightest of them and no less than [`PREFIX`].
+    ///
+    /// The payload is in standing order, which is no order of brightness,
+    /// so its head is a system and not the cell's brightest; the light says
+    /// which is, and the payload is read down to it.
+    async fn of(
+        source: &dyn galos_index::prelude::Source,
+        id: CellId,
+    ) -> Option<Read> {
+        let lit = source.lit(id, usize::MAX).await.ok()?;
+        let brightest = lit
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.magnitude.total_cmp(&b.magnitude))
+            .map(|(at, _)| at);
+        let want = brightest.map_or(PREFIX, |at| (at + 1).max(PREFIX));
+        let points = source.payload_prefix(id, want).await.ok()?;
+        let lit = lit.into_iter().take(points.len()).collect();
+        Some(Read { points, lit, brightest })
+    }
+
+    /// The `at`th point and its light.
+    fn at(&self, at: usize) -> Option<(&CellSystem, Option<Lit>)> {
+        Some((self.points.get(at)?, self.lit.get(at).copied()))
+    }
 }
 
 impl Prominent {
-    /// The point a cell's mark stands for, where it has been read
+    /// The point a cell's mark stands for, and its light, where it has been
+    /// read
     ///
-    /// The head of the prefix while the map is drawing the sky as light:
-    /// the payload is in magnitude order, so the first is the brightest
-    /// thing under the cell.
+    /// The brightest system the cell owns while the map is drawing the sky
+    /// as light — the photometry sidecar says which — or the head of the
+    /// prefix where the cell had no light on record.
     ///
     /// The busiest of the prefix where marks are drawn by population,
     /// because there a mark's *size* is the population it carries and the
@@ -213,18 +255,22 @@ impl Prominent {
         id: CellId,
         by_population: bool,
         populated: &Populated,
-    ) -> Option<&CellSystem> {
+    ) -> Option<(&CellSystem, Option<Lit>)> {
         let read = self.known.get(&id)?;
         if !by_population {
-            return read.first();
+            return read.at(read.brightest.unwrap_or(0));
         }
-        read.iter()
-            .max_by_key(|point| {
+        let busiest = read
+            .points
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, point)| {
                 populated
                     .get(point.id64 as i64)
                     .map_or(0, |system| system.population)
             })
-            .or_else(|| read.first())
+            .map_or(0, |(at, _)| at);
+        read.at(busiest)
     }
 }
 
@@ -293,14 +339,13 @@ fn point_at_blobs(
 
 /// Read the system the pointed-at merged mark stands for
 ///
-/// One cell's payload prefix, off the same transport the walk's own reads
-/// go through, and only for the mark under the pointer. What comes back is
-/// kept in [`Prominent`] against the cell for as long as the map runs.
+/// One cell's light and payload prefix, off the same transport the walk's
+/// own reads go through, and only for the mark under the pointer. What comes
+/// back is kept in [`Prominent`] against the cell for as long as the map
+/// runs.
 ///
-/// A prefix and not the whole cell: the payload is in magnitude order, so
-/// the brightest is its head and [`PREFIX`] is enough to choose the busiest
-/// among the cell's own brightest too. Reading a whole slice to rank it
-/// would be hundreds of systems read to name one.
+/// A prefix and not the whole cell: the light says where the brightest is,
+/// and the payload is read down to it and no further. See [`Read::of`].
 ///
 /// A cell that reads back nothing is remembered as nothing — an empty
 /// prefix is an answer — so it is asked once rather than every frame the
@@ -338,17 +383,17 @@ fn name_blobs(
     let source = transport.0.clone();
     let id = blob.id;
     let task = AsyncComputeTaskPool::get()
-        .spawn(async move { source.payload_prefix(id, PREFIX).await.ok() });
+        .spawn(async move { Read::of(&*source, id).await });
     prominent.reading.insert(id, task);
 }
 
-/// How much of a merged cell's payload is read to name it
+/// How much of a merged cell's payload is read to name it, at the least
 ///
-/// The head of it is the answer outright while the map is drawing the sky
-/// as light — the tree's slices are magnitude-ordered from the root down,
-/// so a cell's first point is the brightest thing under it — and this is
-/// the same `READ_LEAST` the walk's own reads are floored at, so naming a
-/// blob asks the transport for no more than any other cell does.
+/// The busiest of it is the answer while the map is drawing populations,
+/// and this is the same `READ_LEAST` the walk's own reads are floored at,
+/// so naming a blob asks the transport for no more than any other cell
+/// does. While the map is drawing the sky as light it reads further, to
+/// the brightest; see [`Read::of`].
 const PREFIX: usize = 16;
 
 /// Pick out the system a merged mark stands for
@@ -378,13 +423,14 @@ fn click_blobs(
     let Some(blob) = pointed.0 else { return };
     let by_population =
         crate::map::paint::sizing::by_population(&view, &scale_population);
-    let Some(point) = prominent.of(blob.id, by_population, &populated) else {
+    let Some((point, lit)) = prominent.of(blob.id, by_population, &populated)
+    else {
         return;
     };
     // Held down, a modifier gathers rather than replaces, exactly as it
     // does over a drawn system; see `crate::map::galaxy::spawn::select_on_click`.
     let gathering = crate::input::gathering(&keys);
-    let system: System = System::of(point, &populated, &names);
+    let system: System = System::of(point, lit, &populated, &names);
     selection.pick(Picked::System(system), gathering);
 }
 
@@ -590,14 +636,14 @@ mod tests {
         assert!(app.world().resource::<PointedBlob>().0.is_none());
     }
 
-    /// The system a merged mark stands for is the head of its cell's own
-    /// payload, which is the brightest thing under it
+    /// The system a merged mark stands for is the brightest its cell owns,
+    /// wherever in the payload it stands
     ///
-    /// The tree's slices are magnitude-ordered from the root down, so a
-    /// cell owns the brightest of its whole subtree and nothing deeper has
-    /// to be read to name what the mark stands for.
+    /// The payload is in standing order, which says nothing of brightness,
+    /// so the cell's light is read whole and the payload down to the
+    /// brightest of it. Here the brightest is the third.
     #[test]
-    fn a_mark_is_named_by_the_head_of_its_cell() {
+    fn a_mark_is_named_by_the_brightest_of_its_cell() {
         let id = CellId::of_point(AHEAD, 8);
         let empty = Populated::default();
         let mut prominent = Prominent::default();
@@ -606,30 +652,43 @@ mod tests {
             "nothing is known unasked",
         );
 
-        let head = CellSystem {
-            id64: 7,
-            position: [1., 2., 3.],
-            magnitude: 1.5,
-            temp_bucket: galos_index::core::aggregate::TempBucket::new(4),
-            updated_at: 0,
-            kind: StarKind::Unknown,
-        };
-        prominent.known.insert(id, vec![head]);
-        assert_eq!(
-            prominent.of(id, false, &empty).map(|point| point.id64),
-            Some(7),
-        );
+        prominent
+            .known
+            .insert(id, read(&[(7, 6.0), (8, 9.0), (9, 1.5), (10, 4.0)]));
+        let (point, lit) = prominent.of(id, false, &empty).unwrap();
+        assert_eq!(point.id64, 9);
+        assert_eq!(lit.map(|lit| lit.magnitude), Some(1.5));
     }
 
-    /// One system of a merged mark's prefix, at `magnitude`.
-    fn point(id64: u64, magnitude: f32) -> CellSystem {
+    /// One system of a merged mark's prefix.
+    fn point(id64: u64) -> CellSystem {
         CellSystem {
             id64,
             position: [1., 2., 3.],
-            magnitude,
-            temp_bucket: galos_index::core::aggregate::TempBucket::new(4),
             updated_at: 0,
             kind: StarKind::Unknown,
+        }
+    }
+
+    /// What reading a cell of these systems, at these magnitudes and in this
+    /// order, would have kept.
+    fn read(systems: &[(u64, f32)]) -> Read {
+        let lit: Vec<Lit> = systems
+            .iter()
+            .map(|&(_, magnitude)| Lit {
+                magnitude,
+                temp_bucket: galos_index::prelude::TempBucket::new(4),
+            })
+            .collect();
+        let brightest = lit
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.magnitude.total_cmp(&b.magnitude))
+            .map(|(at, _)| at);
+        Read {
+            points: systems.iter().map(|&(id, _)| point(id)).collect(),
+            lit,
+            brightest,
         }
     }
 
@@ -704,17 +763,16 @@ mod tests {
     fn what_a_mark_stands_for_follows_what_is_drawn() {
         let id = CellId::of_point(AHEAD, 8);
         let mut prominent = Prominent::default();
-        // In magnitude order, as a payload is: the brightest heads it.
-        prominent.known.insert(id, vec![point(1, 0.5), point(2, 6.0)]);
+        prominent.known.insert(id, read(&[(2, 6.0), (1, 0.5)]));
         let populated = lived_on(2);
 
         assert_eq!(
-            prominent.of(id, false, &populated).map(|point| point.id64),
+            prominent.of(id, false, &populated).map(|(point, _)| point.id64),
             Some(1),
             "drawing light, a mark is the brightest under it",
         );
         assert_eq!(
-            prominent.of(id, true, &populated).map(|point| point.id64),
+            prominent.of(id, true, &populated).map(|(point, _)| point.id64),
             Some(2),
             "drawing population, a mark is the busiest under it",
         );
@@ -726,7 +784,7 @@ mod tests {
     fn a_mark_over_nothing_readable_is_asked_once() {
         let id = CellId::of_point(AHEAD, 8);
         let mut prominent = Prominent::default();
-        prominent.known.insert(id, Vec::new());
+        prominent.known.insert(id, Read::default());
         assert!(prominent.of(id, false, &Populated::default()).is_none());
         assert!(
             prominent.known.contains_key(&id),

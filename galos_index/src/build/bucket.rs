@@ -489,9 +489,12 @@ mod tests {
                 &params,
             );
             payloads.extend(built.payloads.clone());
-            indexes.push(built.index);
+            indexes.push((built.index, built.lights));
         }
-        let index = joined(&crown, indexes.iter());
+        let (index, _) = joined(
+            &crown,
+            indexes.iter().map(|(index, lights)| (index, lights)),
+        );
 
         assert_eq!(index.len(), whole.index.len(), "a different set of cells");
         for cell in whole.index.cells() {

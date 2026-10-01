@@ -38,9 +38,9 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use chrono::{DateTime, Utc};
-use galos_index::prelude::{CellId, CellSystem, Part, Stamp, StarKind};
+use galos_index::prelude::{CellId, CellSystem, Lit, Part, Stamp, StarKind};
 use galos_index::read::inhabited::{Inhabited, Readings};
-use galos_index::read::resident::Resident;
+use galos_index::read::resident::{Resident, ResidentCell};
 use galos_index::read::screen::{Crowded, Empty, Share};
 use galos_photometry::{Distance, Magnitude};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -323,7 +323,7 @@ pub(crate) struct Worked<'w> {
 
 /// One cell's read as it lands: the payload and the [`Stamp`] it was read
 /// under.
-type Landed = (CellId, io::Result<(Vec<CellSystem>, Option<Stamp>)>);
+type Landed = (CellId, io::Result<(Vec<CellSystem>, Vec<Lit>, Option<Stamp>)>);
 
 /// The payload reads the walk wants, queued and on the wire
 ///
@@ -432,10 +432,16 @@ impl BoundedTasks {
                                 .await
                                 .ok()
                                 .flatten();
-                            let read = source
-                                .payload_prefix(id, want)
-                                .await
-                                .map(|points| (points, stamp));
+                            // And the light after the payload: it is written
+                            // before the payload it stands beside, so what
+                            // is read here is at least as new as the points.
+                            let read = async {
+                                let points =
+                                    source.payload_prefix(id, want).await?;
+                                let lit = source.lit(id, points.len()).await?;
+                                Ok((points, lit, stamp))
+                            }
+                            .await;
                             landed.push((id, read));
                         }
                         landed
@@ -516,8 +522,9 @@ fn by_class(
 
 /// Ask for the payloads of the marks cells the map does not hold enough of
 ///
-/// **A prefix and not the payload.** A cell's payload is magnitude-ordered
-/// and the draw takes a share of it ([`wanted`]), so the rest is bytes
+/// **A prefix and not the payload.** A cell's payload is in standing order,
+/// an even sample of the cell, and the draw takes a share of it
+/// ([`wanted`]), so the rest is bytes
 /// faulted, held and never looked at: measured over `.index/full`, one
 /// flight held 121 M points and 5.8 GB to draw eight thousand marks, and
 /// the fill-in after every camera move was the map waiting on them. What is
@@ -532,10 +539,10 @@ fn by_class(
 ///
 /// Where a filter is asked, or star class draws each cell by class
 /// ([`strata`]), marked cells are held whole. The filters promote systems
-/// out of magnitude order — a faction is a handful of systems anywhere in a
-/// payload — and a class sample reaches as far down it as the faintest
-/// class the cell holds, so a prefix is the one thing that cannot answer
-/// either. Under a filter admitting nothing but rows of the populated table
+/// out of the payload's order — a faction is a handful of systems anywhere in
+/// a payload — and a class sample is exact to the cell's proportions only
+/// over the cell, so a prefix cannot answer the first and answers the
+/// second only to within its own sampling. Under a filter admitting nothing but rows of the populated table
 /// it is only the cells holding a row; see [`Whole::Rows`]. A cell the
 /// frame draws from is still read to its prefix first, so the frame fills
 /// in evenly; see [`reads`].
@@ -587,7 +594,7 @@ pub(crate) fn fetch(
     };
     // Which marked cells are wanted whole: every one under a filter
     // narrowing the map, the systems it admits standing anywhere in a
-    // payload's magnitude order and [`reconcile`] drawing them first out of
+    // payload's standing order and [`reconcile`] drawing them first out of
     // whatever of it is held — or where all it admits is rows of the
     // populated table, every one holding a row; and the ones that draw
     // along star class, drawing every class in its proportion. Not under a
@@ -806,7 +813,7 @@ fn rank(id: CellId, draws: bool) -> (bool, u8, u64) {
 /// [`rank`] and the order the reads land in too. The frame fills in all over
 /// at once and gains density as it goes, whichever way the camera moved.
 struct Unspawned {
-    /// Its place among its cell's undrawn systems, brightest first.
+    /// Its place among its cell's undrawn systems, in the order they draw.
     round: u32,
     rank: (bool, u8, u64),
     address: i64,
@@ -876,7 +883,7 @@ pub(crate) fn collect(
     mut held: ResMut<crate::map::index::refresh::Stamps>,
 ) {
     for (id, read) in tasks.landed() {
-        if let Ok((points, stamp)) = read {
+        if let Ok((points, lit, stamp)) = read {
             // The same payload read further down — the rest of a prefix, or a
             // share that has outgrown it — holds nothing the systems already
             // drawn out of it do not, so they are left standing. Anything
@@ -888,6 +895,7 @@ pub(crate) fn collect(
                 rebuild.then_some(&mut *republished),
                 id,
                 points,
+                lit,
             );
             held.holding(id, stamp);
         }
@@ -960,6 +968,12 @@ pub(crate) struct PointOrders {
     cells: FxHashMap<CellId, Vec<u32>>,
     populated: FxHashMap<CellId, Vec<u32>>,
     strata: FxHashMap<CellId, Vec<u32>>,
+    /// What the strata were worked out along: the axis the map is colored
+    /// by, and for a political one the cut, the populated table being what
+    /// a point's value along it is read from. See [`Along`].
+    strata_along: Option<(ColorBy, u64)>,
+    /// Each cell's points brightest first, for the sky; see [`bright`].
+    bright: FxHashMap<CellId, Vec<u32>>,
 }
 
 impl PointOrders {
@@ -1078,15 +1092,17 @@ impl PointOrders {
         self.populated.get(&id).map_or(&[], Vec::as_slice)
     }
 
-    /// Work out the order star class draws this cell in, where it has none
+    /// Work out the order the map draws this cell in along the axis it is
+    /// colored by, where it has none
     ///
     /// Off the same budget as the verdicts, it being a walk and a sort of the
-    /// whole payload: a cell the budget does not reach draws brightest first
-    /// this frame and in its classes' proportions once it does.
+    /// whole payload: a cell the budget does not reach draws in its standing
+    /// order this frame and in its values' proportions once it does.
     fn stratify(
         &mut self,
         id: CellId,
         points: &[CellSystem],
+        along: &Along<'_>,
         budget: &mut usize,
     ) -> bool {
         if self.strata.contains_key(&id) {
@@ -1096,20 +1112,61 @@ impl PointOrders {
             return false;
         }
         *budget -= points.len();
-        self.strata.insert(id, strata(points));
+        self.strata.insert(id, strata(points, along));
         true
     }
 
-    /// The order star class draws a cell in, where [`Self::stratify`] has
-    /// worked one out
+    /// The order the map draws a cell in along its axis, where
+    /// [`Self::stratify`] has worked one out
     fn strata(&self, id: CellId) -> Option<&[u32]> {
         self.strata.get(&id).map(Vec::as_slice)
     }
 
-    /// Drop every cell's strata, star class no longer drawing by them
-    fn unstratify(&mut self) {
-        if !self.strata.is_empty() {
-            self.strata = FxHashMap::default();
+    /// Hold the strata to the axis they are drawn along, dropping every
+    /// cell's where it has moved — or where nothing is drawn by them
+    fn stratify_along(&mut self, along: Option<(ColorBy, u64)>) {
+        if self.strata_along != along {
+            self.strata_along = along;
+            if !self.strata.is_empty() {
+                self.strata = FxHashMap::default();
+            }
+        }
+    }
+
+    /// Work out a cell's brightest-first order for the sky, where it has none
+    ///
+    /// Off the same budget as the verdicts, it being a sort of the whole
+    /// payload's light. A cell the budget does not reach is weighed point by
+    /// point this frame, which is what the sky did before it had an order to
+    /// cut short.
+    fn brighten(
+        &mut self,
+        id: CellId,
+        cell: &ResidentCell,
+        budget: &mut usize,
+    ) -> bool {
+        if self.bright.contains_key(&id) {
+            return true;
+        }
+        if *budget < cell.points.len() {
+            return false;
+        }
+        *budget -= cell.points.len();
+        self.bright.insert(id, bright(cell));
+        true
+    }
+
+    /// A cell's points brightest first, where [`Self::brighten`] has worked
+    /// the order out
+    fn bright(&self, id: CellId) -> Option<&[u32]> {
+        self.bright.get(&id).map(Vec::as_slice)
+    }
+
+    /// Drop every cell's brightest-first order, the sky no longer being
+    /// drawn
+    fn unbrighten(&mut self) {
+        if !self.bright.is_empty() {
+            self.bright = FxHashMap::default();
         }
     }
 
@@ -1118,41 +1175,125 @@ impl PointOrders {
         self.cells.remove(&id);
         self.populated.remove(&id);
         self.strata.remove(&id);
+        self.bright.remove(&id);
         self.at.remove(&id);
     }
 }
 
-/// A cell's points in the order star class draws them: every class in
-/// proportion to how many of it the cell holds, brightest first within each
+/// What a point's value is along the axis the map is colored by, which is
+/// what [`strata`] draws a cell's values in proportion to
 ///
-/// **Star class colors every system, so its marks are a sample of them.**
-/// Drawn brightest first, a cell spent the budget its faint stars earned on
-/// its bright ones, wherever in the cell they stood: brown dwarfs, last in
-/// every payload at an absolute magnitude of sixteen and a half, were never
-/// reached, and a slab of them twenty light years thick drew as a thin strip
-/// between two bands packed with the M, K and G stars of the same cells —
-/// measured over `.index/full` at four hundred light years out, 603 marks in
-/// it against 1,399 in the layer above, holding two and a half times as
-/// many systems.
-///
-/// The `j`th of a class's `n` points is due at `(j + ½) / n`, and the points
-/// are taken in the order they fall due, so any prefix holds each class in
-/// the proportion the cell does to within one point. Ties go to the brighter,
-/// so the order is the same answer every time.
-fn strata(points: &[CellSystem]) -> Vec<u32> {
-    let mut of = [0u32; StarKind::COUNT];
-    for point in points {
-        of[usize::from(point.kind.code())] += 1;
+/// **Every view orders a cell by its own values.** The payload is in
+/// standing order, which is no view's; each view then draws a cell's points
+/// so that any share of them holds each of its values in the proportion the
+/// cell does. Star class reads a point's kind off the point itself. A
+/// political axis reads it off the populated table, a system nobody lives
+/// in standing in the axis's unreported bucket — so the strata go stale with
+/// the table, and [`PointOrders::stratify_along`] is told the cut.
+pub(crate) struct Along<'a> {
+    axis: ColorBy,
+    populated: &'a Populated,
+}
+
+impl<'a> Along<'a> {
+    pub(crate) fn of(axis: ColorBy, populated: &'a Populated) -> Along<'a> {
+        Along { axis, populated }
     }
-    let mut seen = [0u32; StarKind::COUNT];
-    let mut due: Vec<(f64, u32)> = points
+
+    /// The bucket `point` stands in along the axis.
+    fn bucket(&self, point: &CellSystem) -> usize {
+        match self.axis {
+            ColorBy::StarClass => usize::from(point.kind.code()),
+            axis => self
+                .populated
+                .get(point.id64 as i64)
+                .map_or(0, |row| axis.bucket(&Readings::of(row))),
+        }
+    }
+
+    /// Whether the axis is star class, whose values are the points' own.
+    fn is_star_class(&self) -> bool {
+        matches!(self.axis, ColorBy::StarClass)
+    }
+
+    /// How many buckets the axis has.
+    fn buckets(&self) -> usize {
+        self.axis.buckets()
+    }
+
+    /// What the strata along this axis go stale with: nothing along star
+    /// class, whose values are the points', and the cut along a political
+    /// axis, whose values are the populated table's.
+    fn key(&self, cut: u64) -> (ColorBy, u64) {
+        match self.axis {
+            ColorBy::StarClass => (self.axis, 0),
+            axis => (axis, cut),
+        }
+    }
+}
+
+/// A cell's points brightest first, by the light the sidecar holds for each:
+/// what the sky is drawn in, and what the floor cuts short
+///
+/// **The realistic view's order and no other's.** The payload is in
+/// standing order, an even sample of the cell, so the stars that clear the
+/// eye's floor stand anywhere in it; this is the order the payload used to
+/// be in, worked out of the light where it is read rather than built into
+/// the tree every view reads. A point with no light on record stands at the
+/// default class. Ties go to the earlier point, so the order is the same
+/// answer every time.
+fn bright(cell: &ResidentCell) -> Vec<u32> {
+    let mut order: Vec<(f32, u32)> = (0..cell.points.len())
+        .map(|at| (magnitude_at(cell, at), at as u32))
+        .collect();
+    order.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    order.into_iter().map(|(_, at)| at).collect()
+}
+
+/// The absolute magnitude of a resident cell's `at`th point: its light where
+/// the sidecar had one, the default class where it did not.
+fn magnitude_at(cell: &ResidentCell, at: usize) -> f32 {
+    cell.lit_at(at).map_or(
+        galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0 as f32,
+        |lit| lit.magnitude,
+    )
+}
+
+/// A cell's points in the order the map draws them along the axis it is
+/// colored by: every value in proportion to how many of it the cell holds,
+/// in standing order within each
+///
+/// **A view's marks are a sample of what it colors.** Drawn in any order of
+/// its own — brightness was the one the payload used to be in — a cell spent
+/// the budget its rarer values earned on its commoner ones wherever in the
+/// cell they stood: brown dwarfs, last in every payload at an absolute
+/// magnitude of sixteen and a half, were never reached, and a slab of them
+/// twenty light years thick drew as a thin strip between two bands packed
+/// with the M, K and G stars of the same cells — measured over `.index/full`
+/// at four hundred light years out, 603 marks in it against 1,399 in the
+/// layer above, holding two and a half times as many systems. The payload is
+/// an even sample now ([`galos_index::core::standing`]); this makes any
+/// prefix of a cell exact to its own proportions as well.
+///
+/// The `j`th of a value's `n` points is due at `(j + ½) / n`, and the points
+/// are taken in the order they fall due, so any prefix holds each value in
+/// the proportion the cell does to within one point. Ties go to the earlier,
+/// so the order is the same answer every time.
+fn strata(points: &[CellSystem], along: &Along<'_>) -> Vec<u32> {
+    let buckets: Vec<usize> =
+        points.iter().map(|point| along.bucket(point)).collect();
+    let mut of = vec![0u32; along.buckets()];
+    for &bucket in &buckets {
+        of[bucket] += 1;
+    }
+    let mut seen = vec![0u32; along.buckets()];
+    let mut due: Vec<(f64, u32)> = buckets
         .iter()
         .enumerate()
-        .map(|(index, point)| {
-            let class = usize::from(point.kind.code());
-            let j = seen[class];
-            seen[class] += 1;
-            ((f64::from(j) + 0.5) / f64::from(of[class]), index as u32)
+        .map(|(index, &bucket)| {
+            let j = seen[bucket];
+            seen[bucket] += 1;
+            ((f64::from(j) + 0.5) / f64::from(of[bucket]), index as u32)
         })
         .collect();
     due.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -1181,8 +1322,9 @@ pub(crate) fn adopt(
     republished: Option<&mut Republished>,
     id: CellId,
     points: Vec<CellSystem>,
+    lit: Vec<Lit>,
 ) {
-    resident.0.insert(id, points);
+    resident.0.insert(id, points, lit);
     orders.forget(id);
     if let Some(republished) = republished {
         republished.0.insert(id);
@@ -1235,8 +1377,9 @@ fn drawn_first<'a>(
     }))
 }
 
-/// [`drawn_first`] along star class: what the filters admit and then the
-/// rest, each in the cell's [`strata`] rather than its magnitude order
+/// [`drawn_first`] along an order of the cell's own: what the filters admit
+/// and then the rest, each in the cell's [`strata`] or, in the sky, its
+/// [`bright`] order, rather than the payload's
 ///
 /// `admits` is ascending, so a point's admission is a binary search; both
 /// halves walk the strata, the second only where `fill` asks for it.
@@ -1269,7 +1412,7 @@ fn stratified_first<'a>(
 /// `(j + d) / n`, and they are claimed as they fall due, coarse before fine
 /// and scattered by address among those due together ([`rank`]). Where the
 /// ceiling cuts, every cell has drawn the same share of what it admits,
-/// brightest first, so the marks thin evenly and stand as dense as the
+/// in its own order, so the marks thin evenly and stand as dense as the
 /// field under them says the colonies are. Where it does not — a view wide
 /// enough that the lattice is what thins — every colony that stands apart
 /// is drawn, and the order only settles which of two in one patch it is.
@@ -1333,9 +1476,9 @@ fn claim_admitted(
         }
     }
     // Each weighed cell's admitted in the order it draws them, in the
-    // weighing's order, which is [`rank`]'s. Along star class that is the
-    // strata's order and has to be worked out; otherwise it is the admitted
-    // list itself, brightest first.
+    // weighing's order, which is [`rank`]'s. Along the colored axis that is
+    // the strata's order and has to be worked out; otherwise it is the
+    // admitted list itself, in the payload's order.
     //
     // And only what stands inside the bubble, so a cell the edge cuts is
     // weighed for what it can draw: counted whole, its outside took places
@@ -1771,7 +1914,7 @@ pub struct Sampled {
 /// systems first, grown and shed per system as the camera moves
 ///
 /// **The walk says how many, and there is nothing to divide.** A cell's
-/// payload is magnitude-ordered and [`galos_index::read::walk::MarkRef::wanted`] is how
+/// payload is in standing order and [`galos_index::read::walk::MarkRef::wanted`] is how
 /// many of it the cell's footprint holds apart at [`galos_index::MERGE_PX`]
 /// to every merge distance squared of the patch of screen the cell's
 /// contents cover. Drawing that many, and only that many, is what lets a
@@ -1799,24 +1942,25 @@ pub struct Sampled {
 /// it stands apart on the sky ([`claim_admitted`]), so a map narrowed to the
 /// colonies draws every colony of an arm and one to a patch of the core.
 ///
-/// So the order is: what the filters admit, brightest first, and then — only
-/// where [`crate::map::filter::DimTo`] still draws the excluded — the rest,
-/// brightest first, to
+/// So the order is: what the filters admit, and then — only where
+/// [`crate::map::filter::DimTo`] still draws the excluded — the rest, to
 /// fill whatever the admitted left. The excluded are what a short budget sheds
 /// first, which is what they are for: the space a faction is read against
 /// gives way to the faction. Where the admitted alone overrun the budget they
-/// decimate among themselves by magnitude, exactly as the whole payload used
-/// to. Where nothing is asked every system is admitted, the order is the
-/// payload's own, and this costs nothing.
+/// decimate among themselves in the cell's order. Where nothing is asked
+/// every system is admitted, and the order is the cell's own.
 ///
-/// Along star class each half is drawn by class instead, every class of the
-/// cell taking its proportion of the budget, brightest first within it
-/// ([`strata`]): the coloring is of every system, so its marks are a sample
-/// of them rather than the bright end.
+/// **And the cell's own order is the view's.** On the map each half is drawn
+/// along the axis the map is colored by, every value of the cell taking its
+/// proportion of the budget ([`strata`]): the coloring is of the systems, so
+/// its marks are a sample of them. In the sky each half is drawn brightest
+/// first, off the light beside the payload ([`bright`]), which is what the
+/// floor cuts short. The payload's own order, standing, is no view's and is
+/// what a cell not yet ordered draws in.
 ///
 /// What this gives up is that the drawn set is no longer a prefix of the
-/// cell's magnitude order: it is a subset chosen by admission, still in
-/// magnitude order within each half. Nothing reads it as a prefix today.
+/// payload: it is a subset chosen by admission, in the cell's order within
+/// each half. Nothing reads it as a prefix today.
 /// Whoever writes the residual splat must subtract the aggregate of the
 /// systems actually drawn — `Aggregate::remove` over exactly these points —
 /// and not a rank range off the walk's ask, or the glow will double the
@@ -2019,10 +2163,15 @@ pub(crate) fn reconcile(
         galos_index::prelude::Mode::Real { limit } => Some(limit),
         galos_index::prelude::Mode::Shell => None,
     };
-    // Whether each cell's budget is spent by class; see [`strata`].
-    let by_class = by_class(**color_by, &planned.0.mode, by_population);
-    if !by_class {
-        orders.unstratify();
+    // Whether each cell's budget is spent by its values along the axis the
+    // map is colored by; see [`strata`]. Every view on the map is: the sky
+    // spends it brightest first instead, and the populations busiest first.
+    let along = Along::of(**color_by, &populated);
+    let stratified = limit.is_none() && !by_population;
+    let along_key = stratified.then(|| along.key(orders.cut));
+    orders.stratify_along(along_key);
+    if limit.is_none() {
+        orders.unbrighten();
     }
     // What the frame has to spend and what it is spread over. A share of
     // the population is a share of every *other* marked cell's too, so the
@@ -2084,8 +2233,13 @@ pub(crate) fn reconcile(
                     by_population,
                     &mut verdicts,
                 );
-                let stratified =
-                    !by_class || orders.stratify(id, points, &mut verdicts);
+                // Along star class only: a claim draws what the filters
+                // admit wherever it stands apart, and the strata only say
+                // which of two in one patch it is — which along a political
+                // axis is not worth a second walk of the payload in the
+                // frame's budget.
+                let stratified = !(stratified && along.is_star_class())
+                    || orders.stratify(id, points, &along, &mut verdicts);
                 deferred |= !(weighed && stratified);
                 weighed
             },
@@ -2097,11 +2251,11 @@ pub(crate) fn reconcile(
             view.crowded_marks() as usize,
         ),
     };
-    // And star class's strata, off the same budget and in the same order,
-    // for the cells whose share draws; the draw below then finds them
-    // worked out. Left to the draw, they came in down the plan's order and
-    // the classes filled in a patch at a time.
-    if by_class && !narrowed {
+    // And the strata, off the same budget and in the same order, for the
+    // cells whose share draws; the draw below then finds them worked out.
+    // Left to the draw, they came in down the plan's order and the values
+    // filled in a patch at a time.
+    if stratified && !narrowed {
         for &offer in &weighed_in {
             let mark = &planned.0.marks[offer as usize];
             if !in_reach(mark.id, orbit, bubble)
@@ -2110,8 +2264,12 @@ pub(crate) fn reconcile(
                 continue;
             }
             if let Some(cell) = resident.0.cell(mark.id) {
-                deferred |=
-                    !orders.stratify(mark.id, &cell.points, &mut verdicts);
+                deferred |= !orders.stratify(
+                    mark.id,
+                    &cell.points,
+                    &along,
+                    &mut verdicts,
+                );
             }
         }
     }
@@ -2240,7 +2398,7 @@ pub(crate) fn reconcile(
         // held, and every mark would shift as the payloads came in.
         // A cell the share draws nothing of still draws one mark where
         // nothing else in the frame reaches its patch of sky: the
-        // brightest it holds, which is the head of its payload. See
+        // first it draws, which is the head of its order. See
         // [`Empty`] — and the payload is in hand for it, every marked cell
         // in reach being read to [`READ_LEAST`] whatever its share.
         // In the sky the ask is the cell's whole slice: which of it draws is
@@ -2271,14 +2429,20 @@ pub(crate) fn reconcile(
         let refreshed;
         {
             let Some(cell) = resident.0.cell(id) else { continue };
-            // How far down the cell's magnitude order the floor reaches. A
-            // payload is in ascending absolute magnitude, so the stars that
-            // can clear the floor are a prefix of it: measured at the
-            // *nearest* face of the cell, which is the most generous
-            // distance modulus anything in it can have, so the prefix never
-            // cuts a star the exact test below would have kept. Without it
-            // a wide view would walk every point of every marked cell —
-            // tens of millions — to find the few thousand that draw.
+            // In the sky, the cell's points brightest first, off its light;
+            // see [`bright`].
+            if limit.is_some() {
+                deferred |= !orders.brighten(id, cell, &mut verdicts);
+            }
+            // How far down the cell's brightest-first order the floor
+            // reaches. The stars that can clear the floor are a prefix of
+            // it: measured at the *nearest* face of the cell, which is the
+            // most generous distance modulus anything in it can have, so the
+            // prefix never cuts a star the exact test below would have kept.
+            // Without it a wide view would walk every point of every marked
+            // cell — tens of millions — to find the few thousand that draw.
+            // A cell whose order the budget has not reached yet is weighed
+            // whole, point by point.
             let target = match limit {
                 None => asked.min(cell.points.len()),
                 Some(limit) => {
@@ -2292,9 +2456,13 @@ pub(crate) fn reconcile(
                         }
                         false => f64::INFINITY,
                     };
-                    cell.points.partition_point(|point| {
-                        f64::from(point.magnitude) <= faintest
-                    })
+                    match orders.bright(id) {
+                        Some(bright) => bright.partition_point(|&at| {
+                            f64::from(magnitude_at(cell, at as usize))
+                                <= faintest
+                        }),
+                        None => cell.points.len(),
+                    }
                 }
             };
             if target == 0 && !won {
@@ -2312,8 +2480,9 @@ pub(crate) fn reconcile(
                     &mut verdicts,
                 );
             }
-            if by_class {
-                deferred |= !orders.stratify(id, &cell.points, &mut verdicts);
+            if stratified {
+                deferred |=
+                    !orders.stratify(id, &cell.points, &along, &mut verdicts);
             }
             let admits = orders.admits(id);
             let order: Vec<usize> = if by_population {
@@ -2342,6 +2511,10 @@ pub(crate) fn reconcile(
                         )
                         .collect(),
                 }
+            } else if let Some(bright) = limit.and(orders.bright(id)) {
+                // The sky, brightest first: the same walk as the strata's,
+                // in the order the floor was measured down.
+                stratified_first(bright, admits, fill).take(target).collect()
             } else if let Some(strata) = orders.strata(id) {
                 stratified_first(strata, admits, fill).take(target).collect()
             } else {
@@ -2353,7 +2526,7 @@ pub(crate) fn reconcile(
                 // where the eye stands is not drawn at all. The prefix above
                 // is the cell's best case; this is the star's own.
                 if let Some(limit) = limit
-                    && Magnitude(f64::from(point.magnitude))
+                    && Magnitude(f64::from(magnitude_at(cell, index)))
                         .apparent(Distance::light_years(
                             orbit.eye().distance(DVec3::from(point.position)),
                         ))
@@ -2373,7 +2546,7 @@ pub(crate) fn reconcile(
         // What this cell's marks account for, so [`crate::map::paint::glow`] can lay the
         // rest of it down and not the whole. Built here because here is the
         // only place the drawn set is known: it is not a rank range, the
-        // filters having promoted systems out of magnitude order, and it is
+        // filters having promoted systems out of the payload's order, and it is
         // cut again per point by the bubble just below.
         let mut took = Accounted::default();
         let mut round = 0u32;
@@ -2518,7 +2691,7 @@ pub(crate) fn reconcile(
                         // population, and the payload path names one by
                         // its address. See [`System::build`].
                         let system = System::build(
-                            address, at, None, &populated, &names,
+                            address, at, None, None, &populated, &names,
                         );
                         pending.push(system, false, true, now);
                         wanting = true;
@@ -2790,14 +2963,13 @@ mod tests {
         let point = CellSystem {
             id64: 7,
             position: at,
-            magnitude: 0.,
-            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
             kind: galos_index::prelude::StarKind::G,
         };
 
         let system = System::of(
             &point,
+            None,
             &Populated::default(),
             &Names::reaching(Vec::new(), Vec::new()),
         );
@@ -2823,14 +2995,13 @@ mod tests {
         let point = |id: u64, ago: i64| CellSystem {
             id64: id,
             position: [0.; 3],
-            magnitude: 0.,
-            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: (now - Span::seconds(ago)).timestamp() as u32,
             kind: galos_index::prelude::StarKind::G,
         };
         let built = |point: &CellSystem| {
             System::of(
                 point,
+                None,
                 &Populated::default(),
                 &Names::reaching(Vec::new(), Vec::new()),
             )
@@ -2852,13 +3023,11 @@ mod tests {
         );
     }
 
-    /// A payload point at `id`, faintness rising with the id
+    /// A payload point at `id`
     fn point(id: u64) -> CellSystem {
         CellSystem {
             id64: id,
             position: [0.; 3],
-            magnitude: id as f32,
-            temp_bucket: galos_index::core::aggregate::TempBucket::new(0),
             updated_at: 0,
             kind: galos_index::prelude::StarKind::G,
         }
@@ -2944,7 +3113,7 @@ mod tests {
     }
 
     /// Along star class every class takes its share of a cell's budget,
-    /// however faint it is, and the brightest of it
+    /// wherever in the payload it stands
     ///
     /// Brightest first, a cell of ten G stars and twenty brown dwarfs spent
     /// ten marks on the G stars and none on the dwarfs, and a slab of them
@@ -2952,14 +3121,15 @@ mod tests {
     #[test]
     fn each_class_takes_its_share_of_a_cells_budget() {
         use galos_index::prelude::StarKind;
-        // Ten G stars, then twenty brown dwarfs all fainter.
+        // Ten G stars, then twenty brown dwarfs.
         let points: Vec<CellSystem> = (1..=30)
             .map(|id| CellSystem {
                 kind: if id <= 10 { StarKind::G } else { StarKind::BrownDwarf },
                 ..point(id)
             })
             .collect();
-        let order = strata(&points);
+        let populated = Populated::default();
+        let order = strata(&points, &Along::of(ColorBy::StarClass, &populated));
 
         for take in 1..=points.len() {
             let dwarfs = order[..take]
@@ -3002,6 +3172,86 @@ mod tests {
             stratified_first(&order, &admits, false).count(),
             admits.len(),
             "the excluded were offered below the dim"
+        );
+    }
+
+    /// Along a political axis every value takes its share of a cell's
+    /// budget too, off the populated table, and nobody living anywhere is a
+    /// value with a share of its own
+    ///
+    /// A view orders a cell by its own values, whichever axis it colors by:
+    /// a fifth of these systems are imperial colonies and the rest empty, and
+    /// any first few drawn hold them a fifth to within one.
+    #[test]
+    fn a_political_axis_takes_its_share_by_its_own_values() {
+        use elite_journal::prelude::Allegiance;
+        use galos_index::records::PopulatedSystem;
+
+        let points: Vec<CellSystem> = (1..=40).map(point).collect();
+        let colony = |address: i64| PopulatedSystem {
+            address,
+            name: "Colony".into(),
+            position: [0.; 3],
+            population: 1,
+            security: None,
+            government: None,
+            allegiance: Some(Allegiance::Empire),
+            primary_economy: None,
+            secondary_economy: None,
+            factions: Vec::new(),
+            body_count: None,
+            non_body_count: None,
+            state: None,
+            power: None,
+            powerplay_state: None,
+        };
+        // The last eight, so the payload's own order would draw none of them
+        // in its first thirty.
+        let populated = Populated(std::sync::Arc::new(
+            (33..=40).map(|address| (address, colony(address))).collect(),
+        ));
+        let order =
+            strata(&points, &Along::of(ColorBy::Allegiance, &populated));
+        for take in 1..=points.len() {
+            let colonies = order[..take]
+                .iter()
+                .filter(|&&index| points[index as usize].id64 > 32)
+                .count() as f64;
+            let fair = take as f64 * 8. / 40.;
+            assert!(
+                (colonies - fair).abs() <= 1.,
+                "{colonies} colonies in the first {take}, against {fair}"
+            );
+        }
+    }
+
+    /// The sky draws a cell brightest first, off the light beside its
+    /// payload, wherever in the payload the brightest stands
+    ///
+    /// The payload is in standing order, which is no order of brightness;
+    /// the stars that clear the eye's floor are a prefix of this order and
+    /// not of the payload. A point with no light on record stands at the
+    /// default class.
+    #[test]
+    fn the_sky_draws_a_cell_brightest_first() {
+        let lit = |magnitude| galos_index::prelude::Lit {
+            magnitude,
+            temp_bucket: galos_index::prelude::TempBucket::new(0),
+        };
+        let mut resident = Resident::default();
+        let id = CellId::of_point([0.; 3], 4);
+        // Five points and light for four: the fifth stands at the default
+        // class, between the second and the third.
+        resident.insert(
+            id,
+            (1..=5).map(point).collect(),
+            vec![lit(12.), lit(-4.), lit(18.), lit(4.8)],
+        );
+        let cell = resident.cell(id).unwrap();
+        assert_eq!(bright(cell), vec![1, 3, 4, 0, 2]);
+        assert_eq!(
+            magnitude_at(cell, 4),
+            galos_photometry::ClassLight::DEFAULT.absolute_magnitude.0 as f32,
         );
     }
 
@@ -3263,8 +3513,8 @@ mod tests {
         }));
         {
             let mut resident = app.world_mut().resource_mut::<ResidentCells>();
-            resident.0.insert(first, one);
-            resident.0.insert(second, two);
+            resident.0.insert(first, one, Vec::new());
+            resident.0.insert(second, two, Vec::new());
         }
         app.world_mut().resource_mut::<Filters>().add(Filter::Systems {
             label: "one apiece".into(),
@@ -3326,10 +3576,11 @@ mod tests {
                 slice: points.len() as u32,
                 at: place,
             });
-            app.world_mut()
-                .resource_mut::<ResidentCells>()
-                .0
-                .insert(id, points);
+            app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                id,
+                points,
+                Vec::new(),
+            );
         }
         app.insert_resource(Planned(galos_index::prelude::Needed {
             mode: galos_index::prelude::Mode::Shell,
@@ -3415,10 +3666,11 @@ mod tests {
                     slice: points.len() as u32,
                     at: place,
                 });
-                app.world_mut()
-                    .resource_mut::<ResidentCells>()
-                    .0
-                    .insert(id, points);
+                app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                    id,
+                    points,
+                    Vec::new(),
+                );
             }
             app.insert_resource(Planned(galos_index::prelude::Needed {
                 mode: galos_index::prelude::Mode::Shell,
@@ -3491,10 +3743,11 @@ mod tests {
                     slice: points.len() as u32,
                     at: place,
                 });
-                app.world_mut()
-                    .resource_mut::<ResidentCells>()
-                    .0
-                    .insert(id, points);
+                app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                    id,
+                    points,
+                    Vec::new(),
+                );
             }
             app.insert_resource(Planned(galos_index::prelude::Needed {
                 mode: galos_index::prelude::Mode::Shell,
@@ -3555,8 +3808,8 @@ mod tests {
                 .collect()
         };
         let mut resident = ResidentCells::default();
-        resident.0.insert(big, row(1, 100, 0.));
-        resident.0.insert(small, row(1_000, 10, 7.));
+        resident.0.insert(big, row(1, 100, 0.), Vec::new());
+        resident.0.insert(small, row(1_000, 10, 7.), Vec::new());
         let marks: Vec<galos_index::read::walk::MarkRef> = [big, small]
             .into_iter()
             .map(|id| galos_index::read::walk::MarkRef {
@@ -3651,10 +3904,11 @@ mod tests {
                 splats: Vec::new(),
             }));
             for &(id, address) in held {
-                app.world_mut()
-                    .resource_mut::<ResidentCells>()
-                    .0
-                    .insert(id, payload(address));
+                app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                    id,
+                    payload(address),
+                    Vec::new(),
+                );
             }
             app.world_mut().resource_mut::<Filters>().add(Filter::Systems {
                 label: "rivals".into(),
@@ -3675,10 +3929,11 @@ mod tests {
             app.update();
             // Its rival arrives, and nothing else moves.
             let (id, address) = cells[then];
-            app.world_mut()
-                .resource_mut::<ResidentCells>()
-                .0
-                .insert(id, payload(address));
+            app.world_mut().resource_mut::<ResidentCells>().0.insert(
+                id,
+                payload(address),
+                Vec::new(),
+            );
             app.update();
             assert_eq!(queued(&app), 0, "{address} was built over {drawn}");
             assert!(!dropping(&mut app).contains(&drawn), "{drawn} dropped");
@@ -3806,7 +4061,11 @@ mod tests {
             for cell in built.index.cells() {
                 let points = built.payload(cell.id);
                 if !points.is_empty() {
-                    resident.0.insert(cell.id, points.to_vec());
+                    resident.0.insert(
+                        cell.id,
+                        points.to_vec(),
+                        built.lit(cell.id).to_vec(),
+                    );
                     marks.push(galos_index::read::walk::MarkRef {
                         id: cell.id,
                         slice: points.len() as u32,
@@ -4770,10 +5029,11 @@ mod tests {
         app.insert_resource(crate::map::index::ResidentIndex(
             built.index.clone(),
         ));
-        app.world_mut()
-            .resource_mut::<ResidentCells>()
-            .0
-            .insert(owner, built.payload(owner).to_vec());
+        app.world_mut().resource_mut::<ResidentCells>().0.insert(
+            owner,
+            built.payload(owner).to_vec(),
+            built.lit(owner).to_vec(),
+        );
         // Marked as well as held: the walk draws the cells the plan names.
         app.insert_resource(Planned(galos_index::prelude::Needed {
             mode: galos_index::prelude::Mode::Shell,
@@ -4810,6 +5070,7 @@ mod tests {
                         Some(&mut *republished),
                         owner,
                         payload.clone(),
+                        Vec::new(),
                     );
                 });
             });
@@ -4891,7 +5152,7 @@ mod tests {
                 .lock()
                 .expect("the reads lock")
                 .landed
-                .push((owner, Ok((payload.clone(), stamp))));
+                .push((owner, Ok((payload.clone(), Vec::new(), stamp))));
             app.world_mut().run_system_once(collect).expect("collect runs");
             app.world_mut().insert_resource(PendingSpawns::default());
             app.update();

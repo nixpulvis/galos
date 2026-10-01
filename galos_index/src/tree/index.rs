@@ -14,6 +14,7 @@ use crate::core::aggregate::AGE_BUCKETS;
 
 use crate::core::geometry::{CellId, CellMap};
 use crate::tree::cell::Cell;
+use crate::tree::lights::Lights;
 
 /// The resident tree of cell aggregates, keyed by address, and the same tree
 /// flattened for the walks.
@@ -74,6 +75,10 @@ pub(crate) struct Node {
     /// How many the cell owns itself.
     pub(crate) slice: u64,
     /// The brightest absolute magnitude in the subtree, for the sky's cut.
+    ///
+    /// Not the cell's: light is the photometry sidecar's, and [`None`] until
+    /// a reader that asks how bright the sky is hands it over
+    /// ([`Index::lit`]).
     pub(crate) m_min: Option<f32>,
     /// How many systems the subtree holds in each Recency bucket, so a span
     /// can be asked of a merged mark.
@@ -101,7 +106,7 @@ impl Node {
             width: cell.contents_width(),
             count: cell.aggregate.count(),
             slice: cell.slice_len(),
-            m_min: cell.aggregate.m_min(),
+            m_min: None,
             aged: *cell.aggregate.aged(),
             id: cell.id,
             first_child: 0,
@@ -191,6 +196,20 @@ impl Index {
         Index { cells, nodes }
     }
 
+    /// The same tree, its walk told how bright each subtree is
+    ///
+    /// What the realistic view's cut prunes on: a subtree whose brightest
+    /// star cannot clear the eye's limit from here is dropped whole. Every
+    /// other walk is blind to it, which is why it is not in the cells — see
+    /// [`crate::core::photometry`] — and an index read without its lights
+    /// walks the sky as having none to see.
+    pub fn lit(mut self, lights: &Lights) -> Index {
+        for node in &mut self.nodes {
+            node.m_min = lights.get(node.id).m_min();
+        }
+        self
+    }
+
     /// The cell at an address, if the tree holds it.
     pub fn get(&self, id: CellId) -> Option<&Cell> {
         self.cells.get(&id)
@@ -223,30 +242,6 @@ impl Index {
             match kids.clone().find(|&kid| self.nodes[kid].id == want) {
                 Some(kid) => at = kid,
                 None => return,
-            }
-        }
-    }
-
-    /// Where in the walk's nodes the deepest cell standing over `point` sits,
-    /// the descent begun at node `from` rather than at the root
-    ///
-    /// [`descend`](Self::descend)'s rule, answering a position in `nodes`
-    /// rather than an address, so a caller keeping a figure per cell can hold
-    /// it in a `Vec` beside them and roll it up without hashing. Begun below
-    /// the root for a system known to sit inside a cell — a payload's own.
-    pub(crate) fn deepest_below(&self, from: usize, point: [f64; 3]) -> usize {
-        let mut at = from;
-        loop {
-            let node = &self.nodes[at];
-            if node.children == 0 {
-                return at;
-            }
-            let want = CellId::of_point(point, node.id.level + 1);
-            let first = node.first_child as usize;
-            let kids = first..first + node.children as usize;
-            match kids.clone().find(|&kid| self.nodes[kid].id == want) {
-                Some(kid) => at = kid,
-                None => return at,
             }
         }
     }
@@ -295,8 +290,8 @@ impl Index {
     /// This descends from the root instead, dropping a subtree whose box is
     /// already further than `radius` from `center`, so the work is the cells
     /// the sphere actually touches. Every level is visited and not only the
-    /// leaves: a cell owns a *slice* of its subtree's magnitude order (see
-    /// [`Cell::rank_lo`]), so the brightest systems in reach sit in the
+    /// leaves: a cell owns a *slice* of its subtree's standing order (see
+    /// [`Cell::rank_lo`]), so some of the systems in reach sit in the
     /// ancestors and a walk that stopped at leaves would route past them.
     ///
     /// A cell straddling the sphere is handed over rather than measured: the

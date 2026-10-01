@@ -4220,7 +4220,7 @@ mod tests {
     /// published caps is one root payload however far apart they lie), and
     /// the two systems 384 light years apart land the two ways they can. One
     /// is in an *internal* node's slice and the other below it — a cell
-    /// keeps the brightest of what fell in it and pushes the rest down, so a
+    /// keeps the first of what fell in it and pushes the rest down, so a
     /// system in an internal node is ordinary and not an edge case — and the
     /// third is off in a sibling subtree the search's own cell does not
     /// contain at all.

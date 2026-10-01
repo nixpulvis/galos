@@ -1,7 +1,7 @@
 //! The live tree: the galaxy tree held open and kept current.
 //!
 //! [`Snapshot::build`] turns a whole galaxy into a tree at once: the split,
-//! the magnitude ordering, the aggregates. [`Tree`] is that same tree held
+//! the slice ordering, the aggregates. [`Tree`] is that same tree held
 //! open, so a scan arriving on EDDN moves one system and touches only the
 //! cells on its path. The work of one edit is the depth of the tree, not its
 //! size.
@@ -9,14 +9,14 @@
 //! Every edit leaves the tree where a fresh [`Snapshot::build`] over the
 //! same systems would: same cells, same ownership, same payloads, which the
 //! oracle test checks after every operation. A system sits in exactly one
-//! cell, a cell owns the brightest of its subtree its ancestors did not, and
+//! cell, a cell owns the first of its subtree its ancestors did not, and
 //! a cell splits at the cap and collapses back under it.
 //!
 //! Two moves do all the work. **Insert** settles the system at the
 //! shallowest cell on its path with room; where that cell is full and the
-//! newcomer brighter than its faintest, it takes the slot and the evicted
+//! newcomer stands ahead of its last, it takes the slot and the evicted
 //! system carries on down its own path. **Remove** is the mirror: the hole
-//! is filled by promoting the brightest system from the children, which
+//! is filled by promoting the first system from the children, which
 //! leaves a hole one level down. Splitting and collapsing a cell are local
 //! to that cell's own systems.
 //!
@@ -28,10 +28,13 @@
 use crate::build::snapshot::{BuildParams, CellDiff, Snapshot};
 use crate::core::aggregate::Aggregate;
 use crate::core::geometry::{CellId, MAX_LEVEL};
+use crate::core::photometry::{Lit, Photometry};
+use crate::core::standing;
 use crate::system::System;
 use crate::tree::cell::Cell;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+use crate::tree::lights::Lights;
 use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -112,22 +115,9 @@ impl std::ops::Index<&u64> for Records {
     }
 }
 
-/// A monotonic `u64` image of a magnitude, so a `BTreeSet` orders systems
-/// brightest first without a float key. Standard order-preserving transform:
-/// negatives flip every bit, non-negatives flip the sign bit, and the result
-/// sorts as the `f64` did. Magnitudes are finite, so no NaN reaches this.
-fn mag_key(magnitude: f64) -> u64 {
-    let bits = magnitude.to_bits();
-    if bits & 0x8000_0000_0000_0000 != 0 {
-        !bits
-    } else {
-        bits | 0x8000_0000_0000_0000
-    }
-}
-
 /// One node of the live tree.
 ///
-/// `slice` is what the cell owns, ordered `(magnitude, id)`, brightest
+/// `slice` is what the cell owns, ordered by [`standing::key`], the first
 /// first. `physical` is what falls in the cell and is kept only at leaves,
 /// where a split reads it; an internal node's physical members live in its
 /// descendants. `count` is the subtree's physical total, an integer, so the
@@ -168,9 +158,12 @@ pub struct Tree {
     ///
     /// Never *subtracted*: a leaf is re-summed from its own members, at most
     /// [`BuildParams::leaf_cap`] of them, and an internal cell is the merge
-    /// of its children — so `m_min` stays exact, which it is not from a
-    /// difference, and nothing drifts with the number of edits.
+    /// of its children — so nothing drifts with the number of edits.
     agg: HashMap<CellId, Aggregate>,
+    /// Every cell's subtree light, settled beside the totals and on the same
+    /// rule — which is what keeps `m_min` exact, a brightest star being
+    /// nothing a difference can recover.
+    light: HashMap<CellId, Photometry>,
     /// How many of each cell's subtree are owned by it or by something
     /// below it. `rank_lo` is the subtree's count less this; maintained in
     /// the same walk as the totals.
@@ -197,6 +190,7 @@ impl Tree {
             dirty: HashSet::new(),
             gone: HashSet::new(),
             agg: HashMap::new(),
+            light: HashMap::new(),
             owned_below: HashMap::new(),
             restat: HashSet::new(),
             params: *params,
@@ -211,10 +205,7 @@ impl Tree {
                 physical: Vec::new(),
             };
             for point in built.payload(cell.id) {
-                node.slice.insert((
-                    mag_key(tree.records[&point.id64].absolute_magnitude),
-                    point.id64,
-                ));
+                node.slice.insert(standing::key(point.id64));
                 tree.owner.insert(point.id64, cell.id);
             }
             tree.cells.insert(cell.id, node);
@@ -233,6 +224,7 @@ impl Tree {
         // descendants own, so the second map is read back out of the first.
         for cell in built.index.cells() {
             tree.agg.insert(cell.id, cell.aggregate);
+            tree.light.insert(cell.id, built.lights.get(cell.id));
             tree.owned_below
                 .insert(cell.id, cell.aggregate.count() - cell.rank_lo);
         }
@@ -374,13 +366,14 @@ impl Tree {
     ///
     /// A leaf is re-summed from its own physical members and an internal
     /// cell is the merge of its children, so nothing is ever subtracted and
-    /// `m_min` stays exact. The set is what [`bump_count`](Self::bump_count)
+    /// the light's `m_min` stays exact. The set is what [`bump_count`](Self::bump_count)
     /// and the structural moves marked, plus every ancestor of those: a
     /// slice changing without a count changing still moves the owned-below
     /// totals `rank_lo` is read from.
     fn settle(&mut self) {
         for id in &self.gone {
             self.agg.remove(id);
+            self.light.remove(id);
             self.owned_below.remove(id);
         }
         if self.restat.is_empty() && self.dirty.is_empty() {
@@ -403,50 +396,45 @@ impl Tree {
         let mut ordered: Vec<CellId> = touched.into_iter().collect();
         ordered.sort_by_key(|id| std::cmp::Reverse(id.level));
         for id in ordered {
-            let (aggregate, owned) = {
+            let (aggregate, light, owned) = {
                 let node = &self.cells[&id];
                 let mut aggregate = Aggregate::ZERO;
+                let mut light = Photometry::ZERO;
                 let mut owned = node.slice.len() as u64;
                 if node.is_leaf() {
                     for pid in &node.physical {
                         let r = &self.records[pid];
-                        aggregate = aggregate.merge(Aggregate::of_system(
-                            r.position,
-                            r.absolute_magnitude,
-                            r.temperature,
-                            r.age_bucket,
-                            r.kind,
-                        ));
+                        aggregate = aggregate.merge(Aggregate::of(r));
+                        light = light.merge(Photometry::of(r));
                     }
                 } else {
                     for child in id.children() {
                         if self.cells.contains_key(&child) {
                             aggregate = aggregate.merge(self.agg[&child]);
+                            light = light.merge(self.light[&child]);
                             owned += self.owned_below[&child];
                         }
                     }
                 }
-                (aggregate, owned)
+                (aggregate, light, owned)
             };
             self.agg.insert(id, aggregate);
+            self.light.insert(id, light);
             self.owned_below.insert(id, owned);
         }
         self.restat.clear();
     }
 
     /// Settle a system into the shallowest cell on its path with room,
-    /// displacing a fainter owner down its own path where it must.
+    /// displacing an owner standing later down its own path where it must.
     fn own_insert(&mut self, start: u64) {
         let mut id = start;
         let mut cur = CellId::ROOT;
         loop {
-            let (mk, position) = {
-                let r = &self.records[&id];
-                (mag_key(r.absolute_magnitude), r.position)
-            };
-            let key = (mk, id);
+            let position = self.records[&id].position;
+            let key = standing::key(id);
 
-            let (full, faintest) = {
+            let (full, last) = {
                 let node = &self.cells[&cur];
                 let cap = if node.is_leaf() {
                     self.params.leaf_cap
@@ -466,15 +454,15 @@ impl Tree {
                 return;
             }
 
-            let faintest = faintest.expect("a full cell has a faintest owner");
-            if key < faintest {
+            let last = last.expect("a full cell has a last owner");
+            if key < last {
                 let node = self.cells.get_mut(&cur).unwrap();
-                node.slice.remove(&faintest);
+                node.slice.remove(&last);
                 node.slice.insert(key);
                 self.owner.insert(id, cur);
                 self.dirty.insert(cur);
                 // The evicted system carries on down its own path.
-                let evicted = faintest.1;
+                let evicted = last.1;
                 let evicted_pos = self.records[&evicted].position;
                 id = evicted;
                 cur = CellId::of_point(evicted_pos, cur.level + 1);
@@ -485,7 +473,7 @@ impl Tree {
     }
 
     /// Divide a leaf that has outgrown the cap: hand its systems to eight
-    /// children, keep the brightest [`BuildParams::internal_slice`] of what it
+    /// children, keep the first [`BuildParams::internal_slice`] of what it
     /// owned, and push the rest down.
     fn split(&mut self, id: CellId) {
         let physical =
@@ -518,7 +506,7 @@ impl Tree {
         self.cells.get_mut(&id).unwrap().child_mask = child_mask;
         self.dirty.insert(id);
 
-        // The node keeps the brightest of what it owned; the rest belong to the
+        // The node keeps the first of what it owned; the rest belong to the
         // children now, by the same path rule the cascade uses.
         let slice = std::mem::take(&mut self.cells.get_mut(&id).unwrap().slice);
         let mut kept = BTreeSet::new();
@@ -572,24 +560,20 @@ impl Tree {
         let owner = self.owner.remove(&id).unwrap();
         let leaf = self.leaf.remove(&id).unwrap();
 
-        self.cells
-            .get_mut(&owner)
-            .unwrap()
-            .slice
-            .remove(&(mag_key(rec.absolute_magnitude), id));
+        self.cells.get_mut(&owner).unwrap().slice.remove(&standing::key(id));
         self.dirty.insert(owner);
         self.cells.get_mut(&leaf).unwrap().physical.retain(|&x| x != id);
         self.bump_count(rec.position, leaf.level, -1);
         self.records.remove(id);
 
-        // Fill the hole the departed owner left by promoting the brightest
+        // Fill the hole the departed owner left by promoting the first
         // system from below, which leaves a hole one level down.
         self.pull_up(owner);
 
         self.repair(leaf, rec.position);
     }
 
-    /// Promote the brightest owned system from the children of `node` up into
+    /// Promote the first owned system from the children of `node` up into
     /// it, then repeat one level down, until a leaf or an empty subtree.
     fn pull_up(&mut self, start: CellId) {
         let mut node = start;
@@ -597,8 +581,8 @@ impl Tree {
             if self.cells[&node].is_leaf() {
                 return;
             }
-            // The brightest system owned anywhere below is the brightest owned
-            // by a direct child, each of which owns the brightest of its own.
+            // The first system owned anywhere below is the first owned by a
+            // direct child, each of which owns the first of its own.
             let mut best: Option<(u64, u64)> = None;
             let mut from = None;
             for octant in 0..8u8 {
@@ -726,15 +710,26 @@ impl Tree {
     /// maintained totals and builds only the payloads it will write.
     pub fn to_snapshot(&mut self) -> Snapshot {
         self.settle();
-        let payloads = self
-            .cells
-            .keys()
-            .filter_map(|&id| {
-                let points = self.payload_of(id);
-                (!points.is_empty()).then_some((id, points))
-            })
-            .collect();
-        Snapshot { index: self.index_of(), payloads }
+        let mut payloads = HashMap::new();
+        let mut lit = HashMap::new();
+        for &id in self.cells.keys() {
+            let (points, light) = self.payload_of(id);
+            if !points.is_empty() {
+                payloads.insert(id, points);
+                lit.insert(id, light);
+            }
+        }
+        Snapshot {
+            index: self.index_of(),
+            lights: self.lights_of(),
+            payloads,
+            lit,
+        }
+    }
+
+    /// Every cell's light as the settled totals have it.
+    fn lights_of(&self) -> Lights {
+        self.cells.keys().map(|&id| (id, self.light[&id])).collect()
     }
 
     /// The index as the maintained totals have it: one pass over the cells,
@@ -757,14 +752,19 @@ impl Tree {
         }))
     }
 
-    /// One cell's payload: what it owns, brightest first, as the slice holds
-    /// it.
-    fn payload_of(&self, id: CellId) -> Vec<CellSystem> {
-        let Some(node) = self.cells.get(&id) else { return Vec::new() };
+    /// One cell's payload: what it owns, in standing order, as the slice holds
+    /// it, and its systems' light in the same order.
+    fn payload_of(&self, id: CellId) -> (Vec<CellSystem>, Vec<Lit>) {
+        let Some(node) = self.cells.get(&id) else {
+            return (Vec::new(), Vec::new());
+        };
         node.slice
             .iter()
-            .map(|&(_, pid)| CellSystem::of(&self.records[&pid]))
-            .collect()
+            .map(|&(_, pid)| {
+                let record = &self.records[&pid];
+                (CellSystem::of(record), Lit::of(record))
+            })
+            .unzip()
     }
 
     /// Write the tree whole to a directory, as a first publish or a reset.
@@ -789,19 +789,26 @@ impl Tree {
         self.settle();
         let mut dirtied = CellDiff::default();
         let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
+        let mut lit: HashMap<CellId, Vec<Lit>> = HashMap::new();
         let touched: HashSet<CellId> =
             self.dirty.iter().chain(self.gone.iter()).copied().collect();
         for id in touched {
-            let points = self.payload_of(id);
+            let (points, light) = self.payload_of(id);
             match points.is_empty() {
                 false => {
                     dirtied.changed.push(id);
                     payloads.insert(id, points);
+                    lit.insert(id, light);
                 }
                 true => dirtied.removed.push(id),
             }
         }
-        let built = Snapshot { index: self.index_of(), payloads };
+        let built = Snapshot {
+            index: self.index_of(),
+            lights: self.lights_of(),
+            payloads,
+            lit,
+        };
         built.write_diff(dir, &dirtied)?;
         self.dirty.clear();
         self.gone.clear();
@@ -879,14 +886,10 @@ mod tests {
                 "count at {:?}",
                 cell.id
             );
-            assert_eq!(
-                got.aggregate.m_min(),
-                cell.aggregate.m_min(),
-                "m_min at {:?}",
-                cell.id
-            );
-            let (a, b) =
-                (got.aggregate.total_flux(), cell.aggregate.total_flux());
+            let (ours, theirs) =
+                (live.lights.get(cell.id), fresh.lights.get(cell.id));
+            assert_eq!(ours.m_min(), theirs.m_min(), "m_min at {:?}", cell.id);
+            let (a, b) = (ours.total_flux(), theirs.total_flux());
             assert!(
                 (a - b).abs() <= b.abs() * 1e-6 + 1e-12,
                 "flux at {:?}",
@@ -897,6 +900,12 @@ mod tests {
                 live.payload(cell.id),
                 fresh.payload(cell.id),
                 "payload at {:?}",
+                cell.id
+            );
+            assert_eq!(
+                live.lit(cell.id),
+                fresh.lit(cell.id),
+                "light at {:?}",
                 cell.id
             );
         }

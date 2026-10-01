@@ -338,7 +338,8 @@ fn ask_leg(
                             // A stop comes out of the jump graph, which is
                             // places and nothing else.
                             System::build(
-                                address, position, None, &populated, &names,
+                                address, position, None, None, &populated,
+                                &names,
                             )
                         })
                         .collect()

@@ -76,7 +76,7 @@ pub(super) mod fixtures {
     }
 
     /// A cube lattice of systems well inside the root cube, each a touch
-    /// fainter than the last so the magnitude ordering is unambiguous.
+    /// fainter than the last.
     pub(super) fn systems(n: usize) -> Vec<System> {
         let side = (n as f64).cbrt().ceil() as usize;
         let step = 80.0;

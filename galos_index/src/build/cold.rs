@@ -423,7 +423,7 @@ impl<'a> Build<'a> {
             return Err(err);
         }
         crown.built().write_payloads(&dir)?;
-        let mut indexes = vec![crown.built().index.clone()];
+        let mut indexes = Vec::new();
         let mut base = Compaction::begin(&checkpoint)?;
         let mut points = crown.built().point_count();
 
@@ -437,7 +437,7 @@ impl<'a> Build<'a> {
             );
             built.write_payloads(&dir)?;
             points += built.point_count();
-            indexes.push(built.index);
+            indexes.push((built.index, built.lights));
             for &system in spilled.systems() {
                 base.push(system)?;
             }
@@ -451,8 +451,14 @@ impl<'a> Build<'a> {
         // is three hours of not knowing which file. Named, so it says.
         step("the resume point", base.finish(cursor, by))?;
 
-        let index = region::joined(&crown, indexes.iter().skip(1));
+        let (index, lights) = region::joined(
+            &crown,
+            indexes.iter().map(|(index, lights)| (index, lights)),
+        );
         let published = step("the names table", names.finish())?;
+        // The light before the index, so a reader that finds the index finds
+        // the light of every cell it names.
+        step("the photometry", lights.write(&dir))?;
         step("the index file", index.write(&dir))?;
         // The cells of whatever tree stood here before this one, which this
         // build neither wrote nor named: see
@@ -686,7 +692,7 @@ impl fmt::Display for Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codec::layout::{HEAD_FILE, NAMES_DIR};
+    use crate::codec::layout::{HEAD_FILE, NAMES_DIR, PHOTOMETRY_FILE};
     use crate::codec::names::Names;
     use std::cell::Cell;
     use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1226,8 +1232,12 @@ mod tests {
         };
         let mine = over(&dir);
         let theirs = over(&whole);
+        // The two files of sums are left to `counted` below: a resumed build
+        // forms other regions and sums the same systems' moments in another
+        // order, which is the same figures to the last bit or two.
         for (path, bytes) in &theirs {
             if path == Path::new(INDEX_FILE)
+                || path == Path::new(PHOTOMETRY_FILE)
                 || path == &Path::new(NAMES_DIR).join(HEAD_FILE)
             {
                 continue;
@@ -1269,6 +1279,16 @@ mod tests {
             cells
         };
         assert_eq!(counted(&dir), counted(&whole), "the trees differ");
+        let brightest = |dir: &Path| {
+            let lights = crate::tree::lights::Lights::read(dir).expect("light");
+            let mut cells: Vec<(u8, u64, Option<f32>)> = lights
+                .iter()
+                .map(|(id, light)| (id.level, id.morton(), light.m_min()))
+                .collect();
+            cells.sort_unstable_by_key(|&(level, morton, _)| (level, morton));
+            cells
+        };
+        assert_eq!(brightest(&dir), brightest(&whole), "the light differs");
     }
 
     /// Bodies large enough that a shard's dead records are worth sweeping

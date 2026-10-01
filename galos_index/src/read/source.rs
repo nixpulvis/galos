@@ -23,9 +23,11 @@ use crate::codec::names;
 use crate::codec::tables::Table;
 use crate::codec::tables::msgpack::read_meta;
 use crate::core::geometry::CellId;
+use crate::core::photometry::Lit;
 use crate::records::{Faction, PopulatedSystem, SystemBodies, SystemReach};
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+use crate::tree::lights::Lights;
 use async_trait::async_trait;
 use std::io;
 use std::path::PathBuf;
@@ -83,13 +85,14 @@ pub trait Source: Send + Sync {
     /// where the cell owns nothing.
     async fn payload(&self, id: CellId) -> io::Result<Vec<CellSystem>>;
 
-    /// The brightest `limit` of one cell's payload.
+    /// The first `limit` of one cell's payload.
     ///
-    /// What a draw actually wants: a payload is magnitude-ordered and the
-    /// map draws a share of each cell, so the rest is bytes fetched, held
-    /// and never looked at. A transport that cannot answer a range answers
-    /// the whole and the caller is no worse off than before; a file can,
-    /// and does.
+    /// What a draw actually wants: a payload is in
+    /// [`standing`](crate::core::standing) order, so its first few are an
+    /// even sample of it, and the map draws a share of each cell, so the
+    /// rest is bytes fetched, held and never looked at. A transport that
+    /// cannot answer a range answers the whole and the caller is no worse
+    /// off than before; a file can, and does.
     async fn payload_prefix(
         &self,
         id: CellId,
@@ -99,6 +102,23 @@ pub trait Source: Send + Sync {
         points.truncate(limit);
         Ok(points)
     }
+
+    /// Every cell's light: the photometry sidecar's index half, which only a
+    /// reader asking how bright the sky is wants. See
+    /// [`Index::lit`](crate::tree::index::Index::lit).
+    ///
+    /// Written before the index it stands beside, so a reader that re-reads
+    /// both when [`Part::Index`]'s stamp moves has the light of every cell it
+    /// was handed. Empty where the directory has none on record.
+    async fn lights(&self) -> io::Result<Lights>;
+
+    /// The first `limit` of one cell's systems' light, in its payload's own
+    /// order, so the `at`th of one is the `at`th of the other.
+    ///
+    /// Written before the payload it stands beside, so a reader that re-reads
+    /// both when [`Part::Cell`]'s stamp moves has a light for every system it
+    /// was handed. Empty where the cell has none on record.
+    async fn lit(&self, id: CellId, limit: usize) -> io::Result<Vec<Lit>>;
 
     /// The populated-systems table, held resident for filtering and color.
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>>;
@@ -174,8 +194,9 @@ pub async fn table<T: Table>(
 
 /// A [`Source`] over a build directory on the local filesystem.
 ///
-/// The directory holds `index.bin`, a `cells/` subdirectory of payloads, and
-/// the metadata files this reads beside them. The reads are blocking; a reader
+/// The directory holds `index.bin`, a `cells/` subdirectory of payloads, the
+/// photometry sidecar beside both, and the metadata files this reads beside
+/// them. The reads are blocking; a reader
 /// drives them off its own task pool.
 pub struct FsSource {
     dir: PathBuf,
@@ -204,6 +225,19 @@ impl Source for FsSource {
         limit: usize,
     ) -> io::Result<Vec<CellSystem>> {
         Index::read_payload_prefix(&self.dir, id, limit)
+    }
+
+    async fn lights(&self) -> io::Result<Lights> {
+        match Lights::read(&self.dir) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                Ok(Lights::default())
+            }
+            read => read,
+        }
+    }
+
+    async fn lit(&self, id: CellId, limit: usize) -> io::Result<Vec<Lit>> {
+        Directory::at(&self.dir).read_lit(id, limit)
     }
 
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>> {

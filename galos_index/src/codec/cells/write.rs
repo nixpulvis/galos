@@ -1,5 +1,6 @@
-//! Putting a built tree down: the index file, a payload per cell, the
-//! changes a publish makes, and the sweep of what no cell names.
+//! Putting a built tree down: the index file, a payload per cell and the
+//! light beside it, the changes a publish makes, and the sweep of what no
+//! cell names.
 
 use super::format::payload_bytes;
 use crate::codec::Directory;
@@ -8,8 +9,10 @@ use crate::codec::layout::{
     INDEX_FILE, PAYLOAD_DIR, legacy_payload_path, payload_path,
 };
 use crate::core::geometry::CellId;
+use crate::core::photometry::Lit;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+use crate::tree::lights::Lights;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -27,41 +30,63 @@ impl Index {
 }
 
 impl Directory<'_> {
-    /// Write a payload file for every cell that owns any systems, and no index.
+    /// Write a payload file for every cell that owns any systems, and its
+    /// systems' light beside it, and no index.
     ///
     /// Existing files are overwritten; a cell with no systems is left without
-    /// one. See [`Snapshot::write`](crate::build::snapshot::Snapshot::write).
+    /// either. See [`Snapshot::write`](crate::build::snapshot::Snapshot::write).
     pub(crate) fn write_payloads<'a>(
         self,
-        payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
+        payloads: impl IntoIterator<Item = (CellId, &'a [CellSystem], &'a [Lit])>,
     ) -> io::Result<()> {
         let dir = self.root;
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
-        for (id, points) in payloads {
+        for (id, points, lit) in payloads {
             if !points.is_empty() {
-                Directory::at(dir)
-                    .write_payload(id, payload_bytes(id, points))?;
+                self.write_cell(id, points, lit)?;
             }
         }
         Ok(())
     }
 
-    /// Publish a change: the index whole, the `changed` cells' payloads, and the
-    /// `removed` cells' files deleted, in both layouts.
+    /// Write one cell's payload and its systems' light, the light first
+    ///
+    /// So a reader that finds a payload finds the light that goes with it: a
+    /// write cut short between the two leaves the old payload over the new
+    /// light, which the payload's own count will not run past, rather than a
+    /// payload with nothing beside it.
+    pub(crate) fn write_cell(
+        self,
+        id: CellId,
+        points: &[CellSystem],
+        lit: &[Lit],
+    ) -> io::Result<()> {
+        debug_assert_eq!(points.len(), lit.len(), "a payload and its light");
+        self.write_lit(id, lit)?;
+        self.write_payload(id, payload_bytes(id, points))
+    }
+
+    /// Publish a change: the index and the lights whole, the `changed` cells'
+    /// payloads and light, and the `removed` cells' files deleted, in both
+    /// layouts.
     ///
     /// The directory ends identical to a full write of the same tree. See
     /// [`Snapshot::write_diff`](crate::build::snapshot::Snapshot::write_diff).
     pub(crate) fn write_cell_changes<'a>(
         self,
         index: &Index,
-        changed: impl IntoIterator<Item = (CellId, &'a [CellSystem])>,
+        lights: &Lights,
+        changed: impl IntoIterator<Item = (CellId, &'a [CellSystem], &'a [Lit])>,
         removed: impl IntoIterator<Item = CellId>,
     ) -> io::Result<()> {
         let dir = self.root;
         fs::create_dir_all(dir.join(PAYLOAD_DIR))?;
+        // The light before the file it stands beside, every time, so a
+        // reader that finds one finds the other as new.
+        lights.write(dir)?;
         fs::write(dir.join(INDEX_FILE), index.to_bytes())?;
-        for (id, points) in changed {
-            self.write_payload(id, payload_bytes(id, points))?;
+        for (id, points, lit) in changed {
+            self.write_cell(id, points, lit)?;
         }
         for id in removed {
             for path in [payload_path(dir, id), legacy_payload_path(dir, id)] {
@@ -71,6 +96,7 @@ impl Directory<'_> {
                     Err(e) => return Err(e),
                 }
             }
+            self.remove_lit(id)?;
         }
         Ok(())
     }
@@ -106,7 +132,8 @@ impl Directory<'_> {
 /// What a sweep of the payload directory found.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Swept {
-    /// Payload files no cell of the index names.
+    /// Payload files no cell of the index names, and the light files beside
+    /// them.
     pub orphans: usize,
     /// What those files hold, in bytes.
     pub bytes: u64,
@@ -142,29 +169,31 @@ impl Directory<'_> {
     /// `|id| index.get(id).is_some()` over the [`Index`] just
     /// written. `apply` false counts and removes nothing, which is what `galos
     /// index sweep` reports before it is asked to act.
+    ///
+    /// The photometry sidecar's per-cell files are swept by the same rule,
+    /// being named as the payloads are: a cell the tree does not name has no
+    /// light either.
     pub fn sweep_payloads(
         self,
         named: &dyn Fn(CellId) -> bool,
         apply: bool,
     ) -> io::Result<Swept> {
-        let dir = self.root;
-        let root = dir.join(PAYLOAD_DIR);
-        let entries = match fs::read_dir(&root) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Ok(Swept::default());
-            }
-            Err(e) => return Err(e),
-        };
         let mut swept = Swept { removed: apply, ..Swept::default() };
-        for entry in entries {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                for shard in fs::read_dir(entry.path())? {
-                    orphan(&shard?, named, apply, &mut swept)?;
+        for root in [self.root.join(PAYLOAD_DIR), self.lit_dir()] {
+            let entries = match fs::read_dir(&root) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e),
+            };
+            for entry in entries {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    for shard in fs::read_dir(entry.path())? {
+                        orphan(&shard?, named, apply, &mut swept)?;
+                    }
+                } else {
+                    orphan(&entry, named, apply, &mut swept)?;
                 }
-            } else {
-                orphan(&entry, named, apply, &mut swept)?;
             }
         }
         Ok(swept)
@@ -322,11 +351,24 @@ mod tests {
             fs::read(b.join(INDEX_FILE)).unwrap(),
             "index files differ",
         );
+        assert_eq!(
+            fs::read(crate::codec::layout::photometry_path(a)).unwrap(),
+            fs::read(crate::codec::layout::photometry_path(b)).unwrap(),
+            "photometry files differ",
+        );
+        for sub in [PAYLOAD_DIR, crate::codec::layout::PHOTOMETRY_DIR] {
+            assert_files_identical(&a.join(sub), &b.join(sub));
+        }
+    }
+
+    /// Two directories of sharded per-cell files hold the same files, byte
+    /// for byte.
+    fn assert_files_identical(a: &Path, b: &Path) {
         // One level of shard directories, so the comparison is over the
-        // payloads and not over how they are filed.
+        // files and not over how they are filed.
         let names = |d: &Path| {
             let mut v: Vec<PathBuf> = Vec::new();
-            for shard in fs::read_dir(d.join(PAYLOAD_DIR)).unwrap() {
+            for shard in fs::read_dir(d).unwrap() {
                 let shard = shard.unwrap();
                 if !shard.file_type().unwrap().is_dir() {
                     v.push(PathBuf::from(shard.file_name()));
@@ -343,12 +385,12 @@ mod tests {
             v
         };
         let (na, nb) = (names(a), names(b));
-        assert_eq!(na, nb, "payload file sets differ");
+        assert_eq!(na, nb, "{} file sets differ", a.display());
         for name in na {
             assert_eq!(
-                fs::read(a.join(PAYLOAD_DIR).join(&name)).unwrap(),
-                fs::read(b.join(PAYLOAD_DIR).join(&name)).unwrap(),
-                "payload {} differs",
+                fs::read(a.join(&name)).unwrap(),
+                fs::read(b.join(&name)).unwrap(),
+                "{} differs",
                 name.display(),
             );
         }
@@ -365,8 +407,8 @@ mod tests {
         let prev = Snapshot::build(&s, &params);
         prev.write(&scratch.0).unwrap();
 
-        // The shapes churn takes: one system moved within the ordering, one
-        // new faint system, one dropped.
+        // The shapes churn takes: one system brightened, which moves its
+        // light and not where it stands, one new faint system, one dropped.
         s[100].absolute_magnitude += 2.0;
         s.push(System {
             id64: 999_999,

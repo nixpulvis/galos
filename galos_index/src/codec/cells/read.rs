@@ -4,7 +4,6 @@
 use super::format::{self, INDEX_VERSION, index_version};
 use crate::codec::bytes::Decode;
 use crate::codec::layout::{INDEX_FILE, legacy_payload_path, payload_path};
-use crate::core::aggregate::TempBucket;
 use crate::core::geometry::CellId;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
@@ -59,10 +58,11 @@ impl Index {
         Ok(format::payload_points(id, &bytes).unwrap_or_default())
     }
 
-    /// The first `limit` systems of a cell's payload, brightest first.
+    /// The first `limit` systems of a cell's payload, in standing order.
     ///
     /// **What a draw asks for is a share of a cell and not the cell.** The
-    /// payload is magnitude-ordered, the map draws the brightest few of it
+    /// payload is in [`standing`](crate::core::standing) order, so its first
+    /// few are an even sample of it, the map draws a few of it
     /// (`galos_map`'s `bounded::wanted`), and reading the rest is bytes
     /// faulted, decoded, held and never looked at: measured over
     /// `.index/full`, a flight that drew eight thousand marks read 121 M
@@ -105,8 +105,7 @@ impl Index {
 /// **The columns are the point of the layout.** A position is six bytes and
 /// a star kind is one, laid in runs of their own, so an expansion that
 /// measures every system in a cell walks 6 bytes a row and touches the
-/// magnitude, the temperature and the moment not at all. See
-/// [`format::payload_bytes`].
+/// address and the moment not at all. See [`format::payload_bytes`].
 pub struct Payload {
     map: memmap2::Mmap,
     count: usize,
@@ -119,8 +118,8 @@ pub struct Payload {
     kinds: usize,
     /// Where the address column starts.
     ids: usize,
-    /// Where the photometry column starts.
-    lit: usize,
+    /// Where the moment column starts.
+    updated: usize,
 }
 
 impl Payload {
@@ -168,7 +167,7 @@ impl Payload {
             origin: id.min_ly(),
             kinds: held.kinds,
             ids: held.ids,
-            lit: held.lit,
+            updated: held.updated,
         }))
     }
 
@@ -220,19 +219,13 @@ impl Payload {
         crate::core::star::StarKind::from_code(self.map[self.kinds + at])
     }
 
-    /// The photometry of the `at`th system: how bright, how hot, how lately
-    /// heard from.
+    /// When the `at`th system was last heard from, Unix seconds.
     ///
     /// A column of its own because the router never reads it and the
     /// drawing always does.
-    pub fn lit_at(&self, at: usize) -> (f32, TempBucket, u32) {
-        let from = self.lit + at * 9;
-        let bytes = &self.map[from..from + 9];
-        (
-            f32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            TempBucket::new(bytes[4]),
-            u32::from_le_bytes(bytes[5..9].try_into().unwrap()),
-        )
+    pub fn updated_at(&self, at: usize) -> u32 {
+        let from = self.updated + at * 4;
+        u32::from_le_bytes(self.map[from..from + 4].try_into().unwrap())
     }
 
     /// The `at`th system as a drawable point, columns joined.
@@ -241,13 +234,10 @@ impl Payload {
     /// shape the layout is deliberately not in: the router reads one column
     /// of millions of rows, and the map reads every column of a handful.
     pub fn point_at(&self, at: usize) -> CellSystem {
-        let (magnitude, temp_bucket, updated_at) = self.lit_at(at);
         CellSystem {
             id64: self.id64_at(at),
             position: self.position_at(at),
-            magnitude,
-            temp_bucket,
-            updated_at,
+            updated_at: self.updated_at(at),
             kind: self.kind_at(at),
         }
     }

@@ -12,23 +12,24 @@
 //!
 //! ## Why a region can be built alone
 //!
-//! A cell owns the brightest systems of its subtree that its ancestors have
-//! not already claimed. Inside a region that rule is local. Across regions
-//! it is not: the cells *above* the cut — the **crown** — are shared, and
-//! the brightest systems anywhere may be owned up there.
+//! A cell owns the first systems of its subtree, in
+//! [`standing`](crate::core::standing) order, that its ancestors have not
+//! already claimed. Inside a region that rule is local. Across regions it is
+//! not: the cells *above* the cut — the **crown** — are shared, and the first
+//! systems anywhere may be owned up there.
 //!
 //! The coupling is bounded. A region's crown cells are its own ancestors,
 //! `region.level` of them, each owning at most
-//! [`BuildParams::internal_slice`], so a region can lose only its brightest
+//! [`BuildParams::internal_slice`], so a region can lose only its first
 //! `region.level × internal_slice` systems, and it is enough to
-//! [offer](Offer::of) exactly those. Nothing fainter can be claimed: a
+//! [offer](Offer::of) exactly those. Nothing standing later can be claimed: a
 //! candidate that finds no room proves the crown was full, and the crown
-//! never empties, so everything fainter falls to the region.
+//! never empties, so everything after it falls to the region.
 //!
 //! ## The shape of a build
 //!
 //! 1. **Offer.** Each region streams its systems once, keeping its
-//!    brightest few and its total in bounded memory.
+//!    first few and its total in bounded memory.
 //! 2. **Crown.** [`Crown::over`] places those candidates in the cells above
 //!    the cut, as a whole build would, and answers which it claimed.
 //! 3. **Build.** Each region is a [`Snapshot::of_region`] over its own
@@ -46,10 +47,13 @@
 use crate::build::snapshot::{BuildParams, Snapshot};
 use crate::core::aggregate::Aggregate;
 use crate::core::geometry::CellId;
+use crate::core::photometry::{Lit, Photometry};
+use crate::core::standing;
 use crate::system::System;
 use crate::tree::cell::Cell;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+use crate::tree::lights::Lights;
 use std::collections::{HashMap, HashSet};
 
 /// Which cells a galaxy is built a region at a time from.
@@ -160,18 +164,20 @@ impl Cut {
 
 /// What one region hands the cells above it.
 ///
-/// Its brightest few systems, which are the only ones the crown could take,
+/// Its first few systems, which are the only ones the crown could take,
 /// and the total of everything in it, which is what the crown's aggregates
 /// are rolled up from. Both are gathered in one streaming pass.
 #[derive(Clone, Debug)]
 pub struct Offer {
     /// The cell this is an offer for.
     pub region: CellId,
-    /// Its brightest systems, brightest first, at most as many as the crown
+    /// Its first systems in standing order, at most as many as the crown
     /// could possibly claim.
-    brightest: Vec<System>,
+    first: Vec<System>,
     /// Everything in the region, rolled up.
     total: Aggregate,
+    /// And its light.
+    light: Photometry,
 }
 
 impl Offer {
@@ -185,34 +191,28 @@ impl Offer {
         params: &BuildParams,
     ) -> Offer {
         let room = region.level as usize * params.internal_slice;
-        let mut brightest: Vec<System> = Vec::with_capacity(room + 1);
+        let mut first: Vec<System> = Vec::with_capacity(room + 1);
         let mut total = Aggregate::ZERO;
+        let mut light = Photometry::ZERO;
 
         for system in systems {
-            total = total.merge(Aggregate::of_system(
-                system.position,
-                system.absolute_magnitude,
-                system.temperature,
-                system.age_bucket,
-                system.kind,
-            ));
+            total = total.merge(Aggregate::of(&system));
+            light = light.merge(Photometry::of(&system));
             if room == 0 {
                 continue;
             }
             // Held sorted rather than heaped: the insert is a memmove of
-            // `room`, and it only happens for a system brighter than the
-            // faintest already kept.
-            if brightest.len() == room
-                && !brighter(&system, &brightest[room - 1])
-            {
+            // `room`, and it only happens for a system standing ahead of the
+            // last already kept.
+            if first.len() == room && !ahead(&system, &first[room - 1]) {
                 continue;
             }
-            let at = brightest.partition_point(|held| brighter(held, &system));
-            brightest.insert(at, system);
-            brightest.truncate(room);
+            let at = first.partition_point(|held| ahead(held, &system));
+            first.insert(at, system);
+            first.truncate(room);
         }
 
-        Offer { region, brightest, total }
+        Offer { region, first, total, light }
     }
 
     /// How many systems the region holds.
@@ -221,12 +221,10 @@ impl Offer {
     }
 }
 
-/// Brightest first, ties by id: the order the build settles ownership in.
-fn brighter(a: &System, b: &System) -> bool {
-    a.absolute_magnitude
-        .total_cmp(&b.absolute_magnitude)
-        .then(a.id64.cmp(&b.id64))
-        .is_lt()
+/// Whether `a` stands ahead of `b`: the order the build settles ownership
+/// in. See [`standing`].
+fn ahead(a: &System, b: &System) -> bool {
+    standing::key(a.id64) < standing::key(b.id64)
 }
 
 /// The cells above the cut, and what they took from the regions below.
@@ -242,7 +240,7 @@ pub struct Crown {
 impl Crown {
     /// Settle the cells above the cut over what the regions offered.
     ///
-    /// The candidates are taken brightest first across *all* regions, which
+    /// The candidates are taken in standing order across *all* regions, which
     /// is the order a whole build would have reached them in, and each is
     /// placed at the shallowest crown cell on its path with room. A
     /// candidate that finds none is left to its region.
@@ -251,31 +249,30 @@ impl Crown {
         // something beneath them.
         let mut child_mask: HashMap<CellId, u8> = HashMap::new();
         let mut total: HashMap<CellId, Aggregate> = HashMap::new();
+        let mut lights = Lights::default();
         for offer in offers {
             let mut child = offer.region;
             while let Some(parent) = child.parent() {
                 *child_mask.entry(parent).or_insert(0) |= 1 << child.octant();
                 let at = total.entry(parent).or_insert(Aggregate::ZERO);
                 *at = at.merge(offer.total);
+                lights.insert(parent, lights.get(parent).merge(offer.light));
                 child = parent;
             }
         }
 
-        // The candidates, brightest first across every region. Each carries
+        // The candidates, in standing order across every region. Each carries
         // the level its region sits at, which is where the crown stops.
         let mut candidates: Vec<(&System, u8)> = offers
             .iter()
             .flat_map(|offer| {
-                offer.brightest.iter().map(|s| (s, offer.region.level))
+                offer.first.iter().map(|s| (s, offer.region.level))
             })
             .collect();
-        candidates.sort_by(|(a, _), (b, _)| {
-            a.absolute_magnitude
-                .total_cmp(&b.absolute_magnitude)
-                .then(a.id64.cmp(&b.id64))
-        });
+        candidates.sort_by_key(|(system, _)| standing::key(system.id64));
 
         let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
+        let mut lit: HashMap<CellId, Vec<Lit>> = HashMap::new();
         let mut owned: HashMap<CellId, usize> = HashMap::new();
         let mut rank_lo: HashMap<CellId, u64> = HashMap::new();
         let mut claimed = HashSet::new();
@@ -294,6 +291,7 @@ impl Crown {
                         .entry(cid)
                         .or_default()
                         .push(CellSystem::of(system));
+                    lit.entry(cid).or_default().push(Lit::of(system));
                     break;
                 }
             }
@@ -321,7 +319,12 @@ impl Crown {
         });
 
         Crown {
-            built: Snapshot { index: Index::from_cells(cells), payloads },
+            built: Snapshot {
+                index: Index::from_cells(cells),
+                lights,
+                payloads,
+                lit,
+            },
             claimed,
         }
     }
@@ -338,21 +341,22 @@ impl Crown {
     }
 }
 
-/// The index of a whole galaxy, from the crown and every region's cells.
+/// The index of a whole galaxy and its lights, from the crown and every
+/// region's cells.
 ///
 /// The one thing that has to be held to the end of a build, a cell being a
 /// couple of hundred bytes where the systems it stands for are gigabytes.
 pub fn joined<'a>(
     crown: &'a Crown,
-    regions: impl IntoIterator<Item = &'a Index>,
-) -> Index {
-    let cells = crown
-        .built()
-        .index
-        .cells()
-        .chain(regions.into_iter().flat_map(|index| index.cells()))
-        .copied();
-    Index::from_cells(cells)
+    regions: impl IntoIterator<Item = (&'a Index, &'a Lights)>,
+) -> (Index, Lights) {
+    let mut cells: Vec<Cell> = crown.built().index.cells().copied().collect();
+    let mut lights = crown.built().lights.clone();
+    for (index, light) in regions {
+        cells.extend(index.cells().copied());
+        lights.extend(light.iter().map(|(id, light)| (id, *light)));
+    }
+    (Index::from_cells(cells), lights)
 }
 
 #[cfg(test)]
@@ -477,7 +481,8 @@ mod tests {
             );
 
             let mut payloads = crown.built().payloads.clone();
-            let mut indexes = Vec::new();
+            let mut lit = crown.built().lit.clone();
+            let mut built_regions = Vec::new();
             for &region in cut.regions() {
                 let built = Snapshot::of_region(
                     region,
@@ -486,9 +491,13 @@ mod tests {
                     &params,
                 );
                 payloads.extend(built.payloads.clone());
-                indexes.push(built.index);
+                lit.extend(built.lit.clone());
+                built_regions.push((built.index, built.lights));
             }
-            let index = joined(&crown, indexes.iter());
+            let (index, lights) = joined(
+                &crown,
+                built_regions.iter().map(|(index, lights)| (index, lights)),
+            );
 
             assert_eq!(
                 index.len(),
@@ -517,7 +526,23 @@ mod tests {
                     "{:?} owns different systems under {budget}",
                     cell.id,
                 );
+                assert_eq!(
+                    lit.get(&cell.id).map_or(&[][..], Vec::as_slice),
+                    whole.lit(cell.id),
+                    "{:?} lights its systems differently under {budget}",
+                    cell.id,
+                );
+                let (ours, theirs) =
+                    (lights.get(cell.id), whole.lights.get(cell.id));
+                assert_eq!(ours.m_min(), theirs.m_min(), "{:?}", cell.id);
+                assert!(
+                    (ours.total_flux() - theirs.total_flux()).abs()
+                        <= theirs.total_flux() * 1e-9,
+                    "{:?} gives off different light under {budget}",
+                    cell.id,
+                );
             }
+            assert_eq!(lights.len(), whole.lights.len());
         }
     }
 
@@ -536,9 +561,9 @@ mod tests {
                 let offer = Offer::of(region, held.clone(), &params);
                 let room = level as usize * params.internal_slice;
                 assert!(
-                    offer.brightest.len() <= room.min(held.len()),
+                    offer.first.len() <= room.min(held.len()),
                     "a region at level {level} offered {} of {}",
-                    offer.brightest.len(),
+                    offer.first.len(),
                     held.len(),
                 );
                 assert_eq!(offer.count(), held.len() as u64);
@@ -566,11 +591,11 @@ mod tests {
         }
     }
 
-    /// What a region offers is its brightest, in the order the build settles
+    /// What a region offers is its first, in the order the build settles
     /// ownership in. A build that took them in any other order would hand
     /// the crown the wrong systems.
     #[test]
-    fn an_offer_is_the_brightest_in_order() {
+    fn an_offer_is_the_first_in_order() {
         let params = BuildParams::default();
         let systems = galaxy(5_000);
         let region = cut(&systems, 2_000, &params).regions()[0];
@@ -578,12 +603,8 @@ mod tests {
         let offer = Offer::of(region, held.clone(), &params);
 
         let mut wanted = held.clone();
-        wanted.sort_by(|a, b| {
-            a.absolute_magnitude
-                .total_cmp(&b.absolute_magnitude)
-                .then(a.id64.cmp(&b.id64))
-        });
-        wanted.truncate(offer.brightest.len());
-        assert_eq!(offer.brightest, wanted);
+        wanted.sort_by_key(|system| standing::key(system.id64));
+        wanted.truncate(offer.first.len());
+        assert_eq!(offer.first, wanted);
     }
 }

@@ -2,7 +2,7 @@
 //! written to a directory.
 //!
 //! [`Snapshot::build`] turns a list of systems into a tree in one pass: the
-//! split, the magnitude ordering, the aggregates. The same systems build the
+//! split, the standing ordering, the aggregates. The same systems build the
 //! same tree however they arrive, which is what lets a regional build
 //! (`crate::build::region`) and the live tree ([`crate::build::tree`]) be
 //! checked against it. A built tree is written whole, or as a [`CellDiff`]
@@ -13,10 +13,13 @@ use crate::codec::Directory;
 use crate::core::aggregate::Aggregate;
 
 use crate::core::geometry::{CellId, MAX_LEVEL};
+use crate::core::photometry::{Lit, Photometry};
+use crate::core::standing;
 use crate::system::System;
 use crate::tree::cell::Cell;
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
+use crate::tree::lights::Lights;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
@@ -48,16 +51,23 @@ impl Default for BuildParams {
     }
 }
 
-/// A built tree: the index the walks plan on and the per-cell payloads.
+/// A built tree: the index the walks plan on and the per-cell payloads, and
+/// the light of both, which is served beside them.
 ///
 /// The index is the aggregates and rank ranges, a few megabytes over a galaxy
 /// and always resident. The payloads are the systems themselves, keyed by the
 /// cell that owns them, and are what a reader fetches a cell at a time. Every
 /// system sits in exactly one cell's payload.
+///
+/// `lights` is every cell's [`Photometry`] and `lit` each payload's systems'
+/// [`Lit`], in the payload's own order: the photometry sidecar, which only
+/// the realistic view reads. See [`crate::codec::lights`].
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub index: Index,
+    pub lights: Lights,
     pub payloads: HashMap<CellId, Vec<CellSystem>>,
+    pub lit: HashMap<CellId, Vec<Lit>>,
 }
 
 /// Which cells changed between one build and the next, the whole of what a
@@ -82,6 +92,12 @@ impl Snapshot {
         self.payloads.get(&id).map_or(&[], Vec::as_slice)
     }
 
+    /// The light of a cell's payload, in its order, empty if the cell owns no
+    /// systems.
+    pub fn lit(&self, id: CellId) -> &[Lit] {
+        self.lit.get(&id).map_or(&[], Vec::as_slice)
+    }
+
     /// How many systems the tree holds, across every cell's payload.
     pub fn point_count(&self) -> usize {
         self.payloads.values().map(Vec::len).sum()
@@ -90,9 +106,10 @@ impl Snapshot {
     /// Build the light snapshot from a list of systems.
     ///
     /// The order of the input does not matter: the split is by position and the
-    /// slicing is by magnitude, so the same systems build the same tree however
-    /// they arrive. Within a cell's payload the systems come out brightest
-    /// first. For the live, editable form raise a
+    /// slicing is by [`standing`], a function of the address, so the same
+    /// systems build the same tree however they arrive. Within a cell's
+    /// payload the systems come out in standing order. For the live, editable
+    /// form raise a
     /// [`Tree`](crate::build::tree::Tree) with
     /// [`Tree::build`](crate::build::tree::Tree::build), which builds this and
     /// holds it open.
@@ -119,8 +136,8 @@ impl Snapshot {
     ) -> Snapshot {
         let leaves = split_into_leaves(region, systems, params.leaf_cap);
         let (cells, child_mask) = tree_of(region, &leaves);
-        let aggregates = roll_up(systems, &leaves, &cells);
-        let Slices { payloads, rank_lo, owned } =
+        let (aggregates, lights) = roll_up(systems, &leaves, &cells);
+        let Slices { payloads, lit, rank_lo, owned } =
             assign_slices(region, systems, &leaves, claimed, params);
 
         let built_cells = cells.iter().map(|&id| {
@@ -138,15 +155,24 @@ impl Snapshot {
             }
         });
 
-        Snapshot { index: Index::from_cells(built_cells), payloads }
+        Snapshot {
+            index: Index::from_cells(built_cells),
+            lights: lights.into_iter().collect(),
+            payloads,
+            lit,
+        }
     }
 
     /// Which cells' payloads differ from a previous build `since`.
     ///
-    /// `self` is the new build. A cell is `changed` when its systems are not
-    /// byte-for-byte what they were and `removed` when it owned systems before
-    /// and owns none now; an untouched cell is in neither, so its file is left
-    /// exactly as it lies.
+    /// `self` is the new build. A cell is `changed` when its systems or their
+    /// light are not byte-for-byte what they were and `removed` when it owned
+    /// systems before and owns none now; an untouched cell is in neither, so
+    /// its files are left exactly as they lie.
+    ///
+    /// The light is asked apart from the systems: a system that brightened
+    /// stands where it stood, so its cell's payload is the same bytes and
+    /// only the light beside it moved.
     pub fn diff(&self, since: &Snapshot) -> CellDiff {
         let mut dirtied = CellDiff::default();
         let ids: HashSet<CellId> = since
@@ -159,7 +185,7 @@ impl Snapshot {
             let (before, after) = (since.payload(id), self.payload(id));
             if after.is_empty() && !before.is_empty() {
                 dirtied.removed.push(id);
-            } else if before != after {
+            } else if before != after || since.lit(id) != self.lit(id) {
                 dirtied.changed.push(id);
             }
         }
@@ -248,8 +274,8 @@ fn tree_of(
     (cells, child_mask)
 }
 
-/// The subtree totals of every cell, leaves summed from their systems and
-/// internal nodes rolled up from their children.
+/// The subtree totals of every cell, and the subtree light, leaves summed
+/// from their systems and internal nodes rolled up from their children.
 ///
 /// Deepest first, so a node has all its children before it merges into its
 /// parent. The result at the root is the whole galaxy, and every cell between
@@ -258,22 +284,21 @@ fn roll_up(
     systems: &[System],
     leaves: &HashMap<CellId, Vec<usize>>,
     cells: &HashSet<CellId>,
-) -> HashMap<CellId, Aggregate> {
+) -> (HashMap<CellId, Aggregate>, HashMap<CellId, Photometry>) {
     let mut agg: HashMap<CellId, Aggregate> =
         cells.iter().map(|&c| (c, Aggregate::ZERO)).collect();
+    let mut lit: HashMap<CellId, Photometry> =
+        cells.iter().map(|&c| (c, Photometry::ZERO)).collect();
 
     for (&leaf, members) in leaves {
-        let a = members.iter().fold(Aggregate::ZERO, |a, &i| {
-            let s = &systems[i];
-            a.merge(Aggregate::of_system(
-                s.position,
-                s.absolute_magnitude,
-                s.temperature,
-                s.age_bucket,
-                s.kind,
-            ))
+        let a = members
+            .iter()
+            .fold(Aggregate::ZERO, |a, &i| a.merge(Aggregate::of(&systems[i])));
+        let l = members.iter().fold(Photometry::ZERO, |l, &i| {
+            l.merge(Photometry::of(&systems[i]))
         });
         agg.insert(leaf, a);
+        lit.insert(leaf, l);
     }
 
     let mut ordered: Vec<CellId> = cells.iter().copied().collect();
@@ -284,9 +309,13 @@ fn roll_up(
             if let Some(parent) = agg.get_mut(&p) {
                 *parent = parent.merge(child);
             }
+            let child = lit[&c];
+            if let Some(parent) = lit.get_mut(&p) {
+                *parent = parent.merge(child);
+            }
         }
     }
-    agg
+    (agg, lit)
 }
 
 /// What [`assign_slices`] hands back: the per-cell payloads and the two counts
@@ -294,14 +323,16 @@ fn roll_up(
 struct Slices {
     /// Each cell's owned systems, packed into its payload.
     payloads: HashMap<CellId, Vec<CellSystem>>,
+    /// Their light, in the payload's order.
+    lit: HashMap<CellId, Vec<Lit>>,
     /// Each cell's `rank_lo`: how many of its subtree its ancestors claimed.
     rank_lo: HashMap<CellId, u64>,
     /// How many systems each cell owns in its own slice.
     owned: HashMap<CellId, usize>,
 }
 
-/// Place each system at the shallowest cell on its path with room, brightest
-/// first, and pack it into that cell's payload.
+/// Place each system at the shallowest cell on its path with room, in
+/// [`standing`] order, and pack it into that cell's payload.
 ///
 /// Returns the payloads, each cell's `rank_lo` (how many of its subtree the
 /// ancestors claimed), and how many systems each cell owns. A system claimed
@@ -328,14 +359,10 @@ fn assign_slices(
     }
 
     let mut order: Vec<usize> = (0..systems.len()).collect();
-    order.sort_by(|&a, &b| {
-        systems[a]
-            .absolute_magnitude
-            .total_cmp(&systems[b].absolute_magnitude)
-            .then(systems[a].id64.cmp(&systems[b].id64))
-    });
+    order.sort_by_key(|&at| standing::key(systems[at].id64));
 
     let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
+    let mut lit: HashMap<CellId, Vec<Lit>> = HashMap::new();
     let mut slice_count: HashMap<CellId, usize> = HashMap::new();
     let mut rank_lo: HashMap<CellId, u64> = HashMap::new();
 
@@ -361,6 +388,7 @@ fn assign_slices(
                     *count += 1;
                     owner = level;
                     payloads.entry(cid).or_default().push(CellSystem::of(s));
+                    lit.entry(cid).or_default().push(Lit::of(s));
                     break;
                 }
             }
@@ -378,12 +406,13 @@ fn assign_slices(
         }
     }
 
-    Slices { payloads, rank_lo, owned: slice_count }
+    Slices { payloads, lit, rank_lo, owned: slice_count }
 }
 
 impl Snapshot {
-    /// Write the whole tree to a directory: the index file and one payload
-    /// file per cell that owns any systems. Existing files are overwritten,
+    /// Write the whole tree to a directory: the index file, one payload file
+    /// per cell that owns any systems, and the photometry sidecar beside
+    /// both. Existing files are overwritten,
     /// and a cell the previous tree had and this one does not is left
     /// standing — this writes what it holds and reads nothing.
     ///
@@ -394,17 +423,21 @@ impl Snapshot {
     /// the incremental publish, which removes what it is told went.
     pub fn write(&self, dir: &Path) -> io::Result<()> {
         self.write_payloads(dir)?;
+        self.lights.write(dir)?;
         self.index.write(dir)
     }
 
-    /// Write the payloads and no index file.
+    /// Write the payloads and their light, and no index file.
     ///
     /// What a regional build writes: its cells are only part of the
-    /// galaxy's, so the index file belongs to whoever joins them — see
-    /// `crate::build::region`. A whole build is this and then the index.
+    /// galaxy's, so the index file and the lights belong to whoever joins
+    /// them — see `crate::build::region`. A whole build is this and then
+    /// those.
     pub fn write_payloads(&self, dir: &Path) -> io::Result<()> {
         Directory::at(dir).write_payloads(
-            self.payloads.iter().map(|(&id, points)| (id, points.as_slice())),
+            self.payloads
+                .iter()
+                .map(|(&id, points)| (id, points.as_slice(), self.lit(id))),
         )
     }
 
@@ -415,7 +448,11 @@ impl Snapshot {
     pub fn write_diff(&self, dir: &Path, dirtied: &CellDiff) -> io::Result<()> {
         Directory::at(dir).write_cell_changes(
             &self.index,
-            dirtied.changed.iter().map(|&id| (id, self.payload(id))),
+            &self.lights,
+            dirtied
+                .changed
+                .iter()
+                .map(|&id| (id, self.payload(id), self.lit(id))),
             dirtied.removed.iter().copied(),
         )
     }
@@ -476,11 +513,11 @@ mod tests {
         assert_eq!(seen, want);
     }
 
-    /// The root owns the brightest systems and nothing fainter than what it
-    /// left to its children — the boundary the magnitude ordering is easiest
+    /// The root owns the first systems in standing order and nothing after
+    /// what it left to its children — the boundary the ordering is easiest
     /// to break at.
     #[test]
-    fn the_root_owns_the_brightest() {
+    fn the_root_owns_the_first() {
         let systems = grid(20, 100.0);
         let params = BuildParams::default();
         let built = Snapshot::build(&systems, &params);
@@ -488,34 +525,69 @@ mod tests {
         let root = built.payload(CellId::ROOT);
         assert_eq!(root.len(), params.internal_slice.min(systems.len()));
 
-        let brightest_in_root =
-            root.iter().map(|p| p.magnitude).fold(f32::MIN, f32::max);
+        let last_in_root =
+            root.iter().map(|p| standing::key(p.id64)).max().unwrap();
         let owned: HashSet<u64> = root.iter().map(|p| p.id64).collect();
         for s in &systems {
             if !owned.contains(&s.id64) {
                 assert!(
-                    s.absolute_magnitude as f32 >= brightest_in_root,
-                    "a system brighter than the root's faintest was left out",
+                    standing::key(s.id64) > last_in_root,
+                    "a system ahead of the root's last was left out",
                 );
             }
         }
     }
 
-    /// Within a cell the payload is brightest first, which the map leans
-    /// on to draw a prefix without re-sorting.
+    /// Within a cell the payload is in standing order, so any prefix of it
+    /// is an even sample of the whole and a reader can draw one without
+    /// re-sorting.
     #[test]
-    fn a_payload_is_ordered_brightest_first() {
+    fn a_payload_is_in_standing_order() {
         let built = Snapshot::build(&grid(20, 100.0), &BuildParams::default());
         for points in built.payloads.values() {
             for pair in points.windows(2) {
-                assert!(pair[0].magnitude <= pair[1].magnitude);
+                assert!(
+                    standing::key(pair[0].id64) < standing::key(pair[1].id64)
+                );
             }
         }
     }
 
+    /// A coarse cell holds every kind of star in the proportion its subtree
+    /// does, however faint the kind
+    ///
+    /// The reason the order is not brightness. Ordered by magnitude, the
+    /// root held the white dwarfs at thirteen ahead of every brown dwarf at
+    /// eighteen, and a map drawing from coarse cells drew remnants where the
+    /// galaxy is brown dwarfs. Here a fifth of the grid is brown dwarfs, the
+    /// faintest thing in it, and a twentieth white dwarfs; the root holds
+    /// them at about those shares.
+    #[test]
+    fn a_coarse_cell_is_an_even_sample_of_its_kinds() {
+        use crate::core::star::StarKind;
+        let mut systems = grid(20, 100.0);
+        for (at, system) in systems.iter_mut().enumerate() {
+            (system.kind, system.absolute_magnitude) = match at % 20 {
+                0..=3 => (StarKind::BrownDwarf, 18.0),
+                4 => (StarKind::WhiteDwarf, 13.0),
+                _ => (StarKind::M, 10.0),
+            };
+        }
+        let built = Snapshot::build(&systems, &BuildParams::default());
+        let root = built.payload(CellId::ROOT);
+        let share = |kind| {
+            root.iter().filter(|p| p.kind == kind).count() as f64
+                / root.len() as f64
+        };
+        let brown = share(StarKind::BrownDwarf);
+        let white = share(StarKind::WhiteDwarf);
+        assert!((0.15..0.25).contains(&brown), "brown dwarfs {brown}");
+        assert!((0.02..0.08).contains(&white), "white dwarfs {white}");
+    }
+
     /// The root aggregate is the whole galaxy: every system counted once and
-    /// every flux summed, whatever cell drew it — what a splat over an
-    /// unloaded region stands on.
+    /// every flux summed into the root's light, whatever cell drew it — what
+    /// a splat over an unloaded region stands on.
     #[test]
     fn the_root_aggregate_is_the_whole_galaxy() {
         let systems = grid(16, 80.0);
@@ -528,9 +600,25 @@ mod tests {
             .iter()
             .map(|s| galos_photometry::Magnitude(s.absolute_magnitude).flux().0)
             .sum();
-        assert!(
-            (root.aggregate.total_flux() - want_flux).abs() < want_flux * 1e-9
-        );
+        let flux = built.lights.root().total_flux();
+        assert!((flux - want_flux).abs() < want_flux * 1e-9);
+    }
+
+    /// Every payload's light is its systems', one for one and in its order,
+    /// so the sidecar needs no join to the payload it stands beside.
+    #[test]
+    fn a_payloads_light_is_in_its_order() {
+        let systems = grid(20, 100.0);
+        let built = Snapshot::build(&systems, &BuildParams::default());
+        let by_id: HashMap<u64, &System> =
+            systems.iter().map(|s| (s.id64, s)).collect();
+        for cell in built.index.cells() {
+            let (points, lit) = (built.payload(cell.id), built.lit(cell.id));
+            assert_eq!(points.len(), lit.len(), "{:?}", cell.id);
+            for (point, lit) in points.iter().zip(lit) {
+                assert_eq!(*lit, Lit::of(by_id[&point.id64]));
+            }
+        }
     }
 
     /// An internal node's aggregate is exactly its children's, merged, so
@@ -549,11 +637,16 @@ mod tests {
                 .children(cell)
                 .fold(Aggregate::ZERO, |a, c| a.merge(c.aggregate));
             assert_eq!(cell.aggregate.count(), from_children.count());
+            let light = built.lights.get(cell.id);
+            let from_children = built
+                .index
+                .children(cell)
+                .fold(Photometry::ZERO, |a, c| a.merge(built.lights.get(c.id)));
             assert!(
-                (cell.aggregate.total_flux() - from_children.total_flux())
-                    .abs()
-                    < cell.aggregate.total_flux() * 1e-9
+                (light.total_flux() - from_children.total_flux()).abs()
+                    < light.total_flux() * 1e-9
             );
+            assert_eq!(light.m_min(), from_children.m_min());
         }
     }
 

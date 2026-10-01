@@ -1,23 +1,26 @@
 //! One node of the served tree, and the record its payload packs each of its
 //! systems as.
 //!
-//! A [`Cell`] is a node: its address, the magnitude-ordered slice of systems
-//! it owns, which children it has, and the totals over its whole subtree. A
+//! A [`Cell`] is a node: its address, the slice of systems it owns, which
+//! children it has, and the totals over its whole subtree. A
 //! [`CellSystem`] is one system in that slice, packed at the precision a
 //! reader needs. Both are read-side and fixed: the tree a feed edits is
 //! [`crate::build::tree::Tree`], which publishes into these.
 
-use crate::core::aggregate::{Aggregate, TempBucket};
+use crate::core::aggregate::Aggregate;
 use crate::core::geometry::CellId;
 use crate::core::star::StarKind;
 use crate::system::System;
 
-/// One node of the tree: its address, the magnitude-ordered slice it owns, the
-/// children it has, and the totals it stands for.
+/// One node of the tree: its address, the slice it owns, the children it
+/// has, and the totals it stands for.
 ///
 /// A node at level `L` owns ranks `[rank_lo, rank_hi)` of its subtree's
-/// magnitude order, holding only what its ancestors did not, so drawing a
-/// node with its loaded ancestors is exactly the union with no system twice.
+/// [`standing`](crate::core::standing) order, holding only what its
+/// ancestors did not, so drawing a node with its loaded ancestors is exactly
+/// the union with no system twice. The order is not any view's: the first of
+/// a subtree are an even sample of it, so a coarse cell holds what its
+/// region holds in the proportions the region holds it.
 /// The `aggregate` is the total over the whole subtree, not the slice; with
 /// the slice absent it is drawn as it stands, and with the slice present the
 /// residual is drawn instead.
@@ -25,7 +28,7 @@ use crate::system::System;
 pub struct Cell {
     /// Where the cell sits in the tree.
     pub id: CellId,
-    /// The first rank of the subtree's magnitude order this cell owns.
+    /// The first rank of the subtree's standing order this cell owns.
     pub rank_lo: u64,
     /// One past the last rank this cell owns.
     pub rank_hi: u64,
@@ -104,9 +107,9 @@ impl Cell {
 pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
 
 /// One system as the index is built *into*: packed for a cell's payload, with
-/// its id, its exact position, the two photometric fields at the precision a
-/// reader needs, when it was last updated, and its arrival star's kind. What
-/// the map draws and the router measures; made only by [`CellSystem::of`].
+/// its id, its exact position, when it was last updated, and its arrival
+/// star's kind. What the map draws and the router measures; made only by
+/// [`CellSystem::of`].
 ///
 /// **The served half of two records of a system.** [`System`] is the whole
 /// record the build works in — see its table for what this one drops and
@@ -115,11 +118,12 @@ pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
 ///
 /// Position is three `f64` in light years, the system's own galactic
 /// coordinates carried through unchanged, so a system is drawn exactly where
-/// it sits however coarse the cell that owns it. The magnitude is the
-/// system's combined absolute magnitude narrowed to `f32`, which its flux is
-/// drawn from, and the temperature bucket is the blackbody tint, already
-/// binned so a reader needs no per-star join. Neither is fit to build an
-/// aggregate or an order from; that is [`System`]'s.
+/// it sits however coarse the cell that owns it.
+///
+/// **No light.** How bright a system is and how hot are the realistic view's
+/// questions, and are [`Lit`](crate::core::photometry::Lit), served in a
+/// sidecar beside the payload in the payload's own order. A reader that
+/// draws anything else never reads them.
 ///
 /// `updated_at` is Unix seconds, and the one field here that is not about
 /// where a system is or what it looks like. It is what the Recency filter
@@ -134,8 +138,6 @@ pub const UNIFORM_SPAN: f64 = 3.464_101_615_137_754_6;
 pub struct CellSystem {
     pub id64: u64,
     pub position: [f64; 3],
-    pub magnitude: f32,
-    pub temp_bucket: TempBucket,
     pub updated_at: u32,
     /// What kind of star a ship arrives at
     ///
@@ -151,15 +153,14 @@ pub struct CellSystem {
 impl CellSystem {
     /// Pack a system for the payload: the one place precision is given up.
     ///
-    /// The position and `updated_at` are carried through whole; the
-    /// magnitude narrows to `f32`, the temperature to its bucket, and
-    /// `age_bucket` is dropped, the aggregates having already counted it.
+    /// The position and `updated_at` are carried through whole, and
+    /// `age_bucket` is dropped, the aggregates having already counted it. The
+    /// magnitude and the temperature go to the photometry sidecar, as
+    /// [`Lit::of`](crate::core::photometry::Lit::of).
     pub fn of(system: &System) -> CellSystem {
         CellSystem {
             id64: system.id64,
             position: system.position,
-            magnitude: system.absolute_magnitude as f32,
-            temp_bucket: TempBucket::of(system.temperature),
             updated_at: system.updated_at,
             kind: system.kind,
         }

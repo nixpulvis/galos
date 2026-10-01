@@ -227,6 +227,10 @@ async fn read(
         at(Step::Cells);
         let index = block_on(source.index())
             .map_err(|e| format!("reading the index at {dir}: {e}"))?;
+        // And how bright each cell's subtree is, which only the realistic
+        // view's cut asks: the photometry sidecar beside the cells. A
+        // directory with none on record walks a sky with nothing to see.
+        let index = index.lit(&block_on(source.lights()).unwrap_or_default());
 
         at(Step::Populated);
         let populated = block_on(source.populated()).unwrap_or_default();

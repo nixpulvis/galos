@@ -50,6 +50,29 @@ pub fn legacy_payload_path(dir: &Path, id: CellId) -> PathBuf {
     ))
 }
 
+/// The photometry sidecar's index half: every cell's light, beside
+/// [`INDEX_FILE`] and read only by the realistic view.
+pub const PHOTOMETRY_FILE: &str = "photometry.bin";
+
+/// The subdirectory the photometry sidecar's per-cell files live in, beside
+/// [`PAYLOAD_DIR`].
+pub const PHOTOMETRY_DIR: &str = "photometry";
+
+/// The photometry sidecar's index half's path within a build directory.
+pub fn photometry_path(dir: &Path) -> PathBuf {
+    dir.join(PHOTOMETRY_FILE)
+}
+
+/// The file a cell's systems' light lives in: the payload's own shard and
+/// name under [`PHOTOMETRY_DIR`], so the two files of a cell are found the
+/// same way and swept by the same reading of a name.
+pub fn lit_path(dir: &Path, id: CellId) -> PathBuf {
+    let morton = id.morton();
+    dir.join(PHOTOMETRY_DIR)
+        .join(format!("{:03x}", morton & 0xfff))
+        .join(format!("{:02}-{morton:016x}.bin", id.level))
+}
+
 /// The populated-systems table, resident once and read for every color.
 pub const POPULATED_FILE: &str = "populated.bin";
 

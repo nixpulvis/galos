@@ -321,8 +321,8 @@ stopping the postmaster is not something this should do behind an
 operator's back.
 
 **An index backup must carry the siblings.** A published directory is a
-lossy projection — the payload downcasts the magnitude, buckets the
-temperature and drops the age — and the full-precision inputs live in
+lossy projection — the photometry downcasts the magnitude and buckets the
+temperature, the payload drops the age — and the full-precision inputs live in
 `<dir>.checkpoint` beside it. A copy of the directory alone cannot be
 resumed by `ingest --watch` and cannot be merged. `galos index backup`
 takes all three siblings; a `cp -r` of the directory does not.

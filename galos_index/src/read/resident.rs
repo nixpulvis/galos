@@ -13,13 +13,26 @@
 //! the loop turns on.
 
 use crate::core::geometry::{CellId, CellMap};
+use crate::core::photometry::Lit;
 use crate::read::walk::Needed;
 use crate::tree::cell::CellSystem;
 
-/// A cell whose payload has loaded, and the systems it holds.
+/// A cell whose payload has loaded, the systems it holds, and their light
+/// where it was read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResidentCell {
     pub points: Box<[CellSystem]>,
+    /// The photometry sidecar's row for each of `points`, in the same order:
+    /// the `at`th light is the `at`th system's. Shorter than `points`, or
+    /// empty, where the directory had none on record for the rest.
+    pub lit: Box<[Lit]>,
+}
+
+impl ResidentCell {
+    /// The light of the `at`th system, where it was read.
+    pub fn lit_at(&self, at: usize) -> Option<Lit> {
+        self.lit.get(at).copied()
+    }
 }
 
 /// The payloads a reader holds, keyed by cell.
@@ -32,10 +45,21 @@ pub struct Resident {
 }
 
 impl Resident {
-    /// A cell's payload arrives, replacing anything held for that cell.
-    pub fn insert(&mut self, id: CellId, points: Vec<CellSystem>) {
-        self.cells
-            .insert(id, ResidentCell { points: points.into_boxed_slice() });
+    /// A cell's payload arrives with its light, replacing anything held for
+    /// that cell.
+    pub fn insert(
+        &mut self,
+        id: CellId,
+        points: Vec<CellSystem>,
+        lit: Vec<Lit>,
+    ) {
+        self.cells.insert(
+            id,
+            ResidentCell {
+                points: points.into_boxed_slice(),
+                lit: lit.into_boxed_slice(),
+            },
+        );
     }
 
     /// Whether a cell's payload is held.
@@ -95,8 +119,6 @@ mod tests {
         CellSystem {
             id64: id,
             position: [1.0, 2.0, 3.0],
-            magnitude: 4.0,
-            temp_bucket: crate::core::aggregate::TempBucket::new(2),
             updated_at: 1_757_260_000,
             kind: StarKind::G,
         }
@@ -117,7 +139,7 @@ mod tests {
         let mut cache = Resident::default();
         let id = at(3, 1);
         assert!(!cache.contains(id));
-        cache.insert(id, vec![point(1), point(2)]);
+        cache.insert(id, vec![point(1), point(2)], Vec::new());
         assert!(cache.contains(id));
         let (held, cell) = cache.iter().next().unwrap();
         assert_eq!(held, id);
@@ -136,8 +158,8 @@ mod tests {
     fn the_fetch_set_is_what_is_needed_and_absent() {
         let (a, b, c) = (at(4, 0), at(4, 1), at(4, 2));
         let mut cache = Resident::default();
-        cache.insert(a, vec![point(1)]); // needed and resident
-        cache.insert(c, vec![point(3)]); // resident but not needed
+        cache.insert(a, vec![point(1)], Vec::new()); // needed and resident
+        cache.insert(c, vec![point(3)], Vec::new()); // resident but not needed
         // b is needed but absent.
         let needed = Needed {
             mode: Mode::Shell,
@@ -159,7 +181,7 @@ mod tests {
     fn an_aggregate_only_cell_is_never_fetched() {
         let s = at(2, 1);
         let mut cache = Resident::default();
-        cache.insert(s, vec![point(1)]);
+        cache.insert(s, vec![point(1)], Vec::new());
         let needed = Needed {
             mode: Mode::Real { limit: 8.0 },
             marks: vec![],

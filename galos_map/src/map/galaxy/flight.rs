@@ -191,7 +191,11 @@ impl Flight {
         let (index, populated) = pollster::block_on(async {
             use galos_index::prelude::Source as _;
             (
-                source.index().await.expect("the index should read"),
+                source
+                    .index()
+                    .await
+                    .expect("the index should read")
+                    .lit(&source.lights().await.unwrap_or_default()),
                 source.populated().await.unwrap_or_default(),
             )
         });
@@ -643,7 +647,7 @@ fn the_populated_sky_settles_cheap() {
 ///
 /// The cause was the source: that mode draws the systems anybody lives
 /// in, one payload point in forty-four is one of those, and a payload is
-/// read as a magnitude-ordered prefix sized for the mark count — so the
+/// read as a prefix sized for the mark count — so the
 /// busiest of the prefix was not the busiest of the cell, and which
 /// prefix was resident depended on where the camera had been. It reads
 /// the resident table instead; see [`crate::map::galaxy::populated::PopulatedOrder`].
@@ -825,7 +829,7 @@ fn flying_stays_quick() {
     // The fill-in: frames from the stop until the walk has nothing left to
     // offer, and what the map was drawing by then.
     // What the last frame held against what it could have drawn from: the
-    // payload is magnitude-ordered and the draw takes a prefix of each cell,
+    // payload is in standing order and the draw takes a prefix of each cell,
     // but the fetch reads the whole file. The difference is read and held for
     // nothing.
     {

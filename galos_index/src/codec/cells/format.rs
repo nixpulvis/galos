@@ -3,13 +3,18 @@
 //!
 //! The index file is a header and a run of fixed-width [`Cell`] records, each
 //! spelled out with `record!` below down to the fields it is built of — a
-//! [`CellId`] as level plus Morton key, an [`Aggregate`] with its `m_min` as
-//! a NaN-sentinel `f32`, the [`Moments`] inside it.
+//! [`CellId`] as level plus Morton key, an [`Aggregate`], the [`Moments`]
+//! inside it.
 //!
 //! A cell's payload is columns rather than records — a 12-byte header, then
-//! runs of position, star kind, address and photometry — and a position is
-//! an integer count of [`POSITION_STEP`] off the cell's own low corner, so a
-//! block is read *with* its cell rather than standing on its own.
+//! runs of position, star kind, address and when each was last heard from —
+//! and a position is an integer count of [`POSITION_STEP`] off the cell's own
+//! low corner, so a block is read *with* its cell rather than standing on its
+//! own.
+//!
+//! Neither holds any light. How bright a cell and its systems are is the
+//! photometry sidecar's, [`crate::codec::lights`], which is these files'
+//! neighbour and is read only by the realistic view.
 //!
 //! Nothing is frozen yet: the version moves whenever a directory at the old
 //! one has to be brought forward rather than rebuilt (see [`INDEX_VERSION`]),
@@ -17,7 +22,7 @@
 //! step's filter marginals and its quantization.
 
 use crate::codec::bytes::{Decode, Encode, FixedCodec, record};
-use crate::core::aggregate::{AGE_BUCKETS, Aggregate, TempBucket};
+use crate::core::aggregate::{AGE_BUCKETS, Aggregate};
 use crate::core::geometry::CellId;
 use crate::core::moments::Moments;
 use crate::core::star::StarKind;
@@ -42,24 +47,6 @@ impl Decode for CellId {
 
 impl FixedCodec for CellId {
     const LEN: usize = u8::LEN + u64::LEN;
-}
-
-/// A temperature bucket, as its index. Both ways in clamp, so a byte out of
-/// range reads as the hottest bucket.
-impl Encode for TempBucket {
-    fn encode(&self, out: &mut Vec<u8>) {
-        (self.index() as u8).encode(out);
-    }
-}
-
-impl Decode for TempBucket {
-    fn decode(cur: &mut &[u8]) -> Option<TempBucket> {
-        Some(TempBucket::new(u8::decode(cur)?))
-    }
-}
-
-impl FixedCodec for TempBucket {
-    const LEN: usize = 1;
 }
 
 /// A star kind, as [`StarKind::code`].
@@ -87,44 +74,9 @@ record! {
     }
 }
 
-/// A brightest magnitude on the wire, with `NaN` standing for none: a real
-/// magnitude is never NaN, so the sentinel cannot collide with a value.
-struct BrightestMag(f32);
-
-impl Encode for BrightestMag {
-    fn encode(&self, out: &mut Vec<u8>) {
-        self.0.encode(out);
-    }
-}
-
-impl Decode for BrightestMag {
-    fn decode(cur: &mut &[u8]) -> Option<BrightestMag> {
-        Some(BrightestMag(f32::decode(cur)?))
-    }
-}
-
-impl FixedCodec for BrightestMag {
-    const LEN: usize = f32::LEN;
-}
-
-impl From<Option<f32>> for BrightestMag {
-    fn from(m: Option<f32>) -> BrightestMag {
-        BrightestMag(m.unwrap_or(f32::NAN))
-    }
-}
-
-impl From<BrightestMag> for Option<f32> {
-    fn from(m: BrightestMag) -> Option<f32> {
-        (!m.0.is_nan()).then_some(m.0)
-    }
-}
-
 record! {
     Aggregate {
-        m_min: Option<f32> as BrightestMag,
         count: u64,
-        flux: [f64; TempBucket::COUNT],
-        light: Moments,
         mass: Moments,
         aged: [u32; AGE_BUCKETS],
         kinds: [u32; StarKind::COUNT],
@@ -144,8 +96,12 @@ record! {
 /// The magic at the head of a cell's payload.
 pub(crate) const PAYLOAD_MAGIC: [u8; 4] = *b"GPAY";
 
-/// The payload layout this crate writes.
-pub(crate) const PAYLOAD_VERSION: u16 = 1;
+/// The payload layout this crate writes
+///
+/// Two since the magnitude and the temperature bucket left for the
+/// photometry sidecar, the column that held them beside the moment now
+/// holding the moment alone.
+pub(crate) const PAYLOAD_VERSION: u16 = 2;
 
 /// The header: magic, version, how many systems, how wide a position axis.
 pub(crate) const PAYLOAD_HEADER: usize = 4 + 2 + 4 + 1 + 1;
@@ -181,23 +137,22 @@ fn columns(count: usize, width: u8) -> [usize; 4] {
     let pos = PAYLOAD_HEADER;
     let kind = pos + count * width as usize * 3;
     let id64 = kind + count;
-    let lit = id64 + count * 8;
-    [pos, kind, id64, lit]
+    let updated = id64 + count * 8;
+    [pos, kind, id64, updated]
 }
 
 /// How long a payload of `count` systems is at `width` bytes an axis.
 pub(crate) fn payload_len(count: usize, width: u8) -> usize {
-    columns(count, width)[3] + count * (4 + 1 + 4)
+    columns(count, width)[3] + count * 4
 }
 
 /// A cell's payload: its systems as columns rather than as records
 ///
 /// **Columns, because the router and the drawing want different fields.**
-/// An expansion reads a position and a star kind; drawing reads the
-/// magnitude, the temperature bucket and the address. Laid as records, the
-/// expansion faults all forty-one bytes of a row to read seven of them,
-/// which is the same complaint the names table makes about itself in its
-/// own header.
+/// An expansion reads a position and a star kind; drawing reads the address
+/// and the moment as well. Laid as records, the expansion faults every byte
+/// of a row to read seven of them, which is the same complaint the names
+/// table makes about itself in its own header.
 ///
 /// Positions are cell-relative integers on [`POSITION_STEP`], so the block
 /// needs its cell to be read at all — which every reader has, the cell
@@ -230,8 +185,6 @@ pub fn payload_bytes(cell: CellId, points: &[CellSystem]) -> Vec<u8> {
         point.id64.encode(&mut out);
     }
     for point in points {
-        point.magnitude.encode(&mut out);
-        point.temp_bucket.encode(&mut out);
         point.updated_at.encode(&mut out);
     }
     out
@@ -245,7 +198,7 @@ pub(crate) struct PayloadHead {
     pub width: u8,
     pub kinds: usize,
     pub ids: usize,
-    pub lit: usize,
+    pub updated: usize,
 }
 
 /// Read a payload's header, or [`None`] for bytes that are not one
@@ -268,8 +221,8 @@ pub(crate) fn payload_head(bytes: &[u8]) -> Option<PayloadHead> {
     if width != 2 && width != 4 {
         return None;
     }
-    let [_, kinds, ids, lit] = columns(count, width);
-    Some(PayloadHead { count, width, kinds, ids, lit })
+    let [_, kinds, ids, updated] = columns(count, width);
+    Some(PayloadHead { count, width, kinds, ids, updated })
 }
 
 /// And back, or [`None`] for bytes that are not a payload of this layout
@@ -282,7 +235,7 @@ pub(crate) fn payload_points(
     bytes: &[u8],
 ) -> Option<Vec<CellSystem>> {
     let head = payload_head(bytes)?;
-    let PayloadHead { count, width, kinds: kind, ids: id64, lit } = head;
+    let PayloadHead { count, width, kinds: kind, ids: id64, updated } = head;
     if bytes.len() < payload_len(count, width) {
         return None;
     }
@@ -301,104 +254,46 @@ pub(crate) fn payload_points(
             };
             *held = origin[axis] + counts * POSITION_STEP;
         }
-        let mut lit = &bytes[lit + at * 9..];
         points.push(CellSystem {
             id64: {
                 let mut cur = &bytes[id64 + at * 8..];
                 u64::decode(&mut cur)?
             },
             position: axes,
-            magnitude: f32::decode(&mut lit)?,
-            temp_bucket: TempBucket::decode(&mut lit)?,
-            updated_at: u32::decode(&mut lit)?,
+            updated_at: {
+                let mut cur = &bytes[updated + at * 4..];
+                u32::decode(&mut cur)?
+            },
             kind: StarKind::from_code(bytes[kind + at]),
         });
     }
     Some(points)
 }
 
-/// How wide a record is in a legacy payload, the headerless record layout
-///
-/// Read by the migration that rewrites them and by nothing else: a legacy
-/// block is `id64`, three `f64` axes, a magnitude, a temperature bucket and
-/// a moment, laid end to end with no header to say so.
-pub(crate) const LEGACY_POINT_LEN: usize = 8 + 24 + 4 + 1 + 4;
-
-/// The systems a legacy payload holds
-///
-/// Whole records only, so a trailing partial row is dropped rather than
-/// failed. A legacy record has no star kind, so every system comes back as
-/// [`StarKind::Unknown`] and the migration fills it from the scan record.
-pub(crate) fn legacy_payload_points(bytes: &[u8]) -> Vec<CellSystem> {
-    let mut points = Vec::with_capacity(bytes.len() / LEGACY_POINT_LEN);
-    let (rows, _) = bytes.as_chunks::<LEGACY_POINT_LEN>();
-    for row in rows {
-        let mut cur = &row[..];
-        let Some(id64) = u64::decode(&mut cur) else { continue };
-        let Some(pos) = <[f64; 3]>::decode(&mut cur) else { continue };
-        let Some(magnitude) = f32::decode(&mut cur) else { continue };
-        let Some(temp_bucket) = TempBucket::decode(&mut cur) else { continue };
-        let Some(updated_at) = u32::decode(&mut cur) else { continue };
-        points.push(CellSystem {
-            id64,
-            position: pos,
-            magnitude,
-            temp_bucket,
-            updated_at,
-            kind: StarKind::Unknown,
-        });
-    }
-    points
-}
-
 /// The magic and version at the head of an index file.
 pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// Four, and moved by what a directory needs brought forward
+/// Five, and moved by what a directory needs brought forward
 ///
-/// Each move is a step [`crate::ops::upgrade::rewrite`] knows how to take, and
-/// a stale directory is refused at `index.bin`, named by [`index_version`],
-/// and sent there by name rather than rebuilt:
+/// Each move is a step [`crate::ops::upgrade::rewrite`] takes, and a stale
+/// directory is refused at `index.bin`, named by [`index_version`], and sent
+/// there by name rather than rebuilt:
 ///
-/// - **3** moved for the payload's layout. A legacy payload is a block of
-///   records with no magic, no version and no count, so nothing about it can
-///   be held to a width: its decode takes whole records until fewer than one
-///   remains, and a file written at another width decodes as a plausible
-///   number of systems with every field read out of the wrong bytes. The
-///   index beside it could not tell either, `Cell::LEN` being the same, so
-///   the header had to. The step reads the record blocks and writes them as
-///   columns.
+/// - **3** moved for the payload's layout: records with no header became
+///   columns with one.
 /// - **4** moved for the index record: the aggregate gained its star-kind
-///   histogram, 64 bytes a cell. The length check in [`Index`]'s own `decode`
-///   would have refused the old file on its own, but as "not an index file",
-///   which is a rebuild — hours off a dump — for a record whose one new field
-///   is derivable from the payloads beside it. So the version says which
-///   record the file holds ([`CELL_LEN_BEFORE_KINDS`] up to 3), and the step
-///   fills the histogram in from the payloads' kind column.
+///   histogram.
+/// - **5** moved for the order and the light. A cell's slice is its
+///   subtree's first in [`standing`](crate::core::standing) order rather than
+///   its brightest, so every payload holds different systems; and the
+///   magnitude, the temperature and a cell's flux left the record and the
+///   payload for the photometry sidecar. Nothing of a directory at 4 can be
+///   rewritten into that in place — which systems a cell owns is the whole of
+///   what moved — so the step raises the tree again from the resume point
+///   beside the directory, which holds every system whole.
 ///
 /// The columnar payload carries its own magic, version and count, and refuses
 /// a stale one itself.
-pub const INDEX_VERSION: u16 = 4;
-
-/// The first version whose index record carries [`Aggregate`]'s star kinds.
-pub(crate) const FIRST_WITH_KINDS: u16 = 4;
-
-/// How wide an index record was before [`FIRST_WITH_KINDS`]: the record less
-/// its star-kind histogram.
-pub(crate) const CELL_LEN_BEFORE_KINDS: usize =
-    Cell::LEN - StarKind::COUNT * u32::LEN;
-
-/// An index record written before [`FIRST_WITH_KINDS`], its star kinds zero
-///
-/// The histogram is the last field of the aggregate and the aggregate the
-/// last of the record, so an old record is exactly a current one cut short of
-/// it: padded back out with zeros, the current decode reads it. [`None`] for
-/// fewer than [`CELL_LEN_BEFORE_KINDS`] bytes.
-pub(crate) fn cell_before_kinds(record: &[u8]) -> Option<Cell> {
-    let mut whole = [0u8; Cell::LEN];
-    whole[..CELL_LEN_BEFORE_KINDS]
-        .copy_from_slice(record.get(..CELL_LEN_BEFORE_KINDS)?);
-    Cell::decode(&mut &whole[..])
-}
+pub const INDEX_VERSION: u16 = 5;
 
 /// The version an index file's header claims, or [`None`] for bytes that are
 /// not an index file at all.
@@ -474,15 +369,8 @@ mod tests {
     /// and all; the moments are `f64` and lose nothing.
     #[test]
     fn a_cell_record_round_trips() {
-        let agg =
-            Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2, StarKind::G)
-                .merge(Aggregate::of_system(
-                    [5.0, 6.0, 7.0],
-                    -1.0,
-                    12000.0,
-                    5,
-                    StarKind::Neutron,
-                ));
+        let agg = Aggregate::of_system([1.0, 2.0, 3.0], 2, StarKind::G)
+            .merge(Aggregate::of_system([5.0, 6.0, 7.0], 5, StarKind::Neutron));
         let cell = Cell {
             id: CellId { level: 3, x: 5, y: 6, z: 7 },
             rank_lo: 512,
@@ -497,69 +385,13 @@ mod tests {
         assert_eq!(Cell::decode(&mut cur), Some(cell));
     }
 
-    /// A record from before the star kinds reads as the same cell with no
-    /// kinds, and is the width the files of that version were written at
-    ///
-    /// Which is what `galos index migrate` stands on: it reads every older
-    /// record this way and fills the kinds in after.
-    #[test]
-    fn a_record_from_before_the_kinds_reads_without_them() {
-        assert_eq!(CELL_LEN_BEFORE_KINDS, 198, "the version 3 record width");
-        let agg =
-            Aggregate::of_system([1.0, 2.0, 3.0], 4.83, 5772.0, 2, StarKind::G)
-                .merge(Aggregate::of_system(
-                    [5.0, 6.0, 7.0],
-                    -1.0,
-                    12000.0,
-                    5,
-                    StarKind::Neutron,
-                ));
-        let cell = Cell {
-            id: CellId { level: 3, x: 5, y: 6, z: 7 },
-            rank_lo: 512,
-            rank_hi: 1024,
-            child_mask: 0b1010_0001,
-            aggregate: agg,
-        };
-        let mut buf = Vec::new();
-        cell.encode(&mut buf);
-
-        let mut wanted = cell;
-        wanted.aggregate.kinds = [0; StarKind::COUNT];
-        assert_eq!(
-            cell_before_kinds(&buf[..CELL_LEN_BEFORE_KINDS]),
-            Some(wanted)
-        );
-        assert_eq!(cell_before_kinds(&buf[..CELL_LEN_BEFORE_KINDS - 1]), None);
-    }
-
-    fn point(id: u64, mag: f32) -> CellSystem {
+    fn point(id: u64) -> CellSystem {
         CellSystem {
             id64: id,
             position: [10.5, -40000.25, 65535.0],
-            magnitude: mag,
-            temp_bucket: TempBucket::new(3),
-            updated_at: 1_757_260_000,
+            updated_at: 1_757_260_000 + id as u32,
             kind: StarKind::G,
         }
-    }
-
-    /// Two magnitudes closer together than a hundredth come back apart.
-    ///
-    /// A fixed-point hundredth would round both of these to the same number
-    /// and cost 0.92 % of a system's flux. The payload's own ordering is by
-    /// the full value, so the encoding is the only place the distinction
-    /// could be lost.
-    #[test]
-    fn magnitudes_finer_than_a_centimag_stay_apart() {
-        let dim = point(1, 4.831);
-        let bright = point(2, 4.833);
-        let cell = CellId { level: 11, x: 0, y: 0, z: 0 };
-        let bytes = payload_bytes(cell, &[bright, dim]);
-        let back = payload_points(cell, &bytes).unwrap();
-        assert_eq!(back[0].magnitude, 4.833);
-        assert_eq!(back[1].magnitude, 4.831);
-        assert!(back[0].magnitude != back[1].magnitude);
     }
 
     /// A payload's columns decode back to the systems they were built from,
@@ -581,7 +413,7 @@ mod tests {
             ]
         };
 
-        let mut points = vec![point(1, 2.0), point(2, -3.5), point(3, 9.25)];
+        let mut points = vec![point(1), point(2), point(3)];
         for (n, held) in points.iter_mut().enumerate() {
             held.position = on_grid(n as f64 * 3.0);
             held.kind = StarKind::from_code(n as u8 + 5);
@@ -589,18 +421,17 @@ mod tests {
 
         let bytes = payload_bytes(cell, &points);
         assert_eq!(bytes.len(), payload_len(points.len(), 2));
-        // Seven bytes a system for the two fields a route reads, against
-        // the forty-one of a legacy record.
-        assert_eq!((bytes.len() - PAYLOAD_HEADER) / points.len(), 24);
+        // Seven bytes a system for the two fields a route reads, and twelve
+        // more for the address and the moment: no light, which is the
+        // sidecar's.
+        assert_eq!((bytes.len() - PAYLOAD_HEADER) / points.len(), 19);
 
         let back = payload_points(cell, &bytes).unwrap();
         assert_eq!(back.len(), points.len());
         for (a, b) in points.iter().zip(&back) {
             assert_eq!(a.id64, b.id64);
             assert_eq!(a.position, b.position, "a position on the grid moved");
-            assert_eq!(a.temp_bucket, b.temp_bucket);
             assert_eq!(a.updated_at, b.updated_at);
-            assert_eq!(a.magnitude, b.magnitude);
             assert_eq!(a.kind, b.kind);
         }
     }
@@ -619,7 +450,7 @@ mod tests {
 
         let cell = CellId { level: 3, x: 3, y: 3, z: 3 };
         let origin = cell.min_ly();
-        let mut held = point(9, 1.5);
+        let mut held = point(9);
         held.position = [origin[0] + 9000.0, origin[1] + 0.25, origin[2] + 3.0];
 
         let bytes = payload_bytes(cell, &[held]);
@@ -650,39 +481,13 @@ mod tests {
         );
 
         // A block cut short is refused rather than half read.
-        let whole = payload_bytes(cell, &[point(1, 1.0), point(2, 2.0)]);
+        let whole = payload_bytes(cell, &[point(1), point(2)]);
         assert!(payload_points(cell, &whole[..whole.len() - 1]).is_none());
 
         // And one from another layout.
         let mut wrong = whole.clone();
         wrong[4] = 0xFE;
         assert!(payload_points(cell, &wrong).is_none(), "a stale version read");
-    }
-
-    /// A legacy payload of records reads, for the migration
-    #[test]
-    fn a_payload_from_before_the_columns_still_reads() {
-        let mut row = Vec::new();
-        7u64.encode(&mut row);
-        [1.5f64, -2.0, 3.25].encode(&mut row);
-        4.5f32.encode(&mut row);
-        3u8.encode(&mut row);
-        1_700_000_000u32.encode(&mut row);
-        assert_eq!(row.len(), LEGACY_POINT_LEN);
-
-        // A stray trailing byte yields the whole rows and drops the rest.
-        let mut bytes = row.clone();
-        bytes.push(0xAB);
-        let back = legacy_payload_points(&bytes);
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].id64, 7);
-        assert_eq!(back[0].position, [1.5, -2.0, 3.25]);
-        assert_eq!(back[0].temp_bucket, TempBucket::new(3));
-        assert_eq!(
-            back[0].kind,
-            StarKind::Unknown,
-            "the old payload cannot have held a kind",
-        );
     }
 
     use crate::core::aggregate::Aggregate;
@@ -697,13 +502,7 @@ mod tests {
                 rank_lo: 0,
                 rank_hi: 512,
                 child_mask: 0xFF,
-                aggregate: Aggregate::of_system(
-                    [0.0; 3],
-                    1.0,
-                    5000.0,
-                    0,
-                    StarKind::K,
-                ),
+                aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
             },
             Cell {
                 id: CellId { level: 1, x: 0, y: 1, z: 1 },
@@ -737,13 +536,7 @@ mod tests {
             rank_lo: 0,
             rank_hi: 512,
             child_mask: 0xFF,
-            aggregate: Aggregate::of_system(
-                [0.0; 3],
-                1.0,
-                5000.0,
-                0,
-                StarKind::K,
-            ),
+            aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
@@ -758,10 +551,10 @@ mod tests {
 
     /// An index at another format version is refused, and says which.
     ///
-    /// The width of a legacy payload rides on this version and on nothing
-    /// else, a block of records carrying no header of its own. A legacy
-    /// directory is well-formed at every other check, so this is the only
-    /// thing standing between it and a galaxy decoded out of the wrong bytes.
+    /// A directory at the version before this one is well-formed at every
+    /// other check its index can be put to — and its payloads hold systems a
+    /// cell of this version does not own — so this is the only thing
+    /// standing between it and a galaxy read out of the wrong order.
     #[test]
     fn an_index_at_another_version_is_refused() {
         let cell = Cell {
@@ -769,13 +562,7 @@ mod tests {
             rank_lo: 0,
             rank_hi: 512,
             child_mask: 0xFF,
-            aggregate: Aggregate::of_system(
-                [0.0; 3],
-                1.0,
-                5000.0,
-                0,
-                StarKind::K,
-            ),
+            aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert_eq!(index_version(&bytes), Some(INDEX_VERSION));

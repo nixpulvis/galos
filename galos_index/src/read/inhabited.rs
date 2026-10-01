@@ -969,8 +969,6 @@ mod tests {
         for i in 0..100 {
             mass = mass.merge(Aggregate::of_system(
                 [-20_000.0 + i as f64, 0.0, 24_000.0],
-                8.0,
-                5000.0,
                 0,
                 crate::core::star::StarKind::Unknown,
             ));
@@ -978,8 +976,6 @@ mod tests {
         for at in colonies {
             mass = mass.merge(Aggregate::of_system(
                 at,
-                8.0,
-                5000.0,
                 0,
                 crate::core::star::StarKind::Unknown,
             ));
