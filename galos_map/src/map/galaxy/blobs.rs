@@ -661,6 +661,38 @@ mod tests {
         ))
     }
 
+    /// A system two filters name is named once
+    ///
+    /// Two factions sharing a system, or two legs of a trip meeting at a
+    /// stop, light one system, so the share a cell is dimmed by has to count
+    /// it once — counted per filter, the share outran what was lit.
+    #[test]
+    fn a_system_two_filters_name_is_named_once() {
+        use crate::map::filter::{Filter, Filters};
+        let mut shared = lived_on(7);
+        std::sync::Arc::get_mut(&mut shared.0)
+            .unwrap()
+            .get_mut(&7)
+            .unwrap()
+            .factions = vec![1, 2];
+
+        let mut one = Filters::default();
+        one.add(Filter::Faction { id: 1, name: "One".into() });
+        let mut both = Filters::default();
+        both.add(Filter::Faction { id: 1, name: "One".into() });
+        both.add(Filter::Faction { id: 2, name: "Two".into() });
+        both.add(Filter::Systems { label: "Stop".into(), systems: vec![7, 9] });
+        both.add(Filter::Systems { label: "Next".into(), systems: vec![9] });
+
+        let one = named_systems(&one, &shared);
+        let both = named_systems(&both, &shared);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one.get(&7), Some(&true));
+        assert_eq!(both.len(), 2, "named: {both:?}");
+        assert_eq!(both.get(&7), Some(&true));
+        assert_eq!(both.get(&9), Some(&false));
+    }
+
     /// While marks are drawn by population, the mark stands for the
     /// busiest system under it and not the brightest
     ///
@@ -987,6 +1019,46 @@ impl Admitted {
     }
 }
 
+/// Every system the picking filters name, each once, and whether a filter
+/// named it for somebody living there
+///
+/// **Gathered before anything is counted, because the filters pick as one.**
+/// A system two factions share, or a stop where one leg of a trip ends and
+/// the next begins, is one system the map lights, so it is one system in
+/// the share a cell is dimmed by. Counted once per filter that names it,
+/// the share came out over the systems actually lit.
+///
+/// A faction names only systems somebody lives in, so a faction member is
+/// held as lived in whatever its population column says; a route or a list
+/// leaves that to [`Populated`].
+fn named_systems(
+    filters: &crate::map::filter::Filters,
+    populated: &Populated,
+) -> rustc_hash::FxHashMap<i64, bool> {
+    use crate::map::filter::Filter;
+    let mut named = rustc_hash::FxHashMap::<i64, bool>::default();
+    for filter in filters.picking() {
+        match filter {
+            Filter::Faction { id, .. } => {
+                for system in populated.0.values() {
+                    if system.factions.contains(id) {
+                        named.insert(system.address, true);
+                    }
+                }
+            }
+            Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
+                for &address in systems {
+                    named.entry(address).or_insert(false);
+                }
+            }
+            // Answered off the aggregate's own age column instead; see
+            // [`crate::map::filter::Filters::admitted_share`].
+            Filter::Recency { .. } => {}
+        }
+    }
+    named
+}
+
 impl Named {
     fn rebuild(
         &mut self,
@@ -1000,52 +1072,25 @@ impl Named {
         self.revision = revision;
         self.cells.clear();
         let cells = &mut self.cells;
-        let mut hold = |at: [f64; 3], populated: bool| {
+        for (address, lived_in) in named_systems(filters, populated) {
+            let (at, lived_in) = match populated.get(address) {
+                Some(known) => (
+                    [
+                        f64::from(known.position[0]),
+                        f64::from(known.position[1]),
+                        f64::from(known.position[2]),
+                    ],
+                    lived_in || known.population > 0,
+                ),
+                None => (names.placed(address).into(), lived_in),
+            };
             index.descend(at, |id| {
                 let held = cells.entry(id).or_default();
-                match populated {
+                match lived_in {
                     true => held.populated += 1,
                     false => held.alone += 1,
                 }
             });
-        };
-        for filter in filters.picking() {
-            match filter {
-                crate::map::filter::Filter::Faction { id, .. } => {
-                    for system in populated.0.values() {
-                        if system.factions.contains(&id) {
-                            hold(
-                                [
-                                    f64::from(system.position[0]),
-                                    f64::from(system.position[1]),
-                                    f64::from(system.position[2]),
-                                ],
-                                true,
-                            );
-                        }
-                    }
-                }
-                crate::map::filter::Filter::Route { systems, .. }
-                | crate::map::filter::Filter::Systems { systems, .. } => {
-                    for &address in systems {
-                        let (at, lived_in) = match populated.get(address) {
-                            Some(known) => (
-                                [
-                                    f64::from(known.position[0]),
-                                    f64::from(known.position[1]),
-                                    f64::from(known.position[2]),
-                                ],
-                                known.population > 0,
-                            ),
-                            None => (names.placed(address).into(), false),
-                        };
-                        hold(at, lived_in);
-                    }
-                }
-                // Answered off the aggregate's own age column instead; see
-                // [`crate::map::filter::Filters::admitted_share`].
-                crate::map::filter::Filter::Recency { .. } => {}
-            }
         }
     }
 
