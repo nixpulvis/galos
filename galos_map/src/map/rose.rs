@@ -101,7 +101,7 @@
 //! Pointed at, a piece says what it is for in the line under the bar, in
 //! place of the bar's length: what a click will do, what a mark is on and
 //! where — how far, how far over or under the card, and its bearing round
-//! it — how wide the whole view is for the bar itself, and for the hub where
+//! it — the spyglass's radius for the bar itself, and for the hub where
 //! the view is. That last was said at the middle of the view, over the one
 //! place the user is looking; said here, it is there when it is wanted and
 //! nowhere when it is not, and the middle's is off by default.
@@ -110,8 +110,7 @@ use crate::map::bodies::spawn::Entered;
 use crate::map::camera::{
     MoveCamera, OPENS_AT, OrbitCamera, PITCH_LIMIT, framed, stand_back,
 };
-use crate::map::galaxy::Addresses;
-use crate::map::galaxy::System;
+use crate::map::galaxy::{Addresses, Spyglass, System};
 use crate::map::galaxy::spawn::LastClick;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::grid::{Handover, LINE, READS, RulerUnit, said_in};
@@ -378,7 +377,7 @@ pub(crate) enum Aim {
     Needle(bool),
     /// The hub: where the view is, and straight down onto it and back
     Hub,
-    /// The scale bar: how wide the whole view is
+    /// The scale bar: how far the spyglass reaches
     Scale,
     /// The mark bearing on the thing in this place of the [`Selection`]: what
     /// it is and how far off, and a turn to look straight at it
@@ -676,8 +675,11 @@ pub(crate) fn draw_rose(
     mut contexts: EguiContexts,
     showing: Res<ShowRose>,
     mut cameras: Query<(&mut OrbitCamera, &Camera, Option<&Projection>)>,
-    changing: Res<Handover>,
-    asked: Res<RulerUnit>,
+    // The unit the rose is said in and where it is said from, as the grid's
+    // own numbers are.
+    (changing, asked): (Res<Handover>, Res<RulerUnit>),
+    // How far the spyglass reaches, which the scale bar says pointed at.
+    spyglass: Res<Spyglass>,
     selection: Res<Selection>,
     holding: Res<Entered>,
     systems: Query<&System>,
@@ -1191,16 +1193,20 @@ pub(crate) fn draw_rose(
     }
 
     // Under the bar, the length it spans — or, while a piece of the rose is
-    // pointed at, what that piece has to say: where the view is, how wide it
-    // is, what a bearing is on, or what a click will do. Under its middle,
-    // which is under the hub, so it stands still however the ring grows;
-    // and kept on the screen, a place in the galaxy being wider than the
-    // room the corner leaves to the right of the hub.
+    // pointed at, what that piece has to say: where the view is, how far
+    // the spyglass reaches, what a bearing is on, or what a click will do.
+    // Under its middle, which is under the hub, so it stands still however
+    // the ring grows; and kept on the screen, a place in the galaxy being
+    // wider than the room the corner leaves to the right of the hub.
     let reading = match lit {
         Some(Aim::Hub) => format!("{} {}", told(looking, step), unit.mark),
-        Some(Aim::Scale) => {
-            format!("{} across", said(f64::from(viewport.x) * per_pixel, unit))
-        }
+        Some(Aim::Scale) => format!(
+            "Spyglass radius {}",
+            said(
+                f64::from(spyglass.radius) * space::LIGHT_YEAR / unit.metres,
+                unit
+            )
+        ),
         Some(Aim::Way(index)) => format!("Face {}", WAYS[index].1),
         Some(Aim::Needle(true)) => "Look down from +Y".to_owned(),
         Some(Aim::Needle(false)) => "Look up from -Y".to_owned(),
