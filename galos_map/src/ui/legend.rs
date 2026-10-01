@@ -216,7 +216,7 @@ pub(crate) fn attention(ui: &Ui) -> Color32 {
 /// How large a swatch stands in the mini legend
 const LEGEND_SWATCH: f32 = 10.;
 
-/// Name the color row's chips, one line a chip, a group's members indented
+/// Name the color row's chips, one line a chip, a color's members indented
 /// under it
 ///
 /// The one list, drawn in two places: framed as a popover under the color
@@ -252,7 +252,9 @@ pub(crate) fn legend(
                 ui.label(egui::RichText::new(showing).color(attention(ui)));
             }
         });
-        if let Tier::Group { items, .. } = &tier {
+        // Only a color's group, whose one swatch stands for several values.
+        // Other is folded in the key until asked for, and stays a line here.
+        if let Tier::Group { hue: Some(_), items, .. } = &tier {
             for item in items {
                 ui.horizontal(|ui| {
                     ui.add_space(indent);

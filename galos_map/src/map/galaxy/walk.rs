@@ -1933,7 +1933,7 @@ pub(crate) fn reconcile(
     // Whether the mask only thins the colonies out of the sky, which is then
     // drawn as it is unfiltered rather than claimed; see
     // [`Filters::only_thins_colonies`].
-    let thins = asking && filtering.filters.only_thins_colonies();
+    let thins = filtering.filters.only_thins_colonies();
     // And where what it thins is still drawn, dimmed, the order is the
     // payload's own and there is nothing to weigh: which of the drawn are
     // dimmed is asked of the drawn alone ([`crate::map::filter`]). Weighed,
@@ -3288,6 +3288,111 @@ mod tests {
             app.world().resource::<PendingSpawns>().queued(),
             3,
             "not every colony that stands apart, or more than one of a pile"
+        );
+    }
+
+    /// A key hiding colonies draws the sky the unfiltered map draws, the
+    /// hidden left out of it only below the dim
+    ///
+    /// The reported trouble: hiding No state was taken for a filter, so every
+    /// marked cell was read whole and every point of it, nearly the whole
+    /// sky, claimed a patch of it. Frames went from 25 ms to over 450. Here
+    /// each cell is a pile on one spot, which claimed would be one mark.
+    #[test]
+    fn a_key_hiding_colonies_draws_the_unfiltered_sky() {
+        use crate::map::filter::{DimTo, Filters};
+        use elite_journal::prelude::Allegiance;
+        use galos_index::read::inhabited::Bucketed;
+        use galos_index::records::PopulatedSystem;
+
+        let colony = |address: i64, allegiance| {
+            (
+                address,
+                PopulatedSystem {
+                    address,
+                    name: format!("Home {address}").into(),
+                    position: [0.; 3],
+                    population: 1_000,
+                    security: None,
+                    government: None,
+                    allegiance: Some(allegiance),
+                    primary_economy: None,
+                    secondary_economy: None,
+                    factions: Vec::new(),
+                    body_count: None,
+                    non_body_count: None,
+                    state: None,
+                    power: None,
+                    powerplay_state: None,
+                },
+            )
+        };
+        let drawing = |hide: bool, dim: f32| {
+            let mut app = walking();
+            let mut marks = Vec::new();
+            let mut colonies = HashMap::new();
+            for (n, place) in [[20., 0., 0.], [0., 20., 0.], [-20., 0., 0.]]
+                .into_iter()
+                .enumerate()
+            {
+                let id = CellId::of_point(place, 12);
+                let points: Vec<CellSystem> = (1..=100)
+                    .map(|k| CellSystem {
+                        position: place,
+                        ..point(n as u64 * 1_000 + k)
+                    })
+                    .collect();
+                // The brightest ten are colonies, every other one Federation.
+                for (k, at) in points.iter().take(10).enumerate() {
+                    let allegiance = match k % 2 {
+                        0 => Allegiance::Federation,
+                        _ => Allegiance::Empire,
+                    };
+                    let (address, row) = colony(at.id64 as i64, allegiance);
+                    colonies.insert(address, row);
+                }
+                marks.push(galos_index::read::walk::MarkRef {
+                    id,
+                    slice: points.len() as u32,
+                    at: place,
+                });
+                app.world_mut()
+                    .resource_mut::<ResidentCells>()
+                    .0
+                    .insert(id, points);
+            }
+            app.insert_resource(Planned(galos_index::prelude::Needed {
+                mode: galos_index::prelude::Mode::Shell,
+                marks,
+                blobs: Vec::new(),
+                splats: Vec::new(),
+            }));
+            app.insert_resource(Populated(std::sync::Arc::new(colonies)));
+            app.insert_resource(DimTo(dim));
+            if hide {
+                app.world_mut().resource_mut::<Filters>().edit_mask(|mask| {
+                    mask.set(
+                        ColorBy::Allegiance,
+                        [Allegiance::bucket(Some(Allegiance::Federation))],
+                        true,
+                    )
+                });
+            }
+            app.update();
+            app.world().resource::<PendingSpawns>().queued()
+        };
+
+        let sky = drawing(false, 0.5);
+        assert_eq!(sky, 300, "the unfiltered sky was not drawn whole");
+        assert_eq!(
+            drawing(true, 0.5),
+            sky,
+            "dimmed, the hidden colonies are drawn where the sky has them"
+        );
+        assert_eq!(
+            drawing(true, 0.),
+            sky - 15,
+            "below the dim, only the hidden colonies are left out"
         );
     }
 

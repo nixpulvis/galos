@@ -1220,13 +1220,14 @@ impl Filters {
     /// Whether what these filters admit is the sky with some colonies taken
     /// out of it
     ///
-    /// Only the mask asking, along a political axis, while the systems nobody
-    /// lives in are drawn and let through. Those are nearly every system, so
-    /// a cell's brightest are what it admits whatever the mask hides, and the
-    /// map is drawn as it is unfiltered, the hidden colonies dimmed or left
-    /// out. Anything else admitted stands anywhere in a payload's magnitude
-    /// order, and is found by reading cells whole and claiming it a patch of
-    /// sky apiece; see [`crate::map::galaxy::walk::fetch`] and
+    /// Only the mask asking, along a political axis and hiding some of it,
+    /// while the systems nobody lives in are drawn and let through. Those are
+    /// nearly every system, so a cell's brightest are what it admits whatever
+    /// the mask hides, and the map is drawn as it is unfiltered, the hidden
+    /// colonies dimmed or left out. Anything else admitted stands anywhere in
+    /// a payload's magnitude order, and is found by reading cells whole and
+    /// claiming it a patch of sky apiece; see
+    /// [`crate::map::galaxy::walk::fetch`] and
     /// [`crate::map::galaxy::walk::reconcile`].
     ///
     /// **Claimed like a filter, it was the whole sky claimed.** Hiding No
@@ -1235,7 +1236,8 @@ impl Filters {
     /// read that landed: measured over `.index/full`, frames went from 25 ms
     /// to over 450 in the four hundred after the click, and had not settled.
     pub(crate) fn only_thins_colonies(&self) -> bool {
-        !self.asked.iter().any(|active| active.enabled)
+        self.mask.narrows()
+            && !self.asked.iter().any(|active| active.enabled)
             && self.mask.drawn().is_some_and(|axis| !axis.every_system())
             && self.mask.draws_uninhabited()
             && !self.mask.hides_uninhabited()
@@ -2095,6 +2097,13 @@ mod tests {
             assert!(filters.asking(), "{asked} asked nothing");
             assert_eq!(filters.only_thins_colonies(), thins, "{asked}");
         }
+
+        // Along a political axis with nothing hidden there is nothing to thin,
+        // and the predicate says so without the caller asking first.
+        let mut colored = Filters::default();
+        colored.edit_mask(|mask| mask.draw(Some(ColorBy::State)));
+        assert!(!colored.asking());
+        assert!(!colored.only_thins_colonies(), "nothing hidden");
     }
 
     /// A question nobody has asked is answered by nothing at all

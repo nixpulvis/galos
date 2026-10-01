@@ -200,7 +200,15 @@ pub fn plugin(app: &mut App) {
             let buckets = buckets
                 .split(',')
                 .map(|bucket| {
-                    bucket.parse().expect("GALOS_SHOT_HIDE: a bucket number")
+                    let bucket: usize = bucket
+                        .parse()
+                        .expect("GALOS_SHOT_HIDE: a bucket number");
+                    // The mask holds an axis's buckets as bits of a `u32`.
+                    assert!(
+                        bucket < u32::BITS as usize,
+                        "GALOS_SHOT_HIDE: no bucket {bucket}"
+                    );
+                    bucket
                 })
                 .collect();
             (axis, buckets)
