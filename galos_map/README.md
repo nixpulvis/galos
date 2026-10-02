@@ -85,10 +85,12 @@ stands, so two star classes of the same count lay the same light. That runs
 over some thirty stops in one frame, so the glow is drawn into a target of
 its own and brought onto the display a pixel at a time through one curve
 ([`src/map/paint/curve.rs`](./src/map/paint/curve.rs)), read in stops over
-an average system's mark along the axis drawn and held down as the reach
-widens. Each mark goes through the same curve on its own, at a set exposure,
-and is laid over the glow, so a system drawn as itself reads as one over the
-crowd behind it at every zoom. The settings pane, under the map view, sets
+an average system's mark along the axis drawn, held down as the reach
+widens and, inside two thousand light years, as it narrows too: close in
+the marks are the picture and the glow is a backdrop. Each mark goes
+through the same curve on its own, at a set exposure, and is laid over the
+glow, so a system drawn as itself reads as one over the crowd behind it at
+every zoom. The settings pane, under the map view, sets
 it: Glow takes the glow away and leaves the marks, and its Brightness lifts
 or holds down the glow alone, in stops, the marks staying where they are;
 Field Exposure slides the frame along the curve, and Field Curve is the

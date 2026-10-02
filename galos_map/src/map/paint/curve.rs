@@ -129,7 +129,8 @@ pub struct GlowBrightness(pub f32);
 /// A fixed function of a number the map already knows: nothing here adapts,
 /// nothing lags, and the same reach is the same brightness every time it
 /// comes round. Global to the frame, so it moves no star against another.
-/// Under this reach the field is a handful of systems and the tilt holds.
+/// Under this reach the field is a handful of systems and this part of the
+/// tilt holds; closer in it is [`CLOSE_FROM`]'s.
 const EVEN_AT: f32 = 16.;
 
 /// And how many stops the field is held down for each octave the reach
@@ -138,14 +139,43 @@ const EVEN_AT: f32 = 16.;
 /// reaches.
 const TILT: f32 = 0.59;
 
+/// The reach under which the field is held down as it narrows as well, in
+/// light years
+///
+/// **Close in, the marks are the picture and the field is a backdrop.**
+/// Inside a couple of thousand light years the marks stand apart and say
+/// where the systems are, and what the field adds over them is a wash: the
+/// cells there are wider than much of the view, so its light is a smear the
+/// size of the reach. Measured over `.index/full` looking down on Sol along
+/// allegiance, the field stood at a display level of 0.57 under marks at
+/// 0.71 from four hundred light years back, reach 138 — a yellow ball the
+/// marks were sprinkled into — and at 0.49 from six thousand back, reach
+/// 2,100, where it draws the colonisation's filaments the marks cannot and
+/// reads right. So from here in the field gives a stop and a quarter for
+/// every octave the reach narrows, [`CLOSE`]: about five at 138, the level
+/// falling to 0.3 and the marks standing seven times their glow.
+const CLOSE_FROM: f32 = 2048.;
+
+/// And how many stops the field gives for each octave the reach narrows
+/// under [`CLOSE_FROM`]
+const CLOSE: f32 = 1.25;
+
 /// How many stops the field is moved at a reach of `reach` light years; see
-/// [`EVEN_AT`]. Never lifted, and a reach of nothing, the spyglass not set,
-/// moves it not at all.
+/// [`EVEN_AT`] and [`CLOSE_FROM`]. Never lifted, and a reach of nothing, the
+/// spyglass not set, moves it not at all.
 fn tilt(reach: f32) -> f32 {
-    if reach <= EVEN_AT {
+    if reach <= 0. {
         return 0.;
     }
-    -TILT * (reach / EVEN_AT).log2()
+    let wide = match reach > EVEN_AT {
+        true => -TILT * (reach / EVEN_AT).log2(),
+        false => 0.,
+    };
+    let close = match reach < CLOSE_FROM {
+        true => -CLOSE * (CLOSE_FROM / reach).log2(),
+        false => 0.,
+    };
+    wide + close
 }
 
 /// How many knots the curve is drawn through
@@ -766,19 +796,30 @@ mod tests {
         assert!(curve.level(-60.) < 1e-6, "the toe does not reach black");
     }
 
-    /// A wider reach is never a brighter field, and the field is never
-    /// lifted over the marks: under the reach it meets them at, it holds,
-    /// and a reach not set moves it not at all.
+    /// The field is brightest at [`CLOSE_FROM`] and held down either side of
+    /// it, with no step anywhere: a wider reach past it is never a brighter
+    /// field, nor a narrower one inside it. Never lifted over the marks, and
+    /// a reach not set moves it not at all.
     #[test]
-    fn the_tilt_holds_the_field_down_as_the_reach_widens() {
-        assert_eq!(tilt(EVEN_AT), 0.);
-        assert_eq!(tilt(EVEN_AT / 100.), 0.);
+    fn the_tilt_holds_the_field_down_away_from_its_peak() {
         assert_eq!(tilt(0.), 0., "an unset reach moved the field");
-        let mut last = tilt(EVEN_AT);
-        for step in 1..=64 {
-            let reach = EVEN_AT * 1.2f32.powi(step);
+        let peak = tilt(CLOSE_FROM);
+        let mut last = peak;
+        let mut reach = CLOSE_FROM;
+        for _ in 0..64 {
+            reach *= 1.2;
             let here = tilt(reach);
             assert!(here < last, "no darker at a reach of {reach} ly");
+            assert!(last - here < 0.5, "a step at a reach of {reach} ly");
+            last = here;
+        }
+        let (mut last, mut reach) = (peak, CLOSE_FROM);
+        for _ in 0..40 {
+            reach /= 1.2;
+            let here = tilt(reach);
+            assert!(here < last, "no darker at a reach of {reach} ly");
+            assert!(last - here < 0.5, "a step at a reach of {reach} ly");
+            assert!(here <= 0., "lifted at a reach of {reach} ly");
             last = here;
         }
     }
