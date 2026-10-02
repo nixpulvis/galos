@@ -32,7 +32,7 @@ usage() {
   sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
   echo "Options: -i INDEX  -f FRAMES  -o OUT  -z ZONE (repeatable)  -t TOP"
   echo "         -r (read, fly nothing)  -c BEFORE AFTER (compare)"
-  echo "Scenarios: still out in pan turn"
+  echo "Scenarios: still out in pan turn hide galaxy galaxypan"
   exit "${1:-0}"
 }
 
@@ -48,7 +48,11 @@ scenario() {
     # Standing still as `still` does, where hiding No state was measured, the
     # key's No state hidden once the view has loaded.
     hide) echo "GALOS_SHOT_BACK=30000 GALOS_SHOT_HIDE=state:0,27 GALOS_SHOT_HIDE_AT=120" ;;
-    *) echo "no scenario $1; there are still out in pan turn hide" >&2; exit 2 ;;
+    # The galaxy seen whole from above, as `media.sh` takes it, standing
+    # still and then sliding along x.
+    galaxy) echo "GALOS_SHOT_Z=25000 GALOS_SHOT_BACK=115000 GALOS_SHOT_PITCH=-1.55" ;;
+    galaxypan) echo "GALOS_SHOT_Z=25000 GALOS_SHOT_BACK=115000 GALOS_SHOT_PITCH=-1.55 GALOS_SHOT_PAN=150" ;;
+    *) echo "no scenario $1; there are still out in pan turn hide galaxy galaxypan" >&2; exit 2 ;;
   esac
 }
 
@@ -72,7 +76,7 @@ if [ ${#compare[@]} -eq 1 ]; then
   shift
 fi
 scenarios=("$@")
-[ ${#scenarios[@]} -gt 0 ] || scenarios=(still out in pan turn hide)
+[ ${#scenarios[@]} -gt 0 ] || scenarios=(still out in pan turn hide galaxy galaxypan)
 
 # Fly one scenario and capture it to `$out/<name>.tracy`.
 fly() {

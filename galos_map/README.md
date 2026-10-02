@@ -344,7 +344,8 @@ can lose the handshake and exit rather than wait through it.
 `profile.sh` does the above with nobody at the window: it builds with
 `--features tracy`, flies each scenario through the shot driver
 (`src/dev/shot.rs`) — standing still, zooming out, zooming in, panning,
-turning, and hiding a color from the key while standing still — captures
+turning, hiding a color from the key while standing still, and the galaxy
+seen whole standing still (`galaxy`) and panning (`galaxypan`) — captures
 each with `tracy-capture`, and reads the traces back with `tracy-csvexport`
 and `awk`. For each it prints the frame times and
 what the slowest tenth of frames spent, by zone. Traces stay in `-o` to be
