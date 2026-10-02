@@ -1941,6 +1941,7 @@ mod tests {
     #[test]
     fn a_fully_masked_cell_lets_nothing_through() {
         let mut mask = crate::map::filter::mask::Mask::default();
+        mask.draw(Some(ColorBy::Allegiance));
         mask.set(ColorBy::Allegiance, 0..11, true);
         let cell = empire().merge(unreported());
         let keeps = mask.keeps(ColorBy::Allegiance);
@@ -1962,6 +1963,7 @@ mod tests {
     #[test]
     fn a_hidden_colony_leaves_the_field_as_its_mark_does() {
         let mut mask = crate::map::filter::mask::Mask::default();
+        mask.draw(Some(ColorBy::Allegiance));
         mask.set(ColorBy::Allegiance, [2], true);
         let cell = empire().merge(unreported());
         let whole = composition(&cell, ColorBy::Allegiance, 0.25, Keeps::ALL);

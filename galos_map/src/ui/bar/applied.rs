@@ -1496,6 +1496,7 @@ mod tests {
     #[test]
     fn a_solo_counts_the_uninhabited_among_what_it_hid() {
         let mut mask = Mask::default();
+        mask.draw(Some(ColorBy::Allegiance));
         mask.solo(
             ColorBy::Allegiance,
             &value(ColorBy::Allegiance, "Federation"),

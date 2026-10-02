@@ -44,7 +44,7 @@ use std::{
 };
 
 pub fn plugin(app: &mut App) {
-    app.insert_resource(ColorBy::Allegiance);
+    app.insert_resource(ColorBy::StarClass);
     app.insert_resource(ShowNames(true));
     app.insert_resource(StarExposure::default());
     app.insert_resource(StarProfile::default());

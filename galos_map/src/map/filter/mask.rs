@@ -96,6 +96,7 @@ const _: () = {
 impl ColorBy {
     /// Every axis the map can be colored by, in the order the key lists them
     pub const ALL: [ColorBy; 8] = [
+        ColorBy::StarClass,
         ColorBy::Allegiance,
         ColorBy::Government,
         ColorBy::Security,
@@ -103,11 +104,10 @@ impl ColorBy {
         ColorBy::State,
         ColorBy::Power,
         ColorBy::PowerplayState,
-        ColorBy::StarClass,
     ];
 
-    /// The axes read off a colony's populated columns, which are the first
-    /// of [`Self::ALL`] and the ones a [`Buckets`] holds
+    /// The axes read off a colony's populated columns, which are the ones a
+    /// [`Buckets`] holds
     pub const POLITICAL: [ColorBy; 7] = [
         ColorBy::Allegiance,
         ColorBy::Government,
@@ -128,9 +128,9 @@ impl ColorBy {
         matches!(self, ColorBy::StarClass)
     }
 
-    /// Where this axis stands in [`Self::ALL`], which is where its bits are
-    /// kept in a [`Mask`] and, for a political axis, its bucket in a
-    /// [`Buckets`]
+    /// Where this axis's bits are kept in a [`Mask`] and, for a political
+    /// axis, its bucket in a [`Buckets`]: the political axes first, in
+    /// [`Self::POLITICAL`]'s order. Not where the key lists it.
     const fn slot(self) -> usize {
         match self {
             ColorBy::Allegiance => 0,
@@ -303,7 +303,7 @@ impl Default for Mask {
     fn default() -> Mask {
         Mask {
             hidden: [0; ColorBy::ALL.len()],
-            drawn: Some(ColorBy::Allegiance),
+            drawn: Some(ColorBy::StarClass),
             uninhabited: false,
             empty_drawn: true,
         }
@@ -625,6 +625,14 @@ impl Keeps {
 mod tests {
     use super::*;
 
+    /// A mask over the map colored by allegiance, which is where the
+    /// uninhabited flag means anything: the map's default is star class.
+    fn colored_by_allegiance() -> Mask {
+        let mut mask = Mask::default();
+        mask.draw(Some(ColorBy::Allegiance));
+        mask
+    }
+
     /// The star a political test's systems arrive at, which no political
     /// axis asks about
     const NO_STAR: StarKind = StarKind::Unknown;
@@ -919,7 +927,7 @@ mod tests {
     /// Anything hidden along any axis, or empty space hidden, narrows
     #[test]
     fn anything_hidden_narrows() {
-        let mut mask = Mask::default();
+        let mut mask = colored_by_allegiance();
         assert!(!mask.narrows());
         mask.set_uninhabited(true);
         assert!(mask.narrows());
@@ -932,7 +940,7 @@ mod tests {
     /// unreported colony included
     #[test]
     fn uninhabited_hides_only_the_systems_nobody_lives_in() {
-        let mut mask = Mask::default();
+        let mut mask = colored_by_allegiance();
         mask.set_uninhabited(true);
         assert!(!mask.admits(None, NO_STAR));
         assert!(mask.admits(Some(Buckets::of(&Readings::default())), NO_STAR));
@@ -942,7 +950,7 @@ mod tests {
     /// included, and leaves the other axes as they were
     #[test]
     fn solo_shows_one_value_and_leaves_the_other_axes() {
-        let mut mask = Mask::default();
+        let mut mask = colored_by_allegiance();
         mask.set(ColorBy::Government, [bucket_of(Government::Prison)], true);
         let federation = bucket_of(Allegiance::Federation);
         mask.solo(ColorBy::Allegiance, &[federation]);
@@ -1035,7 +1043,7 @@ mod tests {
     /// keeps it for when it draws them again; the colors still apply
     #[test]
     fn uninhabited_is_ignored_where_none_is_drawn() {
-        let mut mask = Mask::default();
+        let mut mask = colored_by_allegiance();
         mask.set_uninhabited(true);
         mask.draw_uninhabited(false);
         assert!(!mask.narrows());
