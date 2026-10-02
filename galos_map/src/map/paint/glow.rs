@@ -1038,22 +1038,35 @@ fn build_glow(
                 // And held to the reach by its box rather than its centroid:
                 // the shader clips the volume to the reach's own sphere, so a
                 // cell straddling it lays what is inside, where its centroid
-                // decides only whether its splat is laid.
-                let reached = !spyglass.clear
-                    || bounds.distance_to(orbit.center().to_array())
-                        <= f64::from(spyglass.radius);
+                // decides only whether its splat is laid. Faded out as its box
+                // leaves the sphere rather than cut where it does; see
+                // [`volume::rim`].
+                let rim = volume::rim(
+                    bounds.distance_to(orbit.center().to_array()),
+                    spyglass.clear.then_some(spyglass.radius),
+                );
                 let handed = match carried >= 1. - 1e-3
-                    && reached
                     && seen_whole(&bounds, edge)
                 {
                     true => volume::share(edge_px),
                     false => 0.,
                 };
+                // Whether a channel fills its cell is asked of the cell's
+                // systems as a whole, not of what the marks have left of
+                // them: the residual's spread moves a system at a time as the
+                // map's share moves which of them are drawn, and a cell near
+                // the line was laid as a box one frame and a Gaussian the
+                // next. The cell's own stays put however the camera moves.
                 let into_volume = |rms: f64| match rms >= volume::FILLED * edge
                 {
                     true => handed,
                     false => 0.,
                 };
+                let stellar_into = into_volume(cell.aggregate.mass().rms_radius());
+                let colony_into = settled
+                    .0
+                    .get(splat.id)
+                    .map_or(0., |held| into_volume(held.spread()));
                 let mut poured = volume::Source {
                     id: splat.id,
                     lit: Vec3::ZERO,
@@ -1212,7 +1225,7 @@ fn build_glow(
                             share * keeps.of(0),
                             excluded,
                         );
-                        let into = into_volume(mass.rms_radius());
+                        let into = stellar_into;
                         poured.lit += through * into;
                         poured.dimmed += dimmed * into;
                         if let Some(at) = at
@@ -1239,7 +1252,7 @@ fn build_glow(
                         let (through, dimmed) =
                             let_through(whole, kept, share, excluded);
                         let scale = carried * gains.mark * MARK_AREA;
-                        let into = into_volume(mass.rms_radius());
+                        let into = stellar_into;
                         poured.lit += through * scale * into;
                         poured.dimmed += dimmed * scale * into;
                         if let Some(at) = at
@@ -1257,7 +1270,7 @@ fn build_glow(
                             counted.took(lit);
                         }
                     }
-                    pour(poured, frame.mark, &mut sources, &mut counted);
+                    pour(poured, rim, frame.mark, &mut sources, &mut counted);
                     continue;
                 }
                 if empty > 0 && !populated_only {
@@ -1268,7 +1281,7 @@ fn build_glow(
                     );
                     let (through, dimmed) =
                         let_through(whole, whole, backdrop_share, excluded);
-                    let into = into_volume(mass.rms_radius());
+                    let into = stellar_into;
                     poured.lit += through * into;
                     poured.dimmed += dimmed * into;
                     if let Some(at) = at
@@ -1313,7 +1326,7 @@ fn build_glow(
                     let (through, dimmed) =
                         let_through(whole, kept, colony_share, excluded);
                     let scale = carried * gains.mark * MARK_AREA;
-                    let into = into_volume(held.spread());
+                    let into = colony_into;
                     poured.lit += through * scale * into;
                     poured.dimmed += dimmed * scale * into;
                     if let Some(at) = at
@@ -1332,7 +1345,7 @@ fn build_glow(
                         counted.took(lit);
                     }
                 }
-                pour(poured, frame.mark, &mut sources, &mut counted);
+                pour(poured, rim, frame.mark, &mut sources, &mut counted);
             }
             (quads, counted, sources)
         };
@@ -1408,17 +1421,21 @@ struct Lit {
     dimmed: bool,
 }
 
-/// Take a cell's share of the volume in, where it laid any
+/// Take a cell's share of the volume in, where it laid any, at `rim` of it
+/// for how much of the cell the reach still holds ([`volume::rim`])
 ///
 /// Counted into [`Laid`] as a quad is: one more cell, and its brightest
 /// channel's light in the curve's unit, which the volume lays whole as a
 /// splat does.
 fn pour(
-    source: volume::Source,
+    mut source: volume::Source,
+    rim: f32,
     mark: f32,
     sources: &mut Vec<volume::Source>,
     counted: &mut Laid,
 ) {
+    source.lit *= rim;
+    source.dimmed *= rim;
     if source.lit.max_element() <= 0. && source.dimmed.max_element() <= 0. {
         return;
     }

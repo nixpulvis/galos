@@ -168,8 +168,19 @@ the galaxy seen whole (150 k back, reach 90 k), the default (30 k back,
   cells, 7.5 k ghosts, 720 k list entries), across threads.
 - Seen whole the band's edge runs through the frame: 4.4 k cells and 22 k
   ghosts, for little light.
-- The volume ends at the reach's sphere over a sixteenth of it; the splats
-  still fade by how much of themselves the reach holds.
+- The volume ends at the reach's sphere over a sixteenth of it, and a cell's
+  volume light fades over the same band as its box leaves the sphere
+  (`volume::rim`), so the walk dropping it takes nothing on screen with it;
+  the splats still fade by how much of themselves the reach holds. Whether
+  a channel fills its cell is asked of the cell's systems whole, not of what
+  the marks left, so a cell no longer flips between box and Gaussian as
+  marks come and go. Both were found off the field's own accounting, frame
+  by frame, with the screen locked: not yet looked at in the window.
+- Marks churn during a zoom: a cell's drawn count moves up and down by a few
+  a frame as the share rises and the reach takes systems off its edge, and
+  each system's light moves between its mark and its cell's residual. A
+  residual of a few colonies changes shape with it. Small, but a step and
+  not a fade.
 - The tents attempt is still in `git stash list`.
 
 ## Smoother while moving

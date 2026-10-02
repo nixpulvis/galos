@@ -96,6 +96,9 @@ pub fn plugin(app: &mut App) {
 /// the rim stand at 0.32 to 0.39, a few hundred systems each standing where
 /// they happen to, and a cell holding a filament or a knot well under that:
 /// those keep their Gaussian about their own centroid at their own spread.
+///
+/// Asked of the cell's systems as a whole and never of what the marks have
+/// left of them; see `build_glow`.
 pub(crate) const FILLED: f64 = 0.42;
 
 /// The edge on screen, in logical pixels, at which a filled cell starts
@@ -135,6 +138,28 @@ pub(crate) fn share(edge_px: f32) -> f32 {
 /// of it inside, where a splat fades by how much of itself the reach still
 /// holds. A sixteenth: a cell or two at the zooms the reach is set from.
 const SOFT: f32 = 1. / 16.;
+
+/// How much of a cell's light the volume lays where its box stands `apart`
+/// light years from the reach's centre, for a reach of `radius`; one where
+/// the spyglass is not clearing
+///
+/// **Faded out before the walk drops the cell, not cut where it does.** The
+/// walk holds a cell while the reach comes within its box, and the volume is
+/// clipped to the reach's sphere — but a cell's tent reaches a whole edge
+/// past its box, into the neighbour inside the reach, so the cell lays
+/// light well inside the sphere after its own box has all but left it.
+/// Dropped at the walk's edge, that light went out in one frame, on a zoom
+/// that moved the reach by a fraction of a light year. Over the same band
+/// the shader fades the volume across inside the reach.
+pub(crate) fn rim(apart: f64, radius: Option<f32>) -> f32 {
+    let Some(radius) = radius else { return 1. };
+    let soft = f64::from(radius * SOFT);
+    if soft <= 0. {
+        return 0.;
+    }
+    let t = ((f64::from(radius) - apart) / soft).clamp(0., 1.) as f32;
+    t * t * (3. - 2. * t)
+}
 
 /// Where an entry of a box's list keeps the octants it reaches: the high
 /// byte, the low three holding the cell.
@@ -1103,6 +1128,29 @@ mod tests {
     /// Where `id`'s middle stands, from an eye at the cube's origin.
     fn middle(id: CellId) -> DVec3 {
         DVec3::from(id.bounds().center())
+    }
+
+    /// A cell's volume light is gone by the time its box leaves the reach,
+    /// which is where the walk lets the cell go, and gets there without a
+    /// step: a cell dropped takes nothing with it that a frame showed. Its
+    /// tent reaches a whole edge inside the sphere, so light cut off at the
+    /// box went out over a band of the reach on a zoom of a fraction of a
+    /// light year.
+    #[test]
+    fn a_cell_fades_out_before_the_reach_lets_it_go() {
+        let radius = 300.;
+        let at = |apart: f64| rim(apart, Some(radius));
+        assert_eq!(at(f64::from(radius)), 0., "lit where the walk drops it");
+        assert_eq!(at(f64::from(radius) + 1.), 0.);
+        assert_eq!(at(0.), 1., "a cell the reach holds is dimmed");
+        let mut last = at(0.);
+        for step in 1..=3000 {
+            let now = at(f64::from(radius) * f64::from(step) / 3000.);
+            assert!(now <= last, "brighter further out, at step {step}");
+            assert!(last - now < 0.01, "a step from {last} to {now}");
+            last = now;
+        }
+        assert_eq!(rim(1e9, None), 1., "faded with the spyglass off");
     }
 
     /// The same light in every cell of a block is one density inside it,
