@@ -757,7 +757,10 @@ pub(crate) struct Frame {
     _pad1: f32,
     /// Half the frame, logical pixels.
     half: Vec2,
-    _pad2: Vec2,
+    /// Where the point straight ahead lands from the frame's middle, in
+    /// logical pixels with y up: nought but in a piece of a larger picture,
+    /// [`crate::map::camera::Frame`].
+    shift: Vec2,
 }
 
 impl Frame {
@@ -784,6 +787,10 @@ impl Frame {
             radius,
             root: (orbit.eye() - DVec3::from(CellId::ROOT.min_ly())).as_vec3(),
             half: viewport * 0.5,
+            shift: {
+                let off = orbit.frame.middle(viewport) - viewport * 0.5;
+                Vec2::new(off.x, -off.y)
+            },
             ..Frame::default()
         }
     }

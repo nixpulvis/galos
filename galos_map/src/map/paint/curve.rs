@@ -70,7 +70,10 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<GlowBrightness>();
     app.init_resource::<FieldCurve>();
     app.add_systems(Startup, spawn_curve);
-    app.add_systems(Update, (fit_targets, route_field, set_curve).chain());
+    app.add_systems(
+        Update,
+        (fit_targets, route_field.in_set(Routed), set_curve).chain(),
+    );
 }
 
 /// How many stops the field is lifted ahead of its curve
@@ -466,7 +469,7 @@ struct VolumeCamera;
 
 /// The camera that lays the two targets over the galaxy through the curve
 #[derive(Component)]
-struct CurveCamera;
+pub(crate) struct CurveCamera;
 
 /// The one quad it lays them with, sized to the frame
 #[derive(Component)]
@@ -635,6 +638,11 @@ fn spawn_curve(
     ));
     commands.insert_resource(FieldTargets { lit, dimmed, volume });
 }
+
+/// Where the field's camera is sent for the view, which
+/// [`crate::map::enhance`] sends elsewhere after it while a picture is drawn
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct Routed;
 
 /// The field's two cameras, each drawing into its own target
 type Drawing = Or<(With<FieldCamera>, With<DimmedCamera>)>;

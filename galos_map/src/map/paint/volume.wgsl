@@ -54,7 +54,9 @@ struct Frame {
     _pad1: f32,
     // Half the frame, logical pixels.
     half: vec2<f32>,
-    _pad2: vec2<f32>,
+    // Where the point straight ahead lands from the frame's middle, logical
+    // pixels with y up: nought but in a piece of a larger picture.
+    shift: vec2<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> frame: Frame;
@@ -137,7 +139,7 @@ fn vertex(in: Vertex) -> Varying {
             continue;
         }
         let at = vec2(dot(corner, frame.right), dot(corner, frame.up))
-            / (depth * frame.per_pixel);
+            / (depth * frame.per_pixel) + frame.shift;
         low = min(low, at);
         high = max(high, at);
     }
@@ -156,9 +158,10 @@ fn vertex(in: Vertex) -> Varying {
         get_world_from_local(in.instance_index),
         vec4(xy, -2.0, 1.0),
     );
+    let aside = xy - frame.shift;
     out.ray = frame.forward
-        + frame.right * (xy.x * frame.per_pixel)
-        + frame.up * (xy.y * frame.per_pixel);
+        + frame.right * (aside.x * frame.per_pixel)
+        + frame.up * (aside.y * frame.per_pixel);
     return out;
 }
 

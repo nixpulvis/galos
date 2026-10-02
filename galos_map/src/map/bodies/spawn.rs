@@ -70,7 +70,15 @@ pub fn plugin(app: &mut App) {
     // standing at rather than at the one it was standing at last frame. It
     // reads nothing off the rows any more -- the moment is the galaxy's -- so
     // only the ordering against `draw` is load-bearing.
-    app.add_systems(Update, follow.in_set(MapSet::Populate).before(draw));
+    // Not while a picture is enhanced: it is one moment, and a body carried
+    // on between two of its pieces would be drawn twice.
+    app.add_systems(
+        Update,
+        follow
+            .in_set(MapSet::Populate)
+            .before(draw)
+            .run_if(crate::map::enhance::idle),
+    );
     // After the lines are spawned, so one drawn this frame is hidden on this
     // frame rather than being shown once and taken away.
     app.add_systems(Update, show_orbits.in_set(MapSet::Present));

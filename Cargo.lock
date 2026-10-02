@@ -4043,6 +4043,7 @@ dependencies = [
  "galos_photometry",
  "galos_route",
  "log",
+ "png",
  "pollster 0.4.0",
  "rustc-hash 2.1.3",
 ]
