@@ -90,7 +90,9 @@ widens and, inside two thousand light years, as it narrows too: close in
 the marks are the picture and the glow is a backdrop. Each mark goes
 through the same curve on its own, at a set exposure, and is laid over the
 glow, so a system drawn as itself reads as one over the crowd behind it at
-every zoom. The settings pane, under the map view, sets
+every zoom; along star class, close in, a star's mark comes on up to the
+display's full brightness in its class's colour. The settings pane, under
+the map view, sets
 it: Glow takes the glow away and leaves the marks, and its Brightness lifts
 or holds down the glow alone, in stops, the marks staying where they are;
 Field Exposure slides the frame along the curve, and Field Curve is the

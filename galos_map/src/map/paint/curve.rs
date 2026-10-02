@@ -178,6 +178,32 @@ fn tilt(reach: f32) -> f32 {
     wide + close
 }
 
+/// The reach inside which a star's mark is drawn at the display's full
+/// brightness, in light years
+///
+/// **Close in, a star is a colour and not a crowd's worth of light.** Along
+/// star class a mark is the light one star is worth against the galaxy's
+/// average, which is a third of the display or so: right where the marks
+/// stand among the glow with the galaxy seen whole, and dim red and blue
+/// specks on black from a few light years back, where there is no glow and
+/// the marks are the whole picture. So from [`CLOSE_FROM`] in, where the glow
+/// gives way to the marks, a star's mark is lifted toward full brightness,
+/// all of the way by here.
+const BRIGHT_AT: f32 = 128.;
+
+/// How far a star's mark is lifted toward the display's full brightness at
+/// a reach of `reach` light years: nothing at [`CLOSE_FROM`] and wider, all
+/// of it at [`BRIGHT_AT`] and narrower, eased between on the octaves. A
+/// reach of nothing, the spyglass not set, lifts nothing.
+fn lift(reach: f32) -> f32 {
+    if reach <= 0. {
+        return 0.;
+    }
+    let t = ((CLOSE_FROM / reach).log2() / (CLOSE_FROM / BRIGHT_AT).log2())
+        .clamp(0., 1.);
+    t * t * (3. - 2. * t)
+}
+
 /// How many knots the curve is drawn through
 pub(crate) const KNOTS: usize = 7;
 
@@ -324,16 +350,24 @@ pub(crate) struct Exposing<'w> {
 
 impl Exposing<'_> {
     /// Whether what the marks are exposed by moved since the system asking
-    /// last ran: the glow's dial and the tilt are the field's alone
+    /// last ran: the glow's dial and the tilt are the field's alone, and the
+    /// reach moves the marks only through [`Self::lift`]
     pub(crate) fn is_changed(&self) -> bool {
         self.curve.is_changed()
             || self.exposure.is_changed()
             || self.gains.is_changed()
+            || self.spyglass.is_changed()
     }
 
     /// How the marks are exposed: the dial, and no tilt
     pub(crate) fn marks(&self) -> Exposed {
         self.at(self.exposure.0)
+    }
+
+    /// How far a star's mark is lifted toward the display's full brightness
+    /// at this reach; see [`lift`]
+    pub(crate) fn lift(&self) -> f32 {
+        lift(self.spyglass.radius)
     }
 
     /// How the field is exposed: the dial, the glow's own, and the tilt the
@@ -343,11 +377,7 @@ impl Exposing<'_> {
     }
 
     fn at(&self, stops: f32) -> Exposed {
-        Exposed {
-            curve: *self.curve,
-            slope: self.curve.tangents(),
-            gain: stops.exp2() / (self.gains.mark * self.gains.average),
-        }
+        Exposed::at(*self.curve, self.gains.mark * self.gains.average, stops)
     }
 }
 
@@ -358,9 +388,24 @@ pub(crate) struct Exposed {
     slope: [f32; KNOTS],
     /// Linear light to the curve's unit, the dial and the tilt in it.
     gain: f32,
+    /// The brightest a lifted star is drawn, in the display's linear light:
+    /// the whole of it at the dial's rest and over, and halved for every
+    /// stop the dial is turned down. See [`Self::lifted`].
+    full: f32,
 }
 
 impl Exposed {
+    /// Through `curve`, read in a `unit` of linear light, the dial at
+    /// `stops`
+    fn at(curve: FieldCurve, unit: f32, stops: f32) -> Exposed {
+        Exposed {
+            curve,
+            slope: curve.tangents(),
+            gain: stops.exp2() / unit,
+            full: stops.exp2().min(1.),
+        }
+    }
+
     /// A light as the display carries it, through the curve on its own
     ///
     /// The shader's own `through`, for what is laid over the field after its
@@ -376,6 +421,25 @@ impl Exposed {
         let level =
             self.curve.level_along(&self.slope, (top * self.gain).log2());
         c * (decode(level) / top)
+    }
+
+    /// [`Self::through`], lifted `lift` of the way from the level the curve
+    /// gives it to the display's full brightness as the dial has it, its
+    /// colour kept
+    ///
+    /// **The dial still has its say.** Lifted to the display's full light
+    /// outright, a star close in was the one mark [`FieldExposure`] could not
+    /// move. The full it is lifted to is the dial's instead: all of the
+    /// display at rest and turned up, and a stop under it for every stop the
+    /// dial is turned down, so the stars dim with everything else.
+    pub(crate) fn lifted(&self, light: Vec3, lift: f32) -> Vec3 {
+        let shown = self.through(light);
+        let top = shown.max_element();
+        if top <= 0. || lift <= 0. {
+            return shown;
+        }
+        let lift = lift.min(1.);
+        shown * ((top * (1. - lift) + self.full * lift) / top)
     }
 }
 
@@ -794,6 +858,46 @@ mod tests {
         }
         assert_eq!(curve.level(40.), curve.levels[KNOTS - 1], "the hold moved");
         assert!(curve.level(-60.) < 1e-6, "the toe does not reach black");
+    }
+
+    /// A star's mark is lifted from nothing at [`CLOSE_FROM`] to all of the
+    /// way at [`BRIGHT_AT`], never back down as the reach narrows, and a
+    /// reach not set lifts nothing
+    #[test]
+    fn a_star_comes_up_to_full_as_the_reach_narrows() {
+        assert_eq!(lift(0.), 0., "an unset reach lifted the marks");
+        assert_eq!(lift(CLOSE_FROM), 0.);
+        assert_eq!(lift(CLOSE_FROM * 8.), 0.);
+        assert_eq!(lift(BRIGHT_AT), 1.);
+        assert_eq!(lift(BRIGHT_AT / 8.), 1.);
+        let mut last = 0.;
+        let mut reach = CLOSE_FROM;
+        while reach > BRIGHT_AT {
+            reach /= 1.1;
+            let here = lift(reach);
+            assert!(here >= last, "dimmer coming in, at {reach} ly");
+            assert!(here - last < 0.1, "a step at {reach} ly");
+            last = here;
+        }
+    }
+
+    /// Lifted all of the way, a mark's brightest channel is the display's
+    /// full and its colour is what it was; lifted none, it is the curve's.
+    /// And the dial still moves it: a stop down is half the light, and
+    /// turned up it holds at the display's full.
+    #[test]
+    fn a_lifted_star_keeps_its_colour_and_answers_the_dial() {
+        let at = |stops| Exposed::at(FieldCurve::default(), 1., stops);
+        let red = Vec3::new(1., 0.25, 0.1);
+        let shown = at(0.).through(red);
+        assert_eq!(at(0.).lifted(red, 0.), shown);
+        let full = at(0.).lifted(red, 1.);
+        assert!((full.max_element() - 1.).abs() < 1e-6, "{full}");
+        assert!((full / full.x - shown / shown.x).length() < 1e-6, "{full}");
+        let down = at(-1.).lifted(red, 1.);
+        assert!((down.max_element() - 0.5).abs() < 1e-6, "{down}");
+        let up = at(2.).lifted(red, 1.);
+        assert!((up.max_element() - 1.).abs() < 1e-6, "{up}");
     }
 
     /// The field is brightest at [`CLOSE_FROM`] and held down either side of

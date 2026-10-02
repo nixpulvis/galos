@@ -456,6 +456,14 @@ pub(crate) fn build_field(
     // so a system drawn as itself reads as one over the crowd behind it at
     // the level the curve gives one system, whatever that crowd comes to.
     let exposed = exposing.marks();
+    // Close in, along star class, how far a star's mark is lifted toward the
+    // display's full brightness; see [`crate::map::paint::curve::Exposing::lift`].
+    // Not the political axes, whose gray of nobody living there would come
+    // up as bright as the colonies it is there to stand under.
+    let lift = match color_by.every_system() {
+        true => exposing.lift(),
+        false => 0.,
+    };
     // Whether a mark may be painted under a pixel, which is the population
     // scale's to say; see [`floor`].
     let floor = floor(scale_population.0);
@@ -530,7 +538,14 @@ pub(crate) fn build_field(
                     system.population() > 0,
                     &gains,
                 );
-                let c = exposed.through(tone.light() * level) * fade;
+                // A star on record, and not the gray of one nobody has
+                // scanned: lifted to full brightness, that would outshine
+                // every class over it.
+                let lift = match tone {
+                    crate::map::galaxy::spawn::Hue::Grey => 0.,
+                    _ => lift,
+                };
+                let c = exposed.lifted(tone.light() * level, lift) * fade;
                 [c.x, c.y, c.z, 1.]
             }
             // A photometric glint: the blackbody tint at the energy the star's
