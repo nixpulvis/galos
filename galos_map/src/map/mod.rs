@@ -9,6 +9,7 @@
 
 pub(crate) mod bodies;
 pub(crate) mod camera;
+pub(crate) mod enhance;
 pub(crate) mod filter;
 pub(crate) mod galaxy;
 pub(crate) mod grid;
@@ -58,6 +59,7 @@ pub fn plugin(app: &mut App) {
     app.add_plugins(rose::plugin);
     app.add_plugins(search::plugin);
     app.add_plugins(keys::plugin);
+    app.add_plugins(enhance::plugin);
 }
 
 #[cfg(test)]

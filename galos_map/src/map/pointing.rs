@@ -1001,7 +1001,7 @@ pub fn ring(
     // A point given in pixels from the middle of the screen, laid out in screen
     // space. A stop's marks are placed about the middle, where the leader they
     // stand in for runs from.
-    let middle = viewport * 0.5;
+    let middle = orbit.frame.middle(viewport);
     let placed = |at: Vec2| egui::pos2(middle.x + at.x, middle.y + at.y);
 
     // The stops the routes reach from here, while the map is holding a system,

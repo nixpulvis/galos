@@ -171,6 +171,9 @@ pub(crate) struct Axes {
     forward: DVec3,
     right: DVec3,
     up: DVec3,
+    /// Which piece of the picture the viewport draws; see
+    /// [`crate::map::camera::Frame`].
+    frame: crate::map::camera::Frame,
 }
 
 impl Axes {
@@ -179,6 +182,7 @@ impl Axes {
             forward: camera.forward().as_dvec3(),
             right: camera.right().as_dvec3(),
             up: camera.up().as_dvec3(),
+            frame: camera.frame,
         }
     }
 
@@ -198,7 +202,7 @@ impl Axes {
         let up = offset.dot(self.up) as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
 
-        Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
+        Some(self.frame.middle(viewport) + Vec2::new(right, -up) / per_pixel)
     }
 }
 
@@ -385,7 +389,7 @@ pub(crate) fn outline(
     let across = focal * grazing * (lean / swell).sqrt();
 
     Some(Silhouette {
-        at: viewport / 2. + middle.as_vec2(),
+        at: camera.frame.middle(viewport) + middle.as_vec2(),
         across: Vec2::new(along as f32, across as f32),
         axis: projected.as_vec2().try_normalize().unwrap_or(Vec2::X),
     })
@@ -551,6 +555,85 @@ mod tests {
                 .expect("a point in front of the camera");
             // And what the flat painters put there, off the same offset in
             // the light years the map talks in.
+            let painted = screen_offset(
+                &camera,
+                cot_half_fov,
+                viewport,
+                (rotation * offset).as_dvec3() / crate::map::space::LIGHT_YEAR,
+            )
+            .expect("the same point");
+
+            assert!(
+                drawn.distance(painted) < 1e-2,
+                "the scene draws {offset} at {drawn} and the annotations \
+                 paint it at {painted}",
+            );
+        }
+    }
+
+    /// And the same holds for a piece of a larger picture
+    ///
+    /// [`crate::map::enhance`] draws a picture several windows across a
+    /// window at a time: bevy draws the scene through a sub-view of its lens
+    /// ([`crate::map::camera::Frame::sub_view`]) and the flat painters
+    /// place everything off the frame's own middle. A piece where the two
+    /// disagreed would draw every name and mark off the scene beneath it,
+    /// and the pieces would not meet. Weighed in a piece off the picture's
+    /// middle each way, at a scale that is not a whole number, through the
+    /// clip matrix bevy works out for it.
+    #[test]
+    fn a_piece_of_a_larger_picture_is_projected_as_it_is_drawn() {
+        let (width, height) = (1280f32, 720f32);
+        let lens =
+            PerspectiveProjection { aspect_ratio: width / height, ..default() };
+        let frame = crate::map::camera::Frame {
+            scale: 2.5,
+            corner: Vec2::new(1600., 250.),
+        };
+        let sub = frame
+            .sub_view(UVec2::new(width as u32, height as u32), Vec2::new(width, height))
+            .expect("a piece has a sub-view");
+        let whole = Projection::Perspective(lens.clone()).get_clip_from_view();
+        let clip_from_view =
+            Projection::Perspective(lens).get_clip_from_view_for_sub(&sub);
+        let rendered = Camera {
+            computed: bevy::camera::ComputedCameraValues {
+                target_info: Some(bevy::camera::RenderTargetInfo {
+                    physical_size: UVec2::new(width as u32, height as u32),
+                    scale_factor: 1.,
+                }),
+                clip_from_view,
+                ..default()
+            },
+            ..default()
+        };
+
+        let rotation = Quat::from_euler(EulerRot::YXZ, 0.7, -0.3, 0.);
+        let mut camera = OrbitCamera::default();
+        camera.rotation = rotation;
+        camera.frame = frame;
+        let eye = GlobalTransform::from(
+            Transform::from_rotation(rotation)
+                .with_scale(crate::map::camera::MIRROR),
+        );
+        let viewport = Vec2::new(width, height);
+        // The piece's own lens, `scale` times narrower, as the painters read
+        // it off the camera.
+        let cot_half_fov = clip_from_view.y_axis.y;
+        assert!(
+            (cot_half_fov - frame.scale * whole.y_axis.y).abs()
+                < 1e-4,
+            "a piece's lens is the picture's, scale times narrower",
+        );
+
+        for offset in [
+            Vec3::new(1.2e8, 0.6e8, -1e9),
+            Vec3::new(1.5e8, 0.3e8, -1e9),
+            Vec3::new(0.9e8, 0.7e8, -1e9),
+        ] {
+            let drawn = rendered
+                .world_to_viewport(&eye, rotation * offset)
+                .expect("a point in front of the camera");
             let painted = screen_offset(
                 &camera,
                 cot_half_fov,

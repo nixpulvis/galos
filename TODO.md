@@ -225,6 +225,47 @@ What is left, on `galaxypan`:
   a whole `NameEntry` to take its name; `name_of` is the cheaper answer.
   Off the main thread now, so it costs fill-in time rather than frames.
 
+## Enhance
+
+`map/enhance.rs`: the view drawn again `scale` windows across, a window-sized
+piece at a time through an off-centre lens (`camera::Frame`), laid over the
+map as each piece finishes. Builds and its projection tests pass; **it has
+not yet been run against a window.** Left to do, the first first:
+
+- Run it. `GALOS_ENHANCE=3 GALOS_ENHANCE_EXIT=1 cargo run -p galos_map -- -i
+  .index/full` presses the button once the view has loaded and saves the
+  picture; then by hand. What to look at: the base standing on the window
+  from the first frame (no black flash), pieces meeting with no seam and no
+  shift, the overlay's colours matching the map's own (the pieces are
+  `Rgba8UnormSrgb` laid back through a `Tonemapping::None` HDR camera), the
+  annotations gone while drawing and back on what they name once shown, and
+  both views (the realistic one routes the field's camera too).
+- The loaded test (`enhance::Loading`) is reads, spawns, builds and the walk's
+  last pass, held for `STEADY` frames after `SETTLING`. Both numbers are
+  guesses; a piece taken early shows as a piece thinner than its neighbours.
+  The clip matrix lags the frame by one (bevy works it out in `PostUpdate`),
+  which is why the plan's key now carries the lens; reading the lens off the
+  `Projection` would drop the lag.
+- Lift the spawn and verdict budgets while drawing: the camera is still and
+  the frame rate does not matter, so a piece could fill in a few frames.
+- Seams the walk cannot prevent: bloom is screen space, so in the realistic
+  view a bright star at a piece's edge blooms on one side only (draw pieces
+  with an overlap and crop it); and `crowded_marks`, the populated view's
+  ceiling, is spent per piece rather than over the picture.
+- A filter change cancels through `Filters::is_changed`; check nothing writes
+  the filters every frame, or a picture never finishes.
+- While shown, the map still draws to the window under the opaque picture,
+  for nothing but the entities the names are placed from; the scene and curve
+  cameras could stand down then.
+- Pointing at the picture: the full-window area that takes the wheel and the
+  drag also takes clicks, so nothing on the picture can be hovered or picked,
+  though the map underneath is registered to it and could answer.
+- Saving holds the whole picture in memory (6× a 1440p window is half a
+  gigabyte) and writes to the working directory; stream rows to the encoder
+  and ask where.
+- The EDAstro-style distribution maps this was for: a top-down preset, and
+  the glow weighted by one star kind's count or share (`Aggregate::kinds`).
+
 ## Broken
 
 - `cargo test --release -p galos_map` does not compile: `ui/bar/search.rs`

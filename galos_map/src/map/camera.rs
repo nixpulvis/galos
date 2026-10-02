@@ -39,9 +39,32 @@ pub fn plugin(app: &mut App) {
         Update,
         focus_lens.in_set(MapSet::Camera).after(orbit_camera),
     );
+    // Off the camera's ordering too: the frame is set by whatever draws a
+    // picture in pieces, and the lens only has to have it before bevy works
+    // the clip matrix out in `PostUpdate`.
+    app.add_systems(Update, frame_lens);
     // Reads the view and retunes the camera's bloom when it changes; off the
     // camera's own ordering, since it writes the bloom rather than the pose.
     app.add_systems(Update, tune_bloom);
+}
+
+/// Draw the scene through the camera's [`Frame`]
+///
+/// The flat painters place what they draw off [`OrbitCamera::frame`]
+/// themselves; the scene — the bodies, the ruled plane — is drawn by bevy,
+/// and this hands it the same piece of the same picture.
+fn frame_lens(mut cameras: Query<(&OrbitCamera, &mut Camera)>) {
+    for (orbit, mut camera) in &mut cameras {
+        let (Some(physical), Some(logical)) =
+            (camera.physical_viewport_size(), camera.logical_viewport_size())
+        else {
+            continue;
+        };
+        let sub = orbit.frame.sub_view(physical, logical);
+        if camera.sub_camera_view != sub {
+            camera.sub_camera_view = sub;
+        }
+    }
 }
 
 /// The bloom the realistic sky draws its stars through
@@ -764,6 +787,88 @@ pub(crate) struct OrbitCamera {
     /// to reach, so how far the camera is from what was asked for says
     /// nothing about whether it is moving.
     pub(crate) settled: bool,
+    /// Which part of a larger picture the viewport draws
+    ///
+    /// The whole of it, ordinarily. [`crate::map::enhance`] draws a picture
+    /// several viewports across one viewport at a time, and this is the
+    /// piece the frame is: the lens it is drawn through and every place the
+    /// map projects for itself both read it, so the pieces meet.
+    pub(crate) frame: Frame,
+}
+
+/// A viewport's piece of a picture `scale` viewports across
+///
+/// The picture is what the camera would draw on a screen `scale` times the
+/// viewport's size from the same eye, looking the same way: the same lens,
+/// spread over more pixels. `corner` is where the viewport's top left
+/// stands in it, in the picture's logical pixels.
+///
+/// **One eye, so the pieces meet exactly.** Off the middle of the picture a
+/// piece is drawn off-centre rather than by turning the camera towards it:
+/// a turned camera draws onto a plane that leans away from the picture's,
+/// and the piece would have to be warped back, its marks stretched and its
+/// glow thinned towards the corners. Drawn off-centre it is a window cut
+/// out of the one picture, and where a point lands is the picture's place
+/// for it less the corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Frame {
+    /// How many viewports across the picture is, along either axis
+    pub(crate) scale: f32,
+    /// Where the viewport's top left stands in the picture, in its logical
+    /// pixels
+    pub(crate) corner: Vec2,
+}
+
+impl Frame {
+    /// The picture the viewport is: everything drawn as it always was
+    pub(crate) const WHOLE: Frame = Frame { scale: 1., corner: Vec2::ZERO };
+
+    /// Whether the viewport is the whole picture
+    pub(crate) fn is_whole(&self) -> bool {
+        *self == Frame::WHOLE
+    }
+
+    /// Where the point straight ahead of the eye lands in the viewport, in
+    /// logical pixels from its top left
+    ///
+    /// The middle of the picture rather than of the viewport: every place
+    /// the map projects is measured out from here.
+    pub(crate) fn middle(&self, viewport: Vec2) -> Vec2 {
+        viewport * self.scale / 2. - self.corner
+    }
+
+    /// The picture's size, in logical pixels
+    pub(crate) fn picture(&self, viewport: Vec2) -> Vec2 {
+        viewport * self.scale
+    }
+
+    /// What bevy draws the scene through for this piece, for a viewport
+    /// `physical` pixels across and `logical` in its own measure
+    ///
+    /// [`None`] for the whole picture, which is the camera's own lens. The
+    /// sizes bevy takes are whole numbers and only their ratios reach the
+    /// lens, so they are taken in [`Self::FINE`]ths of a pixel: a piece at a
+    /// scale of 2.37 stands within a sixty-fourth of a pixel of where the
+    /// map places it rather than half a pixel off.
+    pub(crate) fn sub_view(
+        &self,
+        physical: UVec2,
+        logical: Vec2,
+    ) -> Option<bevy::camera::SubCameraView> {
+        if self.is_whole() || logical.x <= 0. || logical.y <= 0. {
+            return None;
+        }
+        let fine = physical.as_vec2() * Frame::FINE;
+        let per_logical = physical.as_vec2() / logical;
+        Some(bevy::camera::SubCameraView {
+            full_size: (fine * self.scale).round().as_uvec2(),
+            offset: self.corner * per_logical * Frame::FINE,
+            size: fine.as_uvec2(),
+        })
+    }
+
+    /// How finely [`Self::sub_view`] measures a pixel
+    const FINE: f32 = 64.;
 }
 
 impl Default for OrbitCamera {
@@ -789,6 +894,7 @@ impl Default for OrbitCamera {
             // A camera that has not been placed yet has not moved. The frame
             // that places it says otherwise if it has.
             settled: true,
+            frame: Frame::WHOLE,
         }
     }
 }
@@ -1137,13 +1243,21 @@ const ANNOTATIONS_LAYER: usize = 2;
 /// Last: over the scene (0), the star field ([`FIELD_ORDER`]) and its curve
 /// ([`CURVE_ORDER`]), so the names, the rings, and the chrome egui draws
 /// above them land over the whole map rather than under what they annotate.
-/// Anything past the curve's order would do; this is the next one up.
+/// Anything past the curve's order would do; this is the one past the
+/// enhanced picture's ([`ENHANCE_ORDER`]), whose names are drawn over it.
 ///
 /// An order, not a layer. It reads the same as [`ANNOTATIONS_LAYER`] and says
 /// something else — a place in the stack, against a number nothing else is on
 /// — and the two being one thing is exactly the reading [`FIELD_ORDER`] was
 /// split out to stop.
-const ANNOTATIONS_ORDER: isize = 3;
+const ANNOTATIONS_ORDER: isize = 4;
+
+/// The order an enhanced picture is laid over the window at
+///
+/// Over the scene and the field's curve, which it covers once it is drawn,
+/// and under the annotations, which name what it shows. See
+/// [`crate::map::enhance`].
+pub(crate) const ENHANCE_ORDER: isize = 3;
 
 /// The camera the map's annotations are drawn over the galaxy by
 ///

@@ -1036,7 +1036,7 @@ impl PendingSpawns {
         self.arrived_at = Some(self.arrived_at.map_or(at, |prev| prev.max(at)));
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.asked.is_empty() && self.order.is_empty() && self.walked.is_empty()
     }
 
@@ -1121,6 +1121,14 @@ pub(crate) struct Building {
     /// The addresses on their way, so the walk's next offer of one it has
     /// not seen drawn yet is not built a second time.
     addresses: rustc_hash::FxHashSet<i64>,
+}
+
+impl Building {
+    /// How many systems are being built, for a caller showing how far a
+    /// view has to go
+    pub(crate) fn outstanding(&self) -> usize {
+        self.addresses.len()
+    }
 }
 
 /// How many systems one building task takes: small enough that a frame's

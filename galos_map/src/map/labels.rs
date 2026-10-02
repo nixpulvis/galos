@@ -591,8 +591,10 @@ pub(crate) fn choose_names(
 
     // Where the camera is pointed, which is the tightly packed middle that
     // [`room`] measures out from. The point the camera orbits projects here
-    // by construction, so this is that point without the projection.
-    let middle = viewport / 2.;
+    // by construction, so this is that point without the projection: the
+    // picture's middle, which is the viewport's but in a piece of a larger
+    // one.
+    let middle = orbit.frame.middle(viewport);
 
     let Layout { wanted, packing, rings } = &mut *layout;
     rings.clear();
