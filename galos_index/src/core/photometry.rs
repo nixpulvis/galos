@@ -105,6 +105,21 @@ impl Lit {
     }
 }
 
+/// Which of a cell's systems is its brightest, by the light its sidecar holds
+///
+/// The one rule for which system a merged mark stands for: the build places
+/// the mark there ([`Cell::brightest_at`](crate::tree::cell::Cell::brightest_at))
+/// and the map names it by it, so the two agree to the system. Read off the
+/// `f32` the sidecar holds rather than the build's `f64`, because the sidecar
+/// is all a reader has. The first of equals, which in a payload is the first
+/// in standing order; [`None`] for no light at all.
+pub fn brightest(lit: &[Lit]) -> Option<usize> {
+    lit.iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| a.magnitude.total_cmp(&b.magnitude))
+        .map(|(at, _)| at)
+}
+
 /// The light a cell's whole subtree gives off.
 ///
 /// Built from single systems with [`of_system`](Self::of_system), rolled up

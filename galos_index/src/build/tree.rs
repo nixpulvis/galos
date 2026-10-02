@@ -31,7 +31,7 @@ use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::photometry::{Lit, Photometry};
 use crate::core::standing;
 use crate::system::System;
-use crate::tree::cell::Cell;
+use crate::tree::cell::{Cell, brightest_at};
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use crate::tree::lights::Lights;
@@ -121,13 +121,17 @@ impl std::ops::Index<&u64> for Records {
 /// first. `physical` is what falls in the cell and is kept only at leaves,
 /// where a split reads it; an internal node's physical members live in its
 /// descendants. `count` is the subtree's physical total, an integer, so the
-/// split and collapse tests never touch a float.
+/// split and collapse tests never touch a float. `brightest_at` is
+/// [`Cell::brightest_at`] as of the last time the slice was published, and
+/// is worked out again whenever it is: a cell whose slice or light moved is
+/// dirty, and a dirty cell's payload is built to be written anyway.
 #[derive(Clone, Debug, Default)]
 struct Node {
     child_mask: u8,
     count: u64,
     slice: BTreeSet<(u64, u64)>,
     physical: Vec<u64>,
+    brightest_at: Option<[f32; 3]>,
 }
 
 impl Node {
@@ -203,6 +207,7 @@ impl Tree {
                 count: cell.aggregate.count(),
                 slice: BTreeSet::new(),
                 physical: Vec::new(),
+                brightest_at: cell.brightest_at,
             };
             for point in built.payload(cell.id) {
                 node.slice.insert(standing::key(point.id64));
@@ -499,6 +504,7 @@ impl Tree {
                     count: ids.len() as u64,
                     slice: BTreeSet::new(),
                     physical: ids.clone(),
+                    brightest_at: None,
                 },
             );
             self.dirty.insert(*child);
@@ -712,8 +718,9 @@ impl Tree {
         self.settle();
         let mut payloads = HashMap::new();
         let mut lit = HashMap::new();
-        for &id in self.cells.keys() {
-            let (points, light) = self.payload_of(id);
+        let ids: Vec<CellId> = self.cells.keys().copied().collect();
+        for id in ids {
+            let (points, light) = self.republish(id);
             if !points.is_empty() {
                 payloads.insert(id, points);
                 lit.insert(id, light);
@@ -748,6 +755,7 @@ impl Tree {
                 rank_hi: rank_lo + node.slice.len() as u64,
                 child_mask: node.child_mask,
                 aggregate,
+                brightest_at: node.brightest_at,
             }
         }))
     }
@@ -765,6 +773,18 @@ impl Tree {
                 (CellSystem::of(record), Lit::of(record))
             })
             .unzip()
+    }
+
+    /// One cell's payload and light, as [`Self::payload_of`] builds them, and
+    /// its [`Cell::brightest_at`] worked out again off them: what a cell about
+    /// to be written is read through, so the index never names a brightest
+    /// its payload does not hold.
+    fn republish(&mut self, id: CellId) -> (Vec<CellSystem>, Vec<Lit>) {
+        let (points, light) = self.payload_of(id);
+        if let Some(node) = self.cells.get_mut(&id) {
+            node.brightest_at = brightest_at(&points, &light);
+        }
+        (points, light)
     }
 
     /// Write the tree whole to a directory, as a first publish or a reset.
@@ -793,7 +813,7 @@ impl Tree {
         let touched: HashSet<CellId> =
             self.dirty.iter().chain(self.gone.iter()).copied().collect();
         for id in touched {
-            let (points, light) = self.payload_of(id);
+            let (points, light) = self.republish(id);
             match points.is_empty() {
                 false => {
                     dirtied.changed.push(id);
@@ -880,6 +900,11 @@ mod tests {
             );
             assert_eq!(got.rank_lo, cell.rank_lo, "rank_lo at {:?}", cell.id);
             assert_eq!(got.rank_hi, cell.rank_hi, "rank_hi at {:?}", cell.id);
+            assert_eq!(
+                got.brightest_at, cell.brightest_at,
+                "brightest at {:?}",
+                cell.id
+            );
             assert_eq!(
                 got.aggregate.count(),
                 cell.aggregate.count(),

@@ -734,17 +734,11 @@ fn size(bytes: u64) -> String {
 ///    left unfolded is a galaxy of names nothing can spell. It is an
 ///    external sort of gigabytes, which is why it is a verb and not
 ///    something discovered at the front of somebody's import.
-/// 2. **The cells are brought to the format this build reads**, in one
-///    pass over them.
-///
-///    Payloads written before the columns hold every field the new ones do
-///    but the star kind, and that is derivable from `bodies/` — the scan
-///    record the class comes from. So this joins the two and rewrites each
-///    cell, where the alternative is running the importer over the dump
-///    again. And an index written before its records carried a star-kind
-///    histogram has it counted in off the payloads, every system walked to
-///    the deepest cell over it and rolled up — refused whole, index
-///    untouched, unless every cell's histogram comes to its count.
+/// 2. **The cells are brought to the format this build reads**
+///    ([`galos_index::ops::upgrade`]). A directory at 5 has every cell's
+///    merged mark placed off its payload and light, in place; anything
+///    older moved which systems a cell owns, and is raised again from the
+///    resume point beside it with nothing new read.
 /// 3. **The table comes to the version this build writes**, where it is
 ///    behind. That rewrite is what drops every name the address spells —
 ///    97.4 % of a galaxy, and 3.94 GB of `text.bin` down to 133 MB.
@@ -764,13 +758,22 @@ fn migrate(dir: &Path, checkpoint: Option<&Path>, forced: bool) {
     // directory with no index, which the next run raises again.
     let stop = || false;
     let mut said = |wrote: &galos_index::ops::upgrade::Rewrote| {
-        if wrote.systems == 0
-            && wrote.from < galos_index::codec::cells::format::INDEX_VERSION
-        {
+        use galos_index::codec::cells::format::INDEX_VERSION;
+        use galos_index::ops::upgrade::RAISED_THROUGH;
+        if wrote.systems > 0 || wrote.placed > 0 {
+            return;
+        }
+        if wrote.from <= RAISED_THROUGH {
             eprintln!(
                 "index format version {}: raising the tree again from {}",
                 wrote.from,
                 checkpoint.display(),
+            );
+        } else if wrote.from < INDEX_VERSION {
+            eprintln!(
+                "index format version {}: placing every cell's merged mark \
+                 off its payload",
+                wrote.from,
             );
         }
     };
@@ -783,13 +786,19 @@ fn migrate(dir: &Path, checkpoint: Option<&Path>, forced: bool) {
         &mut said,
     ) {
         Ok(wrote) => {
-            match wrote.systems {
-                0 => println!(
+            match (wrote.systems, wrote.placed) {
+                (0, 0) => println!(
                     "the tree is already at version {}, in {:.1?}",
                     wrote.from,
                     at.elapsed(),
                 ),
-                systems => println!(
+                (0, placed) => println!(
+                    "brought from version {} in place, {placed} cells' marks \
+                     placed, in {:.1?}",
+                    wrote.from,
+                    at.elapsed(),
+                ),
+                (systems, _) => println!(
                     "raised from version {} over {systems} systems into {} \
                      cells, in {:.1?}",
                     wrote.from,

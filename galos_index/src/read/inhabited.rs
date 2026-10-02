@@ -882,6 +882,7 @@ mod tests {
             rank_hi: 0,
             child_mask: 0,
             aggregate: Aggregate::ZERO,
+            brightest_at: None,
         }];
         // The chain of cells over `at`, each naming the next as its child.
         let mut path = vec![CellId::ROOT];
@@ -905,6 +906,7 @@ mod tests {
                 rank_hi: 0,
                 child_mask: mask,
                 aggregate: Aggregate::ZERO,
+                brightest_at: None,
             });
         }
         Index::from_cells(cells)

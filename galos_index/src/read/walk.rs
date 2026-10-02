@@ -279,8 +279,9 @@ pub struct BlobRef {
     pub count: u64,
     /// The share of the draw this blob carries, `0.0..=1.0`.
     pub blend: f64,
-    /// Where the mark goes: the count centroid of everything it stands for,
-    /// in light years.
+    /// Where the mark goes: the brightest system the cell owns
+    /// ([`Cell::brightest_at`](crate::tree::cell::Cell::brightest_at)), in
+    /// light years, or the count centroid of a cell owning none.
     pub at: [f64; 3],
     /// How many systems under it fall in each Recency bucket, which is what
     /// a span is answered against: [`crate::core::aggregate::Aggregate::aged`].
@@ -319,8 +320,8 @@ pub struct MarkRef {
     pub id: CellId,
     /// How many systems it owns in its own slice.
     pub slice: u32,
-    /// Where its contents sit, light years: the count centroid, as
-    /// [`BlobRef::at`] is.
+    /// Where its contents sit, light years: the count centroid, where a
+    /// [`BlobRef::at`] is a system.
     ///
     /// What the draw bins by to find the patches of sky it is leaving
     /// dark ([`crate::read::screen::Empty`]). A cell above the frontier spreads
@@ -444,7 +445,7 @@ impl Index {
                     id: node.id,
                     count: node.count,
                     blend: shown * (1.0 - alpha),
-                    at: node.center,
+                    at: node.mark,
                     aged: node.aged,
                     m_min: node.m_min,
                 });
@@ -779,6 +780,7 @@ mod tests {
             rank_hi: held.slice,
             child_mask: held.child_mask,
             aggregate: agg,
+            brightest_at: None,
         }
     }
 
@@ -969,8 +971,14 @@ mod tests {
                 crate::core::star::StarKind::Unknown,
             ));
         }
-        let leaf =
-            Cell { id, rank_lo: 0, rank_hi: 64, child_mask: 0, aggregate: agg };
+        let leaf = Cell {
+            id,
+            rank_lo: 0,
+            rank_hi: 64,
+            child_mask: 0,
+            aggregate: agg,
+            brightest_at: None,
+        };
         let mut cells = chain_to(id, 64);
         cells.push(leaf);
         let index = lit(cells, 4.0);
@@ -1018,6 +1026,7 @@ mod tests {
             rank_hi: 512,
             child_mask: 0,
             aggregate: agg,
+            brightest_at: None,
         };
         let mut cells = chain_to(id, 512);
         cells.push(leaf);
@@ -1306,9 +1315,9 @@ mod merging {
     /// Every system is drawn or stood for, and nothing is drawn where no
     /// system is: the whole of "reduce marks, do not change the geometry".
     ///
-    /// The slack is the merge distance itself. A merged mark stands where
-    /// its systems' centroid is, and they are all inside one mark of it, so
-    /// neither direction can be out by more than that.
+    /// The slack is the merge distance itself. A merged mark stands at one of
+    /// its systems, and they are all inside one mark of it, so neither
+    /// direction can be out by more than that.
     fn holds_the_shape(view: &View, systems: &[[f64; 3]], at: &[[f64; 3]]) {
         for &system in systems {
             let off = nearest(view, at, system);
@@ -1330,7 +1339,10 @@ mod merging {
 
     /// Two systems merge into one mark when they close to within the merge
     /// distance and part into two when they open past it — crossed in both
-    /// directions, off one sky and two distances.
+    /// directions, off one sky and two distances. Merged, the mark stands at
+    /// one of the two and not between them: a mark at a centroid stands
+    /// where no system is, and the centroids of a filled sky's merged cells
+    /// lie on a lattice.
     #[test]
     fn a_pair_merges_and_parts() {
         let apart = 2.0;
@@ -1358,6 +1370,11 @@ mod merging {
         assert!(gap(&far, at[0], at[1]) < MERGE_PX);
         assert!(merged.marks.is_empty(), "a merged pair read a payload");
         assert_eq!(merged.blobs.len(), 1, "a merged pair is not one mark");
+        assert!(
+            at.contains(&merged.blobs[0].at),
+            "a merged pair stands at {:?}, which is neither of them",
+            merged.blobs[0].at,
+        );
         holds_the_shape(&far, &at, &drawn(&sky, &merged));
     }
 

@@ -83,6 +83,39 @@ record! {
     }
 }
 
+/// Where a cell's brightest stands on the wire, with `NaN` standing for a
+/// cell owning nothing: a real position is never NaN, so the sentinel cannot
+/// collide with one.
+struct BrightestAt([f32; 3]);
+
+impl Encode for BrightestAt {
+    fn encode(&self, out: &mut Vec<u8>) {
+        self.0.encode(out);
+    }
+}
+
+impl Decode for BrightestAt {
+    fn decode(cur: &mut &[u8]) -> Option<BrightestAt> {
+        Some(BrightestAt(<[f32; 3]>::decode(cur)?))
+    }
+}
+
+impl FixedCodec for BrightestAt {
+    const LEN: usize = <[f32; 3]>::LEN;
+}
+
+impl From<Option<[f32; 3]>> for BrightestAt {
+    fn from(at: Option<[f32; 3]>) -> BrightestAt {
+        BrightestAt(at.unwrap_or([f32::NAN; 3]))
+    }
+}
+
+impl From<BrightestAt> for Option<[f32; 3]> {
+    fn from(at: BrightestAt) -> Option<[f32; 3]> {
+        (!at.0[0].is_nan()).then_some(at.0)
+    }
+}
+
 record! {
     Cell {
         id: CellId,
@@ -90,7 +123,58 @@ record! {
         rank_hi: u64,
         child_mask: u8,
         aggregate: Aggregate,
+        brightest_at: Option<[f32; 3]> as BrightestAt,
     }
+}
+
+/// A cell as an index at version 5 holds it: everything but
+/// [`Cell::brightest_at`], which [`crate::ops::upgrade`] reads off the
+/// payloads to bring the directory forward.
+pub(crate) struct CellAt5 {
+    id: CellId,
+    rank_lo: u64,
+    rank_hi: u64,
+    child_mask: u8,
+    aggregate: Aggregate,
+}
+
+record! {
+    CellAt5 {
+        id: CellId,
+        rank_lo: u64,
+        rank_hi: u64,
+        child_mask: u8,
+        aggregate: Aggregate,
+    }
+}
+
+impl From<CellAt5> for Cell {
+    fn from(cell: CellAt5) -> Cell {
+        let CellAt5 { id, rank_lo, rank_hi, child_mask, aggregate } = cell;
+        Cell { id, rank_lo, rank_hi, child_mask, aggregate, brightest_at: None }
+    }
+}
+
+impl From<&Cell> for CellAt5 {
+    fn from(cell: &Cell) -> CellAt5 {
+        let Cell { id, rank_lo, rank_hi, child_mask, aggregate, .. } = *cell;
+        CellAt5 { id, rank_lo, rank_hi, child_mask, aggregate }
+    }
+}
+
+/// The cells of an index file at version 5, each with no
+/// [`Cell::brightest_at`]; [`None`] for bytes that are not one, held to the
+/// record width as [`Index`]'s own decode is.
+pub(crate) fn cells_at_5(bytes: &[u8]) -> Option<Vec<Cell>> {
+    let mut cur = bytes;
+    if <[u8; 4]>::decode(&mut cur)? != INDEX_MAGIC || u16::decode(&mut cur)? != 5 {
+        return None;
+    }
+    let count = u32::decode(&mut cur)? as usize;
+    if cur.len() != count * CellAt5::LEN {
+        return None;
+    }
+    (0..count).map(|_| CellAt5::decode(&mut cur).map(Cell::from)).collect()
 }
 
 /// The magic at the head of a cell's payload.
@@ -272,7 +356,7 @@ pub(crate) fn payload_points(
 
 /// The magic and version at the head of an index file.
 pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
-/// Five, and moved by what a directory needs brought forward
+/// Six, and moved by what a directory needs brought forward
 ///
 /// Each move is a step [`crate::ops::upgrade::rewrite`] takes, and a stale
 /// directory is refused at `index.bin`, named by [`index_version`], and sent
@@ -290,10 +374,14 @@ pub(crate) const INDEX_MAGIC: [u8; 4] = *b"GIDX";
 ///   rewritten into that in place — which systems a cell owns is the whole of
 ///   what moved — so the step raises the tree again from the resume point
 ///   beside the directory, which holds every system whole.
+/// - **6** moved for the index record: a cell gained
+///   [`Cell::brightest_at`], where its merged mark stands. Nothing a cell owns
+///   moved, so a directory at 5 is brought forward in place, each cell's
+///   brightest read off its payload and its light ([`cells_at_5`]).
 ///
 /// The columnar payload carries its own magic, version and count, and refuses
 /// a stale one itself.
-pub const INDEX_VERSION: u16 = 5;
+pub const INDEX_VERSION: u16 = 6;
 
 /// The version an index file's header claims, or [`None`] for bytes that are
 /// not an index file at all.
@@ -366,7 +454,8 @@ mod tests {
     use super::*;
 
     /// A cell's whole index record survives the round trip exactly, aggregate
-    /// and all; the moments are `f64` and lose nothing.
+    /// and all; the moments are `f64` and lose nothing, and a cell owning
+    /// nothing comes back with no brightest rather than one at the origin.
     #[test]
     fn a_cell_record_round_trips() {
         let agg = Aggregate::of_system([1.0, 2.0, 3.0], 2, StarKind::G)
@@ -377,12 +466,15 @@ mod tests {
             rank_hi: 1024,
             child_mask: 0b1010_0001,
             aggregate: agg,
+            brightest_at: Some([5.0, -40000.25, 65535.03125]),
         };
-        let mut buf = Vec::new();
-        cell.encode(&mut buf);
-        assert_eq!(buf.len(), Cell::LEN);
-        let mut cur = &buf[..];
-        assert_eq!(Cell::decode(&mut cur), Some(cell));
+        for cell in [cell, Cell { brightest_at: None, ..cell }] {
+            let mut buf = Vec::new();
+            cell.encode(&mut buf);
+            assert_eq!(buf.len(), Cell::LEN);
+            let mut cur = &buf[..];
+            assert_eq!(Cell::decode(&mut cur), Some(cell));
+        }
     }
 
     fn point(id: u64) -> CellSystem {
@@ -503,6 +595,7 @@ mod tests {
                 rank_hi: 512,
                 child_mask: 0xFF,
                 aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
+                brightest_at: Some([0.0; 3]),
             },
             Cell {
                 id: CellId { level: 1, x: 0, y: 1, z: 1 },
@@ -510,6 +603,7 @@ mod tests {
                 rank_hi: 520,
                 child_mask: 0,
                 aggregate: Aggregate::ZERO,
+                brightest_at: None,
             },
         ]);
         let bytes = index.to_bytes();
@@ -537,6 +631,7 @@ mod tests {
             rank_hi: 512,
             child_mask: 0xFF,
             aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
+            brightest_at: None,
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert!(Index::from_bytes(&bytes).is_some(), "a good file reads");
@@ -563,6 +658,7 @@ mod tests {
             rank_hi: 512,
             child_mask: 0xFF,
             aggregate: Aggregate::of_system([0.0; 3], 0, StarKind::K),
+            brightest_at: None,
         };
         let bytes = Index::from_cells([cell]).to_bytes();
         assert_eq!(index_version(&bytes), Some(INDEX_VERSION));

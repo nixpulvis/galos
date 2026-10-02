@@ -9,6 +9,7 @@
 
 use crate::core::aggregate::Aggregate;
 use crate::core::geometry::CellId;
+use crate::core::photometry::{Lit, brightest};
 use crate::core::star::StarKind;
 use crate::system::System;
 
@@ -36,6 +37,22 @@ pub struct Cell {
     pub child_mask: u8,
     /// The totals over the whole subtree.
     pub aggregate: Aggregate,
+    /// Where the brightest system the cell owns sits, in light years: where
+    /// the cell's merged mark is drawn, and the system that mark is named by.
+    ///
+    /// **A merged mark stands at a system, not at the cell's centroid.** The
+    /// centroid of a filled cell is about its box centre, and the merged
+    /// cells under one patch of sky are one level, so marks at their centroids
+    /// stand on a regular lattice the eye picks out of a wide view. A system
+    /// stands where the galaxy put it.
+    ///
+    /// Of the cell's own slice and not its subtree, which is what naming the
+    /// mark can read without descending. The head of the slice where the cell
+    /// has no light on record, and [`None`] for a cell owning nothing, which
+    /// is drawn at its centroid. See [`brightest_at`]. `f32`, which at galaxy
+    /// coordinates is still finer than the thirty-second of a light year
+    /// Elite's own positions sit on.
+    pub brightest_at: Option<[f32; 3]>,
 }
 
 impl Cell {
@@ -73,6 +90,15 @@ impl Cell {
             .unwrap_or_else(|| self.id.bounds().center())
     }
 
+    /// Where the cell's merged mark is drawn: at the brightest system it
+    /// owns, or at the centroid of its contents where it owns none.
+    pub(crate) fn mark_at(&self) -> [f64; 3] {
+        match self.brightest_at {
+            Some(at) => at.map(f64::from),
+            None => self.contents_center(),
+        }
+    }
+
     /// How wide the contents are in light years, before the children are
     /// rolled into the answer: the RMS radius read as the span of an even
     /// spread.
@@ -101,6 +127,16 @@ impl Cell {
     pub(crate) fn contents_width(&self) -> f64 {
         UNIFORM_SPAN * self.aggregate.count_extent()
     }
+}
+
+/// Where the brightest of a cell's slice sits, for
+/// [`Cell::brightest_at`]: its payload and its light, in the same order.
+///
+/// The head of the payload where there is no light to choose by, and
+/// [`None`] where there is no payload.
+pub fn brightest_at(points: &[CellSystem], lit: &[Lit]) -> Option<[f32; 3]> {
+    let at = brightest(lit).unwrap_or(0);
+    points.get(at).map(|point| point.position.map(|axis| axis as f32))
 }
 
 /// How many RMS radii across an evenly spread set is: `2·sqrt(3)`.
@@ -180,6 +216,7 @@ mod tests {
             rank_hi: 512,
             child_mask: 0b0000_0101,
             aggregate: Aggregate::ZERO,
+            brightest_at: None,
         };
         assert_eq!(cell.slice_len(), 512);
         assert!(cell.has_child(0));
@@ -187,5 +224,30 @@ mod tests {
         assert!(cell.has_child(2));
         assert!(!cell.is_leaf());
         assert!(Cell { child_mask: 0, ..cell }.is_leaf());
+    }
+
+    /// A merged mark stands at the brightest of the slice wherever it is in
+    /// standing order, at the head where there is no light to choose by, and
+    /// nowhere where the cell owns nothing
+    #[test]
+    fn a_mark_stands_at_the_brightest_of_its_slice() {
+        use crate::core::photometry::TempBucket;
+
+        let at = |x: f64| CellSystem {
+            id64: x as u64,
+            position: [x, 2.0, 3.0],
+            updated_at: 0,
+            kind: StarKind::G,
+        };
+        let lit = |magnitude: f32| Lit { magnitude, temp_bucket: TempBucket::default() };
+        let points = [at(1.0), at(2.0), at(3.0)];
+
+        assert_eq!(
+            brightest_at(&points, &[lit(9.0), lit(-1.0), lit(-1.0)]),
+            Some([2.0, 2.0, 3.0]),
+            "the brightest, and the first of two equally bright",
+        );
+        assert_eq!(brightest_at(&points, &[]), Some([1.0, 2.0, 3.0]));
+        assert_eq!(brightest_at(&[], &[]), None);
     }
 }

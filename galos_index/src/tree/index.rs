@@ -52,12 +52,16 @@ pub struct Index {
 /// view, so it is worked out once when the index is built. What that keeps
 /// out of a frame is not the arithmetic (two cube roots and a
 /// square root a cell) but the cache: `contents_center` and `count_extent`
-/// read the second moments, which sit in a 262-byte [`Cell`], for every
+/// read the second moments, which sit in a 182-byte [`Cell`], for every
 /// cell in the tree.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub(crate) struct Node {
     /// Where a cell's contents sit: [`Cell::contents_center`].
     pub(crate) center: [f64; 3],
+    /// Where its merged mark is drawn: [`Cell::mark_at`], the brightest
+    /// system it owns. The centroid stays what the merge rule and the width
+    /// are measured from; this is only where the one mark goes.
+    pub(crate) mark: [f64; 3],
     /// How far they spread about that centre: [`Cell::contents_extent`], the RMS
     /// radius the field lays a Gaussian at.
     pub(crate) extent: f64,
@@ -102,6 +106,7 @@ impl Node {
     fn of(cell: &Cell) -> Node {
         Node {
             center: cell.contents_center(),
+            mark: cell.mark_at(),
             extent: cell.contents_extent(),
             width: cell.contents_width(),
             count: cell.aggregate.count(),

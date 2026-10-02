@@ -588,9 +588,14 @@ pub(crate) fn build_field(
 
     // And the merged marks, which stand for a cell's whole contents rather
     // than for a system. No shell, no name and no payload: they are laid
-    // straight off the aggregates the walk merged, in the same mesh and at
-    // the same time, because they are marks and the merge already settled
-    // which of the two holds each patch of sky.
+    // straight off what the walk merged, in the same mesh and at the same
+    // time, because they are marks and the merge already settled which of
+    // the two holds each patch of sky.
+    //
+    // Each stands at the brightest system its cell owns, not at the cell's
+    // centroid: a filled cell's centroid is about its box centre, and the
+    // merged cells under one patch of sky are one level, so marks at their
+    // centroids stood on a lattice the eye picked out of the dense disc.
     //
     // Drawn as a mark and not as something else: the same [`SMALLEST`]
     // radius and the same light as a system's own. A blob is one mark
@@ -599,18 +604,7 @@ pub(crate) fn build_field(
     // would say the density with size — which is the one thing the map must
     // say with *how many marks there are*. The crowd behind it is
     // [`crate::map::paint::glow`]'s to draw.
-    //
-    // `GALOS_NO_BLOBS=1` leaves them out, which is the bisect for the
-    // lattice a wide view shows in the dense disc: a filled cell's centroid
-    // is about its box centre and the merged cells under one patch of sky are
-    // one level, so their marks stand on a regular grid. If the grid goes
-    // with this set, it is theirs and not the glow's. See `TODO.md`.
-    let blobs: &[crate::map::galaxy::walk::Blob] =
-        match std::env::var("GALOS_NO_BLOBS") {
-            Ok(_) => &[],
-            Err(_) => &blobs.0,
-        };
-    for blob in blobs {
+    for blob in &blobs.0 {
         let position = DVec3::from(blob.at);
         let Some(at) = screen_position(orbit, cot_half_fov, viewport, position)
         else {

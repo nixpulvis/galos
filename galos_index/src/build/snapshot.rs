@@ -16,7 +16,7 @@ use crate::core::geometry::{CellId, MAX_LEVEL};
 use crate::core::photometry::{Lit, Photometry};
 use crate::core::standing;
 use crate::system::System;
-use crate::tree::cell::Cell;
+use crate::tree::cell::{Cell, brightest_at};
 use crate::tree::cell::CellSystem;
 use crate::tree::index::Index;
 use crate::tree::lights::Lights;
@@ -143,6 +143,10 @@ impl Snapshot {
         let built_cells = cells.iter().map(|&id| {
             let lo = rank_lo.get(&id).copied().unwrap_or(0);
             let slice = owned.get(&id).copied().unwrap_or(0) as u64;
+            let (points, light) = (
+                payloads.get(&id).map_or(&[][..], Vec::as_slice),
+                lit.get(&id).map_or(&[][..], Vec::as_slice),
+            );
             Cell {
                 id,
                 rank_lo: lo,
@@ -152,6 +156,7 @@ impl Snapshot {
                     .get(&id)
                     .copied()
                     .unwrap_or(Aggregate::ZERO),
+                brightest_at: brightest_at(points, light),
             }
         });
 

@@ -215,11 +215,7 @@ impl Read {
         id: CellId,
     ) -> Option<Read> {
         let lit = source.lit(id, usize::MAX).await.ok()?;
-        let brightest = lit
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.magnitude.total_cmp(&b.magnitude))
-            .map(|(at, _)| at);
+        let brightest = galos_index::core::photometry::brightest(&lit);
         let want = brightest.map_or(PREFIX, |at| (at + 1).max(PREFIX));
         let points = source.payload_prefix(id, want).await.ok()?;
         let lit = lit.into_iter().take(points.len()).collect();
@@ -238,7 +234,10 @@ impl Prominent {
     ///
     /// The brightest system the cell owns while the map is drawing the sky
     /// as light — the photometry sidecar says which — or the head of the
-    /// prefix where the cell had no light on record.
+    /// prefix where the cell had no light on record. The same rule the index
+    /// stands the mark at
+    /// ([`Cell::brightest_at`](galos_index::tree::cell::Cell::brightest_at)),
+    /// so the name is the system under the speck.
     ///
     /// The busiest of the prefix where marks are drawn by population,
     /// because there a mark's *size* is the population it carries and the
@@ -681,11 +680,7 @@ mod tests {
                 temp_bucket: galos_index::prelude::TempBucket::new(4),
             })
             .collect();
-        let brightest = lit
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.magnitude.total_cmp(&b.magnitude))
-            .map(|(at, _)| at);
+        let brightest = galos_index::core::photometry::brightest(&lit);
         Read {
             points: systems.iter().map(|&(id, _)| point(id)).collect(),
             lit,

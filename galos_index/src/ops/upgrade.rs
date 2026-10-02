@@ -27,6 +27,13 @@
 //! point beside it cannot be brought forward and is said to be so, by path;
 //! it is rebuilt from its source.
 //!
+//! **Version 6 is brought forward in place.** It added where a cell's merged
+//! mark stands ([`Cell::brightest_at`]), which is read off what the directory
+//! already holds: each cell's light says which of its systems is brightest,
+//! and its payload says where that one is. Nothing a cell owns moved, so a
+//! directory at 5 has its index rewritten and nothing else; one older than 5
+//! is raised, and the raise writes the field itself.
+//!
 //! The raise is a publish like any other: the old index comes down first and
 //! the new one goes up last, so a run cut short leaves a directory with no
 //! index, which every reader reads as nothing and which running this again
@@ -38,12 +45,22 @@ use crate::build::cold::{
     Build, Built, OnStop, ResumeMark, Start, region_budget,
 };
 use crate::build::snapshot::BuildParams;
-use crate::codec::cells::format::{INDEX_VERSION, index_version};
+use crate::codec::Directory;
+use crate::codec::bytes::Encode;
+use crate::codec::cells::format::{INDEX_VERSION, cells_at_5, index_version};
 use crate::codec::checkpoint::Checkpoint;
 use crate::codec::layout::INDEX_FILE;
 use crate::codec::tables::TableSet;
+use crate::core::photometry::brightest;
+use crate::tree::cell::{Cell, brightest_at};
+use crate::tree::index::Index;
 use std::io;
 use std::path::Path;
+
+/// The newest version a directory is raised again from its resume point
+/// at; anything after it and short of [`INDEX_VERSION`] comes forward in
+/// place.
+pub const RAISED_THROUGH: u16 = 4;
 
 /// What a rewrite came to.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -53,6 +70,10 @@ pub struct Rewrote {
     /// Systems the tree was raised again over, out of the resume point; none
     /// for a directory already at this version.
     pub systems: u64,
+    /// Cells whose [`Cell::brightest_at`] was read off their payloads, for a
+    /// directory brought forward in place; none for one raised, or already at
+    /// this version.
+    pub placed: u64,
     /// Cells the raised tree holds.
     pub cells: u64,
     /// Rows the contributed tables' own upgrades rewrote
@@ -84,7 +105,7 @@ pub fn rewrite(
     let mut wrote = Rewrote { from: version_of(dir)?, ..Rewrote::default() };
     said(&wrote);
 
-    if wrote.from < INDEX_VERSION {
+    if wrote.from <= RAISED_THROUGH {
         let resumed = Checkpoint::read(checkpoint).map_err(|err| {
             io::Error::new(
                 err.kind(),
@@ -126,6 +147,8 @@ pub fn rewrite(
                 ));
             }
         }
+    } else if wrote.from < INDEX_VERSION {
+        wrote.placed = placed(dir, stop)?;
     }
 
     // The contributed tables, which an open would bring forward but an open
@@ -140,6 +163,51 @@ pub fn rewrite(
         .sum();
     said(&wrote);
     Ok(wrote)
+}
+
+/// Version 5 to 6, in place: every cell's [`Cell::brightest_at`] read off its
+/// light and its payload, and the index written again with it
+///
+/// The light is read whole, five bytes a system, and the payload down to the
+/// brightest of it and no further. The new index is written beside the old
+/// one and renamed over it, so a run cut short, or stopped, leaves the
+/// directory at 5 for the next run to bring forward. Answers how many cells
+/// were placed: every one owning anything.
+fn placed(dir: &Path, stop: &(dyn Fn() -> bool + Sync)) -> io::Result<u64> {
+    let path = dir.join(INDEX_FILE);
+    let cells = cells_at_5(&std::fs::read(&path)?).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: not an index at version 5", path.display()),
+        )
+    })?;
+    let directory = Directory::at(dir);
+    let mut placed = 0;
+    let cells = cells
+        .into_iter()
+        .map(|mut cell| {
+            if stop() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    format!("{}: stopped, left at version 5", dir.display()),
+                ));
+            }
+            if cell.slice_len() > 0 {
+                let lit = directory.read_lit(cell.id, usize::MAX)?;
+                let want = brightest(&lit).map_or(1, |at| at + 1);
+                let points = Index::read_payload_prefix(dir, cell.id, want)?;
+                let lit = &lit[..lit.len().min(points.len())];
+                cell.brightest_at = brightest_at(&points, lit);
+                placed += u64::from(cell.brightest_at.is_some());
+            }
+            Ok(cell)
+        })
+        .collect::<io::Result<Vec<Cell>>>()?;
+
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, Index::from_cells(cells).to_bytes())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(placed)
 }
 
 /// The version `dir`'s index file claims, refusing one this build is older
@@ -231,6 +299,21 @@ mod tests {
         std::fs::write(&path, bytes).expect("an old index");
     }
 
+    /// Put `dir`'s index back as version 5 wrote it: the same cells, each
+    /// record without the brightest that 6 added.
+    fn written_at_5(dir: &Path) {
+        use crate::codec::cells::format::{CellAt5, INDEX_MAGIC};
+        let index = Index::read(dir).expect("an index");
+        let mut bytes = Vec::new();
+        INDEX_MAGIC.encode(&mut bytes);
+        5u16.encode(&mut bytes);
+        (index.len() as u32).encode(&mut bytes);
+        for cell in index.cells() {
+            CellAt5::from(cell).encode(&mut bytes);
+        }
+        std::fs::write(dir.join(INDEX_FILE), bytes).expect("an index at 5");
+    }
+
     /// A stale directory is raised from its resume point into exactly the
     /// tree a fresh build of the same systems is, light and all
     #[test]
@@ -256,16 +339,16 @@ mod tests {
         }
         build.finish(Provenance::Database, None, OnStop::Abandon).unwrap();
 
-        // What an older build left: an index at the version before, and no
-        // light beside it.
-        written_at(&dir, INDEX_VERSION - 1);
+        // What an older build left: an index at a version that moved what
+        // the cells own, and no light beside it.
+        written_at(&dir, RAISED_THROUGH);
         std::fs::remove_file(photometry_path(&dir)).unwrap();
         assert!(Index::read(&dir).is_err(), "a stale index read");
 
         let wrote =
             rewrite(&dir, &checkpoint, &TableSet::new(), &never, &mut |_| {})
                 .expect("the directory comes forward");
-        assert_eq!(wrote.from, INDEX_VERSION - 1);
+        assert_eq!(wrote.from, RAISED_THROUGH);
         assert_eq!(wrote.systems, systems.len() as u64);
 
         let index = Index::read(&dir).expect("the index reads at its version");
@@ -284,6 +367,11 @@ mod tests {
             );
             assert_eq!(ours.aggregate.count(), cell.aggregate.count());
             assert_eq!(ours.aggregate.kinds(), cell.aggregate.kinds());
+            assert_eq!(
+                ours.brightest_at, cell.brightest_at,
+                "{:?} stands its mark elsewhere",
+                cell.id,
+            );
             assert_eq!(
                 Index::read_payload(&dir, cell.id).unwrap(),
                 whole.payload(cell.id),
@@ -323,7 +411,7 @@ mod tests {
         let dir = scratch("orphan");
         let built = Snapshot::build(&galaxy(100), &BuildParams::default());
         built.write(&dir).unwrap();
-        written_at(&dir, INDEX_VERSION - 1);
+        written_at(&dir, RAISED_THROUGH);
         let nowhere = dir.join("no.checkpoint");
 
         let err =
@@ -332,9 +420,34 @@ mod tests {
         let said = err.to_string();
         assert!(said.contains("no.checkpoint"), "{said}");
         assert!(
-            said.contains(&format!("version {}", INDEX_VERSION - 1)),
+            said.contains(&format!("version {RAISED_THROUGH}")),
             "{said}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A directory at 5 comes forward in place, with no resume point to read:
+    /// every cell standing its mark where a fresh build of the same systems
+    /// does, and nothing else of it moved
+    #[test]
+    fn a_directory_at_5_places_its_marks_in_place() {
+        let dir = scratch("place");
+        let systems = galaxy(3_000);
+        let whole = Snapshot::build(&systems, &BuildParams::default());
+        whole.write(&dir).unwrap();
+        written_at_5(&dir);
+        assert!(Index::read(&dir).is_err(), "an index at 5 read");
+        let nowhere = dir.join("no.checkpoint");
+
+        let wrote =
+            rewrite(&dir, &nowhere, &TableSet::new(), &|| false, &mut |_| {})
+                .expect("the directory comes forward without a resume point");
+        assert_eq!((wrote.from, wrote.systems), (5, 0));
+        let owning = whole.index.cells().filter(|c| c.slice_len() > 0).count();
+        assert_eq!(wrote.placed, owning as u64);
+
+        let index = Index::read(&dir).expect("the index reads at its version");
+        assert_eq!(index, whole.index);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
