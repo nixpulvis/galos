@@ -544,6 +544,15 @@ fn diagnostics(
                     );
                     pair(
                         ui,
+                        "volume",
+                        &format!("{}", glow.volume),
+                        "Cells laid into the volume rather than splatted, \
+                         whole or in part: the evenly filled ones standing \
+                         wide enough on screen to be marched, whose splats \
+                         summed to a grid on their own pitch.",
+                    );
+                    pair(
+                        ui,
                         "deposited",
                         &format!("{:.2} / {:.2}", glow.light, glow.peak),
                         "Light the field let through, all told, and the \

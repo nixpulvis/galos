@@ -125,6 +125,53 @@ cell centroids drew over the dense disc. What is left:
   glow; the number of marks is what says the density. Nor jittering the
   centroid: it draws a mark where no system is.
 
+## The glow's volume
+
+The glow's evenly filled cells are a volume now
+([`galos_map/src/map/paint/volume.rs`](galos_map/src/map/paint/volume.rs)):
+the basis method (Wald et al., 2017), ghosts of density nought past the
+crowd's edge, one march a pixel through a table of the boxes, each box cut
+wherever its field can turn, at half resolution and added in by the curve.
+A filled cell hands its light from its splat to the volume across 4 to 8
+logical pixels of edge; filaments, knots and the walk's cross-fades keep
+their splats. The squared mask is fixed (`the_mask_is_drawn_once`), which
+put the glow up a stop; nothing was retuned for it.
+
+**How it measured.** Glow alone, looking down (`GALOS_SHOT_PITCH=-1.5`), at
+the galaxy seen whole (150 k back, reach 90 k), the default (30 k back,
+10 k) and close (6 k back at `X=-12000 Z=15000`); the Fourier peak at the
+512 ly pitch over the mean.
+
+- Window captures, sRGB, centre patch: before 3.0 %, 2.0 %, 14.3 %; the mask
+  fix alone 0.3 %, 1.2 %, 5.9 %.
+- Headless renders of the field target, linear, quiet patches: the mask fix
+  alone 0.9 %, 3.2 %, 4.6 %; with the volume 0.9 %, 1.9 %, 2.2 %, and the
+  close pose's lumps gone (high-pass rms 11 % of the mean to 5 %). Seen
+  whole the leaves are 3 px, under the band, and nothing changes.
+- The march matches the same field integrated by brute force on the CPU to
+  0.1 %. Cut only at the boxes' centres it was out by up to 1.4 %, in thin
+  lines; drawn a quad a box, summed by the blend, by a percent in lines at
+  every box edge.
+
+**What is left.**
+
+- Not looked at in the window: the screen locked before the volume was in, so
+  the pictures are headless renders of the field target, and the curve's
+  reading of the half-resolution targets was checked on the GPU on its own.
+- The tents are continuous but not smooth: a high-pass at the close pose
+  shows faint creases on the cells' centre planes. The octant method is the
+  smoother sibling, if they show.
+- Cost, measured headless at 2560×1440: the march adds about 5 ms a frame
+  seen whole and at the default, nothing close (at full resolution it was
+  13 to 23 ms); cutting at the finer neighbours' turns is half of it.
+  `volume::Built::of` is about 5 ms a moving frame at the default (21 k
+  cells, 7.5 k ghosts, 720 k list entries), across threads.
+- Seen whole the band's edge runs through the frame: 4.4 k cells and 22 k
+  ghosts, for little light.
+- The volume ends at the reach's sphere over a sixteenth of it; the splats
+  still fade by how much of themselves the reach holds.
+- The tents attempt is still in `git stash list`.
+
 ## Smoother while moving
 
 Measured with Tracy over `.index/full` in the running map, after systems
@@ -140,7 +187,8 @@ slowest tenth of frames spend while zooming out.
   every frame the camera moves. Many glow quads are laid at peaks far
   under a display level; dropping those would shrink the upload, and is a
   change to how the glow looks.
-- `paint::glow::build_glow`, ~6 ms, already across threads.
+- `paint::glow::build_glow`, ~6 ms, already across threads, and
+  `volume::Built::of` ~5 ms more where the volume is wide.
 - The worst single frames (100–140 ms) were not looked into.
 - `galaxy::System::build` names a system through `Names::get`, which builds
   a whole `NameEntry` to take its name; `name_of` is the cheaper answer.

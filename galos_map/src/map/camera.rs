@@ -1105,6 +1105,16 @@ pub(crate) const DIMMED_LAYER: usize = 6;
 /// laid over the field.
 pub(crate) const CURVE_LAYER: usize = 7;
 
+/// The render layers the glow's volume is marched on, the let-through and
+/// what the filters exclude, in the map view
+///
+/// Each drawn by a camera of its own into a target at half the frame's
+/// resolution, which the curve samples back up: the volume is smooth by
+/// construction, and a march a pixel is the dearest thing the map draws.
+/// See [`crate::map::paint::volume`].
+pub(crate) const VOLUME_LAYER: usize = 8;
+pub(crate) const VOLUME_DIMMED_LAYER: usize = 9;
+
 /// The order the field's curve is drawn at, in the map view
 ///
 /// Over the scene and under the annotations, where the field itself draws

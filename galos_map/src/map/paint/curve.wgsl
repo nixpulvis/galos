@@ -1,5 +1,5 @@
-// The field's curve: the two targets the marks and the splats were summed
-// into, brought onto the display a pixel at a time.
+// The field's curve: the targets the marks, the splats and the volume were
+// summed into, brought onto the display a pixel at a time.
 //
 // The curve is read in stops of light over an average system's mark and
 // comes out as a display level, sRGB-encoded, which is what the knots are
@@ -27,6 +27,10 @@ struct Curve {
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> curve: Curve;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var lit: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var dimmed: texture_2d<f32>;
+// The volume's let-through and excluded, at half the frame's resolution.
+@group(#{MATERIAL_BIND_GROUP}) @binding(3) var volume_lit: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(4) var volume_dimmed: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(5) var volume_sampler: sampler;
 
 // The largest finite half float. A pixel summed past it is infinite, and an
 // infinite channel over an infinite top is not a number.
@@ -88,8 +92,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // held inside them for the frame a resize is still landing on.
     let size = vec2<i32>(textureDimensions(lit)) - vec2(1);
     let at = clamp(vec2<i32>(in.position.xy), vec2(0), size);
-    let a = textureLoad(lit, at, 0).rgb;
-    let b = textureLoad(dimmed, at, 0).rgb;
+    // The volume's are half the size, read between their texels: it is
+    // smooth by construction, so the half resolution costs it nothing.
+    let uv = in.position.xy / vec2<f32>(textureDimensions(lit));
+    let a = textureLoad(lit, at, 0).rgb
+        + textureSampleLevel(volume_lit, volume_sampler, uv, 0.0).rgb;
+    let b = textureLoad(dimmed, at, 0).rgb
+        + textureSampleLevel(volume_dimmed, volume_sampler, uv, 0.0).rgb;
     // Alpha nought: an added material is drawn through the premultiplied
     // blend, `src + dst * (1 - src.a)`, which adds only where the alpha is
     // nought. At one it laid the field over the galaxy as a sheet and took

@@ -4,8 +4,10 @@
 //! light of its systems, wherever in the galaxy it stands — and that runs
 //! over some thirty stops in one frame where a display carries a handful.
 //! So the map view's field cameras draw the splats into two targets of their
-//! own, the let-through and what the filters exclude, and this lays them
-//! over the galaxy through one curve:
+//! own, the let-through and what the filters exclude — and the volume
+//! ([`crate::map::paint::volume`]) into two more at half the resolution,
+//! read back up and added to them — and this lays them over the galaxy
+//! through one curve:
 //!
 //! - **The dial** ([`FieldExposure`]) is a gain, in stops, on the light
 //!   before the curve reads it, and **the tilt** ([`EVEN_AT`]) a gain the
@@ -39,7 +41,10 @@
 //! the window, where its own exposure and the bloom are what bring the sky
 //! onto the display.
 
-use crate::map::camera::{CURVE_LAYER, CURVE_ORDER, DIMMED_LAYER, FIELD_ORDER};
+use crate::map::camera::{
+    CURVE_LAYER, CURVE_ORDER, DIMMED_LAYER, FIELD_ORDER, VOLUME_DIMMED_LAYER,
+    VOLUME_LAYER,
+};
 use crate::map::filter::DimTo;
 use crate::map::paint::field::FieldCamera;
 use crate::map::paint::glow::Gains;
@@ -49,6 +54,7 @@ use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ImageRenderTarget, RenderTarget, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::ecs::system::SystemParam;
+use bevy::image::ImageSampler;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     AsBindGroup, Extent3d, ShaderType, TextureFormat,
@@ -327,18 +333,26 @@ impl Exposed {
     }
 }
 
-/// The two targets the map view's field is drawn into
+/// The targets the map view's field is drawn into
 #[derive(Resource)]
 pub(crate) struct FieldTargets {
     /// The marks and splats the filters let through.
     pub(crate) lit: Handle<Image>,
     /// And what they exclude, at full; dimmed by [`CurveMaterial`].
     pub(crate) dimmed: Handle<Image>,
+    /// The volume ([`crate::map::paint::volume`]), let through and
+    /// excluded, at half the frame's resolution and added to the two above
+    /// as the curve reads them.
+    pub(crate) volume: [Handle<Image>; 2],
 }
 
 /// The camera that draws what the filters exclude into its target
 #[derive(Component)]
 struct DimmedCamera;
+
+/// A camera that marches the volume into its half-resolution target
+#[derive(Component)]
+struct VolumeCamera;
 
 /// The camera that lays the two targets over the galaxy through the curve
 #[derive(Component)]
@@ -359,7 +373,7 @@ struct CurveUniform {
     _pad1: f32,
 }
 
-/// What lays the field's two targets onto the frame
+/// What lays the field's targets onto the frame
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 struct CurveMaterial {
     #[uniform(0)]
@@ -368,6 +382,13 @@ struct CurveMaterial {
     lit: Handle<Image>,
     #[texture(2)]
     dimmed: Handle<Image>,
+    /// The volume's let-through and excluded, sampled up from half the
+    /// frame's resolution through the first one's sampler.
+    #[texture(3)]
+    #[sampler(5)]
+    volume_lit: Handle<Image>,
+    #[texture(4)]
+    volume_dimmed: Handle<Image>,
 }
 
 impl Material for CurveMaterial {
@@ -385,15 +406,27 @@ impl Material for CurveMaterial {
 /// A target the field can be drawn into: half floats, as the frame itself
 /// is, sized to the frame
 fn target(size: UVec2) -> Image {
-    Image::new_target_texture(
+    let mut image = Image::new_target_texture(
         size.x.max(1),
         size.y.max(1),
         TextureFormat::Rgba16Float,
         None,
-    )
+    );
+    // Read between texels where it is read at another size: the volume's.
+    image.sampler = ImageSampler::linear();
+    image
 }
 
-/// Put the targets, the dimmed camera and the curve's camera and quad up
+/// How large the volume's targets are for a frame of `size`: half, rounded
+/// up, and the scale factor that keeps them the frame's logical size, which
+/// is what the volume is laid out in.
+fn halved(size: UVec2, scale: f32) -> (UVec2, f32) {
+    let half = (size + UVec2::ONE) / 2;
+    (half, scale * half.y as f32 / size.y.max(1) as f32)
+}
+
+/// Put the targets, the dimmed camera, the volume's cameras and the curve's
+/// camera and quad up
 fn spawn_curve(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -403,6 +436,8 @@ fn spawn_curve(
 ) {
     let lit = images.add(target(UVec2::ONE));
     let dimmed = images.add(target(UVec2::ONE));
+    let volume =
+        [images.add(target(UVec2::ONE)), images.add(target(UVec2::ONE))];
 
     // The field camera's twin, drawing what the filters exclude. Clears to
     // black, its target holding nothing but this frame's excluded light.
@@ -423,6 +458,32 @@ fn spawn_curve(
         RenderLayers::layer(DIMMED_LAYER),
         DimmedCamera,
     ));
+
+    // And the volume's two, each into a target at half the frame's
+    // resolution, cleared to black.
+    for (layer, into) in
+        [VOLUME_LAYER, VOLUME_DIMMED_LAYER].into_iter().zip(&volume)
+    {
+        commands.spawn((
+            Camera3d::default(),
+            Hdr,
+            Tonemapping::None,
+            // Nothing on these layers has an edge to smooth.
+            Msaa::Off,
+            Camera {
+                order: FIELD_ORDER,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            RenderTarget::Image(ImageRenderTarget::from(into.clone())),
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::WindowSize,
+                ..OrthographicProjection::default_3d()
+            }),
+            RenderLayers::layer(layer),
+            VolumeCamera,
+        ));
+    }
 
     // Over the scene and under the annotations, as the field drew before
     // there was a curve; clearing nothing, so the galaxy stands under it.
@@ -454,40 +515,51 @@ fn spawn_curve(
             },
             lit: lit.clone(),
             dimmed: dimmed.clone(),
+            volume_lit: volume[0].clone(),
+            volume_dimmed: volume[1].clone(),
         })),
         RenderLayers::layer(CURVE_LAYER),
         NoFrustumCulling,
         Transform::from_xyz(0., 0., -1.),
         CurveQuad,
     ));
-    commands.insert_resource(FieldTargets { lit, dimmed });
+    commands.insert_resource(FieldTargets { lit, dimmed, volume });
 }
 
 /// The field's two cameras, each drawing into its own target
 type Drawing = Or<(With<FieldCamera>, With<DimmedCamera>)>;
 
-/// The cameras that stand down outside the map view: the dimmed one and the
-/// curve's own
-type MapOnly =
-    (Or<(With<DimmedCamera>, With<CurveCamera>)>, Without<FieldCamera>);
+/// The cameras that stand down outside the map view: the dimmed one, the
+/// volume's, and the curve's own
+type MapOnly = (
+    Or<(With<DimmedCamera>, With<VolumeCamera>, With<CurveCamera>)>,
+    Without<FieldCamera>,
+);
 
-/// Hold the targets at the frame's own size, and the quad over the frame
+/// Hold the targets at the frame's own size, the volume's at half of it,
+/// and the quad over the frame
 ///
-/// Only where the window has moved. A resize reallocates both targets, and
-/// the curve reads a pixel of the frame as a texel of each.
+/// Only where the window has moved. A resize reallocates the targets, and
+/// the curve reads a pixel of the frame as a texel of the first two.
 fn fit_targets(
     window: Query<&Window, With<PrimaryWindow>>,
     targets: Option<Res<FieldTargets>>,
     mut images: ResMut<Assets<Image>>,
     mut quad: Query<&mut Transform, With<CurveQuad>>,
-    mut cameras: Query<&mut RenderTarget, Drawing>,
+    mut cameras: Query<&mut RenderTarget, (Drawing, Without<VolumeCamera>)>,
+    mut marching: Query<&mut RenderTarget, With<VolumeCamera>>,
 ) {
     let (Ok(window), Some(targets)) = (window.single(), targets) else {
         return;
     };
     let size = window.physical_size().max(UVec2::ONE);
     let scale = window.scale_factor();
-    for handle in [&targets.lit, &targets.dimmed] {
+    let (half, half_scale) = halved(size, scale);
+    let sized = [&targets.lit, &targets.dimmed]
+        .map(|handle| (handle, size))
+        .into_iter()
+        .chain(targets.volume.iter().map(|handle| (handle, half)));
+    for (handle, size) in sized {
         if images.get(handle).is_some_and(|image| image.size() != size)
             && let Some(mut image) = images.get_mut(handle)
         {
@@ -500,8 +572,13 @@ fn fit_targets(
     }
     // An image target has no scale factor of its own, and the field is laid
     // out in the window's logical pixels; told the window's, its cameras see
-    // the frame the marks were placed in.
-    for mut target in &mut cameras {
+    // the frame the marks were placed in. The volume's targets are half as
+    // many pixels over the same frame, so half the scale.
+    let told = cameras
+        .iter_mut()
+        .map(|target| (target, scale))
+        .chain(marching.iter_mut().map(|target| (target, half_scale)));
+    for (mut target, scale) in told {
         if let RenderTarget::Image(image) = &*target
             && image.scale_factor != scale
         {

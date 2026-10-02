@@ -97,6 +97,20 @@ move the marks as well as the glow, with the glow on or off. What the
 filters exclude is drawn into a second target and dimmed after the curve, so
 the Filtered Opacity dims the glow as far as it dims a mark.
 
+Most of the galaxy stands in index cells 256 to 512 light years across, each
+evenly filled, which the index can describe by nothing finer than a count.
+Laid as a blob at each cell's middle they summed to a grid of lumps on the
+cells' own pitch once those stood tens of pixels apart. A filled cell that
+wide on screen is instead part of a volume
+([`src/map/paint/volume.rs`](./src/map/paint/volume.rs)): the glow at any
+point is the mean of the densities of the cells around it, each weighted by
+a tent as wide as its cell, so it runs straight between neighbours and
+holds flat across a change of cell size, and fades out over one cell past
+the last. Each pixel marches its own ray through it, at half the frame's
+resolution. A cell whose systems sit tighter than it — a filament, a
+cluster — keeps its blob at its own centroid and its own spread, which is
+where the detail is.
+
 The galaxy is drawn the way round the game draws it. Its coordinates are
 left handed — seen from galactic north with the core at the top, `+X` is on
 the right — and the renderer is right handed, so the camera is mirrored

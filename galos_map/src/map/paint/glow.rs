@@ -75,6 +75,16 @@
 //! carry. Between them the field is as sharp as the frame allows wherever
 //! the tree has depth, and an honest wash where it has not.
 //!
+//! **Where the tree runs out, the wash is a volume.** Most of the galaxy
+//! stands in evenly filled leaves hundreds of light years wide, which the
+//! splats laid as a grid of lumps on their own pitch once they stood tens
+//! of pixels apart. A filled cell wider than [`volume::FROM_PX`] on screen
+//! hands its light to [`crate::map::paint::volume`] instead, all of it by
+//! [`volume::FULL_PX`], which interpolates between the cells' densities and
+//! is marched along each pixel's ray. A cell of a filament or a knot keeps
+//! its splat; so does one part way into the walk's cross-fade, which is a
+//! pixel or two anyway.
+//!
 //! Drawn on [`FIELD_LAYER`] and [`DIMMED_LAYER`], into the curve's two
 //! targets; [`crate::map::paint::field`]'s marks are laid over it after the
 //! curve, each through it on its own.
@@ -85,6 +95,7 @@ use crate::map::galaxy::plan::Planned;
 use crate::map::galaxy::spawn::{ColorBy, Hue};
 use crate::map::index::{ResidentIndex, Settled};
 use crate::map::paint::sizing::View;
+use crate::map::paint::volume::{self, VolumeMark, Volumes};
 use crate::map::schedule::MapSet;
 use crate::map::screen::{screen_position, world_per_pixel};
 use bevy::asset::RenderAssetUsages;
@@ -144,6 +155,10 @@ pub struct Laid {
     /// Quads laid into the dimmed target, for what the filters and the
     /// color mask exclude.
     pub dimmed: u32,
+    /// Cells laid into the volume ([`crate::map::paint::volume`]), whole or
+    /// in part: the evenly filled ones wide enough on screen to be marched
+    /// rather than splatted.
+    pub volume: u32,
     /// The light the let-through quads laid, all told: each one's brightest
     /// channel over its footprint, in the curve's unit. Zero where the marks have
     /// accounted for everything.
@@ -199,6 +214,7 @@ impl Default for Laid {
             colonies: 0,
             backdrop: 0,
             dimmed: 0,
+            volume: 0,
             light: 0.,
             peak: 0.,
             faintest: 0.,
@@ -779,7 +795,12 @@ fn let_through(
 /// one parameter, a system taking sixteen at most.
 type Written<'w, 's> = (
     ResMut<'w, Laid>,
-    Query<'w, 's, (&'static GlowMark, &'static mut Mesh3d)>,
+    Query<
+        'w,
+        's,
+        (&'static GlowMark, &'static mut Mesh3d),
+        Without<VolumeMark>,
+    >,
     ResMut<'w, Assets<Mesh>>,
     Local<'s, Option<(galos_index::read::walk::View, DVec3)>>,
 );
@@ -801,7 +822,7 @@ type Written<'w, 's> = (
 #[expect(
     clippy::too_many_arguments,
     reason = "the plan, the two aggregations it reads, the palette, the gains \
-              and the mesh it writes"
+              and the meshes and the volume it writes"
 )]
 fn build_glow(
     camera: Query<(&OrbitCamera, &Camera)>,
@@ -817,6 +838,7 @@ fn build_glow(
     show_glow: Res<ShowGlow>,
     scale_population: Res<crate::map::paint::sizing::ScalePopulation>,
     spyglass: Res<crate::map::galaxy::Spyglass>,
+    mut volumes: Volumes<'_, '_>,
     (mut laid, mut glow, mut meshes, mut last): Written<'_, '_>,
 ) {
     if glow.is_empty() {
@@ -863,6 +885,10 @@ fn build_glow(
     let mask = filtering.filters.mask();
     let mut quads = Quads::default();
     let mut counted = Laid::default();
+    // The cells laid into the volume, and where it is seen from; none where
+    // nothing is laid, which hides it.
+    let mut sources: Vec<volume::Source> = Vec::new();
+    let mut volume_seen: Option<(DVec3, volume::Frame)> = None;
 
     // The realistic sky's own glow is the summed light below the visibility
     // floor, read off the flux buckets and the luminosity moments rather than
@@ -938,6 +964,36 @@ fn build_glow(
             })
         };
 
+        // The volume ([`volume`]) is seen from the eye, clipped to the reach
+        // where the spyglass clears, and holds only cells it can see: a box
+        // grown by its own edge, since a tent reaches that far past its
+        // centre into the boxes beside it.
+        let eye = orbit.eye();
+        let forward = orbit.forward().as_dvec3();
+        let per_pixel = f64::from(world_per_pixel(
+            frame.cot_half_fov,
+            frame.viewport.y,
+            1.,
+        ));
+        volume_seen = Some((
+            eye,
+            volume::Frame::new(
+                orbit,
+                frame.cot_half_fov,
+                viewport,
+                spyglass.clear.then(|| (orbit.center(), spyglass.radius)),
+            ),
+        ));
+        let seen_whole = |bounds: &galos_index::core::geometry::Aabb,
+                          edge: f64| {
+            seen.is_none_or(|(view, _)| {
+                view.sees(&galos_index::core::geometry::Aabb {
+                    min: bounds.min.map(|at| at - edge),
+                    max: bounds.max.map(|at| at + edge),
+                })
+            })
+        };
+
         // One chunk of the splats laid down on its own: each splat is its
         // own quads and the field is additive, so
         // the chunks are laid on their own threads and joined in any
@@ -946,6 +1002,7 @@ fn build_glow(
         let lay = |chunk: &[galos_index::read::walk::SplatRef]| {
             let mut quads = Quads::default();
             let mut counted = Laid::default();
+            let mut sources = Vec::new();
             for splat in chunk {
                 let Some(cell) = index.0.get(splat.id) else { continue };
                 let count = cell.aggregate.count();
@@ -962,6 +1019,46 @@ fn build_glow(
                 // it stands for its whole subtree, less where it is part way into a
                 // cross-fade with its children.
                 let carried = splat.blend as f32 * total / count as f32;
+
+                // How much of each channel goes into the volume rather than
+                // its splat: the share its cell's edge on screen hands over
+                // ([`volume::share`]), for a channel whose systems fill the
+                // cell ([`volume::FILLED`]), of a cell carrying the whole of
+                // its weight. A cell part way into the walk's cross-fade is
+                // drawn with its children, and the two would stand one in the
+                // other; the cross-fade is under a pixel or two anyway, where
+                // the share is nothing.
+                let edge = cell.id.edge_ly();
+                let bounds = cell.id.bounds();
+                let depth = (DVec3::from(bounds.center()) - eye).dot(forward);
+                let edge_px = match depth > 0. {
+                    true => (edge / (per_pixel * depth)) as f32,
+                    false => f32::INFINITY,
+                };
+                // And held to the reach by its box rather than its centroid:
+                // the shader clips the volume to the reach's own sphere, so a
+                // cell straddling it lays what is inside, where its centroid
+                // decides only whether its splat is laid.
+                let reached = !spyglass.clear
+                    || bounds.distance_to(orbit.center().to_array())
+                        <= f64::from(spyglass.radius);
+                let handed = match carried >= 1. - 1e-3
+                    && reached
+                    && seen_whole(&bounds, edge)
+                {
+                    true => volume::share(edge_px),
+                    false => 0.,
+                };
+                let into_volume = |rms: f64| match rms >= volume::FILLED * edge
+                {
+                    true => handed,
+                    false => 0.,
+                };
+                let mut poured = volume::Source {
+                    id: splat.id,
+                    lit: Vec3::ZERO,
+                    dimmed: Vec3::ZERO,
+                };
 
                 // The systems nobody lives in, at the stellar moments: one
                 // uncolored channel, because a backdrop is a density question and
@@ -1088,10 +1185,9 @@ fn build_glow(
                     let unscanned = u64::from(std::mem::take(&mut kinds[0]));
                     let scanned: u64 =
                         kinds.iter().map(|n| u64::from(*n)).sum();
-                    let Some(at) = mass.centroid().filter(|at| in_reach(*at))
-                    else {
-                        continue;
-                    };
+                    // Where its splats go, if anywhere; the volume's share is
+                    // laid either way.
+                    let at = mass.centroid().filter(|at| in_reach(*at));
                     let spread = (mass.rms_radius() * FLATTENED)
                         .max(covered(mass.rms_radius()));
                     let keeps = mask.keeps(*color_by);
@@ -1116,15 +1212,20 @@ fn build_glow(
                             share * keeps.of(0),
                             excluded,
                         );
-                        if let Some(lit) = quads.deposit(
-                            &frame,
-                            at,
-                            spread,
-                            through,
-                            dimmed,
-                            systems * MARK_AREA,
-                            room(at),
-                        ) {
+                        let into = into_volume(mass.rms_radius());
+                        poured.lit += through * into;
+                        poured.dimmed += dimmed * into;
+                        if let Some(at) = at
+                            && let Some(lit) = quads.deposit(
+                                &frame,
+                                at,
+                                spread,
+                                through * (1. - into),
+                                dimmed * (1. - into),
+                                systems * MARK_AREA,
+                                room(at),
+                            )
+                        {
                             counted.backdrop += 1;
                             counted.took(lit);
                         }
@@ -1138,42 +1239,50 @@ fn build_glow(
                         let (through, dimmed) =
                             let_through(whole, kept, share, excluded);
                         let scale = carried * gains.mark * MARK_AREA;
-                        if let Some(lit) = quads.deposit(
-                            &frame,
-                            at,
-                            spread,
-                            through * scale,
-                            dimmed * scale,
-                            scanned as f32 * carried * MARK_AREA,
-                            room(at),
-                        ) {
+                        let into = into_volume(mass.rms_radius());
+                        poured.lit += through * scale * into;
+                        poured.dimmed += dimmed * scale * into;
+                        if let Some(at) = at
+                            && let Some(lit) = quads.deposit(
+                                &frame,
+                                at,
+                                spread,
+                                through * scale * (1. - into),
+                                dimmed * scale * (1. - into),
+                                scanned as f32 * carried * MARK_AREA,
+                                room(at),
+                            )
+                        {
                             counted.colonies += 1;
                             counted.took(lit);
                         }
                     }
+                    pour(poured, frame.mark, &mut sources, &mut counted);
                     continue;
                 }
-                if empty > 0
-                    && !populated_only
-                    && let Some(at) = mass.centroid()
-                    && in_reach(at)
-                {
+                if empty > 0 && !populated_only {
+                    let at = mass.centroid().filter(|at| in_reach(*at));
                     let systems = empty as f32 * carried;
                     let whole = Vec3::splat(
                         systems * gains.empty * gains.mark * MARK_AREA,
                     );
                     let (through, dimmed) =
                         let_through(whole, whole, backdrop_share, excluded);
-                    if let Some(lit) = quads.deposit(
-                        &frame,
-                        at,
-                        (mass.rms_radius() * FLATTENED)
-                            .max(covered(mass.rms_radius())),
-                        through,
-                        dimmed,
-                        systems * MARK_AREA,
-                        room(at),
-                    ) {
+                    let into = into_volume(mass.rms_radius());
+                    poured.lit += through * into;
+                    poured.dimmed += dimmed * into;
+                    if let Some(at) = at
+                        && let Some(lit) = quads.deposit(
+                            &frame,
+                            at,
+                            (mass.rms_radius() * FLATTENED)
+                                .max(covered(mass.rms_radius())),
+                            through * (1. - into),
+                            dimmed * (1. - into),
+                            systems * MARK_AREA,
+                            room(at),
+                        )
+                    {
                         counted.backdrop += 1;
                         counted.took(lit);
                     }
@@ -1182,10 +1291,8 @@ fn build_glow(
                 // And the colonies, at their own. Absent where there are none,
                 // and never stood in for by the stellar centroid: that is how a
                 // colony is drawn where there is not one.
-                if let Some(held) = colonies
-                    && let Some(at) = held.centroid()
-                    && in_reach(at)
-                {
+                if let Some(held) = colonies {
+                    let at = held.centroid().filter(|at| in_reach(*at));
                     let whole = composition(
                         &held,
                         *color_by,
@@ -1206,39 +1313,60 @@ fn build_glow(
                     let (through, dimmed) =
                         let_through(whole, kept, colony_share, excluded);
                     let scale = carried * gains.mark * MARK_AREA;
-                    if let Some(lit) = quads.deposit(
-                        &frame,
-                        at,
-                        (held.spread() * FLATTENED).max(covered(held.spread())),
-                        through * scale,
-                        dimmed * scale,
-                        held.count() as f32 * carried * MARK_AREA,
-                        room(at),
-                    ) {
+                    let into = into_volume(held.spread());
+                    poured.lit += through * scale * into;
+                    poured.dimmed += dimmed * scale * into;
+                    if let Some(at) = at
+                        && let Some(lit) = quads.deposit(
+                            &frame,
+                            at,
+                            (held.spread() * FLATTENED)
+                                .max(covered(held.spread())),
+                            through * scale * (1. - into),
+                            dimmed * scale * (1. - into),
+                            held.count() as f32 * carried * MARK_AREA,
+                            room(at),
+                        )
+                    {
                         counted.colonies += 1;
                         counted.took(lit);
                     }
                 }
+                pour(poured, frame.mark, &mut sources, &mut counted);
             }
-            (quads, counted)
+            (quads, counted, sources)
         };
         let splats = &planned.0.splats[..];
-        let laid_down: Vec<(Quads, Laid)> = if splats.len() < CHUNK * 2 {
-            vec![lay(splats)]
-        } else {
-            let lay = &lay;
-            ComputeTaskPool::get().scope(|scope| {
-                for chunk in splats.chunks(CHUNK) {
-                    scope.spawn(async move { lay(chunk) });
-                }
-            })
-        };
-        for (laid_here, counted_here) in laid_down {
+        let laid_down: Vec<(Quads, Laid, Vec<volume::Source>)> =
+            if splats.len() < CHUNK * 2 {
+                vec![lay(splats)]
+            } else {
+                let lay = &lay;
+                ComputeTaskPool::get().scope(|scope| {
+                    for chunk in splats.chunks(CHUNK) {
+                        scope.spawn(async move { lay(chunk) });
+                    }
+                })
+            };
+        for (laid_here, counted_here, poured_here) in laid_down {
             quads.join(laid_here);
+            sources.extend(poured_here);
             counted.backdrop += counted_here.backdrop;
             counted.colonies += counted_here.colonies;
             counted.dimmed += counted_here.dimmed;
             counted.separated += counted_here.separated;
+            counted.volume += counted_here.volume;
+            counted.light += counted_here.light;
+        }
+    }
+
+    // The volume, or nothing where no field is laid, which hides it.
+    match volume_seen {
+        Some((eye, seen_from)) => {
+            volumes.lay(&volume::Built::of(&sources, eye), seen_from);
+        }
+        None => {
+            volumes.lay(&volume::Built::default(), volume::Frame::default())
         }
     }
 
@@ -1252,7 +1380,7 @@ fn build_glow(
         counted.tenth = percentile(&mut quads.radii, 0.1);
         counted.quarter = percentile(&mut quads.radii, 0.25);
     }
-    counted.light = quads.light;
+    counted.light += quads.light;
     if !quads.peaks.is_empty() {
         let peaks = &mut quads.peaks;
         counted.faintest = peaks.iter().copied().fold(f32::INFINITY, f32::min);
@@ -1278,6 +1406,25 @@ struct Lit {
     separated: bool,
     /// Whether any of it went into the dimmed target.
     dimmed: bool,
+}
+
+/// Take a cell's share of the volume in, where it laid any
+///
+/// Counted into [`Laid`] as a quad is: one more cell, and its brightest
+/// channel's light in the curve's unit, which the volume lays whole as a
+/// splat does.
+fn pour(
+    source: volume::Source,
+    mark: f32,
+    sources: &mut Vec<volume::Source>,
+    counted: &mut Laid,
+) {
+    if source.lit.max_element() <= 0. && source.dimmed.max_element() <= 0. {
+        return;
+    }
+    counted.volume += 1;
+    counted.light += source.lit.max_element() / mark;
+    sources.push(source);
 }
 
 /// Where the frame is seen from, which is everything a splat's centroid
@@ -1550,7 +1697,14 @@ pub(crate) fn gaussian_mask() -> Image {
             data[texel] = value;
             data[texel + 1] = value;
             data[texel + 2] = value;
-            data[texel + 3] = value;
+            // **Opaque, and the profile in the colour alone.** An added
+            // material is drawn as its colour times its alpha
+            // (`bevy_pbr`'s `premultiply_alpha`), so a profile in both was
+            // drawn squared: every splat laid half its light, at seven tenths
+            // of the width it was asked for, and over a lattice of filled
+            // cells a ripple of a sixth where half a cell sums to a
+            // seventieth.
+            data[texel + 3] = 255;
         }
     }
     let mut image = Image::new(
@@ -1807,6 +1961,24 @@ mod tests {
         assert!(at(n / 2, n / 2) >= 250, "the middle is not the peak");
         assert!(at(0, n / 2) < 4, "the rim is not dark: {}", at(0, n / 2));
         assert!(at(n / 2, 0) < 4);
+    }
+
+    /// The mask's profile is in its colour and nowhere else
+    ///
+    /// An added material is drawn as its colour times its alpha. A profile in
+    /// the alpha as well is a profile squared: a splat lays half its light
+    /// over a Gaussian seven tenths as wide, and the deposit law — the light
+    /// of the systems it stands for over `2πσ²` — stops holding, which is
+    /// also what the volume ([`crate::map::paint::volume`]) is handed light
+    /// against.
+    #[test]
+    fn the_mask_is_drawn_once() {
+        let image = gaussian_mask();
+        let data = image.data.as_ref().unwrap();
+        assert!(
+            data.chunks(4).all(|texel| texel[3] == 255),
+            "the profile is in the alpha too, and is drawn squared"
+        );
     }
 }
 
