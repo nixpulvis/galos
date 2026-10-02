@@ -21,6 +21,7 @@ use crate::map::screen::{
 use crate::map::selection::Selected;
 use crate::style::color32;
 use bevy::camera::RenderTarget;
+use bevy::ecs::system::SystemParam;
 use bevy::ecs::entity::EntityHashMap;
 use bevy::math::DVec3;
 use bevy::picking::backend::{HitData, PointerHits};
@@ -54,6 +55,9 @@ pub fn plugin(app: &mut App) {
         Update,
         size_bodies
             .in_set(MapSet::Present)
+            // Its arrival star is marked by what is left of the system's own
+            // mark; see [`body_mark`].
+            .after(size_indicators)
             .before(crate::map::labels::choose_names),
     );
     // Painted flat in screen space with egui, in the same pass and the same
@@ -606,6 +610,7 @@ fn system_mark(
 pub fn size_bodies(
     camera: Query<(&OrbitCamera, &Camera)>,
     places: Places,
+    marks: SystemMarks,
     mut bodies: Query<(Entity, &Body, &mut Indicator)>,
 ) {
     let Ok((orbit, camera)) = camera.single() else { return };
@@ -613,9 +618,15 @@ pub fn size_bodies(
     let cot_half_fov = camera.clip_from_view().y_axis.y;
 
     for (entity, body, mut indicator) in &mut bodies {
-        let Some(mark) =
-            body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
-        else {
+        let Some(mark) = body_mark(
+            orbit,
+            cot_half_fov,
+            viewport,
+            &places,
+            &marks,
+            entity,
+            body,
+        ) else {
             continue;
         };
 
@@ -638,6 +649,18 @@ pub fn size_bodies(
 /// and the floor takes over, which is where the air is already the whole of
 /// the mark.
 ///
+/// Except for the star a system arrives at while the mark standing for that
+/// system is still drawn. A selection resting on a system moves onto that
+/// star the moment its contents are drawn, and a ring resting on its mark is
+/// carried onto it by the pointer, but the mark goes on being drawn whole
+/// past then and fades out only as the camera comes closer still (see
+/// [`crate::map::bodies::spawn`]'s `WORTH_MARKING`). The star is the
+/// system's stand-in, so it is marked by what is left of the system's mark:
+/// all of it while that is drawn whole, and its own outline once that has
+/// gone, taken from one to the other as the mark fades. Marked by its own
+/// outline throughout, the ring snapped from around the mark to a few pixels
+/// inside it at the handover.
+///
 /// Asked by everything that draws a mark around a body or tests the pointer
 /// against one, so that what can be clicked is exactly the shape that was
 /// drawn and [`Indicator`] is one reading of the same answer rather than a
@@ -647,12 +670,49 @@ pub(crate) fn body_mark(
     cot_half_fov: f32,
     viewport: Vec2,
     places: &Places,
+    marks: &SystemMarks,
     entity: Entity,
     body: &Body,
 ) -> Option<Silhouette> {
     let seen = places.seen(entity, camera)?;
+    let own =
+        marking(outline(camera, cot_half_fov, viewport, seen, body.radius)?);
+    if !body.primary {
+        return Some(own);
+    }
 
-    Some(marking(outline(camera, cot_half_fov, viewport, seen, body.radius)?))
+    Some(match places.holder(entity).and_then(|system| marks.of(system)) {
+        Some((radius, left)) => own.toward(radius, left),
+        None => own,
+    })
+}
+
+/// The marks drawn for systems, as the star taking over from one reads them
+///
+/// Split from every body by `Without<Body>`, so it may be read beside a
+/// query writing a body's [`Indicator`].
+#[derive(SystemParam)]
+pub(crate) struct SystemMarks<'w, 's>(
+    Query<
+        'w,
+        's,
+        (&'static Strength, &'static Indicator, &'static Visibility),
+        (With<Shell>, Without<Body>),
+    >,
+);
+
+impl SystemMarks<'_, '_> {
+    /// How large the mark standing for `system` is, in pixels, and how much
+    /// of it is left
+    ///
+    /// Nothing for a system whose mark is not drawn, which the spyglass says
+    /// as [`crate::map::selection::ring`] reads it.
+    fn of(&self, system: Entity) -> Option<(f32, f32)> {
+        let (mark, indicator, shown) = self.0.get(system).ok()?;
+
+        (*shown != Visibility::Hidden)
+            .then_some((indicator.0, mark.0.clamp(0., 1.)))
+    }
 }
 
 /// The room a mark leaves around an outline `drawn`
@@ -709,6 +769,7 @@ fn hits(
     systems: Query<(Entity, &System, &Indicator, &Visibility)>,
     bodies: Query<(Entity, &Body, &Indicator)>,
     places: Places,
+    marks: SystemMarks,
     labels: Query<(Entity, &ChildOf, &PlateText), With<Label>>,
     mut hits: MessageWriter<PointerHits>,
 ) {
@@ -804,9 +865,15 @@ fn hits(
         // camera cannot see.
         for (entity, body, indicator) in &bodies {
             let Some(seen) = places.seen(entity, orbit) else { continue };
-            let Some(mark) =
-                body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
-            else {
+            let Some(mark) = body_mark(
+                orbit,
+                cot_half_fov,
+                viewport,
+                &places,
+                &marks,
+                entity,
+                body,
+            ) else {
                 continue;
             };
             let hit =
@@ -916,6 +983,7 @@ pub fn ring(
         Has<Selected>,
     )>,
     places: Places,
+    marks: SystemMarks,
     dim: Res<DimTo>,
 ) -> Result {
     let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
@@ -1030,9 +1098,15 @@ pub fn ring(
     // Whatever inside a system is pointed at, read off the grid holding it, as
     // its name is, so it is placed against the view it is drawn into.
     for (entity, body, _) in &inside {
-        let Some(mark) =
-            body_mark(orbit, cot_half_fov, viewport, &places, entity, body)
-        else {
+        let Some(mark) = body_mark(
+            orbit,
+            cot_half_fov,
+            viewport,
+            &places,
+            &marks,
+            entity,
+            body,
+        ) else {
             continue;
         };
         painter.add(mark.painted(stroke(INDICATOR)));
@@ -1934,6 +2008,68 @@ mod tests {
         app.update();
 
         assert!(marks(&app) > settled, "left a mark at the size it was");
+    }
+
+    /// How wide a star is marked inside a system whose own mark is `whole`
+    /// pixels round with `left` of it still standing, where the star is the
+    /// one the system arrives at if `primary`
+    fn taken_over(whole: f32, left: f32, primary: bool) -> f32 {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_systems(Update, size_bodies);
+        app.world_mut().spawn((looking(), crate::map::galaxy::tests::seeing()));
+
+        let mut held = crate::map::galaxy::tests::system(1);
+        held.position = [0., 0., -5.];
+        let system = app
+            .world_mut()
+            .spawn((
+                held,
+                Shell,
+                Indicator(whole),
+                Strength(left),
+                Visibility::Visible,
+                crate::map::space::system_grid(),
+            ))
+            .id();
+        let star = app
+            .world_mut()
+            .spawn((
+                Body { primary, ..sun(1, 0) },
+                big_space::prelude::CellCoord::default(),
+                Transform::default(),
+                ChildOf(system),
+                Indicator::default(),
+            ))
+            .id();
+
+        app.update();
+        app.world().get::<Indicator>(star).unwrap().0
+    }
+
+    /// The star a system arrives at takes its system's mark over without a
+    /// jump
+    ///
+    /// A selection or a pointer resting on a system moves onto that star as
+    /// its contents are drawn, while the system's mark is still drawn whole
+    /// around it. Marked by its own outline from there, the ring snapped from
+    /// around the mark to a few pixels inside it. So the star wears the whole
+    /// mark while the mark is whole, its own once the mark has gone, and
+    /// something between the two while it fades.
+    #[test]
+    fn the_arrival_star_takes_over_its_systems_mark() {
+        let whole = 40.;
+        let own = taken_over(whole, 1., false);
+        assert!(own < whole, "the star alone was marked at {own}");
+
+        assert_eq!(taken_over(whole, 1., true), whole);
+        assert_eq!(taken_over(whole, 0., true), own);
+        let fading = taken_over(whole, 0.5, true);
+        assert!(
+            own < fading && fading < whole,
+            "half the mark left marked the star at {fading}, between {own} \
+             and {whole}"
+        );
     }
 
     /// How many times the cursor was written

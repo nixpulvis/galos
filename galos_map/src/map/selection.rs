@@ -753,6 +753,7 @@ pub(crate) fn ring(
     // of its own.
     inside: Query<(Entity, &Body, &Indicator), With<Selected>>,
     places: Places,
+    marks: crate::map::pointing::SystemMarks,
     dim: Res<DimTo>,
 ) -> Result {
     let Ok((orbit, camera)) = camera.single() else { return Ok(()) };
@@ -776,6 +777,7 @@ pub(crate) fn ring(
             cot_half_fov,
             viewport,
             &places,
+            &marks,
             entity,
             body,
         ) else {

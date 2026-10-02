@@ -1083,6 +1083,16 @@ impl Places<'_, '_> {
         Some(system.position() + space::light_years(metres))
     }
 
+    /// The system `body` is drawn inside
+    ///
+    /// Nothing for anything that is not a body drawn inside a system on the
+    /// map, as [`Self::of`].
+    pub fn holder(&self, body: Entity) -> Option<Entity> {
+        let (child_of, ..) = self.inside.get(body).ok()?;
+
+        Some(child_of.parent())
+    }
+
     /// Where `body` stands, in metres from the system holding it
     ///
     /// What [`Self::of`] is worked out from, and the finer of the two: a

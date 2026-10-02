@@ -242,6 +242,19 @@ impl Silhouette {
         Silhouette { across: self.across.max(Vec2::splat(least)), ..self }
     }
 
+    /// Taken `share` of the way to a circle `radius` pixels round
+    ///
+    /// About the same middle: what it is drawn toward stands where it does.
+    /// At no share it is itself and at all of it the circle, and every share
+    /// between is a step along the way, so a mark changing hands by this
+    /// changes size without a jump.
+    pub(crate) fn toward(self, radius: f32, share: f32) -> Silhouette {
+        Silhouette {
+            across: self.across.lerp(Vec2::splat(radius), share),
+            ..self
+        }
+    }
+
     /// How far across it is at its widest
     ///
     /// What anything wanting one number for it asks: how much room a name
