@@ -110,6 +110,28 @@ fn cell_in_reach(id: CellId, center: DVec3, radius: f64) -> bool {
     id.bounds().distance_to(center.to_array()) <= radius
 }
 
+/// `f` of every index under `n`, in order: in chunks across the compute
+/// pool where there are enough of them to be worth the hand-off
+fn across<T: Send + 'static>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    const CHUNK: usize = 8192;
+    if n < CHUNK * 2 {
+        return (0..n).map(f).collect();
+    }
+    let f = &f;
+    let parts = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+        for start in (0..n).step_by(CHUNK) {
+            scope.spawn(async move {
+                (start..(start + CHUNK).min(n)).map(f).collect::<Vec<_>>()
+            });
+        }
+    });
+    let mut out = Vec::with_capacity(n);
+    for part in parts {
+        out.extend(part);
+    }
+    out
+}
+
 /// The cell payloads the map holds, the resident half of the walk's predicate
 ///
 /// Keyed by cell, so [`Resident::missing`] is the marks a fetch must load.
@@ -824,6 +846,31 @@ struct Unspawned {
     /// Which point of the cell's payload it is.
     index: u32,
 }
+
+/// A marked cell the pass draws out of, asked down the plan: where it
+/// stands in the plan, how far down its order it draws, and whether its
+/// payload is newer than the systems drawn from it
+#[derive(Clone, Copy)]
+struct Job {
+    offer: usize,
+    id: CellId,
+    target: usize,
+    refreshed: bool,
+}
+
+/// What a cell came to once taken: its account, the drawn systems it still
+/// wants, and the ones it would draw that are not drawn yet
+#[derive(Default)]
+struct Took {
+    count: usize,
+    accounted: Accounted,
+    wanted: Vec<Entity>,
+    unspawned: Vec<Unspawned>,
+}
+
+/// How many cells one thread takes: a cell is a share's worth of points,
+/// a few apiece with the galaxy seen whole and dozens close in
+const TAKE_CHUNK: usize = 512;
 
 /// Offer what the frame can take of `unspawned`, round by round
 ///
@@ -1681,10 +1728,24 @@ pub(crate) struct ClaimedUnder {
 /// at a time, so a budget spent down the plan brought the filters in a
 /// patch of sky after the next — reported as a filter loading left to
 /// right and top to bottom, every other load filling in all over at once.
+///
+/// Sorted on keys worked out once a mark, each packed with its place:
+/// [`rank`] interleaves an address's bits, and asked of the comparator it was
+/// worked out twice a comparison — four milliseconds of every moving frame
+/// over the forty-odd thousand marks of the galaxy seen whole.
 fn weighing(marks: &[galos_index::read::walk::MarkRef]) -> Vec<u32> {
-    let mut order: Vec<u32> = (0..marks.len() as u32).collect();
-    order.sort_unstable_by_key(|&offer| rank(marks[offer as usize].id, true));
-    order
+    let mut keyed: Vec<u128> = marks
+        .iter()
+        .enumerate()
+        .map(|(offer, mark)| {
+            let (_, level, scattered) = rank(mark.id, true);
+            u128::from(level) << 96
+                | u128::from(scattered) << 32
+                | offer as u128
+        })
+        .collect();
+    keyed.sort_unstable();
+    keyed.into_iter().map(|key| key as u32).collect()
 }
 
 /// What a finished pass was worked out from, besides the resources it reads
@@ -2054,6 +2115,7 @@ pub(crate) fn reconcile(
     // [`weighing`]. Taken for the pass and put back at its end.
     let mut weighed_in = std::mem::take(&mut pass.weighing);
     if planned.is_changed() || weighed_in.len() != planned.0.marks.len() {
+        let _zone = info_span!("weighing order").entered();
         weighed_in = weighing(&planned.0.marks);
     }
     // What the last pass's claims were made under, taken for the same
@@ -2183,6 +2245,21 @@ pub(crate) fn reconcile(
     // payload.
     let population = population(&planned.0);
     let share = Share::of(population, view.marks());
+    // Whether each mark and each merged mark stands in reach, and what the
+    // share draws of each mark, worked out once a pass. The dark tiles, the
+    // strata, the draw and the merged cells each asked them again of every
+    // one of the hundred and forty thousand with the galaxy seen whole: a
+    // box and a distance, and a hash of the address, apiece.
+    let marks_reached = across(planned.0.marks.len(), |offer| {
+        in_reach(planned.0.marks[offer].id, orbit, bubble)
+    });
+    let marks_wanted = across(planned.0.marks.len(), |offer| {
+        let mark = &planned.0.marks[offer];
+        share.wanted(mark.slice as usize, mark.id)
+    });
+    let blobs_reached = across(planned.0.blobs.len(), |offer| {
+        in_reach(planned.0.blobs[offer].id, orbit, bubble)
+    });
     // **Under a filter, what it admits is drawn where it stands apart.**
     // The share above is struck over every system the marked cells hold,
     // and a cell's budget off it is a share of its whole slice: with the
@@ -2259,13 +2336,13 @@ pub(crate) fn reconcile(
     // Left to the draw, they came in down the plan's order and the values
     // filled in a patch at a time.
     if stratified && !narrowed {
+        let _zone = info_span!("strata").entered();
         for &offer in &weighed_in {
-            let mark = &planned.0.marks[offer as usize];
-            if !in_reach(mark.id, orbit, bubble)
-                || share.wanted(mark.slice as usize, mark.id) == 0
-            {
+            let offer = offer as usize;
+            if !marks_reached[offer] || marks_wanted[offer] == 0 {
                 continue;
             }
+            let mark = &planned.0.marks[offer];
             if let Some(cell) = resident.0.cell(mark.id) {
                 deferred |= !orders.stratify(
                     mark.id,
@@ -2310,28 +2387,27 @@ pub(crate) fn reconcile(
         let _zone = info_span!("dark tiles").entered();
         let mut lighting = Empty::over(&view);
         for (offer, mark) in planned.0.marks.iter().enumerate() {
-            if !in_reach(mark.id, orbit, bubble) {
+            if !marks_reached[offer] {
                 continue;
             }
-            match share.wanted(mark.slice as usize, mark.id) {
+            match marks_wanted[offer] {
                 0 => lighting.offered(
-                    &view,
                     mark.at,
                     u64::from(mark.slice),
                     offer as u32,
                 ),
-                take => lighting.drew(&view, mark.at, take),
+                take => lighting.drew(mark.at, take),
             }
         }
         for (offer, blob) in planned.0.blobs.iter().enumerate() {
-            if !in_reach(blob.id, orbit, bubble) {
+            if !blobs_reached[offer] {
                 continue;
             }
             let offer = (planned.0.marks.len() + offer) as u32;
             match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
             {
-                0 => lighting.offered(&view, blob.at, blob.count, offer),
-                _ => lighting.drew(&view, blob.at, 1),
+                0 => lighting.offered(blob.at, blob.count, offer),
+                _ => lighting.drew(blob.at, 1),
             }
         }
         lighting.lit()
@@ -2353,14 +2429,6 @@ pub(crate) fn reconcile(
     // marking would put the far, faint sky the walk just shed back on the
     // map — the level of detail comes from the marks and nowhere else.
     let mut wanted_by: EntityHashSet = EntityHashSet::default();
-    // One buffer for every cell's take rather than one allocation apiece:
-    // a wide view walks thousands of cells a frame, and the indices taken are
-    // a share's worth each.
-    // What a cell draws: an address, where it stands, the payload index it
-    // was named by and the star it arrives at. Taken rather than walked
-    // lazily, the order it is taken in being the one thing the two draws of
-    // this pass disagree about.
-    let mut taken: Vec<(i64, [f64; 3], u32, StarKind)> = Vec::new();
     // The walk's offers are this pass's: what the last one offered and the
     // budget never reached is gone, and what is still wanted is offered again
     // below. See [`crate::map::galaxy::spawn::PendingSpawns`].
@@ -2384,6 +2452,18 @@ pub(crate) fn reconcile(
         true => &[][..],
         false => &planned.0.marks[..],
     };
+    // **Asked down the plan, taken across the pool.** Everything that
+    // writes to the orders — the brightness, the filters' verdicts and the
+    // strata, each off a budget spent in the plan's order — is worked out
+    // here, a cell after the next as it always was, and what is left of a
+    // cell is a read: its order taken to its target, each point held to the
+    // bubble, looked up as drawn or not and summed into its account. That is
+    // the bulk of the pass, a few lookups a point over tens of thousands of
+    // points, and it was four to seven milliseconds of every frame of a pan
+    // with the galaxy seen whole on one thread. Taken in chunks across the
+    // pool and folded back in the plan's order, so what is offered, and in
+    // what order, is what it was.
+    let mut jobs: Vec<Job> = Vec::new();
     for (offer, mark) in by_payload.iter().enumerate() {
         let id = mark.id;
         // **Asked before the payload is looked up.** Most marked cells
@@ -2410,9 +2490,7 @@ pub(crate) fn reconcile(
         // (`node_visible`), so a cell reaching here holds at least one.
         let asked = match limit {
             Some(_) => mark.slice as usize,
-            None => share
-                .wanted(mark.slice as usize, id)
-                .max(usize::from(is_lit(offer as u32))),
+            None => marks_wanted[offer].max(usize::from(is_lit(offer as u32))),
         };
         // A narrowed cell draws what won its patches of sky, share or no
         // share; see [`claim_admitted`]. One that won none and whose share
@@ -2422,138 +2500,139 @@ pub(crate) fn reconcile(
         if asked == 0 && !won {
             continue;
         }
-        // Taken rather than walked lazily, since the two sources are
-        // different iterators and what follows is the same for both: an
-        // address, where it stands, and the payload index where there is
-        // one. A share's worth apiece, which is a few.
-        taken.clear();
+        let Some(cell) = resident.0.cell(id) else { continue };
+        // In the sky, the cell's points brightest first, off its light;
+        // see [`bright`].
+        if limit.is_some() {
+            deferred |= !orders.brighten(id, cell, &mut verdicts);
+        }
+        // How far down the cell's brightest-first order the floor
+        // reaches. The stars that can clear the floor are a prefix of
+        // it: measured at the *nearest* face of the cell, which is the
+        // most generous distance modulus anything in it can have, so the
+        // prefix never cuts a star the exact test below would have kept.
+        // Without it a wide view would walk every point of every marked
+        // cell — tens of millions — to find the few thousand that draw.
+        // A cell whose order the budget has not reached yet is weighed
+        // whole, point by point.
+        let target = match limit {
+            None => asked.min(cell.points.len()),
+            Some(limit) => {
+                let near = id.bounds().distance_to(orbit.eye().to_array());
+                let faintest = match near > 0.0 {
+                    true => {
+                        limit
+                            - Magnitude(0.0)
+                                .apparent(Distance::light_years(near))
+                                .0
+                    }
+                    false => f64::INFINITY,
+                };
+                match orders.bright(id) {
+                    Some(bright) => bright.partition_point(|&at| {
+                        f64::from(magnitude_at(cell, at as usize)) <= faintest
+                    }),
+                    None => cell.points.len(),
+                }
+            }
+        };
+        if target == 0 && !won {
+            continue;
+        }
         // Whether this cell's payload is the one the drawn systems were
         // built from, or a later one; see [`Republished`].
-        let refreshed;
-        {
-            let Some(cell) = resident.0.cell(id) else { continue };
-            // In the sky, the cell's points brightest first, off its light;
-            // see [`bright`].
-            if limit.is_some() {
-                deferred |= !orders.brighten(id, cell, &mut verdicts);
+        let refreshed = republished.holds(id);
+        // Nothing asked of the filters has no verdict to weigh, and the
+        // orders hold none ([`PointOrders::hold`] clears them every pass
+        // while nothing is asked): weighed anyway, every drawing cell came
+        // back stale every pass, stamped, and charged its whole payload to
+        // the budget the strata are worked out on, which went on putting off
+        // the strata of cells just come into view.
+        if !unweighed && asking {
+            deferred |= !orders.walk(
+                id,
+                &cell.points,
+                &asked_for,
+                &populated,
+                wall,
+                by_population,
+                &mut verdicts,
+            );
+        }
+        if stratified {
+            deferred |=
+                !orders.stratify(id, &cell.points, &along, &mut verdicts);
+        }
+        jobs.push(Job { offer, id, target, refreshed });
+    }
+
+    // And each cell taken, which reads and writes nothing shared.
+    let orders: &PointOrders = orders;
+    let take = |job: &Job| -> Took {
+        let Job { offer, id, target, refreshed } = *job;
+        let mut took = Took::default();
+        let Some(cell) = resident.0.cell(id) else { return took };
+        let admits = orders.admits(id);
+        let order: Vec<usize> = if by_population {
+            busiest_first(orders.populated(id), admits, asking, fill)
+                .take(target)
+                .collect()
+        } else if narrowed {
+            // What won its patch of sky, and the excluded after it to
+            // fill the cell's share, where the dim draws them.
+            let claimed = &claims[offer];
+            let left = target.saturating_sub(claimed.len());
+            let won = claimed.iter().map(|&index| index as usize);
+            match orders.strata(id) {
+                Some(strata) => won
+                    .chain(
+                        stratified_first(strata, admits, fill)
+                            .skip(admits.len())
+                            .take(left),
+                    )
+                    .collect(),
+                None => won
+                    .chain(
+                        drawn_first(&cell.points, admits, fill)
+                            .skip(admits.len())
+                            .take(left),
+                    )
+                    .collect(),
             }
-            // How far down the cell's brightest-first order the floor
-            // reaches. The stars that can clear the floor are a prefix of
-            // it: measured at the *nearest* face of the cell, which is the
-            // most generous distance modulus anything in it can have, so the
-            // prefix never cuts a star the exact test below would have kept.
-            // Without it a wide view would walk every point of every marked
-            // cell — tens of millions — to find the few thousand that draw.
-            // A cell whose order the budget has not reached yet is weighed
-            // whole, point by point.
-            let target = match limit {
-                None => asked.min(cell.points.len()),
-                Some(limit) => {
-                    let near = id.bounds().distance_to(orbit.eye().to_array());
-                    let faintest = match near > 0.0 {
-                        true => {
-                            limit
-                                - Magnitude(0.0)
-                                    .apparent(Distance::light_years(near))
-                                    .0
-                        }
-                        false => f64::INFINITY,
-                    };
-                    match orders.bright(id) {
-                        Some(bright) => bright.partition_point(|&at| {
-                            f64::from(magnitude_at(cell, at as usize))
-                                <= faintest
-                        }),
-                        None => cell.points.len(),
-                    }
-                }
-            };
-            if target == 0 && !won {
+        } else if let Some(bright) = limit.and(orders.bright(id)) {
+            // The sky, brightest first: the same walk as the strata's,
+            // in the order the floor was measured down.
+            stratified_first(bright, admits, fill).take(target).collect()
+        } else if let Some(strata) = orders.strata(id) {
+            stratified_first(strata, admits, fill).take(target).collect()
+        } else {
+            drawn_first(&cell.points, admits, fill).take(target).collect()
+        };
+        let ranked = rank(id, true);
+        let mut round = 0u32;
+        for index in order {
+            let point = &cell.points[index];
+            let (address, pos, kind) =
+                (point.id64 as i64, point.position, point.kind);
+            // And in the sky, a star that does not clear the floor from
+            // where the eye stands is not drawn at all. The prefix above
+            // is the cell's best case; this is the star's own.
+            if let Some(limit) = limit
+                && Magnitude(f64::from(magnitude_at(cell, index)))
+                    .apparent(Distance::light_years(
+                        orbit.eye().distance(DVec3::from(pos)),
+                    ))
+                    .0
+                    > limit
+            {
                 continue;
             }
-            refreshed = republished.holds(id);
-            if !unweighed {
-                deferred |= !orders.walk(
-                    id,
-                    &cell.points,
-                    &asked_for,
-                    &populated,
-                    wall,
-                    by_population,
-                    &mut verdicts,
-                );
-            }
-            if stratified {
-                deferred |=
-                    !orders.stratify(id, &cell.points, &along, &mut verdicts);
-            }
-            let admits = orders.admits(id);
-            let order: Vec<usize> = if by_population {
-                busiest_first(orders.populated(id), admits, asking, fill)
-                    .take(target)
-                    .collect()
-            } else if narrowed {
-                // What won its patch of sky, and the excluded after it to
-                // fill the cell's share, where the dim draws them.
-                let claimed = &claims[offer];
-                let left = target.saturating_sub(claimed.len());
-                let won = claimed.iter().map(|&index| index as usize);
-                match orders.strata(id) {
-                    Some(strata) => won
-                        .chain(
-                            stratified_first(strata, admits, fill)
-                                .skip(admits.len())
-                                .take(left),
-                        )
-                        .collect(),
-                    None => won
-                        .chain(
-                            drawn_first(&cell.points, admits, fill)
-                                .skip(admits.len())
-                                .take(left),
-                        )
-                        .collect(),
-                }
-            } else if let Some(bright) = limit.and(orders.bright(id)) {
-                // The sky, brightest first: the same walk as the strata's,
-                // in the order the floor was measured down.
-                stratified_first(bright, admits, fill).take(target).collect()
-            } else if let Some(strata) = orders.strata(id) {
-                stratified_first(strata, admits, fill).take(target).collect()
-            } else {
-                drawn_first(&cell.points, admits, fill).take(target).collect()
-            };
-            for index in order {
-                let point = &cell.points[index];
-                // And in the sky, a star that does not clear the floor from
-                // where the eye stands is not drawn at all. The prefix above
-                // is the cell's best case; this is the star's own.
-                if let Some(limit) = limit
-                    && Magnitude(f64::from(magnitude_at(cell, index)))
-                        .apparent(Distance::light_years(
-                            orbit.eye().distance(DVec3::from(point.position)),
-                        ))
-                        .0
-                        > limit
-                {
-                    continue;
-                }
-                taken.push((
-                    point.id64 as i64,
-                    point.position,
-                    index as u32,
-                    point.kind,
-                ));
-            }
-        }
-        // What this cell's marks account for, so [`crate::map::paint::glow`] can lay the
-        // rest of it down and not the whole. Built here because here is the
-        // only place the drawn set is known: it is not a rank range, the
-        // filters having promoted systems out of the payload's order, and it is
-        // cut again per point by the bubble just below.
-        let mut took = Accounted::default();
-        let mut round = 0u32;
-        for &(address, pos, index, kind) in &taken {
+            // What this cell's marks account for, so
+            // [`crate::map::paint::glow`] can lay the rest of it down and not
+            // the whole. Built here because here is the only place the drawn
+            // set is known: it is not a rank range, the filters having
+            // promoted systems out of the payload's order, and it is cut
+            // again per point by the bubble just below.
             // A cell straddling the bubble draws only the points inside it, so
             // the edge is a sphere about the camera, not the cell grid.
             if let Some(radius) = bubble
@@ -2562,14 +2641,14 @@ pub(crate) fn reconcile(
                 continue;
             }
 
-            took_all += 1;
+            took.count += 1;
             // Counted before it is queued rather than after it is spawned: a
             // system the budget has not reached yet is one the field would
             // otherwise go on drawing for the frame or two it takes to land,
             // and a mark arriving over light that is already there reads as a
             // flash. Accounting for it now hands the light over on the frame
             // the walk decides, and the spawn catches up under it.
-            took.took(
+            took.accounted.took(
                 pos,
                 kind,
                 populated
@@ -2592,32 +2671,48 @@ pub(crate) fn reconcile(
             // [`crate::map::galaxy::spawn::Waiting`]. Its place among this
             // cell's own undrawn is the round it is offered in; see
             // [`Unspawned`].
-            let unspawned_here = |unspawned: &mut Vec<Unspawned>, round| {
-                unspawned.push(Unspawned {
+            let on_map = existing.get(address);
+            if let Some(entity) = on_map {
+                took.wanted.push(entity);
+            }
+            if on_map.is_none() || refreshed {
+                took.unspawned.push(Unspawned {
                     round,
-                    rank: rank(id, true),
+                    rank: ranked,
                     address,
                     cell: id,
-                    index,
+                    index: index as u32,
                 });
-            };
-            match existing.get(address) {
-                Some(entity) => {
-                    wanted_by.insert(entity);
-                    if refreshed {
-                        unspawned_here(&mut unspawned, round);
-                        round += 1;
-                    }
-                }
-                None => {
-                    unspawned_here(&mut unspawned, round);
-                    round += 1;
-                }
+                round += 1;
             }
         }
-        drawn.0.insert(id, took);
-        if refreshed {
-            republished.settled(id);
+        took
+    };
+    let taking_zone = info_span!("taking", cells = jobs.len()).entered();
+    // Folded a chunk at a time, as they come back: an account is a few
+    // hundred bytes of histograms, and flattened into one list first every
+    // one was copied once more for nothing.
+    let taking: Vec<Vec<Took>> = if jobs.len() < TAKE_CHUNK * 2 {
+        vec![jobs.iter().map(take).collect()]
+    } else {
+        let take = &take;
+        bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+            for chunk in jobs.chunks(TAKE_CHUNK) {
+                scope.spawn(async move {
+                    chunk.iter().map(take).collect::<Vec<_>>()
+                });
+            }
+        })
+    };
+    drop(taking_zone);
+    drawn.0.reserve(jobs.len());
+    for (job, took) in jobs.iter().zip(taking.into_iter().flatten()) {
+        took_all += took.count;
+        wanted_by.extend(took.wanted);
+        unspawned.extend(took.unspawned);
+        drawn.0.insert(job.id, took.accounted);
+        if job.refreshed {
+            republished.settled(job.id);
         }
     }
     drop(prefixes);
@@ -2712,7 +2807,7 @@ pub(crate) fn reconcile(
     let merged =
         info_span!("merged cells", cells = planned.0.blobs.len()).entered();
     for (offer, blob) in planned.0.blobs.iter().enumerate() {
-        if !in_reach(blob.id, orbit, bubble) {
+        if !blobs_reached[offer] {
             continue;
         }
         // What it stands for is the weighing's to say: its whole subtree
@@ -2886,19 +2981,20 @@ pub(crate) fn evict_payloads(
 ) {
     let now = time.last_update().unwrap_or_else(|| time.startup());
     // **Not every frame.** This is a pass over everything the map holds,
-    // which at a wide zoom is a hundred thousand payloads and three
+    // which at a wide zoom is a hundred thousand payloads and two or three
     // milliseconds — and what it decides is measured against [`KEEP`],
     // which is two seconds. Running it sixty times inside every one of
     // those is sixty answers to a question that can only change once.
     //
-    // Swept on a plan change, since that is what moves a cell in or out
-    // of the wanted set, and on a clock besides, since the grace expires
-    // on its own while nothing at all is happening. A quarter of a second
-    // is an eighth of the grace: the ceiling holds the memory either way,
-    // and what this costs is the freeing running late by a frame or two.
+    // On a clock alone, and not on a plan change as well: a moving camera
+    // changes the plan every frame, so it ran every frame of a pan. A
+    // quarter of a second is an eighth of the grace: what is marked when it
+    // sweeps is stamped and kept, a cell held but never stamped counts from
+    // the sweep that first sees it, the ceiling holds the memory either
+    // way, and what this costs is the freeing running a few frames late.
     let due =
         swept.is_none_or(|last| now.saturating_duration_since(last) >= SWEEPS);
-    if !planned.is_changed() && !due {
+    if !due {
         return;
     }
     *swept = Some(now);
@@ -3291,7 +3387,7 @@ mod tests {
         let points: Vec<CellSystem> = (1..=4).map(point).collect();
         let id = CellId::of_point([0.; 3], 4);
         // The third point is the only one a faction is present in.
-        let populated = Populated(std::sync::Arc::new(HashMap::from([(
+        let populated = Populated(std::sync::Arc::new([(
             3i64,
             PopulatedSystem {
                 address: 3,
@@ -3310,7 +3406,7 @@ mod tests {
                 power: None,
                 powerplay_state: None,
             },
-        )])));
+        )].into_iter().collect()));
 
         let mut filters = Filters::default();
         filters.add(Filter::Faction { id: 7, name: "Faction 7".into() });
@@ -3684,7 +3780,9 @@ mod tests {
                 blobs: Vec::new(),
                 splats: Vec::new(),
             }));
-            app.insert_resource(Populated(std::sync::Arc::new(colonies)));
+            app.insert_resource(Populated(std::sync::Arc::new(
+                colonies.into_iter().collect(),
+            )));
             app.insert_resource(DimTo(dim));
             if hide {
                 app.world_mut().resource_mut::<Filters>().edit_mask(|mask| {
@@ -4444,7 +4542,7 @@ mod tests {
             built.index.clone(),
         ));
         holding(&mut app, &built);
-        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([(
+        app.insert_resource(Populated(std::sync::Arc::new([(
             held,
             PopulatedSystem {
                 address: held,
@@ -4463,7 +4561,7 @@ mod tests {
                 power: None,
                 powerplay_state: None,
             },
-        )]))));
+        )].into_iter().collect())));
         for address in 1..=5 {
             let mut drawn = system(address);
             drawn.position = placed(address);
@@ -4579,10 +4677,10 @@ mod tests {
                 },
             )
         };
-        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([
+        app.insert_resource(Populated(std::sync::Arc::new([
             lived_in(2, 10),
             lived_in(4, 1_000_000),
-        ]))));
+        ].into_iter().collect())));
 
         // The ordinary sky: every system the cell resolves is built.
         app.update();
@@ -4662,12 +4760,12 @@ mod tests {
                 },
             )
         };
-        app.insert_resource(Populated(std::sync::Arc::new(HashMap::from([
+        app.insert_resource(Populated(std::sync::Arc::new([
             lived_in(1),
             lived_in(2),
             lived_in(3),
             lived_in(4),
-        ]))));
+        ].into_iter().collect())));
         app.insert_resource(ScalePopulation(true));
         // A faction nobody is in, and the excluded not drawn at all.
         app.world_mut()
@@ -4712,7 +4810,7 @@ mod tests {
                         },
                     )
                 })
-                .collect::<HashMap<_, _>>(),
+                .collect(),
         ))
     }
 

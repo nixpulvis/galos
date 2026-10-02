@@ -157,16 +157,49 @@ pub(crate) fn screen_offset(
     viewport: Vec2,
     offset: DVec3,
 ) -> Option<Vec2> {
-    let depth = offset.dot(camera.forward().as_dvec3()) as f32;
-    if depth <= 0. {
-        return None;
+    Axes::of(camera).offset(cot_half_fov, viewport, offset)
+}
+
+/// The camera's axes, worked out once for a caller placing many things
+/// through one frame
+///
+/// [`screen_offset`] turns the camera's rotation into three axes for every
+/// place it is asked about; the glow asks it of every splat, a hundred
+/// thousand of them a frame with the galaxy seen whole.
+#[derive(Clone, Copy)]
+pub(crate) struct Axes {
+    forward: DVec3,
+    right: DVec3,
+    up: DVec3,
+}
+
+impl Axes {
+    pub(crate) fn of(camera: &OrbitCamera) -> Axes {
+        Axes {
+            forward: camera.forward().as_dvec3(),
+            right: camera.right().as_dvec3(),
+            up: camera.up().as_dvec3(),
+        }
     }
 
-    let right = offset.dot(camera.right().as_dvec3()) as f32;
-    let up = offset.dot(camera.up().as_dvec3()) as f32;
-    let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+    /// [`screen_offset`], through these axes
+    pub(crate) fn offset(
+        &self,
+        cot_half_fov: f32,
+        viewport: Vec2,
+        offset: DVec3,
+    ) -> Option<Vec2> {
+        let depth = offset.dot(self.forward) as f32;
+        if depth <= 0. {
+            return None;
+        }
 
-    Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
+        let right = offset.dot(self.right) as f32;
+        let up = offset.dot(self.up) as f32;
+        let per_pixel = world_per_pixel(cot_half_fov, viewport.y, depth);
+
+        Some(viewport / 2. + Vec2::new(right, -up) / per_pixel)
+    }
 }
 
 /// The outline a ball draws on screen

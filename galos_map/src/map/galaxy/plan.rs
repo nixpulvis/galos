@@ -174,7 +174,53 @@ pub(crate) fn plan(
             center: center.to_array(),
             radius: f64::from(radius),
         });
-    planned.0 = index.0.needed(&view, mode, within);
+    planned.0 = match mode {
+        Mode::Shell => shell(&index.0, &view, within),
+        mode => index.0.needed(&view, mode, within),
+    };
+}
+
+/// The map's walk, its two cuts side by side
+///
+/// The marks and the glow are each a descent of the whole tree and neither
+/// reads the other's answer, so the compute pool walks them at once: two
+/// milliseconds of every moving frame with the galaxy seen whole, one
+/// after the other on one thread.
+fn shell(
+    index: &galos_index::prelude::Index,
+    view: &Viewpoint,
+    within: Option<galos_index::read::walk::Reach>,
+) -> Needed {
+    enum Half {
+        Marks(
+            Vec<galos_index::read::walk::MarkRef>,
+            Vec<galos_index::read::walk::BlobRef>,
+        ),
+        Glow(Vec<galos_index::read::walk::SplatRef>),
+    }
+    let halves = bevy::tasks::ComputeTaskPool::get().scope(|scope| {
+        scope.spawn(async move {
+            let (marks, blobs) = index.screen_marks(view, within);
+            Half::Marks(marks, blobs)
+        });
+        scope.spawn(async move { Half::Glow(index.screen_glow(view, within)) });
+    });
+    let mut needed = Needed {
+        mode: Mode::Shell,
+        marks: Vec::new(),
+        blobs: Vec::new(),
+        splats: Vec::new(),
+    };
+    for half in halves {
+        match half {
+            Half::Marks(marks, blobs) => {
+                needed.marks = marks;
+                needed.blobs = blobs;
+            }
+            Half::Glow(splats) => needed.splats = splats,
+        }
+    }
+    needed
 }
 
 /// The index's view of where the camera stands, if it has a viewport to see

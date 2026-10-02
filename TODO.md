@@ -185,22 +185,42 @@ the galaxy seen whole (150 k back, reach 90 k), the default (30 k back,
 
 ## Smoother while moving
 
-Measured with Tracy over `.index/full` in the running map, after systems
-were built off the main thread. Still, the map is idle; these are what the
-slowest tenth of frames spend while zooming out.
+Measured with `profile.sh` over `.index/full`, the galaxy seen whole and
+panning (`galaxypan`), zooming out (`out`) and in (`in`), frames from 30 %
+of the way in; ms per frame.
 
-- `walk::reconcile`, ~15 ms. The per-cell prefix pass is O(marks) and runs
-  every frame the plan moves. Its per-cell work could run across threads
-  with a serial merge, or the pass could run every other frame while the
-  camera moves.
-- The render thread, ~16 ms, 7 of it `allocate_and_free_meshes`: the glow
-  (up to ~150k quads, ~600k vertices) and the marks field are fresh meshes
-  every frame the camera moves. Many glow quads are laid at peaks far
-  under a display level; dropping those would shrink the upload, and is a
-  change to how the glow looks.
-- `paint::glow::build_glow`, ~6 ms, already across threads, and
-  `volume::Built::of` ~5 ms more where the volume is wide.
-- The worst single frames (100–140 ms) were not looked into.
+| | before | after |
+|---|---|---|
+| `galaxypan` p50 / p90 | 36 / 55 | 24 / 37 |
+| `out` p50 / p90 | 46 / 75 | 41 / 56 |
+| `in` p50 / p90 | 29 / 61 | 25 / 39 |
+| `walk::reconcile`, `galaxypan` | 12.1 | 5.5 |
+| `blobs::weigh_blobs`, `galaxypan` | 3.8 | 0.9 |
+| `walk::evict_payloads`, `galaxypan` | 1.4 | 0.2 |
+
+What did it: the weighing order sorted on keys worked out once; the
+payload sweep on its clock alone; the merged marks weighed and the cells
+taken across the pool; reach and share worked out once a mark a pass; the
+dark tiles' projection and the camera's axes worked out once a frame; no
+verdict walk while nothing is asked; the two screen cuts walked side by
+side; the populated table on `rustc_hash`. Stills are pixel for pixel what
+they were.
+
+What is left, on `galaxypan`:
+
+- The main thread, ~19 ms a moving frame: `paint::glow::build_glow` 7.4
+  (the splats 4.0, `volume::Built::of` 2.8), `walk::reconcile` 5.5 (asking
+  each marked cell for its payload and strata, 2.0, is serial: a probe into
+  a hundred thousand payloads apiece), `fetch` 1.8, `plan` 1.5.
+- The render thread, ~14 ms, ~6 of it `allocate_and_free_meshes`: the glow
+  and the marks field are fresh meshes every frame the camera moves, 168
+  bytes a quad. Laid as instances out of a storage buffer, 28 bytes each,
+  the upload and the join that builds it would shrink sixfold. Dropping
+  quads laid far under a display level would too, and changes the look.
+- The slowest tenth are frames the payload reads land in: `cell payloads`
+  is 150 ms of CPU a frame across the pools then, two files opened and a
+  `stat` a cell (`Directory::read_lit`, `Payload::open`, `FsSource::stamp`),
+  and it starves the compute pool the glow and the walk spread over.
 - `galaxy::System::build` names a system through `Names::get`, which builds
   a whole `NameEntry` to take its name; `name_of` is the cheaper answer.
   Off the main thread now, so it costs fill-in time rather than frames.

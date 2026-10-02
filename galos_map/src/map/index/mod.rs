@@ -41,8 +41,12 @@ pub struct ResidentIndex(pub Index);
 /// About 96,000 systems against 129 million, held resident because a color
 /// and a filter are asked of every drawn system every frame and neither can
 /// wait on a fetch. A system absent here is ungoverned, which is most of them.
+///
+/// Keyed with `rustc_hash`'s hasher, as the map's other tables of addresses
+/// are: the draw asks it of every system it takes, tens of thousands a
+/// frame, and the standard hasher was a tenth of what taking them cost.
 #[derive(Resource, Default, Clone)]
-pub struct Populated(pub Arc<HashMap<i64, PopulatedSystem>>);
+pub struct Populated(pub Arc<rustc_hash::FxHashMap<i64, PopulatedSystem>>);
 
 /// What each cell carries about the systems anybody lives in: the political
 /// aggregation the field splats from.

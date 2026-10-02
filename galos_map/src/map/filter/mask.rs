@@ -453,6 +453,11 @@ impl Mask {
         colonies: Option<&Inhabited>,
         stars: Option<&[u32; StarKind::COUNT]>,
     ) -> OffAxis {
+        // Asked of every splat and merged mark a frame, and nothing hidden
+        // anywhere is the ordinary case: nothing to work out.
+        if self.hidden.iter().all(|bits| *bits == 0) {
+            return OffAxis::ALL;
+        }
         let kept = |axis: ColorBy, counts: &[u32]| {
             let (mut whole, mut kept) = (0u64, 0u64);
             for (bucket, count) in counts.iter().enumerate() {

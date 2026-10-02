@@ -967,8 +967,8 @@ pub(crate) fn weigh_blobs(
     let populated_only =
         crate::map::paint::sizing::by_population(&view, &scale_population);
     standing.revision = revision;
-    standing.marks.clear();
-    standing.marks.extend(planned.0.blobs.iter().map(|blob| {
+    let mask = filtering.filters.mask();
+    let weigh = |blob: &galos_index::read::walk::BlobRef| {
         let held = settled.0.get(blob.id);
         let stands_for = match populated_only {
             true => {
@@ -976,20 +976,14 @@ pub(crate) fn weigh_blobs(
             }
             false => blob.count,
         };
-        let mask = filtering.filters.mask();
+        let kinds = index.0.get(blob.id).map(|cell| cell.aggregate.kinds());
         // Along star class a merged mark stands for its whole subtree's
         // stars, which are the cell's aggregate's and not its colonies'.
-        let stars = color_by
-            .every_system()
-            .then(|| index.0.get(blob.id).map(|cell| *cell.aggregate.kinds()))
-            .flatten();
+        let stars = color_by.every_system().then_some(kinds).flatten();
         // What the axes not drawn let through, by share: the political ones
         // of the colonies, and star class of every system.
-        let off = mask.off_axis(
-            held,
-            index.0.get(blob.id).map(|cell| cell.aggregate.kinds()),
-        );
-        let weighed = |keeps| match &stars {
+        let off = mask.off_axis(held, kinds);
+        let weighed = |keeps| match stars {
             Some(kinds) => {
                 let (light, kept) =
                     averaged_stars(kinds, stands_for, &gains, keeps);
@@ -1009,7 +1003,7 @@ pub(crate) fn weigh_blobs(
         };
         // The unfiltered light, which the mask's share takes no part of: what
         // it hides is drawn dimmed from this, not left out of it.
-        let light = match &stars {
+        let light = match stars {
             Some(kinds) => {
                 averaged_stars(
                     kinds,
@@ -1036,8 +1030,31 @@ pub(crate) fn weigh_blobs(
             ),
             stands_for,
         }
-    }));
+    };
+    // A hundred thousand of them with the galaxy seen whole, each a lookup
+    // or three into tables of a hundred thousand cells: four milliseconds
+    // of every frame a pan moved the plan, on one thread. Weighed in chunks
+    // across the pool instead, spawned straight from the scope so they come
+    // back in the plan's order, which is what [`Standing::of`] is indexed by.
+    let blobs = &planned.0.blobs[..];
+    standing.marks = if blobs.len() < WEIGH_CHUNK * 2 {
+        blobs.iter().map(weigh).collect()
+    } else {
+        let weigh = &weigh;
+        bevy::tasks::ComputeTaskPool::get()
+            .scope(|scope| {
+                for chunk in blobs.chunks(WEIGH_CHUNK) {
+                    scope.spawn(async move {
+                        chunk.iter().map(weigh).collect::<Vec<_>>()
+                    });
+                }
+            })
+            .concat()
+    };
 }
+
+/// How many merged marks one thread weighs
+const WEIGH_CHUNK: usize = 8192;
 
 /// How many of a cell's systems the picking filters name, and how many of
 /// those anybody lives in

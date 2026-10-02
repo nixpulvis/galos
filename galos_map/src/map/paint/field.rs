@@ -40,7 +40,7 @@ use crate::map::galaxy::spawn::{
 };
 use crate::map::paint::sizing::{Drawn, UNSEEN, View};
 use crate::map::schedule::MapSet;
-use crate::map::screen::{screen_position, world_per_pixel};
+use crate::map::screen::{Axes, world_per_pixel};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ScalingMode};
@@ -470,18 +470,18 @@ pub(crate) fn build_field(
     let psf = crate::map::paint::sizing::instrument(profile.0, core);
 
     let half = viewport * 0.5;
+    let axes = Axes::of(orbit);
     for (system, drawn, visibility, strength, filtered, thinned) in &shells {
         // Out of the spyglass is not drawn; `crate::map::galaxy::visibility` says which.
         if *visibility == Visibility::Hidden {
             continue;
         }
         let position = DVec3::from(system.position);
-        let Some(at) = screen_position(orbit, cot_half_fov, viewport, position)
-        else {
+        let from_eye = orbit.eye_from(position);
+        let Some(at) = axes.offset(cot_half_fov, viewport, -from_eye) else {
             continue;
         };
-        let away =
-            crate::map::space::metres(orbit.eye_from(position)).length() as f32;
+        let away = crate::map::space::metres(from_eye).length() as f32;
         let per_pixel = world_per_pixel(cot_half_fov, viewport.y, away.max(1.));
         // The pixel radius the view's sizing system settled, read back off the
         // world size it left on the shell, then floored or dropped by the
@@ -606,7 +606,8 @@ pub(crate) fn build_field(
     // [`crate::map::paint::glow`]'s to draw.
     for blob in &blobs.0 {
         let position = DVec3::from(blob.at);
-        let Some(at) = screen_position(orbit, cot_half_fov, viewport, position)
+        let Some(at) =
+            axes.offset(cot_half_fov, viewport, -orbit.eye_from(position))
         else {
             continue;
         };

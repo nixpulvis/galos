@@ -97,7 +97,7 @@ use crate::map::index::{ResidentIndex, Settled};
 use crate::map::paint::sizing::View;
 use crate::map::paint::volume::{self, VolumeMark, Volumes};
 use crate::map::schedule::MapSet;
-use crate::map::screen::{screen_position, world_per_pixel};
+use crate::map::screen::{Axes, world_per_pixel};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::image::{Image, ImageSampler};
@@ -910,6 +910,7 @@ fn build_glow(
             viewport,
             half: viewport * 0.5,
             mark: gains.mark * gains.average,
+            axes: Axes::of(orbit),
         };
 
         // What the walk hands out shares *of*. `SplatRef::blend` is a share of
@@ -1035,21 +1036,31 @@ fn build_glow(
                     true => (edge / (per_pixel * depth)) as f32,
                     false => f32::INFINITY,
                 };
+                // Asked cheapest first: most cells of a wide view stand a few
+                // pixels across and hand the volume nothing, and the frustum
+                // and the reach were two of the dearest things asked of every
+                // one of a hundred thousand splats a frame.
+                let handed = match volume::share(edge_px) {
+                    share if share > 0.
+                        && carried >= 1. - 1e-3
+                        && seen_whole(&bounds, edge) =>
+                    {
+                        share
+                    }
+                    _ => 0.,
+                };
                 // And held to the reach by its box rather than its centroid:
                 // the shader clips the volume to the reach's own sphere, so a
                 // cell straddling it lays what is inside, where its centroid
                 // decides only whether its splat is laid. Faded out as its box
                 // leaves the sphere rather than cut where it does; see
-                // [`volume::rim`].
-                let rim = volume::rim(
-                    bounds.distance_to(orbit.center().to_array()),
-                    spyglass.clear.then_some(spyglass.radius),
-                );
-                let handed = match carried >= 1. - 1e-3
-                    && seen_whole(&bounds, edge)
-                {
-                    true => volume::share(edge_px),
-                    false => 0.,
+                // [`volume::rim`]. Nothing to fade where nothing is handed.
+                let rim = match handed > 0. {
+                    true => volume::rim(
+                        bounds.distance_to(orbit.center().to_array()),
+                        spyglass.clear.then_some(spyglass.radius),
+                    ),
+                    false => 1.,
                 };
                 // Whether a channel fills its cell is asked of the cell's
                 // systems as a whole, not of what the marks have left of
@@ -1350,6 +1361,7 @@ fn build_glow(
             (quads, counted, sources)
         };
         let splats = &planned.0.splats[..];
+        let _zone = info_span!("glow splats", splats = splats.len()).entered();
         let laid_down: Vec<(Quads, Laid, Vec<volume::Source>)> =
             if splats.len() < CHUNK * 2 {
                 vec![lay(splats)]
@@ -1376,7 +1388,13 @@ fn build_glow(
     // The volume, or nothing where no field is laid, which hides it.
     match volume_seen {
         Some((eye, seen_from)) => {
-            volumes.lay(&volume::Built::of(&sources, eye), seen_from);
+            let built = {
+                let _zone =
+                    info_span!("volume build", cells = sources.len()).entered();
+                volume::Built::of(&sources, eye)
+            };
+            let _zone = info_span!("volume upload").entered();
+            volumes.lay(&built, seen_from);
         }
         None => {
             volumes.lay(&volume::Built::default(), volume::Frame::default())
@@ -1454,6 +1472,9 @@ struct Frame<'a> {
     /// An average system's mark ([`Gains::average`]), which the
     /// diagnostics are read in units of.
     mark: f32,
+    /// The camera's axes, turned out of its rotation once a frame rather
+    /// than once a splat.
+    axes: Axes,
 }
 
 /// One target's quads, as its mesh wants them
@@ -1552,14 +1573,10 @@ impl Quads {
             return None;
         }
         let position = DVec3::from(at);
-        let screen = screen_position(
-            frame.orbit,
-            frame.cot_half_fov,
-            frame.viewport,
-            position,
-        )?;
-        let away =
-            crate::map::space::metres(frame.orbit.eye_from(position)).length();
+        let from_eye = frame.orbit.eye_from(position);
+        let screen =
+            frame.axes.offset(frame.cot_half_fov, frame.viewport, -from_eye)?;
+        let away = crate::map::space::metres(from_eye).length();
         let per_pixel = world_per_pixel(
             frame.cot_half_fov,
             frame.viewport.y,

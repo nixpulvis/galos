@@ -272,13 +272,8 @@ fn frame(
                 continue;
             }
             match share.wanted(mark.slice as usize, mark.id) {
-                0 => lighting.offered(
-                    view,
-                    mark.at,
-                    u64::from(mark.slice),
-                    offer as u32,
-                ),
-                take => lighting.drew(view, mark.at, take),
+                0 => lighting.offered(mark.at, u64::from(mark.slice), offer as u32),
+                take => lighting.drew(mark.at, take),
             }
         }
         for (offer, blob) in needed.blobs.iter().enumerate() {
@@ -288,8 +283,8 @@ fn frame(
             let offer = (needed.marks.len() + offer) as u32;
             match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
             {
-                0 => lighting.offered(view, blob.at, blob.count, offer),
-                _ => lighting.drew(view, blob.at, 1),
+                0 => lighting.offered(blob.at, blob.count, offer),
+                _ => lighting.drew(blob.at, 1),
             }
         }
         lighting.lit()

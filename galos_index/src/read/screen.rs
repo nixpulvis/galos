@@ -80,19 +80,53 @@ impl View {
     /// given, so what this says a mark's place is and what the renderer
     /// draws cannot come apart.
     pub fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+        self.projector().project(at)
+    }
+
+    /// [`Self::project`] with the lens worked out once, for a caller
+    /// projecting many places through one frame
+    fn projector(&self) -> Projector {
         let forward = DVec3::from(self.forward).normalize_or_zero();
         let right = forward.cross(DVec3::from(self.up)).normalize_or_zero();
         let up = right.cross(forward);
-        let from = DVec3::from(at) - DVec3::from(self.eye);
-        let ahead = from.dot(forward);
+        let [width, height] = self.frame_px();
+        Projector {
+            eye: DVec3::from(self.eye),
+            forward,
+            right,
+            up,
+            focal: self.pixels_per_radian(),
+            middle: [width / 2.0, height / 2.0],
+        }
+    }
+}
+
+/// A [`View`]'s projection, its axes and focal length worked out
+///
+/// Two normalisations and two cross products a point, asked of every mark
+/// and merged mark in the frame by [`Empty`], were half of what lighting
+/// the dark tiles cost: a millisecond of every moving frame over the
+/// hundred and forty thousand of them with the galaxy seen whole.
+#[derive(Clone, Copy)]
+struct Projector {
+    eye: DVec3,
+    forward: DVec3,
+    right: DVec3,
+    up: DVec3,
+    focal: f64,
+    middle: [f64; 2],
+}
+
+impl Projector {
+    fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+        let from = DVec3::from(at) - self.eye;
+        let ahead = from.dot(self.forward);
         if ahead <= 0.0 {
             return None;
         }
-        let focal = self.pixels_per_radian();
-        let [width, height] = self.frame_px();
         Some([
-            width / 2.0 + from.dot(right) / ahead * focal,
-            height / 2.0 - from.dot(up) / ahead * focal,
+            self.middle[0] + from.dot(self.right) / ahead * self.focal,
+            self.middle[1] - from.dot(self.up) / ahead * self.focal,
         ])
     }
 }
@@ -362,6 +396,8 @@ pub struct Empty {
     tiles: Vec<Tile>,
     across: usize,
     down: usize,
+    /// The frame's projection, every place laid on the grid through it.
+    projector: Projector,
 }
 
 impl Empty {
@@ -370,12 +406,17 @@ impl Empty {
         let [width, height] = view.frame_px();
         let across = (width / TILE_PX).ceil().max(1.0) as usize;
         let down = (height / TILE_PX).ceil().max(1.0) as usize;
-        Empty { tiles: vec![Tile::default(); across * down], across, down }
+        Empty {
+            tiles: vec![Tile::default(); across * down],
+            across,
+            down,
+            projector: view.projector(),
+        }
     }
 
     /// Which tile a place on screen falls in, or [`None`] off the frame.
-    fn tile(&self, view: &View, at: [f64; 3]) -> Option<usize> {
-        let [x, y] = view.project(at)?;
+    fn tile(&self, at: [f64; 3]) -> Option<usize> {
+        let [x, y] = self.projector.project(at)?;
         if x < 0.0 || y < 0.0 {
             return None;
         }
@@ -390,8 +431,8 @@ impl Empty {
     /// are never promoted: a coarse cell drawing its brightest few over a
     /// patch of sky is a patch that is not dark, and lighting it again
     /// would be a mark nobody asked for.
-    pub fn drew(&mut self, view: &View, at: [f64; 3], marks: usize) {
-        if let Some(tile) = self.tile(view, at) {
+    pub fn drew(&mut self, at: [f64; 3], marks: usize) {
+        if let Some(tile) = self.tile(at) {
             self.tiles[tile].drew += marks as u64;
         }
     }
@@ -403,14 +444,8 @@ impl Empty {
     /// [`Empty::lit`]. The largest subtree in a tile wins it: of the things
     /// standing in an empty patch of sky, the one worth saying is the one
     /// standing for the most.
-    pub fn offered(
-        &mut self,
-        view: &View,
-        at: [f64; 3],
-        stands_for: u64,
-        offer: u32,
-    ) {
-        let Some(tile) = self.tile(view, at) else { return };
+    pub fn offered(&mut self, at: [f64; 3], stands_for: u64, offer: u32) {
+        let Some(tile) = self.tile(at) else { return };
         let tile = &mut self.tiles[tile];
         if tile.stands_for < stands_for.max(1) {
             tile.stands_for = stands_for.max(1);
@@ -722,12 +757,12 @@ mod tests {
         let view = looking();
         let mut empty = Empty::over(&view);
         // Two offers in the middle tile, which something already draws in.
-        empty.drew(&view, [0.0; 3], 1);
-        empty.offered(&view, [0.0; 3], 500, 7);
+        empty.drew([0.0; 3], 1);
+        empty.offered([0.0; 3], 500, 7);
         // And two in a tile far off to one side, which nothing draws in.
         let aside = [200.0, 0.0, 0.0];
-        empty.offered(&view, aside, 10, 1);
-        empty.offered(&view, aside, 400, 2);
+        empty.offered(aside, 10, 1);
+        empty.offered(aside, 400, 2);
         assert_eq!(empty.lit(), vec![2], "the largest offer, and only it");
     }
 
@@ -737,8 +772,8 @@ mod tests {
     fn what_is_off_the_frame_lights_nothing() {
         let view = looking();
         let mut empty = Empty::over(&view);
-        empty.offered(&view, [0.0, 0.0, -2000.0], 100, 1);
-        empty.offered(&view, [900_000.0, 0.0, 0.0], 100, 2);
+        empty.offered([0.0, 0.0, -2000.0], 100, 1);
+        empty.offered([900_000.0, 0.0, 0.0], 100, 2);
         assert!(empty.lit().is_empty());
     }
 
@@ -753,7 +788,7 @@ mod tests {
         for offer in 0..10_000u32 {
             let across = f64::from(offer % 100) * 8.0 - 400.0;
             let down = f64::from(offer / 100) * 8.0 - 400.0;
-            empty.offered(&view, [across, down, 0.0], 1, offer);
+            empty.offered([across, down, 0.0], 1, offer);
         }
         let lit = empty.lit();
         assert!(lit.len() <= tiles, "{} lit of {tiles} tiles", lit.len());
@@ -829,21 +864,16 @@ mod drawing {
         let mut lighting = Empty::over(view);
         for (offer, mark) in needed.marks.iter().enumerate() {
             match share.wanted(mark.slice as usize, mark.id) {
-                0 => lighting.offered(
-                    view,
-                    mark.at,
-                    u64::from(mark.slice),
-                    offer as u32,
-                ),
-                take => lighting.drew(view, mark.at, take),
+                0 => lighting.offered(mark.at, u64::from(mark.slice), offer as u32),
+                take => lighting.drew(mark.at, take),
             }
         }
         for (offer, blob) in needed.blobs.iter().enumerate() {
             let offer = (needed.marks.len() + offer) as u32;
             match share.scaled(blob.blend).wanted(blob.count as usize, blob.id)
             {
-                0 => lighting.offered(view, blob.at, blob.count, offer),
-                _ => lighting.drew(view, blob.at, 1),
+                0 => lighting.offered(blob.at, blob.count, offer),
+                _ => lighting.drew(blob.at, 1),
             }
         }
         let lit = lighting.lit();
@@ -954,10 +984,10 @@ mod drawing {
         // Nothing lit stands in a tile a mark already reached.
         let mut drew = Empty::over(&view);
         for at in &marks {
-            drew.drew(&view, *at, 1);
+            drew.drew(*at, 1);
         }
         for at in &lit {
-            let tile = drew.tile(&view, *at).expect("lit means on screen");
+            let tile = drew.tile(*at).expect("lit means on screen");
             assert_eq!(
                 drew.tiles[tile].drew, 0,
                 "a tile that already drew was lit again",

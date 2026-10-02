@@ -172,7 +172,6 @@ pub(crate) fn gather(
 mod tests {
     use super::*;
     use galos_index::records::PopulatedSystem;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     /// One populated system at `at` with `population` living there.
@@ -229,9 +228,7 @@ mod tests {
         app.init_resource::<PopulatedOrder>();
         app.insert_resource(ResidentIndex(built.index.clone()));
         app.insert_resource(Populated(Arc::new(
-            rows.into_iter()
-                .map(|row| (row.address, row))
-                .collect::<HashMap<_, _>>(),
+            rows.into_iter().map(|row| (row.address, row)).collect(),
         )));
         app.add_systems(Update, gather);
         app.update();

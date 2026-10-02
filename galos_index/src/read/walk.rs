@@ -497,13 +497,32 @@ impl Index {
     /// descends `Index::nodes` rather than the map, and reads each cell's
     /// figures rather than working them out.
     pub fn walk_screen(&self, view: &View, within: Option<Reach>) -> Needed {
-        let (marks, blobs) = self.frontier(view, MERGE_PX, None, within);
+        let (marks, blobs) = self.screen_marks(view, within);
         Needed {
             mode: Mode::Shell,
             marks,
             blobs,
-            splats: self.glow(view, within),
+            splats: self.screen_glow(view, within),
         }
+    }
+
+    /// [`Self::walk_screen`]'s marks and merged marks alone, for a reader
+    /// walking the two cuts side by side: neither reads the other's.
+    pub fn screen_marks(
+        &self,
+        view: &View,
+        within: Option<Reach>,
+    ) -> (Vec<MarkRef>, Vec<BlobRef>) {
+        self.frontier(view, MERGE_PX, None, within)
+    }
+
+    /// And its splats alone; see [`Self::screen_marks`].
+    pub fn screen_glow(
+        &self,
+        view: &View,
+        within: Option<Reach>,
+    ) -> Vec<SplatRef> {
+        self.glow(view, within)
     }
 
     /// The political field: descend while a cell's contents subtend more than
