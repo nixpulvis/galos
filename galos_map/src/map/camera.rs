@@ -39,10 +39,14 @@ pub fn plugin(app: &mut App) {
         Update,
         focus_lens.in_set(MapSet::Camera).after(orbit_camera),
     );
-    // Off the camera's ordering too: the frame is set by whatever draws a
-    // picture in pieces, and the lens only has to have it before bevy works
-    // the clip matrix out in `PostUpdate`.
-    app.add_systems(Update, frame_lens);
+    // After everything in `Update` that sets the frame and just before bevy
+    // works the clip matrix out, so the matrix is always the frame's: read a
+    // frame late, the walk's lens drifted with every step of a zoom into an
+    // enhanced picture and the map planned again each frame of it.
+    app.add_systems(
+        PostUpdate,
+        frame_lens.before(bevy::camera::CameraUpdateSystems),
+    );
     // Reads the view and retunes the camera's bloom when it changes; off the
     // camera's own ordering, since it writes the bloom rather than the pose.
     app.add_systems(Update, tune_bloom);
@@ -789,10 +793,11 @@ pub(crate) struct OrbitCamera {
     pub(crate) settled: bool,
     /// Which part of a larger picture the viewport draws
     ///
-    /// The whole of it, ordinarily. [`crate::map::enhance`] draws a picture
-    /// several viewports across one viewport at a time, and this is the
-    /// piece the frame is: the lens it is drawn through and every place the
-    /// map projects for itself both read it, so the pieces meet.
+    /// The whole of it, ordinarily. Looking into a picture
+    /// [`crate::map::enhance`] has drawn several viewports across, it is the
+    /// piece of that picture the window shows: the lens the scene is drawn
+    /// through and every place the map projects for itself both read it, so
+    /// the names and rings land on what the picture shows.
     pub(crate) frame: Frame,
 }
 
@@ -835,11 +840,6 @@ impl Frame {
     /// the map projects is measured out from here.
     pub(crate) fn middle(&self, viewport: Vec2) -> Vec2 {
         viewport * self.scale / 2. - self.corner
-    }
-
-    /// The picture's size, in logical pixels
-    pub(crate) fn picture(&self, viewport: Vec2) -> Vec2 {
-        viewport * self.scale
     }
 
     /// What bevy draws the scene through for this piece, for a viewport

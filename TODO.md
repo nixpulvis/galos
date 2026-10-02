@@ -227,44 +227,50 @@ What is left, on `galaxypan`:
 
 ## Enhance
 
-`map/enhance.rs`: the view drawn again `scale` windows across, a window-sized
-piece at a time through an off-centre lens (`camera::Frame`), laid over the
-map as each piece finishes. Builds and its projection tests pass; **it has
-not yet been run against a window.** Left to do, the first first:
+`map/enhance.rs`: every system in the view, read straight off the index
+payloads on a thread of its own, projected through the map's own mirrored
+lens (`plan::Lens`; the index's `View::projector` is right handed and the
+map draws the galaxy mirrored) and its map light (`system_light` ×
+`Hue::light`, dimmed as the filters dim it, clamped to the spyglass) summed
+per pixel; laid over the map as a flat picture `scale` windows across, a
+window-sized piece at a time, on one log curve whose top is read off the
+base. Run with `GALOS_ENHANCE=3 GALOS_ENHANCE_EXIT=1` and a pose held by
+`GALOS_SHOT_WAIT=1000000`: a 3× picture is drawn in 1.1–2 s and a 6× in
+1.5 s, the map's peak memory no higher than without it, the seams
+invisible, the picture registered on the window's own view (it correlates
+0.945 with the plain window shrunk to it, 0.896 mirrored), and a rerun
+bit-identical. While a picture covers the window the map's own cameras
+stand down (`Covered`) and the walk keeps planning the view as it stood, so
+looking about in it spawns nothing: zoomed 3× into the dense middle the map
+holds the 32,409 systems it held and draws at ~120 fps, where it had loaded
+287,622 at 15. The camera stands still under a picture: the wheel, a drag,
+`WASD` and `F`/`R` look about in it, and only close, escape and a resize of
+the window put it away. Left to do, the first first:
 
-- Run it. `GALOS_ENHANCE=3 GALOS_ENHANCE_EXIT=1 cargo run -p galos_map -- -i
-  .index/full` presses the button once the view has loaded and saves the
-  picture; then by hand. What to look at: the base standing on the window
-  from the first frame (no black flash), pieces meeting with no seam and no
-  shift, the overlay's colours matching the map's own (the pieces are
-  `Rgba8UnormSrgb` laid back through a `Tonemapping::None` HDR camera), the
-  annotations gone while drawing and back on what they name once shown, and
-  both views (the realistic one routes the field's camera too).
-- The loaded test (`enhance::Loading`) is reads, spawns, builds and the walk's
-  last pass, held for `STEADY` frames after `SETTLING`. Both numbers are
-  guesses; a piece taken early shows as a piece thinner than its neighbours.
-  The clip matrix lags the frame by one (bevy works it out in `PostUpdate`),
-  which is why the plan's key now carries the lens; reading the lens off the
-  `Projection` would drop the lag.
-- Lift the spawn and verdict budgets while drawing: the camera is still and
-  the frame rate does not matter, so a piece could fill in a few frames.
-- Seams the walk cannot prevent: bloom is screen space, so in the realistic
-  view a bright star at a piece's edge blooms on one side only (draw pieces
-  with an overlap and crop it); and `crowded_marks`, the populated view's
-  ceiling, is spent per piece rather than over the picture.
+- Close in it is near black. A system is one pixel, which is the density a
+  wide view wants and nothing a close one can see: the opening view near Sol
+  lights a dozen pixels of thirty-three million. The map draws a mark at its
+  floor and its own size; the picture wants either that, switched in by
+  projected size, or bloom over the summed light, which is the next thing.
+- By hand: the base standing on the window as it lands, the wheel and a drag
+  in a shown picture with the map registered beneath it, cancel part way,
+  close and Escape. Only the scripted run has been seen.
+- The curve: a log of light topped at the base's 99.5th percentile
+  (`WHITE_AT`). Wide views come out paler and sharper than the map, which
+  lays its glow over the marks; no control for it yet.
+- A cell straddling pieces is read once a piece: 6× reads 88.7M systems for
+  the 37M in reach. Cheap at these sizes; a picture far past six would want
+  the culling done down the tree rather than over every cell a part.
+- The GPU holds every piece, RGBA8: 6× a 1440p window is half a gigabyte.
+  Pieces drawn on demand while looking in would bound it.
 - A filter change cancels through `Filters::is_changed`; check nothing writes
   the filters every frame, or a picture never finishes.
-- While shown, the map still draws to the window under the opaque picture,
-  for nothing but the entities the names are placed from; the scene and curve
-  cameras could stand down then.
 - Pointing at the picture: the full-window area that takes the wheel and the
   drag also takes clicks, so nothing on the picture can be hovered or picked,
   though the map underneath is registered to it and could answer.
-- Saving holds the whole picture in memory (6× a 1440p window is half a
-  gigabyte) and writes to the working directory; stream rows to the encoder
-  and ask where.
-- The EDAstro-style distribution maps this was for: a top-down preset, and
-  the glow weighted by one star kind's count or share (`Aggregate::kinds`).
+- Saving writes to the working directory; ask where.
+- The EDAstro-style distribution maps this was for: a straight-on lens with
+  top-down and side presets, which is what gives them a fixed scale.
 
 ## Broken
 

@@ -66,7 +66,10 @@ pub fn plugin(app: &mut App) {
 /// Panning covers ground in proportion to how far out the camera is, as a drag
 /// does, so a key moves the map at about the same rate at every zoom. Half a
 /// radius a second crosses about two thirds of the view.
-const PAN_PER_SECOND: f32 = 0.5;
+///
+/// Shared with [`crate::map::enhance`], whose window moves over a picture at
+/// the rate a key moves the map.
+pub(crate) const PAN_PER_SECOND: f32 = 0.5;
 
 /// Radians of orbit per second a key is held
 ///
@@ -82,7 +85,7 @@ const ORBIT_PER_SECOND: f32 = 1.5;
 /// surface of a star and barely register out at the rim. This covers a decade
 /// and a third of it a second, so the whole range is a few seconds away and a
 /// single tap is still worth a few percent.
-const ZOOM_PER_SECOND: f32 = 3.;
+pub(crate) const ZOOM_PER_SECOND: f32 = 3.;
 
 /// How near the camera has to be pointed for something to count as centered,
 /// as a fraction of the orbit radius

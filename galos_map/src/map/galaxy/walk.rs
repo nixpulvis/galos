@@ -25,7 +25,7 @@
 use crate::map::bodies::spawn::Entered;
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{Candidate, Cut, Filtering, Prepared};
-use crate::map::galaxy::plan::{Accounted, Planned, Window};
+use crate::map::galaxy::plan::{Accounted, Planned};
 use crate::map::galaxy::spawn::{ColorBy, PendingSpawns};
 use crate::map::galaxy::{PendingEvictions, Spyglass, System};
 use crate::map::index::{Names, Populated, Transport};
@@ -54,7 +54,6 @@ use std::time::{Duration, Instant};
 pub fn plugin(app: &mut App) {
     app.init_resource::<ResidentCells>();
     app.init_resource::<BoundedTasks>();
-    app.init_resource::<Reconciled>();
     app.init_resource::<PointOrders>();
     app.init_resource::<Republished>();
     app.init_resource::<Keeping>();
@@ -345,18 +344,7 @@ pub(crate) struct Worked<'w> {
     /// What the map is colored by, star class spending each cell's budget by
     /// class; see [`strata`].
     color_by: Res<'w, ColorBy>,
-    /// Whether the last pass finished; see [`Reconciled`].
-    reconciled: ResMut<'w, Reconciled>,
 }
-
-/// Whether the last [`reconcile`] pass finished: nothing it wanted left to
-/// build and nothing put off to the next frame's verdict budget
-///
-/// Half of what a view having loaded means, the other half being the reads
-/// ([`BoundedTasks::is_empty`]) and the builds; see
-/// [`crate::map::enhance::Loading`].
-#[derive(Resource, Default)]
-pub(crate) struct Reconciled(pub(crate) bool);
 
 /// One cell's read as it lands: the payload and the [`Stamp`] it was read
 /// under.
@@ -506,23 +494,6 @@ impl BoundedTasks {
     }
 }
 
-impl BoundedTasks {
-    /// Whether nothing is queued, on the wire or waiting to be taken in
-    pub(crate) fn is_empty(&self) -> bool {
-        let reads = self.shared.lock().expect("the reads lock");
-        reads.queued.is_empty()
-            && reads.reading.is_empty()
-            && reads.landed.is_empty()
-    }
-
-    /// How many cells are queued or on the wire, for a caller showing how
-    /// far a view has to go
-    pub(crate) fn outstanding(&self) -> usize {
-        let reads = self.shared.lock().expect("the reads lock");
-        reads.queued.len() + reads.reading.len() + reads.landed.len()
-    }
-}
-
 #[cfg(test)]
 impl BoundedTasks {
     /// The cells asked and not yet landed, queued or on the wire, for a
@@ -540,6 +511,13 @@ impl BoundedTasks {
             .collect()
     }
 
+    /// Whether nothing is queued, on the wire or waiting to be taken in
+    pub(crate) fn is_empty(&self) -> bool {
+        let reads = self.shared.lock().expect("the reads lock");
+        reads.queued.is_empty()
+            && reads.reading.is_empty()
+            && reads.landed.is_empty()
+    }
 }
 
 /// How much more of a cell is read than the share asks for
@@ -604,14 +582,7 @@ pub(crate) fn fetch(
     populated_order: Res<crate::map::galaxy::populated::PopulatedOrder>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
-    // The piece of the picture last asked for; see [`Window`].
-    mut framed: Local<Option<crate::map::camera::Frame>>,
 ) {
-    // A new piece of the same picture moves nothing the plan reads, but
-    // asks for its own cells.
-    let frame = cameras.single().ok().map(|(orbit, _)| orbit.frame);
-    let reframed = *framed != frame;
-    *framed = frame;
     // **Only when something it reads has moved.** The scan below is the
     // one flat cost a still view used to pay for nothing: a pass over
     // every marked cell, which at a wide zoom is tens of thousands of
@@ -619,7 +590,6 @@ pub(crate) fn fetch(
     // the plan, what the map holds and what the filters want, and those
     // are exactly the three resources here that change.
     if !planned.is_changed()
-        && !reframed
         && !resident.is_changed()
         && !filters.is_changed()
         && !view_mode.is_changed()
@@ -682,25 +652,8 @@ pub(crate) fn fetch(
     // what a capture has to be able to see.
     let asking = {
         let _zone = info_span!("missing cells").entered();
-        // Drawing a piece of a larger picture, only the cells that land in
-        // it; the share is still the picture's. See [`Window`].
-        let window = Window::of(orbit, camera);
-        let framed: Vec<_>;
-        let marks = match &window {
-            None => &planned.0.marks[..],
-            Some(window) => {
-                framed = planned
-                    .0
-                    .marks
-                    .iter()
-                    .filter(|mark| window.touches(mark.id))
-                    .copied()
-                    .collect();
-                &framed[..]
-            }
-        };
         reads(
-            marks,
+            &planned.0.marks,
             |slice, id| share.wanted(slice, id),
             |id| resident.0.cell(id).map_or(0, |held| held.points.len()),
             whole,
@@ -1297,8 +1250,9 @@ impl<'a> Along<'a> {
         Along { axis, populated }
     }
 
-    /// The bucket `point` stands in along the axis.
-    fn bucket(&self, point: &CellSystem) -> usize {
+    /// The bucket `point` stands in along the axis: what the walk strata
+    /// are drawn in proportion to, and what an enhanced picture colors by.
+    pub(crate) fn bucket(&self, point: &CellSystem) -> usize {
         match self.axis {
             ColorBy::StarClass => usize::from(point.kind.code()),
             axis => self
@@ -1435,7 +1389,7 @@ pub(crate) fn adopt(
 /// predicate a drawn system is, and without building a system to ask —
 /// [`System::of`] clones a name and reads a reach, work worth avoiding
 /// for a point that is not going to be drawn.
-fn candidate<'a>(
+pub(crate) fn candidate<'a>(
     point: &CellSystem,
     populated: &'a Populated,
 ) -> Candidate<'a> {
@@ -1820,9 +1774,6 @@ struct Settled {
     center: DVec3,
     eye: DVec3,
     bubble: Option<f64>,
-    /// The piece of the picture drawn, which every piece shares the
-    /// view of; see [`crate::map::galaxy::plan::Window`].
-    frame: crate::map::camera::Frame,
 }
 
 /// What the populated draw settles on: every mark it will make
@@ -2133,20 +2084,14 @@ pub(crate) fn reconcile(
         ref mut blobs,
         ref addresses,
         ref color_by,
-        ref mut reconciled,
     } = worked;
     // Nothing to do where the last pass finished and nothing it reads has
     // moved since; see [`Settled`]. Clearing, the spyglass clamps the drawn
     // set to a bubble about the camera: the LOD is untouched inside it, only
     // the far tail is shed.
     let bubble = reach(&spyglass);
-    let here = Settled {
-        view,
-        center: orbit.center(),
-        eye: orbit.eye(),
-        bubble,
-        frame: orbit.frame,
-    };
+    let here =
+        Settled { view, center: orbit.center(), eye: orbit.eye(), bubble };
     let moved = resident.is_changed()
         || populated.is_changed()
         || names.is_changed()
@@ -2306,23 +2251,15 @@ pub(crate) fn reconcile(
     // strata, the draw and the merged cells each asked them again of every
     // one of the hundred and forty thousand with the galaxy seen whole: a
     // box and a distance, and a hash of the address, apiece.
-    // And, drawing a piece of a larger picture, whether it lands in the
-    // piece: the plan is the whole picture's, so the share is, and the
-    // piece draws its own part of it.
-    let window = Window::of(orbit, camera);
-    let in_window =
-        |id: CellId| window.as_ref().is_none_or(|window| window.touches(id));
     let marks_reached = across(planned.0.marks.len(), |offer| {
-        let id = planned.0.marks[offer].id;
-        in_reach(id, orbit, bubble) && in_window(id)
+        in_reach(planned.0.marks[offer].id, orbit, bubble)
     });
     let marks_wanted = across(planned.0.marks.len(), |offer| {
         let mark = &planned.0.marks[offer];
         share.wanted(mark.slice as usize, mark.id)
     });
     let blobs_reached = across(planned.0.blobs.len(), |offer| {
-        let id = planned.0.blobs[offer].id;
-        in_reach(id, orbit, bubble) && in_window(id)
+        in_reach(planned.0.blobs[offer].id, orbit, bubble)
     });
     // **Under a filter, what it admits is drawn where it stands apart.**
     // The share above is struck over every system the marked cells hold,
@@ -3006,7 +2943,6 @@ pub(crate) fn reconcile(
 
     // Finished, or not: see [`Settled`].
     pass.settled = (!wanting && !deferred).then_some(here);
-    reconciled.0 = !wanting && !deferred;
     pass.weighing = weighed_in;
     pass.claimed_under = narrowed.then_some(under);
 }
@@ -5296,7 +5232,6 @@ mod tests {
 
         let mut app = walking();
         app.init_resource::<BoundedTasks>();
-    app.init_resource::<Reconciled>();
         app.init_resource::<crate::map::index::refresh::Stamps>();
         app.insert_resource(Transport(std::sync::Arc::new(
             galos_index::prelude::FsSource::new("unread"),

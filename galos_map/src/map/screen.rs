@@ -573,12 +573,13 @@ mod tests {
 
     /// And the same holds for a piece of a larger picture
     ///
-    /// [`crate::map::enhance`] draws a picture several windows across a
-    /// window at a time: bevy draws the scene through a sub-view of its lens
-    /// ([`crate::map::camera::Frame::sub_view`]) and the flat painters
-    /// place everything off the frame's own middle. A piece where the two
-    /// disagreed would draw every name and mark off the scene beneath it,
-    /// and the pieces would not meet. Weighed in a piece off the picture's
+    /// Looking into a picture [`crate::map::enhance`] has drawn several
+    /// windows across, the window is a piece of it: bevy draws the scene
+    /// through a sub-view of its lens
+    /// ([`crate::map::camera::Frame::sub_view`]) and the flat painters place
+    /// everything off the frame's own middle. A piece where the two disagreed
+    /// would draw every name and mark off the scene beneath it, and off the
+    /// picture over it. Weighed in a piece off the picture's
     /// middle each way, at a scale that is not a whole number, through the
     /// clip matrix bevy works out for it.
     #[test]

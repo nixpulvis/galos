@@ -33,6 +33,7 @@ use galos_index::prelude::{
     CellId, Mode, Moments, Needed, StarKind, View as Viewpoint,
 };
 use galos_index::read::inhabited::Inhabited;
+use galos_index::read::screen::Projector;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -146,7 +147,7 @@ pub(crate) fn plan(
     spyglass: Res<crate::map::galaxy::Spyglass>,
     exposure: Res<crate::map::galaxy::spawn::StarExposure>,
     mut planned: ResMut<Planned>,
-    mut last: Local<Option<(DVec3, Mode, UVec2, u32, Option<(DVec3, f32)>)>>,
+    mut last: Local<Option<(DVec3, Mode, UVec2, Option<(DVec3, f32)>)>>,
 ) {
     let Ok((orbit, camera)) = cameras.single() else { return };
     let Some(view) = view(orbit, camera) else { return };
@@ -157,20 +158,14 @@ pub(crate) fn plan(
         // than only enlarging the ones already in hand.
         View::Realistic => Mode::Real { limit: exposure.zero_point() },
     };
-    // The picture's size, and its lens: in a piece of a larger picture the
-    // walk plans the whole of it, which the pieces share. The lens is in the
-    // key because bevy works the clip matrix out a frame after the piece is
-    // set, and the walk read off the old one has to be walked again.
-    let size = view.viewport_height;
-    let size = UVec2::new((size * view.aspect).round() as u32, size as u32);
-    let lens = view.fov_y.to_bits();
+    let size = camera.logical_viewport_size().unwrap_or_default().as_uvec2();
     // The spyglass is a clamp on the walk and not a filter after it: a
     // subtree the bubble does not touch is never descended into, so the
     // sets the map works over are the sets it draws from. See
     // [`galos_index::read::walk::Reach`], and [`crate::map::galaxy::walk::reach`] for why the
     // clamp is the spyglass's `clear` rather than its radius alone.
     let bubble = spyglass.clear.then(|| (orbit.center(), spyglass.radius));
-    let key = (orbit.eye(), mode, size, lens, bubble);
+    let key = (orbit.eye(), mode, size, bubble);
     if last.as_ref() == Some(&key) && !index.is_changed() {
         return;
     }
@@ -237,87 +232,50 @@ fn shell(
 /// is read off the camera's own clip matrix rather than its projection, since
 /// that is where the field of view has already been worked out.
 ///
-/// **The whole picture, and not the piece of it the viewport draws.** Where
-/// [`OrbitCamera::frame`] cuts the viewport out of a picture several times
-/// its size, the clip matrix is the piece's own, narrower by the picture's
-/// scale, and what the walk is given is the picture: its lens and its
-/// pixels. So every piece plans the same marks, strikes the same share and
-/// draws at the same density, and the pieces meet without a seam; which of
-/// the plan a piece draws is [`Window`]'s to say.
+/// **The whole view, also while looking into an enhanced picture.** There the
+/// window shows a piece of the picture through a lens narrower by
+/// [`OrbitCamera::frame`]'s scale, and the clip matrix is that piece's; the
+/// walk is given the view as it stood, so looking about in the picture moves
+/// nothing the map loads, and only what is painted over it follows.
 pub fn view(orbit: &OrbitCamera, camera: &Camera) -> Option<Viewpoint> {
     let viewport = camera.logical_viewport_size()?;
     // `y_axis.y` of the clip matrix is the cotangent of half the vertical field
     // of view.
     let cot_half_fov = camera.clip_from_view().y_axis.y / orbit.frame.scale;
-    Some(viewpoint(
-        orbit.eye(),
-        orbit.rotation,
-        cot_half_fov,
-        orbit.frame.picture(viewport),
-    ))
+    Some(viewpoint(orbit.eye(), orbit.rotation, cot_half_fov, viewport))
 }
 
-/// The piece of the planned picture the viewport draws, as a test of the
-/// cells the plan names
+/// A [`Viewpoint`]'s projection, laid on the map's own screen
 ///
-/// [`None`] where the viewport is the whole picture, which is every frame
-/// but the ones [`crate::map::enhance`] draws in pieces. A cell whose box
-/// lands clear of the piece is planned — it is part of the picture, and the
-/// share is struck over it — but neither read nor drawn here: the piece
-/// next to it will.
-pub(crate) struct Window {
-    view: Viewpoint,
-    /// The piece in the picture's logical pixels, grown by [`Window::MARGIN`]:
-    /// left, top, right, bottom.
-    rect: [f64; 4],
+/// **Mirrored.** The index projects right handed, its right `forward × up`,
+/// which is the camera's own `x`; the map draws the galaxy mirrored across
+/// that ([`crate::map::camera::MIRROR`]), its right the camera's `-x`. Same
+/// lens and same middle, so where the map draws a point is where the index
+/// puts it reflected across the frame's vertical middle. Anything that asks
+/// the index's projection *where on screen* something is asks this, or what
+/// it finds is the other side of the screen.
+#[derive(Clone, Copy)]
+pub(crate) struct Lens {
+    /// The index's projection, its axes and focal length worked out once
+    projector: Projector,
+    /// The frame's width in pixels, which the reflection is across
+    width: f64,
 }
 
-impl Window {
-    /// How far past its edges a piece takes in, in logical pixels
-    ///
-    /// The widest mark the field draws, and some: a system standing just over
-    /// the edge lays part of its mark inside, and a piece that left it to the
-    /// neighbour would draw half a star at every seam.
-    const MARGIN: f64 = 48.;
-
-    pub(crate) fn of(orbit: &OrbitCamera, camera: &Camera) -> Option<Window> {
-        if orbit.frame.is_whole() {
-            return None;
+impl Lens {
+    pub(crate) fn of(view: &Viewpoint) -> Lens {
+        Lens {
+            projector: view.projector(),
+            // As the index rounds its frame, so the middle is the same one.
+            width: (f64::from(view.viewport_height) * f64::from(view.aspect))
+                .round(),
         }
-        let viewport = camera.logical_viewport_size()?;
-        let corner = orbit.frame.corner.as_dvec2();
-        let far = corner + viewport.as_dvec2();
-        Some(Window {
-            view: view(orbit, camera)?,
-            rect: [
-                corner.x - Window::MARGIN,
-                corner.y - Window::MARGIN,
-                far.x + Window::MARGIN,
-                far.y + Window::MARGIN,
-            ],
-        })
     }
 
-    /// Whether any of a cell's box lands in the piece
-    ///
-    /// Its eight corners projected and the rectangle round them laid against
-    /// the piece, which keeps a little more than it must and never less. A
-    /// box reaching behind the eye is kept: it has no rectangle on screen.
-    pub(crate) fn touches(&self, id: CellId) -> bool {
-        let bounds = id.bounds();
-        let (mut low, mut high) = ([f64::MAX; 2], [f64::MIN; 2]);
-        for corner in 0..8 {
-            let at = [
-                if corner & 1 == 0 { bounds.min[0] } else { bounds.max[0] },
-                if corner & 2 == 0 { bounds.min[1] } else { bounds.max[1] },
-                if corner & 4 == 0 { bounds.min[2] } else { bounds.max[2] },
-            ];
-            let Some([x, y]) = self.view.project(at) else { return true };
-            low = [low[0].min(x), low[1].min(y)];
-            high = [high[0].max(x), high[1].max(y)];
-        }
-        let [left, top, right, bottom] = self.rect;
-        high[0] >= left && low[0] <= right && high[1] >= top && low[1] <= bottom
+    /// Where a position lands on the map's screen, in pixels from the top
+    /// left, or [`None`] where it is behind the eye
+    pub(crate) fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+        self.projector.project(at).map(|[x, y]| [self.width - x, y])
     }
 }
 
@@ -372,44 +330,6 @@ mod tests {
         assert_eq!(view.viewport_height, 900.);
     }
 
-    /// A piece of a larger picture takes in the cells that land in it, and
-    /// leaves the ones landing in another piece to that piece
-    ///
-    /// A picture two windows across from ten thousand light years back,
-    /// looking down -Z through a right angle: a small cell well into the top
-    /// left piece is that piece's and not the bottom right one's, and a cell
-    /// wider than the whole picture is every piece's.
-    #[test]
-    fn a_piece_takes_in_the_cells_that_land_in_it() {
-        let (window, picture) = (Vec2::new(1280., 720.), Vec2::new(2560., 1440.));
-        let view = viewpoint(DVec3::new(0., 0., 10_000.), Quat::IDENTITY, 1., picture);
-        let piece = |corner: Vec2| Window {
-            view,
-            rect: [
-                f64::from(corner.x) - Window::MARGIN,
-                f64::from(corner.y) - Window::MARGIN,
-                f64::from(corner.x + window.x) + Window::MARGIN,
-                f64::from(corner.y + window.y) + Window::MARGIN,
-            ],
-        };
-        let (top_left, bottom_right) = (piece(Vec2::ZERO), piece(window));
-
-        // Lands three hundred pixels in and two hundred down: with a focal
-        // length of 720 pixels, ten thousand light years back.
-        let focal = 720.;
-        let at = [
-            (300. - 1280.) / focal * 10_000.,
-            (720. - 200.) / focal * 10_000.,
-            0.,
-        ];
-        assert_eq!(view.project(at).map(|[x, y]| [x.round(), y.round()]), Some([300., 200.]));
-        let small = CellId::of_point(at, 18);
-        assert!(top_left.touches(small), "the piece it lands in takes it");
-        assert!(!bottom_right.touches(small), "a piece it misses takes it in");
-
-        assert!(top_left.touches(CellId::ROOT) && bottom_right.touches(CellId::ROOT));
-    }
-
     /// A turned camera turns the forward and up with it
     #[test]
     fn a_turn_carries_forward_and_up() {
@@ -419,6 +339,30 @@ mod tests {
         // A quarter turn about Y sends -Z to -X, and leaves Y up.
         assert!((view.forward[0] + 1.).abs() < 1e-6, "not facing -X");
         assert!((view.up[1] - 1.).abs() < 1e-6, "up did not stay Y");
+    }
+
+    /// The lens lands a point where the map draws it: mirrored
+    ///
+    /// Unturned, the camera looks down -Z and the map's right is its -X, so a
+    /// point off to +X stands on the left of the screen. The index's own
+    /// projection puts it on the right; asked where something is, that is the
+    /// other side of the screen, and an enhanced picture drawn through it
+    /// comes out flipped.
+    #[test]
+    fn the_lens_lands_a_point_where_the_map_draws_it() {
+        let view = viewpoint(
+            DVec3::new(0., 0., 10.),
+            Quat::IDENTITY,
+            1.,
+            Vec2::new(200., 100.),
+        );
+        let [x, y] = Lens::of(&view)
+            .project([5., 0., 0.])
+            .expect("a point ahead of the eye");
+        assert!(x < 100., "drawn on the right, at {x}");
+        assert!((y - 50.).abs() < 1e-9, "not level with the eye, at {y}");
+        let right = OrbitCamera::default().right();
+        assert!(right.x < 0., "the map's right is no longer -X: {right}");
     }
 
     /// Republished aggregates are re-walked without the camera moving

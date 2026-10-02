@@ -70,10 +70,7 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<GlowBrightness>();
     app.init_resource::<FieldCurve>();
     app.add_systems(Startup, spawn_curve);
-    app.add_systems(
-        Update,
-        (fit_targets, route_field.in_set(Routed), set_curve).chain(),
-    );
+    app.add_systems(Update, (fit_targets, route_field, set_curve).chain());
 }
 
 /// How many stops the field is lifted ahead of its curve
@@ -469,7 +466,7 @@ struct VolumeCamera;
 
 /// The camera that lays the two targets over the galaxy through the curve
 #[derive(Component)]
-pub(crate) struct CurveCamera;
+struct CurveCamera;
 
 /// The one quad it lays them with, sized to the frame
 #[derive(Component)]
@@ -639,11 +636,6 @@ fn spawn_curve(
     commands.insert_resource(FieldTargets { lit, dimmed, volume });
 }
 
-/// Where the field's camera is sent for the view, which
-/// [`crate::map::enhance`] sends elsewhere after it while a picture is drawn
-#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct Routed;
-
 /// The field's two cameras, each drawing into its own target
 type Drawing = Or<(With<FieldCamera>, With<DimmedCamera>)>;
 
@@ -740,15 +732,23 @@ fn fit_targets(
 /// black each frame, and lays it over the galaxy through the curve. The
 /// realistic view draws it straight onto the window over the scene, as it
 /// always has, and the curve and the dimmed camera stand down.
+///
+/// And all of them stand down while an enhanced picture covers the window
+/// ([`Covered`]): the map under it is drawn for nobody, and looking into
+/// the picture draws it again through a narrower lens, every mark several
+/// times the size.
+///
+/// [`Covered`]: crate::map::enhance::Covered
 fn route_field(
     view: Res<View>,
+    covered: Res<crate::map::enhance::Covered>,
     targets: Option<Res<FieldTargets>>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut field: Query<(&mut Camera, &mut RenderTarget), With<FieldCamera>>,
     mut others: Query<&mut Camera, MapOnly>,
 ) {
     let Some(targets) = targets else { return };
-    if !view.is_changed() && !targets.is_added() {
+    if !view.is_changed() && !covered.is_changed() && !targets.is_added() {
         return;
     }
     let map = matches!(*view, View::Map);
@@ -764,9 +764,10 @@ fn route_field(
             *target = RenderTarget::Window(WindowRef::Primary);
             camera.clear_color = ClearColorConfig::None;
         }
+        camera.is_active = !covered.0;
     }
     for mut camera in &mut others {
-        camera.is_active = map;
+        camera.is_active = map && !covered.0;
     }
 }
 

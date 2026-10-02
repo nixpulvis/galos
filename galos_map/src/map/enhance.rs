@@ -1,111 +1,110 @@
 //! Enhance: the view drawn again at several times the window's resolution,
-//! a piece at a time, over the map it was drawn from
+//! every system in it, as a flat picture laid over the map
 //!
-//! **One picture, larger than the window, from the same eye.** The map's
-//! detail is measured in pixels: the walk splits a cell once its contents
-//! are half a pixel across, merges marks closer than [`MERGE_PX`] and spends
-//! the frame's marks by its area. So a picture `scale` windows across from
-//! the same eye is the same view with that much more in it, and nothing
-//! about the map has to change for it but the size it believes the screen
-//! to be.
+//! **Every system, and not the map's budget of them.** The map draws what a
+//! frame can afford: the walk spends a frame's marks over what is in reach
+//! and the glow stands in for the rest, so a frame of the galaxy draws a few
+//! tens of thousands of its two hundred million systems. A picture is not a
+//! frame. The camera stands still while it is made, so nothing has to be
+//! spawned, settled or drawn again next frame: each system in view is read
+//! straight off its cell's payload, projected through the view's own lens
+//! ([`galos_index::read::screen::Projector`], the walk's projection), and the
+//! light the map would lay for it — its hue's [`Hue::light`] at
+//! [`system_light`], dimmed as the filters dim it — is added into the pixel
+//! it lands in. What comes out is the map's own reading at a resolution the
+//! map's budget never reaches, in the key's own colors.
 //!
-//! **Drawn a window at a time.** The picture is cut into pieces the size of
-//! the window and each is drawn as an ordinary frame, off-centre through
-//! [`Frame`]: the walk plans the whole picture once, so every piece strikes
-//! the same share and the pieces meet without a seam, and each piece reads
-//! and builds only the cells that land in it ([`Window`]), so a piece costs
-//! a frame's worth of systems whatever the picture's size.
+//! **A window-sized piece at a time, off the main thread.** The picture is
+//! `scale` windows across, and is summed a piece at a time on a thread of its
+//! own with workers reading the cells that land in the piece ([`lands_in`],
+//! through the map's own mirrored [`plan::Lens`]): only one piece's sums are
+//! ever held, twelve bytes a pixel of a window, whatever the picture's size.
+//! Each piece is turned into colors as it finishes and laid over the map, the
+//! middle first, and the map's own cameras stand down under it ([`Covered`]).
 //!
-//! **Where it is drawn, over the map it is drawn from.** The camera stands
-//! still while it works and each piece is laid down in its place as it
-//! finishes, the middle first, until the picture covers the map. The view
-//! the button was pressed on is drawn first into a picture of its own and
-//! stands underneath, so the map's own frame — which is busy drawing pieces
-//! out of sight — is never what the window shows.
+//! **One curve over the whole picture.** What a pixel gathers runs from one
+//! unscanned star to thousands in the bubble, so it is drawn on a log curve,
+//! and every piece has to be drawn on the same one or they would not meet.
+//! The curve's top is read off the base: the whole view at the window's own
+//! resolution, summed first, which stands under the pieces until they land.
 //!
 //! **And it stays where it is.** The picture is the view from one eye, so
-//! looking closer into it is a narrower lens from the same eye, which is
-//! what [`Frame`] is: the wheel and a drag move about in the picture, the
-//! map underneath follows to the pixel, and the names and rings drawn over
-//! it stand on what they name at every magnification. Anything that would
-//! move the eye puts the picture away.
+//! looking closer into it is a narrower lens from the same eye, which is what
+//! [`Frame`] is: the wheel and a drag move about in the picture, the map
+//! underneath follows to the pixel, and the names and rings drawn over it
+//! stand on what they name at every magnification; `WASD` and `F`/`R` move
+//! and zoom the window over it as they would the map. The camera stands
+//! still under it, and only the close button and escape put it away.
 //!
-//! [`MERGE_PX`]: galos_index::read::walk::MERGE_PX
-//! [`Window`]: crate::map::galaxy::plan::Window
+//! [`Hue::light`]: crate::map::galaxy::spawn::Hue::light
 
+use crate::input::{Keyboard, bare};
 use crate::map::camera::{Frame, OrbitCamera};
-use crate::map::filter::Filters;
-use crate::map::galaxy::spawn::{Building, ColorBy, PendingSpawns};
-use crate::map::galaxy::walk::{BoundedTasks, Reconciled};
-use crate::map::paint::sizing::View;
+use crate::map::filter::{DimTo, Filters};
+use crate::map::galaxy::spawn::ColorBy;
+use crate::map::galaxy::walk::{Along, candidate};
+use crate::map::galaxy::{Spyglass, plan};
+use crate::map::index::{Populated, ResidentIndex, Transport};
+use crate::map::keys::{PAN_PER_SECOND, ZOOM_PER_SECOND};
+use crate::map::paint::glow::{Gains, system_light};
 use crate::map::schedule::{MapSet, PaintSet};
-use bevy::asset::embedded_asset;
+use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
-use bevy::camera::{Hdr, ImageRenderTarget, RenderTarget, ScalingMode};
+use bevy::camera::{Hdr, ScalingMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::ecs::system::SystemParam;
 use bevy::image::ImageSampler;
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType, TextureFormat};
-use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use bevy::render::gpu_readback::{Readback, ReadbackComplete};
+use bevy::render::render_resource::{
+    AsBindGroup, Extent3d, ShaderType, TextureDimension, TextureFormat,
+    TextureUsages,
+};
+use bevy::render::renderer::RenderDevice;
 use bevy::shader::ShaderRef;
-use bevy::window::{PrimaryWindow, WindowRef};
+use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use chrono::{DateTime, Utc};
+use galos_index::prelude::{CellId, Source, View as Viewpoint};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed,
+};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "enhance.wgsl");
     app.add_plugins(MaterialPlugin::<PieceMaterial>::default());
     app.init_resource::<Enhance>();
+    app.init_resource::<Covered>();
     app.add_systems(Startup, spawn_overlay);
-    // The camera stands still while a picture is drawn or shown: the
-    // picture is the view from where it stood, and every piece and every
-    // look into it is measured from that one eye.
+    // The camera stands still while there is a picture: it is the view from
+    // where the camera stood, and every look into it is measured from that
+    // one eye. The keys that would have moved it look about in the picture
+    // instead ([`look`]).
     app.configure_sets(Update, MapSet::Camera.run_if(idle));
-    // After the frame has been drawn into the map's own resources, so a
-    // piece is judged on what this frame worked out, and the piece it moves
-    // to is the next frame's.
-    app.add_systems(Update, drive.after(MapSet::Present));
-    // After the field's own routing, which this overrides while a picture
-    // is being drawn.
-    app.add_systems(
-        Update,
-        (route, lay)
-            .chain()
-            .after(drive)
-            .after(crate::map::paint::curve::Routed),
-    );
+    app.add_systems(Update, (look, drive, lay).chain().after(MapSet::Present));
     app.add_systems(EguiPrimaryContextPass, controls.in_set(PaintSet::Ui));
-    // Under everything else in the pass, so the map's own annotations
-    // follow it.
-    app.add_systems(
-        EguiPrimaryContextPass,
-        hide_annotations.before(PaintSet::Map),
-    );
     app.add_observer(captured);
     script(app);
 }
 
 /// An enhance run with nobody at the window, from `GALOS_ENHANCE`
 ///
-/// `GALOS_ENHANCE=3` enhances the view the map opens on three windows across
-/// once it has loaded, saves the picture, and with `GALOS_ENHANCE_EXIT` set
-/// closes the map when it is written; the window's own capture beside it is
-/// `GALOS_SHOT`'s, `crate::dev::shot`. What `media.sh` would record a
-/// picture with, and how a change to this is seen working without a person
-/// pressing the button.
+/// `GALOS_ENHANCE=3` enhances the view the map opens on three windows across,
+/// saves the picture, and with `GALOS_ENHANCE_EXIT` set closes the map when it
+/// is written; the window's own capture beside it is `GALOS_SHOT`'s,
+/// `crate::dev::shot`, whose pose a run here can be pointed with. What
+/// `media.sh` would record a picture with, and how a change to this is seen
+/// working without a person pressing the button.
 fn script(app: &mut App) {
     let Ok(scale) = std::env::var("GALOS_ENHANCE") else { return };
     let scale =
         scale.parse().unwrap_or(SCALE).clamp(*SCALES.start(), *SCALES.end());
     let exit = std::env::var("GALOS_ENHANCE_EXIT").is_ok();
-    app.insert_resource(Scripted {
-        scale,
-        exit,
-        loaded: 0,
-        asked: false,
-        told: false,
-    });
+    app.insert_resource(Scripted { scale, exit, waited: 0, told: false });
     app.add_systems(
         Update,
         scripted
@@ -114,15 +113,19 @@ fn script(app: &mut App) {
     );
 }
 
+/// Frames in a row the camera has to have stood still before a scripted run
+/// asks for a picture: a pose `GALOS_SHOT` holds is eased into, and a picture
+/// asked for on the way would be of somewhere else.
+const SCRIPT_WAIT: u32 = 30;
+
 /// Where a scripted run is; see [`script`]
 #[derive(Resource)]
 struct Scripted {
     scale: u32,
     exit: bool,
-    /// Frames in a row the opening view has read as loaded
-    loaded: u32,
-    /// Whether the picture has been asked for
-    asked: bool,
+    /// Frames in a row the camera has stood still, and past [`SCRIPT_WAIT`]
+    /// the picture asked for
+    waited: u32,
     /// Whether where it was saved has been said
     told: bool,
 }
@@ -130,17 +133,15 @@ struct Scripted {
 fn scripted(
     mut scripted: ResMut<Scripted>,
     mut enhance: ResMut<Enhance>,
-    loading: Loading,
+    cameras: Query<&OrbitCamera>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    if !scripted.asked {
-        scripted.loaded = if loading.done() { scripted.loaded + 1 } else { 0 };
-        // A second's worth of frames loaded, so the opening view has
-        // settled rather than paused between two waves of reads.
-        if scripted.loaded >= 60 {
+    if scripted.waited < SCRIPT_WAIT {
+        let still = cameras.single().is_ok_and(OrbitCamera::is_settled);
+        scripted.waited = if still { scripted.waited + 1 } else { 0 };
+        if scripted.waited == SCRIPT_WAIT {
             enhance.scale = scripted.scale;
             enhance.asked = Some(Ask::Start);
-            scripted.asked = true;
         }
         return;
     }
@@ -149,7 +150,7 @@ fn scripted(
             if enhance
                 .picture
                 .as_ref()
-                .is_some_and(|it| it.reading.is_none()) =>
+                .is_some_and(|it| it.saving.is_none()) =>
         {
             enhance.asked = Some(Ask::Save);
         }
@@ -169,10 +170,54 @@ fn scripted(
     }
 }
 
-/// Whether nothing is being enhanced, for the systems that stand still
+/// Whether nothing is being enhanced, for the camera, which stands still
 /// while something is
-pub(crate) fn idle(enhance: Res<Enhance>) -> bool {
+fn idle(enhance: Res<Enhance>) -> bool {
     matches!(enhance.phase, Phase::Off)
+}
+
+/// Look about in a shown picture with the keys that move the map
+///
+/// The camera stands still under a picture, so the keys that would have
+/// moved it move the window over the picture instead, at the rates they move
+/// the map: `WASD` across it, `F` in and `R` out about the window's middle.
+/// The keys that turn the camera have nothing to turn in a flat picture and
+/// do nothing.
+fn look(
+    keys: Res<ButtonInput<KeyCode>>,
+    keyboard: Res<Keyboard>,
+    time: Res<Time<Real>>,
+    mut enhance: ResMut<Enhance>,
+) {
+    if enhance.phase != Phase::Shown || keyboard.typing || !bare(&keys) {
+        return;
+    }
+    let Some(picture) = &mut enhance.picture else { return };
+    let held = |key| keys.pressed(key);
+    let mut way = Vec2::ZERO;
+    for (key, toward) in [
+        (KeyCode::KeyD, Vec2::X),
+        (KeyCode::KeyA, Vec2::NEG_X),
+        (KeyCode::KeyW, Vec2::NEG_Y),
+        (KeyCode::KeyS, Vec2::Y),
+    ] {
+        if held(key) {
+            way += toward;
+        }
+    }
+    // Across the window as a key crosses the map, a share of what is on
+    // screen a second; and the picture moves the other way to the eye.
+    if let Some(way) = way.try_normalize() {
+        let rate = PAN_PER_SECOND * picture.viewport.x;
+        picture.pan(-way * rate * time.delta_secs());
+    }
+    let zoom = f32::from(u8::from(held(KeyCode::KeyF)))
+        - f32::from(u8::from(held(KeyCode::KeyR)));
+    if zoom != 0. {
+        let middle = picture.viewport / 2.;
+        let factor = (zoom * ZOOM_PER_SECOND * time.delta_secs()).exp();
+        picture.zoom_about(middle, factor);
+    }
 }
 
 /// How many windows across a picture is, to begin with
@@ -180,25 +225,10 @@ const SCALE: u32 = 3;
 
 /// The scales offered, windows across
 ///
-/// One window is the view as it is, and nothing to draw. Past six, a
-/// picture is thirty-six windows held as textures at once, which at a
-/// large window is gigabytes.
+/// One window is the view as it is. Past six, a picture is thirty-six
+/// windows held as textures at once, which at a large window is most of a
+/// gigabyte of the GPU's.
 const SCALES: std::ops::RangeInclusive<u32> = 2..=6;
-
-/// Frames a piece is given before whether it has loaded is asked
-///
-/// bevy works the lens out a frame after the piece is set, and the plan,
-/// the reads it asks for and the walk over what landed each follow the
-/// frame before: a piece that read as loaded before all of that had
-/// happened once would be the last piece's systems in this one's place.
-const SETTLING: u32 = 6;
-
-/// Frames in a row a piece has to read as loaded before it is taken
-///
-/// A view loads in waves — the reads land, the walk offers what they hold,
-/// the builds come back — and between two of them a frame can find nothing
-/// outstanding without being finished.
-const STEADY: u32 = 4;
 
 /// What enhancing is doing, and the picture it is doing it to
 #[derive(Resource)]
@@ -232,32 +262,9 @@ enum Phase {
     /// No picture: the map as it always is
     Off,
     /// Drawing one, a piece at a time
-    Drawing(Drawing),
+    Drawing,
     /// Drawn, and laid over the map
     Shown,
-}
-
-/// Which piece is being drawn and how far it has got
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Drawing {
-    /// The piece, by its place in [`Picture::order`]; [`None`] is the view
-    /// as the button found it, drawn first to stand under the rest
-    piece: Option<usize>,
-    /// Frames since the piece was set
-    frames: u32,
-    /// Frames in a row it has read as loaded
-    steady: u32,
-    /// The most it has had outstanding, which how far it has got is
-    /// measured against
-    most: usize,
-    /// What it has outstanding now
-    left: usize,
-}
-
-impl Drawing {
-    fn of(piece: Option<usize>) -> Drawing {
-        Drawing { piece, frames: 0, steady: 0, most: 0, left: 0 }
-    }
 }
 
 /// What the controls asked for
@@ -275,78 +282,57 @@ struct Picture {
     scale: u32,
     /// The window it was started in, logical pixels
     viewport: Vec2,
-    /// And physical
+    /// And physical, which is a piece's size in texels
     physical: UVec2,
-    /// The window's scale factor
-    scale_factor: f32,
-    /// The view as it stood, drawn first and laid under the pieces
+    /// The view as it stood, at the window's own resolution, laid under the
+    /// pieces
     base: Part,
     /// The pieces, row by row
     pieces: Vec<Part>,
-    /// The order they are drawn in: out from the middle
-    order: Vec<usize>,
+    /// The one quad every part is laid with
+    mesh: Handle<Mesh>,
     /// How far into the picture the window is looking: how many times the
     /// picture's own size on the window it is shown at, from one, the
     /// whole picture on the window, up to [`Picture::scale`], a piece's
     /// pixel to the window's
     zoom: f32,
-    /// Where the window's top left stands in the picture, in its pixels
+    /// Where the window's top left stands in the picture, in its logical
+    /// pixels
     corner: Vec2,
-    /// What the picture was drawn under, which changing puts it away
-    against: Against,
-    /// The pieces read back so far, for saving: the base first, then the
-    /// pieces by number
-    reading: Option<Vec<Option<Image>>>,
+    /// The thread drawing it, until every part is laid
+    job: Option<Job>,
+    /// The PNG being written, a row of pieces at a time
+    saving: Option<Saving>,
 }
 
-/// One piece of a picture: the texture it is drawn into and the quad it is
-/// laid over the map with
+/// One part of a picture, and once it is drawn, what lays it over the map
 struct Part {
-    image: Handle<Image>,
-    material: Handle<PieceMaterial>,
-    quad: Entity,
     /// Where it stands in the picture, in pieces
     column: u32,
     row: u32,
-    done: bool,
+    laid: Option<Laid>,
 }
 
-/// What a picture is drawn under: the reading of the map it shows
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Against {
-    view: View,
-    color_by: ColorBy,
-    window: UVec2,
+/// A drawn part: its texture and the quad it is laid over the map with
+struct Laid {
+    image: Handle<Image>,
+    material: Handle<PieceMaterial>,
+    quad: Entity,
 }
 
-/// Whether the map has drawn everything the view asks of it
-///
-/// Nothing queued to read or on the wire, nothing waiting to be built or
-/// being built, and the walk's last pass finished rather than put off. The
-/// plan and the field are worked out within the frame and need no asking.
+/// What the map is read through for a picture: everything a system's light
+/// depends on, and where the systems are read from
 #[derive(SystemParam)]
-pub(crate) struct Loading<'w> {
-    reads: Res<'w, BoundedTasks>,
-    spawns: Res<'w, PendingSpawns>,
-    building: Res<'w, Building>,
-    reconciled: Res<'w, Reconciled>,
-}
-
-impl Loading<'_> {
-    /// How much the view is still waiting on: cells and systems, together
-    fn outstanding(&self) -> usize {
-        self.reads.outstanding()
-            + self.spawns.queued()
-            + self.building.outstanding()
-    }
-
-    /// Whether it has all been drawn
-    pub(crate) fn done(&self) -> bool {
-        self.reads.is_empty()
-            && self.spawns.is_empty()
-            && self.building.outstanding() == 0
-            && self.reconciled.0
-    }
+struct Under<'w> {
+    color_by: Res<'w, ColorBy>,
+    filters: Res<'w, Filters>,
+    dim: Res<'w, DimTo>,
+    gains: Res<'w, Gains>,
+    /// With the index and the transport, there once the index has loaded.
+    populated: Option<Res<'w, Populated>>,
+    index: Option<Res<'w, ResidentIndex>>,
+    transport: Option<Res<'w, Transport>>,
+    spyglass: Res<'w, Spyglass>,
 }
 
 /// The render layer the picture is laid over the window on
@@ -359,11 +345,11 @@ const LAYER: usize = 10;
 #[derive(Component)]
 struct OverlayCamera;
 
-/// One piece's quad
+/// One part's quad
 #[derive(Component)]
 struct PieceQuad;
 
-/// What lays a piece over the window, averaging the texels each pixel
+/// What lays a part over the window, averaging the texels each pixel
 /// covers
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub(crate) struct PieceMaterial {
@@ -374,8 +360,8 @@ pub(crate) struct PieceMaterial {
     piece: Handle<Image>,
 }
 
-/// How many of a piece's texels a pixel of the window covers, along
-/// either axis
+/// How many of a part's texels a pixel of the window covers, along either
+/// axis
 #[derive(ShaderType, Clone, Copy, Debug, Default, PartialEq)]
 struct Footprint {
     across: f32,
@@ -394,14 +380,17 @@ impl Material for PieceMaterial {
 ///
 /// Over the map's own cameras and under the annotations, so the names and
 /// rings land over the picture as they do over the map, and clearing the
-/// window: while the pieces are drawn the map's cameras draw elsewhere, and
-/// once they are all down the picture covers whatever the map draws.
+/// window once the base is down: the picture covers whatever the map draws.
+///
+/// [`Hdr`] and the scene's own MSAA, so it draws into the one texture the
+/// scene, the curve and the annotations share. On a texture of its own it
+/// would be laid on the window and then covered whole by the annotations',
+/// which carries the scene and is laid last.
 fn spawn_overlay(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
         Hdr,
         Tonemapping::None,
-        Msaa::Off,
         Camera {
             order: crate::map::camera::ENHANCE_ORDER,
             clear_color: ClearColorConfig::Custom(Color::BLACK),
@@ -417,24 +406,21 @@ fn spawn_overlay(mut commands: Commands) {
     ));
 }
 
-/// Carry out what was asked, and move the picture on a piece when the one
-/// being drawn has loaded
+/// Carry out what was asked, and lay each part as the thread drawing the
+/// picture hands it over
 #[allow(clippy::too_many_arguments)]
 fn drive(
     mut commands: Commands,
     mut enhance: ResMut<Enhance>,
-    mut cameras: Query<&mut OrbitCamera>,
+    mut cameras: Query<(&mut OrbitCamera, &Camera)>,
     window: Query<&Window, With<PrimaryWindow>>,
-    view: Res<View>,
-    color_by: Res<ColorBy>,
-    filters: Res<Filters>,
-    loading: Loading,
+    reading: Under,
     keys: Res<ButtonInput<KeyCode>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<PieceMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let Ok(mut orbit) = cameras.single_mut() else { return };
+    let Ok((mut orbit, camera)) = cameras.single_mut() else { return };
     let Ok(window) = window.single() else { return };
     let enhance = &mut *enhance;
 
@@ -445,33 +431,46 @@ fn drive(
         asked = Some(Ask::Close);
     }
 
-    // **What the picture shows has moved.** A picture is one reading of the
-    // map; drawn on under another, its pieces would not agree.
-    let against = Against {
-        view: *view,
-        color_by: *color_by,
-        window: window.physical_size(),
-    };
+    // **The window changed size.** The pieces are cut to the window they were
+    // drawn in and laid in its pixels; in another they would be laid wrong.
+    // Nothing else puts a picture away but the close and the escape: the
+    // camera stands still under it, and what it shows is the map as it was
+    // when it was asked for.
     if let Some(picture) = &enhance.picture
-        && (picture.against != against || filters.is_changed())
+        && picture.physical != window.physical_size().max(UVec2::ONE)
         && asked != Some(Ask::Start)
     {
         asked = Some(Ask::Close);
     }
 
     match asked {
+        // Held until the camera stands still: a picture is the view from
+        // one eye, and one asked for on the way somewhere would be of where
+        // the camera happened to be.
+        Some(Ask::Start)
+            if enhance.phase == Phase::Off && !orbit.is_settled() =>
+        {
+            enhance.asked = Some(Ask::Start);
+        }
         Some(Ask::Start) if enhance.phase == Phase::Off => {
-            let picture = Picture::new(
-                enhance.scale,
-                window,
-                against,
-                &mut commands,
-                &mut images,
-                &mut materials,
-                &mut meshes,
-            );
+            let (Some(index), Some(transport), Some(populated)) =
+                (&reading.index, &reading.transport, &reading.populated)
+            else {
+                return;
+            };
+            let Some(view) = plan::view(&orbit, camera) else { return };
+            let mut picture = Picture::new(enhance.scale, window, &mut meshes);
+            picture.job = Some(Job::start(Spec::new(
+                &picture,
+                view,
+                &index.0,
+                transport.0.clone(),
+                (**populated).clone(),
+                orbit.center(),
+                &reading,
+            )));
             enhance.picture = Some(picture);
-            enhance.phase = Phase::Drawing(Drawing::of(None));
+            enhance.phase = Phase::Drawing;
             enhance.saved = None;
             orbit.frame = Frame::WHOLE;
             return;
@@ -487,37 +486,65 @@ fn drive(
         Some(Ask::Save) => {
             if let Some(picture) = &mut enhance.picture
                 && enhance.phase == Phase::Shown
-                && picture.reading.is_none()
+                && picture.saving.is_none()
             {
-                picture.read_back(&mut commands);
+                match Saving::start(picture) {
+                    Ok(saving) => {
+                        saving.ask_row(picture, &mut commands);
+                        picture.saving = Some(saving);
+                    }
+                    Err(why) => enhance.saved = Some(Err(why)),
+                }
             }
         }
         _ => {}
     }
 
     let Some(picture) = &mut enhance.picture else { return };
-    match &mut enhance.phase {
+    match enhance.phase {
         Phase::Off => {}
-        Phase::Drawing(drawing) => {
-            drawing.frames += 1;
-            let left = loading.outstanding();
-            drawing.left = left;
-            drawing.most = drawing.most.max(left);
-            let loaded = drawing.frames > SETTLING && loading.done();
-            drawing.steady = if loaded { drawing.steady + 1 } else { 0 };
-            if drawing.steady < STEADY {
+        Phase::Drawing => {
+            let Some(job) = &picture.job else { return };
+            let finished: Vec<Finished> =
+                job.finished.lock().expect("the parts").try_iter().collect();
+            let failed =
+                job.progress.failed.lock().expect("the failure").take();
+            let unread = job.progress.unread.load(Relaxed);
+            let (counted, elapsed) =
+                (job.progress.counted.load(Relaxed), job.started.elapsed());
+            for Finished { part, rgba } in finished {
+                picture.lay_part(
+                    part,
+                    rgba,
+                    &mut commands,
+                    &mut images,
+                    &mut materials,
+                );
+            }
+            if let Some(why) = failed {
+                error!("enhance: {why}");
+                if let Some(picture) = enhance.picture.take() {
+                    picture.put_away(
+                        &mut commands,
+                        &mut images,
+                        &mut materials,
+                    );
+                }
+                enhance.phase = Phase::Off;
+                enhance.saved = Some(Err(why));
                 return;
             }
-            // This piece is down: lay it, and set the next.
-            match drawing.piece {
-                None => picture.base.done = true,
-                Some(at) => picture.pieces[picture.order[at]].done = true,
-            }
-            let next = drawing.piece.map_or(0, |at| at + 1);
-            if next < picture.order.len() {
-                *drawing = Drawing::of(Some(next));
-                orbit.frame = picture.frame_of(picture.order[next]);
-            } else {
+            if picture.base.laid.is_some()
+                && picture.pieces.iter().all(|part| part.laid.is_some())
+            {
+                info!(
+                    "enhance: {}× drawn, {counted} systems in {elapsed:.1?}",
+                    picture.scale,
+                );
+                if unread > 0 {
+                    warn!("enhance: {unread} cells could not be read");
+                }
+                picture.job = None;
                 enhance.phase = Phase::Shown;
                 orbit.frame = picture.looking();
             }
@@ -532,86 +559,87 @@ fn drive(
 }
 
 impl Picture {
-    fn new(
-        scale: u32,
-        window: &Window,
-        against: Against,
-        commands: &mut Commands,
-        images: &mut Assets<Image>,
-        materials: &mut Assets<PieceMaterial>,
-        meshes: &mut Assets<Mesh>,
-    ) -> Picture {
-        let physical = window.physical_size().max(UVec2::ONE);
-        let viewport = Vec2::new(window.width(), window.height());
-        let mesh = meshes.add(Rectangle::new(1., 1.));
-        let mut part = |column: u32, row: u32, depth: f32| {
-            let mut image = Image::new_target_texture(
-                physical.x,
-                physical.y,
-                TextureFormat::Rgba8UnormSrgb,
-                None,
-            );
-            image.sampler = ImageSampler::linear();
-            let image = images.add(image);
-            let material = materials.add(PieceMaterial {
-                footprint: Footprint::default(),
-                piece: image.clone(),
-            });
-            let quad = commands
-                .spawn((
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d(material.clone()),
-                    RenderLayers::layer(LAYER),
-                    NoFrustumCulling,
-                    Transform::from_xyz(0., 0., depth),
-                    Visibility::Hidden,
-                    PieceQuad,
-                ))
-                .id();
-            Part { image, material, quad, column, row, done: false }
-        };
-        // The pieces stand nearer the overlay's camera than the base, so each
-        // covers it where it is laid.
-        let base = part(0, 0, -2.);
-        let pieces: Vec<Part> = (0..scale)
-            .flat_map(|row| (0..scale).map(move |column| (column, row)))
-            .map(|(column, row)| part(column, row, -1.))
-            .collect();
-        // Out from the middle, which is what the view was pointed at.
-        let middle = (scale as f32 - 1.) / 2.;
-        let mut order: Vec<usize> = (0..pieces.len()).collect();
-        order.sort_by(|&a, &b| {
-            let away = |piece: &Part| {
-                Vec2::new(
-                    piece.column as f32 - middle,
-                    piece.row as f32 - middle,
-                )
-                .length_squared()
-            };
-            away(&pieces[a]).total_cmp(&away(&pieces[b]))
-        });
+    fn new(scale: u32, window: &Window, meshes: &mut Assets<Mesh>) -> Picture {
+        let part = |column: u32, row: u32| Part { column, row, laid: None };
         Picture {
             scale,
-            viewport,
-            physical,
-            scale_factor: window.scale_factor(),
-            base,
-            pieces,
-            order,
+            viewport: Vec2::new(window.width(), window.height()),
+            physical: window.physical_size().max(UVec2::ONE),
+            base: part(0, 0),
+            pieces: (0..scale)
+                .flat_map(|row| (0..scale).map(move |column| (column, row)))
+                .map(|(column, row)| part(column, row))
+                .collect(),
+            mesh: meshes.add(Rectangle::new(1., 1.)),
             zoom: 1.,
             corner: Vec2::ZERO,
-            against,
-            reading: None,
+            job: None,
+            saving: None,
         }
     }
 
-    /// The frame the `piece`th piece is drawn in
-    fn frame_of(&self, piece: usize) -> Frame {
-        let piece = &self.pieces[piece];
-        Frame {
-            scale: self.scale as f32,
-            corner: UVec2::new(piece.column, piece.row).as_vec2()
-                * self.viewport,
+    /// The pieces in the order they are drawn: out from the middle, which is
+    /// what the view was pointed at
+    fn order(&self) -> Vec<usize> {
+        let middle = (self.scale as f32 - 1.) / 2.;
+        let away = |piece: &Part| {
+            Vec2::new(piece.column as f32 - middle, piece.row as f32 - middle)
+                .length_squared()
+        };
+        let mut order: Vec<usize> = (0..self.pieces.len()).collect();
+        order.sort_by(|&a, &b| {
+            away(&self.pieces[a]).total_cmp(&away(&self.pieces[b]))
+        });
+        order
+    }
+
+    /// Lay a drawn part over the map: [`None`] the base, or a piece by number
+    fn lay_part(
+        &mut self,
+        part: Option<usize>,
+        rgba: Vec<u8>,
+        commands: &mut Commands,
+        images: &mut Assets<Image>,
+        materials: &mut Assets<PieceMaterial>,
+    ) {
+        let mut image = Image::new(
+            Extent3d {
+                width: self.physical.x,
+                height: self.physical.y,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            rgba,
+            TextureFormat::Rgba8UnormSrgb,
+            // The GPU's alone once uploaded: a picture is gigabytes'
+            // worth of pieces held twice otherwise. Saving reads it back.
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        image.sampler = ImageSampler::linear();
+        let image = images.add(image);
+        let material = materials.add(PieceMaterial {
+            footprint: Footprint::default(),
+            piece: image.clone(),
+        });
+        // The pieces stand nearer the overlay's camera than the base, so
+        // each covers it where it is laid.
+        let depth = if part.is_some() { -1. } else { -2. };
+        let quad = commands
+            .spawn((
+                Mesh3d(self.mesh.clone()),
+                MeshMaterial3d(material.clone()),
+                RenderLayers::layer(LAYER),
+                NoFrustumCulling,
+                Transform::from_xyz(0., 0., depth),
+                Visibility::Hidden,
+                PieceQuad,
+            ))
+            .id();
+        let laid = Some(Laid { image, material, quad });
+        match part {
+            None => self.base.laid = laid,
+            Some(at) => self.pieces[at].laid = laid,
         }
     }
 
@@ -624,17 +652,6 @@ impl Picture {
             Frame::WHOLE
         } else {
             frame
-        }
-    }
-
-    /// The part being drawn into, if any
-    fn drawing<'a>(&'a self, phase: &Phase) -> Option<&'a Part> {
-        match phase {
-            Phase::Drawing(Drawing { piece: None, .. }) => Some(&self.base),
-            Phase::Drawing(Drawing { piece: Some(at), .. }) => {
-                Some(&self.pieces[self.order[*at]])
-            }
-            _ => None,
         }
     }
 
@@ -665,190 +682,693 @@ impl Picture {
             self.corner.clamp(Vec2::ZERO, (picture - seen).max(Vec2::ZERO));
     }
 
-    /// Ask the pieces back off the GPU, for [`captured`] to put together
-    fn read_back(&mut self, commands: &mut Commands) {
-        self.reading = Some(vec![None; self.pieces.len()]);
-        for (at, piece) in self.pieces.iter().enumerate() {
-            commands
-                .spawn(Screenshot::image(piece.image.clone()))
-                .insert(Reading(at));
-        }
-    }
-
-    /// Let the pieces' textures and quads go
+    /// Let the parts' textures and quads go, and the thread drawing them
     fn put_away(
         self,
         commands: &mut Commands,
         images: &mut Assets<Image>,
         materials: &mut Assets<PieceMaterial>,
     ) {
-        for part in std::iter::once(self.base).chain(self.pieces) {
-            commands.entity(part.quad).despawn();
-            images.remove(&part.image);
-            materials.remove(&part.material);
+        for laid in std::iter::once(self.base)
+            .chain(self.pieces)
+            .filter_map(|part| part.laid)
+        {
+            commands.entity(laid.quad).despawn();
+            images.remove(&laid.image);
+            materials.remove(&laid.material);
+        }
+    }
+}
+
+/// A picture being drawn: the thread summing it, how far it has got, and
+/// the parts it has finished
+///
+/// Dropped with the picture, which stops the thread at its next cell.
+struct Job {
+    progress: Arc<Progress>,
+    finished: Mutex<mpsc::Receiver<Finished>>,
+    started: Instant,
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.progress.cancelled.store(true, Relaxed);
+    }
+}
+
+/// How far a picture has got, counted in systems against what the cells in
+/// view own, which the index says before a payload is read
+#[derive(Default)]
+struct Progress {
+    /// Systems summed so far, over every part
+    counted: AtomicU64,
+    /// Systems every part will sum, once the parts have been culled
+    total: AtomicU64,
+    /// Whether `total` is known yet
+    planned: AtomicBool,
+    /// Parts finished
+    parts: AtomicUsize,
+    /// Cells whose payload would not read, left out of the picture
+    unread: AtomicU64,
+    /// Set to stop the thread
+    cancelled: AtomicBool,
+    /// Why the thread gave up, where it did
+    failed: Mutex<Option<String>>,
+}
+
+/// A finished part, colored: [`None`] the base, or a piece by number
+struct Finished {
+    part: Option<usize>,
+    rgba: Vec<u8>,
+}
+
+impl Job {
+    fn start(spec: Spec) -> Job {
+        let progress = Arc::new(Progress::default());
+        let (send, finished) = mpsc::channel();
+        let drawing = progress.clone();
+        let spawned = std::thread::Builder::new()
+            .name("enhance".into())
+            .spawn(move || spec.draw(&drawing, &send));
+        if let Err(why) = spawned {
+            *progress.failed.lock().expect("the failure") =
+                Some(format!("no thread to draw on: {why}"));
+        }
+        Job {
+            progress,
+            finished: Mutex::new(finished),
+            started: Instant::now(),
+        }
+    }
+}
+
+/// Everything the thread draws a picture from, taken off the map when it is
+/// asked for
+struct Spec {
+    /// The cells that own systems, and how many each owns
+    cells: Vec<(CellId, u64)>,
+    source: Arc<dyn Source>,
+    populated: Populated,
+    filters: Filters,
+    now: DateTime<Utc>,
+    /// The spyglass's bubble, where it clears what is past it: the centre
+    /// the camera looks at and the radius, as the map's own walk clamps to
+    bubble: Option<(bevy::math::DVec3, f64)>,
+    light: Light,
+    /// The view at the window's resolution, in its physical pixels
+    base: Viewpoint,
+    /// The same view `scale` windows across
+    picture: Viewpoint,
+    physical: UVec2,
+    scale: u32,
+    /// The pieces' columns and rows, by number
+    places: Vec<UVec2>,
+    order: Vec<usize>,
+}
+
+/// How many cells a worker takes off the shared list at once
+const BATCH: usize = 16;
+
+/// The fixed-point unit a system's light is summed in, as a share of the
+/// brightest system's
+///
+/// Sums are `u32`, so a pixel holds sixteen million systems at full light
+/// before it wraps; the faintest light the map lays, an unscanned star's,
+/// still comes to a dozen units.
+const UNIT: f32 = 256.;
+
+/// Of the base's lit pixels, the share drawn below the top of the curve
+///
+/// The brightest few go to white rather than the curve being set by the
+/// one pixel the bubble's core lands in, which would leave the rest of the
+/// galaxy dim.
+const WHITE_AT: f64 = 0.995;
+
+impl Spec {
+    fn new(
+        picture: &Picture,
+        view: Viewpoint,
+        index: &galos_index::prelude::Index,
+        source: Arc<dyn Source>,
+        populated: Populated,
+        center: bevy::math::DVec3,
+        reading: &Under,
+    ) -> Spec {
+        // In physical pixels, so a pixel of a piece is a texel of it.
+        let physical = picture.physical;
+        let at = |height: u32| Viewpoint {
+            viewport_height: height as f32,
+            aspect: physical.x as f32 / physical.y as f32,
+            ..view
+        };
+        Spec {
+            cells: index
+                .cells()
+                .filter(|cell| cell.slice_len() > 0)
+                .map(|cell| (cell.id, cell.slice_len()))
+                .collect(),
+            source,
+            populated,
+            filters: reading.filters.clone(),
+            now: Utc::now(),
+            bubble: reading
+                .spyglass
+                .clear
+                .then(|| (center, f64::from(reading.spyglass.radius))),
+            light: Light::new(
+                *reading.color_by,
+                &reading.gains,
+                reading.dim.opacity(),
+            ),
+            base: at(physical.y),
+            picture: at(physical.y * picture.scale),
+            physical,
+            scale: picture.scale,
+            places: picture
+                .pieces
+                .iter()
+                .map(|piece| UVec2::new(piece.column, piece.row))
+                .collect(),
+            order: picture.order(),
         }
     }
 
-    /// Put the read-back pieces together into one picture and write it
-    fn save(&self, read: &[Option<Image>]) -> Result<PathBuf, String> {
-        let width = self.physical.x * self.scale;
-        let height = self.physical.y * self.scale;
-        let mut pixels = vec![0u8; width as usize * height as usize * 4];
-        for (piece, image) in self.pieces.iter().zip(read) {
-            let image = image.as_ref().ok_or("a piece did not come back")?;
-            let data = image.data.as_ref().ok_or("a piece came back empty")?;
-            let size = image.size();
-            if size != self.physical {
-                return Err(format!(
-                    "a piece came back {size} rather than {}",
-                    self.physical
-                ));
-            }
-            // Four bytes a texel, whichever way round the channels are.
-            let swap = matches!(
-                image.texture_descriptor.format,
-                TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
-            );
-            let row_bytes = size.x as usize * 4;
-            for y in 0..size.y as usize {
-                let from = &data[y * row_bytes..(y + 1) * row_bytes];
-                let into_y = piece.row as usize * size.y as usize + y;
-                let into_x = piece.column as usize * size.x as usize;
-                let at = (into_y * width as usize + into_x) * 4;
-                let into = &mut pixels[at..at + row_bytes];
-                into.copy_from_slice(from);
-                for texel in into.chunks_exact_mut(4) {
-                    if swap {
-                        texel.swap(0, 2);
-                    }
-                    texel[3] = 255;
-                }
+    /// Whether the spyglass reaches into a cell's box at all
+    fn reaches_cell(&self, id: CellId) -> bool {
+        self.bubble.is_none_or(|(center, radius)| {
+            id.bounds().distance_to(center.to_array()) <= radius
+        })
+    }
+
+    /// Whether the spyglass reaches a system, as the map's walk asks it
+    fn reaches(&self, at: [f64; 3]) -> bool {
+        self.bubble
+            .is_none_or(|(center, radius)| center.distance(at.into()) <= radius)
+    }
+
+    /// Draw the picture: the base, and from its light the curve, then each
+    /// piece, handing each over as it is colored
+    fn draw(self, progress: &Progress, send: &mpsc::Sender<Finished>) {
+        // What each part reads, and so how much there is to count. Culled
+        // across the workers, a part each: tens of millions of corners at
+        // six windows across.
+        let parts: Vec<(Viewpoint, UVec2)> =
+            std::iter::once((self.base, UVec2::ZERO))
+                .chain(self.order.iter().map(|&piece| {
+                    (self.picture, self.places[piece] * self.physical)
+                }))
+                .collect();
+        let culled = self.cull(&parts, progress);
+        if progress.cancelled.load(Relaxed) {
+            return;
+        }
+        let total =
+            culled.iter().flatten().map(|&(_, owned)| owned).sum::<u64>();
+        progress.total.store(total, Relaxed);
+        progress.planned.store(true, Relaxed);
+
+        let mut white = None;
+        for (at, ((view, origin), cells)) in
+            parts.into_iter().zip(&culled).enumerate()
+        {
+            let Some(sums) = self.sum(view, origin, cells, progress) else {
+                return;
+            };
+            // A base pixel takes in `scale` squared of the picture's.
+            let per = if at == 0 { f64::from(self.scale).powi(2) } else { 1. };
+            let white = *white.get_or_insert_with(|| white_point(&sums, per));
+            let rgba = tone(&sums, per, white);
+            drop(sums);
+            let part = (at > 0).then(|| self.order[at - 1]);
+            progress.parts.fetch_add(1, Relaxed);
+            if send.send(Finished { part, rgba }).is_err() {
+                return;
             }
         }
+    }
+
+    /// The cells each part reads: those whose box lands in it
+    fn cull(
+        &self,
+        parts: &[(Viewpoint, UVec2)],
+        progress: &Progress,
+    ) -> Vec<Vec<(CellId, u64)>> {
+        let size = self.physical.as_dvec2();
+        let next = AtomicUsize::new(0);
+        let culled: Vec<Mutex<Vec<(CellId, u64)>>> =
+            parts.iter().map(|_| Mutex::default()).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..workers() {
+                scope.spawn(|| {
+                    loop {
+                        let at = next.fetch_add(1, Relaxed);
+                        if at >= parts.len() || progress.cancelled.load(Relaxed)
+                        {
+                            return;
+                        }
+                        let (view, origin) = parts[at];
+                        let lens = plan::Lens::of(&view);
+                        let low = origin.as_dvec2();
+                        let rect =
+                            [low.x, low.y, low.x + size.x, low.y + size.y];
+                        let cells = self
+                            .cells
+                            .iter()
+                            .filter(|(id, _)| self.reaches_cell(*id))
+                            .filter(|(id, _)| lands_in(&lens, *id, rect))
+                            .copied()
+                            .collect();
+                        *culled[at].lock().expect("a part's cells") = cells;
+                    }
+                });
+            }
+        });
+        culled
+            .into_iter()
+            .map(|cells| cells.into_inner().expect("a part's cells"))
+            .collect()
+    }
+
+    /// Sum the light every system in `cells` lays into the part of `view`
+    /// whose top left is `origin`, or [`None`] where the picture was put
+    /// away part way
+    fn sum(
+        &self,
+        view: Viewpoint,
+        origin: UVec2,
+        cells: &[(CellId, u64)],
+        progress: &Progress,
+    ) -> Option<Vec<AtomicU32>> {
+        let (width, height) =
+            (self.physical.x as usize, self.physical.y as usize);
+        let sums: Vec<AtomicU32> =
+            (0..width * height * 3).map(|_| AtomicU32::new(0)).collect();
+        // The map's own screen, mirrored as it draws the galaxy.
+        let lens = plan::Lens::of(&view);
+        let origin = origin.as_dvec2();
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..workers() {
+                scope.spawn(|| {
+                    let prepared = self.filters.prepared();
+                    let along = Along::of(self.light.color_by, &self.populated);
+                    loop {
+                        let at = next.fetch_add(BATCH, Relaxed);
+                        if at >= cells.len() || progress.cancelled.load(Relaxed)
+                        {
+                            return;
+                        }
+                        for &(id, owned) in
+                            &cells[at..(at + BATCH).min(cells.len())]
+                        {
+                            let Ok(points) =
+                                bevy::tasks::block_on(self.source.payload(id))
+                            else {
+                                progress.unread.fetch_add(1, Relaxed);
+                                progress.counted.fetch_add(owned, Relaxed);
+                                continue;
+                            };
+                            for point in &points {
+                                if !self.reaches(point.position) {
+                                    continue;
+                                }
+                                let Some([x, y]) = lens.project(point.position)
+                                else {
+                                    continue;
+                                };
+                                let (x, y) = (x - origin.x, y - origin.y);
+                                if !(0. ..width as f64).contains(&x)
+                                    || !(0. ..height as f64).contains(&y)
+                                {
+                                    continue;
+                                }
+                                let admitted = prepared.admits(
+                                    &candidate(point, &self.populated),
+                                    self.now,
+                                );
+                                let peopled = self
+                                    .populated
+                                    .get(point.id64 as i64)
+                                    .is_some_and(|row| row.population > 0);
+                                let Some(light) = self.light.of(
+                                    along.bucket(point),
+                                    peopled,
+                                    admitted,
+                                ) else {
+                                    continue;
+                                };
+                                let pixel =
+                                    3 * (y as usize * width + x as usize);
+                                for (channel, value) in light.iter().enumerate()
+                                {
+                                    sums[pixel + channel]
+                                        .fetch_add(*value, Relaxed);
+                                }
+                            }
+                            progress.counted.fetch_add(owned, Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        (!progress.cancelled.load(Relaxed)).then_some(sums)
+    }
+}
+
+/// Whether any of a cell's box lands in `rect` of `lens`'s frame, in its
+/// pixels: left, top, right, bottom
+///
+/// Its eight corners projected and the rectangle round them laid against the
+/// part, which keeps a little more than it must and never less. A box
+/// reaching behind the eye is kept: it has no rectangle on screen. No margin:
+/// a system is drawn as a point, and lands in the part it projects into and
+/// nowhere else.
+fn lands_in(lens: &plan::Lens, id: CellId, rect: [f64; 4]) -> bool {
+    let bounds = id.bounds();
+    let (mut low, mut high) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for corner in 0..8 {
+        let at = [
+            if corner & 1 == 0 { bounds.min[0] } else { bounds.max[0] },
+            if corner & 2 == 0 { bounds.min[1] } else { bounds.max[1] },
+            if corner & 4 == 0 { bounds.min[2] } else { bounds.max[2] },
+        ];
+        let Some([x, y]) = lens.project(at) else { return true };
+        low = [low[0].min(x), low[1].min(y)];
+        high = [high[0].max(x), high[1].max(y)];
+    }
+    let [left, top, right, bottom] = rect;
+    high[0] >= left && low[0] <= right && high[1] >= top && low[1] <= bottom
+}
+/// How many threads sum a picture: all but two, which the map's own frame
+/// and its render keep
+fn workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .saturating_sub(2)
+        .max(1)
+}
+
+/// The light one system lays into a picture, by its bucket along the axis,
+/// whether anybody lives there, and whether the filters admit it: the map's
+/// own light for a mark ([`system_light`] times the hue's
+/// [`crate::map::galaxy::spawn::Hue::light`]), in [`UNIT`]s of the brightest
+#[derive(Clone)]
+struct Light {
+    color_by: ColorBy,
+    /// By bucket, then unpeopled and peopled: admitted, and dimmed
+    table: Vec<[[Option<[u32; 3]>; 2]; 2]>,
+}
+
+impl Light {
+    fn new(color_by: ColorBy, gains: &Gains, opacity: f32) -> Light {
+        let lights: Vec<[Vec3; 2]> = (0..color_by.buckets())
+            .map(|bucket| {
+                let hue = color_by.hue_of(bucket);
+                [false, true].map(|peopled| {
+                    hue.light() * system_light(color_by, hue, peopled, gains)
+                })
+            })
+            .collect();
+        let brightest = lights
+            .iter()
+            .flatten()
+            .map(|light| light.max_element())
+            .fold(f32::MIN_POSITIVE, f32::max);
+        let fixed = |light: Vec3, fade: f32| {
+            (fade > 0.).then(|| {
+                (light * fade / brightest * UNIT).round().as_uvec3().to_array()
+            })
+        };
+        Light {
+            color_by,
+            table: lights
+                .iter()
+                .map(|by| {
+                    [1., opacity].map(|fade| by.map(|light| fixed(light, fade)))
+                })
+                .collect(),
+        }
+    }
+
+    /// What one system lays, or [`None`] where it is not drawn at all: a
+    /// system the filters exclude with the dim at zero
+    fn of(
+        &self,
+        bucket: usize,
+        peopled: bool,
+        admitted: bool,
+    ) -> Option<[u32; 3]> {
+        let by = self.table.get(bucket)?;
+        by[usize::from(!admitted)][usize::from(peopled)]
+    }
+}
+
+/// The light at the top of the curve: [`WHITE_AT`] of the base's lit pixels,
+/// as light a pixel of the picture gathers
+fn white_point(sums: &[AtomicU32], per: f64) -> f64 {
+    let mut lit: Vec<f64> = sums
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|pixel| brightest(pixel) / per)
+        .filter(|&light| light > 0.)
+        .collect();
+    if lit.is_empty() {
+        return 1.;
+    }
+    let at = ((lit.len() - 1) as f64 * WHITE_AT) as usize;
+    let (_, white, _) = lit.select_nth_unstable_by(at, f64::total_cmp);
+    white.max(1.)
+}
+
+/// A pixel's light in the brightest system's, along its brightest channel
+fn brightest(pixel: &[AtomicU32; 3]) -> f64 {
+    pixel
+        .iter()
+        .map(|channel| f64::from(channel.load(Relaxed)))
+        .fold(0., f64::max)
+        / f64::from(UNIT)
+}
+
+/// Color a part: each pixel's light on a log curve topped at `white`, its
+/// hue held, as sRGB
+fn tone(sums: &[AtomicU32], per: f64, white: f64) -> Vec<u8> {
+    let top = (1. + white).ln();
+    let mut rgba = Vec::with_capacity(sums.len() / 3 * 4);
+    for pixel in sums.as_chunks::<3>().0 {
+        let light = brightest(pixel) / per;
+        if light <= 0. {
+            rgba.extend_from_slice(&[0, 0, 0, 255]);
+            continue;
+        }
+        // The brightest channel goes to the curve and the others with it,
+        // so a mix keeps the color the key gives it.
+        let level = ((1. + light).ln() / top).min(1.);
+        let scale = level / (light * per * f64::from(UNIT));
+        for channel in pixel {
+            let linear = f64::from(channel.load(Relaxed)) * scale;
+            rgba.push((encode(linear as f32) * 255.).round() as u8);
+        }
+        rgba.push(255);
+    }
+    rgba
+}
+
+/// Linear light in `0..=1` encoded for an sRGB texture
+fn encode(linear: f32) -> f32 {
+    let linear = linear.clamp(0., 1.);
+    if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1. / 2.4) - 0.055
+    }
+}
+
+/// A picture being written, a row of pieces at a time
+///
+/// A row is read back off the GPU, its texel rows written through the
+/// encoder, and let go before the next is asked for: what is held is one row
+/// of pieces, whatever the picture's size.
+struct Saving {
+    path: PathBuf,
+    writer: png::StreamWriter<'static, std::io::BufWriter<std::fs::File>>,
+    /// The row of pieces being read back
+    row: u32,
+    /// Its pieces as they come back, by column
+    read: Vec<Option<Vec<u8>>>,
+}
+
+impl Saving {
+    fn start(picture: &Picture) -> Result<Saving, String> {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let path = PathBuf::from(format!("galos-enhanced-{stamp}.png"));
         let file =
             std::fs::File::create(&path).map_err(|err| err.to_string())?;
-        let mut encoder =
-            png::Encoder::new(std::io::BufWriter::new(file), width, height);
+        let mut encoder = png::Encoder::new(
+            std::io::BufWriter::new(file),
+            picture.physical.x * picture.scale,
+            picture.physical.y * picture.scale,
+        );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-        let mut writer =
-            encoder.write_header().map_err(|err| err.to_string())?;
-        writer.write_image_data(&pixels).map_err(|err| err.to_string())?;
-        writer.finish().map_err(|err| err.to_string())?;
-        Ok(std::fs::canonicalize(&path).unwrap_or(path))
+        let writer = encoder
+            .write_header()
+            .and_then(png::Writer::into_stream_writer)
+            .map_err(|err| err.to_string())?;
+        Ok(Saving {
+            path: std::fs::canonicalize(&path).unwrap_or(path),
+            writer,
+            row: 0,
+            read: vec![None; picture.scale as usize],
+        })
+    }
+
+    /// Ask the row of pieces being written back off the GPU
+    fn ask_row(&self, picture: &Picture, commands: &mut Commands) {
+        let scale = picture.scale as usize;
+        let row = self.row as usize;
+        for (at, piece) in
+            picture.pieces.iter().enumerate().skip(row * scale).take(scale)
+        {
+            if let Some(laid) = &piece.laid {
+                commands.spawn((
+                    Readback::texture(laid.image.clone()),
+                    Reading(at),
+                ));
+            }
+        }
+    }
+
+    /// Write the row once every piece of it is back, and say whether the
+    /// picture is finished
+    fn write_row(&mut self, picture: &Picture) -> Result<bool, String> {
+        if self.read.iter().any(Option::is_none) {
+            return Ok(false);
+        }
+        let row_bytes = picture.physical.x as usize * 4;
+        let stride = RenderDevice::align_copy_bytes_per_row(row_bytes);
+        let rows = picture.physical.y as usize;
+        let read: Vec<Vec<u8>> =
+            self.read.iter_mut().flat_map(Option::take).collect();
+        for data in &read {
+            if data.len() < stride * (rows - 1) + row_bytes {
+                return Err(format!(
+                    "a piece came back {} bytes rather than {}",
+                    data.len(),
+                    stride * rows
+                ));
+            }
+        }
+        for y in 0..rows {
+            for data in &read {
+                self.writer
+                    .write_all(&data[y * stride..y * stride + row_bytes])
+                    .map_err(|err| err.to_string())?;
+            }
+        }
+        self.row += 1;
+        Ok(self.row == picture.scale)
     }
 }
 
-/// Which piece a read-back screenshot is of
+/// Which piece a read-back is of
 #[derive(Component)]
 struct Reading(usize);
 
-/// Take a piece read back, and save the picture once every piece is
+/// Take a piece read back into the row being written, write the row once it
+/// is whole, and ask for the next
 fn captured(
-    capture: On<ScreenshotCaptured>,
+    read: On<ReadbackComplete>,
     readings: Query<&Reading>,
+    mut commands: Commands,
     mut enhance: ResMut<Enhance>,
 ) {
-    let Ok(Reading(at)) = readings.get(capture.entity) else { return };
+    let Ok(Reading(at)) = readings.get(read.entity) else { return };
+    // Once is enough: a readback left standing reads again every frame, and
+    // one or two more may land before this despawn does.
+    commands.entity(read.entity).try_despawn();
     let enhance = &mut *enhance;
     let Some(picture) = &mut enhance.picture else { return };
-    let Some(reading) = &mut picture.reading else { return };
-    if let Some(slot) = reading.get_mut(*at) {
-        *slot = Some(capture.image.clone());
+    let Some(mut saving) = picture.saving.take() else { return };
+    let scale = picture.scale as usize;
+    if *at / scale != saving.row as usize {
+        picture.saving = Some(saving);
+        return;
     }
-    if reading.iter().all(Option::is_some) {
-        let read = picture.reading.take().unwrap_or_default();
-        enhance.saved = Some(picture.save(&read));
+    saving.read[*at % scale] = Some(read.data.clone());
+    match saving.write_row(picture) {
+        Ok(false) if saving.read.iter().all(Option::is_none) => {
+            saving.ask_row(picture, &mut commands);
+            picture.saving = Some(saving);
+        }
+        Ok(false) => picture.saving = Some(saving),
+        Ok(true) => {
+            let path = saving.path.clone();
+            enhance.saved = Some(
+                saving
+                    .writer
+                    .finish()
+                    .map(|()| path)
+                    .map_err(|err| err.to_string()),
+            );
+        }
+        Err(why) => enhance.saved = Some(Err(why)),
     }
 }
 
-/// The map's cameras that draw onto the window
-type OntoWindow = Or<(
-    With<OrbitCamera>,
-    With<crate::map::paint::curve::CurveCamera>,
-    With<crate::map::paint::field::FieldCamera>,
-)>;
-
-/// Send the map's cameras where the phase draws: into the piece being
-/// drawn, or onto the window
+/// Whether an enhanced picture covers the window
 ///
-/// The scene's camera and the curve's draw onto the window, and in the
-/// realistic view the field's does too; while a piece is drawn all three
-/// draw into its texture instead, the window being the overlay's. The
-/// field's camera in the map view draws into a target of its own and is
-/// left alone.
-fn route(
+/// From the frame its base is laid until it is put away. The map's own
+/// cameras stand down for as long, the picture standing over all of them:
+/// the scene's here, the field's and the curve's in
+/// `crate::map::paint::curve`.
+#[derive(Resource, Default)]
+pub(crate) struct Covered(pub(crate) bool);
+
+/// Lay the parts that are down over the window, where the window is looking
+/// into the picture
+fn lay(
     enhance: Res<Enhance>,
+    mut covered: ResMut<Covered>,
     mut overlay: Query<&mut Camera, With<OverlayCamera>>,
-    mut cameras: Query<(Entity, &mut RenderTarget), OntoWindow>,
-    // The cameras sent into a piece, which are the ones to send back.
-    mut ours: Local<Vec<Entity>>,
+    mut scene: Query<&mut Camera, (With<OrbitCamera>, Without<OverlayCamera>)>,
+    mut quads: Query<(&mut Transform, &mut Visibility), With<PieceQuad>>,
+    mut materials: ResMut<Assets<PieceMaterial>>,
 ) {
-    let active = enhance.phase != Phase::Off;
+    // Over the window once the base is down, and not before: until then
+    // the map itself is the view as it stands.
+    let active = enhance
+        .picture
+        .as_ref()
+        .is_some_and(|picture| picture.base.laid.is_some());
+    if covered.0 != active {
+        covered.0 = active;
+    }
     for mut camera in &mut overlay {
         if camera.is_active != active {
             camera.is_active = active;
         }
     }
-    let into = enhance.picture.as_ref().and_then(|picture| {
-        picture
-            .drawing(&enhance.phase)
-            .map(|part| (part.image.clone(), picture.scale_factor))
-    });
-    let Some((image, scale_factor)) = into else {
-        for entity in ours.drain(..) {
-            if let Ok((_, mut target)) = cameras.get_mut(entity) {
-                *target = RenderTarget::Window(WindowRef::Primary);
-            }
-        }
-        return;
-    };
-    for (entity, mut target) in &mut cameras {
-        let send = match &*target {
-            RenderTarget::Window(_) => true,
-            // Into the last piece, and on to this one.
-            RenderTarget::Image(held) => {
-                ours.contains(&entity) && held.handle != image
-            }
-            _ => false,
-        };
-        if send {
-            *target = RenderTarget::Image(ImageRenderTarget {
-                handle: image.clone(),
-                scale_factor,
-            });
-            if !ours.contains(&entity) {
-                ours.push(entity);
-            }
+    for mut camera in &mut scene {
+        if camera.is_active == active {
+            camera.is_active = !active;
         }
     }
-}
-
-/// Lay the pieces that are down over the window, where the window is
-/// looking into the picture
-fn lay(
-    enhance: Res<Enhance>,
-    mut quads: Query<(&mut Transform, &mut Visibility), With<PieceQuad>>,
-    mut materials: ResMut<Assets<PieceMaterial>>,
-) {
     let Some(picture) = &enhance.picture else { return };
     // How large a picture pixel is on the window, in window pixels, and so
     // how many of a piece's texels each window pixel takes in.
     let shown = picture.zoom / picture.scale as f32;
     let across = 1. / shown;
     let half = picture.viewport / 2.;
-    let mut place = |part: &Part, shown: bool, rect: Rect, across: f32| {
-        let Ok((mut transform, mut visibility)) = quads.get_mut(part.quad)
+    let mut place = |part: &Part, rect: Rect, across: f32| {
+        let Some(laid) = &part.laid else { return };
+        let Ok((mut transform, mut visibility)) = quads.get_mut(laid.quad)
         else {
             return;
         };
-        let wanted =
-            if shown { Visibility::Visible } else { Visibility::Hidden };
-        if *visibility != wanted {
-            *visibility = wanted;
+        if *visibility != Visibility::Visible {
+            *visibility = Visibility::Visible;
         }
         let centre = rect.center();
         let placed = Transform::from_xyz(
@@ -860,9 +1380,9 @@ fn lay(
         if *transform != placed {
             *transform = placed;
         }
-        if let Some(material) = materials.get(&part.material)
+        if let Some(material) = materials.get(&laid.material)
             && material.footprint.across != across
-            && let Some(mut material) = materials.get_mut(&part.material)
+            && let Some(mut material) = materials.get_mut(&laid.material)
         {
             material.footprint.across = across;
         }
@@ -874,42 +1394,27 @@ fn lay(
         )
     };
     // The base is the view as it stood, a window's worth of picture: it
-    // covers the whole picture at a piece's resolution over `scale`. Shown
-    // from the first frame, which is the frame it is first drawn in: the
-    // overlay's camera draws after the map's, and the view was on the
-    // window, loaded, when the button was pressed.
+    // covers the whole picture at a piece's resolution over `scale`.
     let whole = picture.viewport * picture.scale as f32;
     place(
         &picture.base,
-        true,
         picture_rect(Vec2::ZERO, whole),
         across / picture.scale as f32,
     );
     for piece in &picture.pieces {
         let low =
             UVec2::new(piece.column, piece.row).as_vec2() * picture.viewport;
-        place(piece, piece.done, picture_rect(low, picture.viewport), across);
+        place(piece, picture_rect(low, picture.viewport), across);
     }
 }
 
-/// Keep the map's own annotations off the window while pieces are drawn
-///
-/// They are drawn for whichever piece the map is drawing, and would stand
-/// a piece's width from what they name; once the picture is down the map
-/// draws through the window's own frame again and they come back.
-fn hide_annotations(
-    mut contexts: EguiContexts,
-    enhance: Res<Enhance>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let drawing = matches!(enhance.phase, Phase::Drawing(_));
-    let transform = if drawing {
-        egui::emath::TSTransform::from_translation(egui::vec2(1e6, 1e6))
-    } else {
-        egui::emath::TSTransform::IDENTITY
-    };
-    ctx.set_transform_layer(crate::map::screen::annotations_layer(), transform);
-    Ok(())
+/// A count of systems as the progress reads it
+fn systems(count: u64) -> String {
+    match count {
+        0..1_000 => format!("{count}"),
+        1_000..1_000_000 => format!("{:.0}k", count as f64 / 1e3),
+        _ => format!("{:.1}M", count as f64 / 1e6),
+    }
 }
 
 /// The button, the progress, and the picture's own controls
@@ -977,37 +1482,23 @@ fn controls(
                         if ui
                             .button("enhance")
                             .on_hover_text(
-                                "Draw this view again at several times the \
-                                 window's resolution, over the map",
+                                "Draw every system in this view at several \
+                                 times the window's resolution, over the map",
                             )
                             .clicked()
                         {
                             enhance.asked = Some(Ask::Start);
                         }
                     });
+                    if let Some(Err(why)) = &enhance.saved {
+                        ui.label(format!("not drawn: {why}"));
+                    }
                 }
-                Phase::Drawing(drawing) => {
+                Phase::Drawing => {
                     let Some(picture) = &enhance.picture else { return };
-                    let pieces = picture.pieces.len();
-                    let (done, label) = match drawing.piece {
-                        None => (0., "the view".to_owned()),
-                        Some(at) => (
-                            at as f32 + 1.,
-                            format!("piece {} of {pieces}", at + 1),
-                        ),
-                    };
-                    // How far the piece under way has got, by what it still
-                    // has to read and build against the most it has had.
-                    let within = if drawing.most == 0 {
-                        0.
-                    } else {
-                        1. - drawing.left as f32 / drawing.most as f32
-                    };
-                    let progress =
-                        ((done + within) / (pieces as f32 + 1.)).clamp(0., 1.);
-                    ui.set_width(260.);
-                    ui.label(format!("enhancing {}×: {label}", picture.scale));
-                    ui.add(egui::ProgressBar::new(progress).show_percentage());
+                    let Some(job) = &picture.job else { return };
+                    ui.set_width(280.);
+                    drawing(ui, picture, job);
                     if ui.button("cancel").clicked() {
                         enhance.asked = Some(Ask::Close);
                     }
@@ -1019,15 +1510,19 @@ fn controls(
                         picture.scale, picture.zoom
                     ));
                     ui.horizontal(|ui| {
-                        let saving = picture.reading.is_some();
+                        let saving = picture.saving.as_ref();
+                        let label = match saving {
+                            Some(saving) => format!(
+                                "saving {} of {}…",
+                                saving.row + 1,
+                                picture.scale
+                            ),
+                            None => "save png".to_owned(),
+                        };
                         if ui
                             .add_enabled(
-                                !saving,
-                                egui::Button::new(if saving {
-                                    "saving…"
-                                } else {
-                                    "save png"
-                                }),
+                                saving.is_none(),
+                                egui::Button::new(label),
                             )
                             .clicked()
                         {
@@ -1050,4 +1545,47 @@ fn controls(
             });
         });
     Ok(())
+}
+
+/// How far a picture being drawn has got: the systems summed against what
+/// the cells in view own, the part under way, the rate and what is left
+fn drawing(ui: &mut egui::Ui, picture: &Picture, job: &Job) {
+    let progress = &job.progress;
+    let parts = picture.pieces.len() + 1;
+    let done = progress.parts.load(Relaxed).min(parts);
+    let part = match done {
+        0 => "the view".to_owned(),
+        n if n < parts => format!("piece {n} of {}", parts - 1),
+        _ => "laying it down".to_owned(),
+    };
+    ui.label(format!("enhancing {}×: {part}", picture.scale));
+    if !progress.planned.load(Relaxed) {
+        ui.add(egui::ProgressBar::new(0.).text("finding the cells in view"));
+        return;
+    }
+    let counted = progress.counted.load(Relaxed);
+    let total = progress.total.load(Relaxed).max(1);
+    let share = (counted as f32 / total as f32).clamp(0., 1.);
+    ui.add(egui::ProgressBar::new(share).show_percentage());
+    let elapsed = job.started.elapsed();
+    let left = (counted > 0).then(|| {
+        Duration::from_secs_f64(
+            elapsed.as_secs_f64() * (total - counted.min(total)) as f64
+                / counted as f64,
+        )
+    });
+    ui.label(format!(
+        "{} of {} systems · {}/s{}",
+        systems(counted),
+        systems(total),
+        systems((counted as f64 / elapsed.as_secs_f64().max(1e-3)) as u64),
+        left.map_or(String::new(), |left| {
+            let left = left.as_secs_f32();
+            if left < 10. {
+                format!(" · about {left:.1}s left")
+            } else {
+                format!(" · about {left:.0}s left")
+            }
+        }),
+    ));
 }
