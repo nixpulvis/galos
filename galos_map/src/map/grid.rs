@@ -467,8 +467,8 @@ fn wants_ruling(standing: f32, carried: f32, stood_in: bool) -> f32 {
 /// to step. Eased, a step becomes a fade of this long however it was arrived
 /// at.
 ///
-/// The same half second the mark standing for a system is bounded to
-/// ([`crate::map::bodies::spawn::GOES_OUT_IN`]), so where the two are both
+/// The same half second a mark is eased over when the map changes hands
+/// ([`crate::map::bodies::spawn::HANDED_OVER_IN`]), so where the two are both
 /// moving they move together.
 const HANDS_OVER_IN: f32 = 0.5;
 

@@ -254,10 +254,11 @@ impl Entered {
 
 /// How strongly the mark standing for a system is drawn, from one to nothing
 ///
-/// What is drawn, which follows what the distance asks at a bounded rate
-/// rather than exactly. Read by everything that goes out with a system: its
-/// shell, the rings around it, its name, the routes reaching it and the ruled
-/// plane under it, so that the whole of it goes together.
+/// What the distance asks, exactly and on the frame it asks it, so the mark
+/// goes out with the zoom and comes back with it rather than catching up
+/// after. Read by everything that goes out with a system: its shell, the
+/// rings around it, its name, the routes reaching it and the ruled plane
+/// under it, so that the whole of it goes together.
 #[derive(Component)]
 pub struct Strength(pub f32);
 
@@ -268,46 +269,58 @@ impl Default for Strength {
     }
 }
 
-/// How long a mark takes to go out, in seconds
+/// How long a mark takes to come to what is wanted of it when the system the
+/// map is holding changes hands, in seconds
 ///
-/// How much of a mark should be left is a question about how far off the
-/// system is, and the camera is free to cross the whole band in a frame or
-/// two. A flight covers four light years in ninety frames and spends three of
-/// them inside the band; a drag flicked across the view is not far behind.
-/// Only a scroll crosses it slowly, being multiplicative and asked for a click
-/// at a time, and it is the one path that ever looked like a fade.
+/// The one time a mark does not simply follow the distance. Zooming and
+/// panning about a system the map is holding move the camera through the band
+/// a frame at a time, and the mark goes with them exactly. But the map lets go
+/// of a system for a nearer one the moment the crosshair is nearer it (see
+/// [`crate::map::bodies::fetch`]), and a wide system's band runs out past its
+/// neighbours: Alpha Centauri's mark is nearly gone from Sol, and panned from
+/// one toward the other it came back whole in a frame. Taking hold of a system
+/// is the same jump the other way, a flight landing inside one.
 ///
-/// So the distance says what a mark should come to and this says how fast what
-/// is drawn may follow it. Half a second: long enough to read as one thing
-/// becoming another, short enough that a mark is not left standing over the
-/// system it stands for.
-///
-/// A bound rather than a pace, so raising it slows only the paths that cross
-/// the band faster than this. A camera coming in on the wheel is slower than
-/// this the whole way and never touches it.
-pub(crate) const GOES_OUT_IN: f32 = 0.5;
+/// Half a second, as the ruled plane hands over in ([`crate::map::grid`]), so
+/// the two go together.
+pub(crate) const HANDED_OVER_IN: f32 = 0.5;
 
-/// Draw every mark a step nearer what is wanted of it
+/// Draw every mark at what is wanted of it
 ///
 /// Every system every frame, and written only where it moved, which past the
 /// one being closed on is none of them.
+///
+/// Taken straight off the distance for the system the map is holding, once
+/// it has caught up with it. A mark bounded to go out over half a second
+/// trailed any camera crossing the band faster than that, so what was drawn
+/// said where the camera had been rather than where it is. What is eased is
+/// a change of hands, which no camera movement draws out; see
+/// [`HANDED_OVER_IN`].
 fn fade(
     time: Res<Time<Real>>,
     camera: Query<&OrbitCamera>,
     holding: Res<Entered>,
+    // The system held and caught up with, whose mark follows the distance
+    // exactly. Nothing from the frame the map changes hands until the new one
+    // has been eased to where its distance puts it.
+    mut following: Local<Option<Entity>>,
     mut systems: Query<(Entity, &System, &Visibility, &mut Strength)>,
 ) {
     let Ok(eye) = camera.single().map(|camera| camera.eye()) else { return };
     let drawing = holding.of();
-    let step = time.delta_secs() / GOES_OUT_IN;
+    if *following != drawing {
+        *following = None;
+    }
+    let step = time.delta_secs() / HANDED_OVER_IN;
 
     for (entity, system, visible, mut standing) in &mut systems {
-        // Off the frame a mark is not drawn, so how far out it has gone is not
-        // stepped — except the one system being closed on, whose fade the plane
-        // handover rides (see [`crate::map::grid`]). It is stepped even when a filter
-        // has hidden it, or the plane ruled inside it would never give way back
-        // to the galaxy on the way up.
-        if *visible == Visibility::Hidden && Some(entity) != drawing {
+        let held = Some(entity) == drawing;
+        // Off the frame a mark is not drawn, so how much of it is left is not
+        // asked — except of the one system being closed on, whose fade the
+        // plane handover rides (see [`crate::map::grid`]). It is asked even
+        // when a filter has hidden it, or the plane ruled inside it would
+        // never give way back to the galaxy on the way up.
+        if *visible == Visibility::Hidden && !held {
             continue;
         }
         // Only the one system whose insides the map is holding may give way to
@@ -315,19 +328,18 @@ fn fade(
         // there is nothing drawn behind it, so a mark going out there is a
         // system going out altogether. Alpha Centauri reaches a fifth of a
         // light year, and by its own measure its mark is nearly gone from Sol.
-        let wanted = if Some(entity) == drawing {
-            standing_for(system, eye)
-        } else {
-            1.
-        };
+        let wanted = if held { standing_for(system, eye) } else { 1. };
         // A system arriving is drawn at whatever its distance asks rather than
-        // fading in from whole. It is one the map has just been told about,
+        // eased in from whole. It is one the map has just been told about,
         // not one the camera has come up on.
-        let drawn = if standing.is_added() {
+        let drawn = if standing.is_added() || (held && following.is_some()) {
             wanted
         } else {
             standing.0 + (wanted - standing.0).clamp(-step, step)
         };
+        if held && drawn == wanted {
+            *following = drawing;
+        }
 
         if standing.0 != drawn {
             standing.0 = drawn;
@@ -2319,38 +2331,47 @@ mod tests {
         fading(seen)
     }
 
-    /// A world holding a camera `away` light years from one system
+    /// A world holding a camera `away` light years from one system, which the
+    /// map is holding where `held`
     ///
     /// The marks are kept up in it, and the camera is stood wherever a test
-    /// wants it rather than flown there: what is being asked is how fast a
-    /// mark follows the camera, not how the camera moves.
-    fn approaching(away: f64) -> App {
+    /// wants it rather than flown there: what is being asked is what a mark
+    /// comes to where the camera stands, not how the camera moves.
+    fn standing_off(away: f64, held: bool) -> App {
         let mut app = App::new();
         app.init_resource::<Time<Real>>();
         app.world_mut()
             .spawn(OrbitCamera::standing_at(DVec3::new(away, 0., 0.)));
         // A system of the middling sort, at the origin. Its mark goes out
         // between 0.0127 light years and 0.0032.
-        let held = app
-            .world_mut()
-            .spawn((
-                crate::map::galaxy::tests::reaching(1, 0., 1.5e12),
-                Visibility::Visible,
-            ))
-            .id();
-        // Held, since a mark only goes out where the map is drawing what it
-        // stands for.
-        app.insert_resource(Entered(Some(held)));
+        app.world_mut().spawn((
+            crate::map::galaxy::tests::reaching(1, 0., 1.5e12),
+            Visibility::Visible,
+        ));
+        app.init_resource::<Entered>();
+        hold(&mut app, held);
         app.add_systems(Update, fade);
         app.update();
         app
     }
 
-    /// And one the map is not holding
+    /// One the map is holding, since a mark only goes out where the map is
+    /// drawing what it stands for
+    fn approaching(away: f64) -> App {
+        standing_off(away, true)
+    }
+
+    /// And one the map is not
     fn beside(away: f64) -> App {
-        let mut app = approaching(away);
-        app.insert_resource(Entered::default());
-        app
+        standing_off(away, false)
+    }
+
+    /// Have the map take hold of the system, or let go of it
+    fn hold(app: &mut App, held: bool) {
+        let world = app.world_mut();
+        let system = world.query_filtered::<Entity, With<System>>().single(world);
+        *world.resource_mut::<Entered>() =
+            Entered(system.ok().filter(|_| held));
     }
 
     /// A mark over a system the map is not holding stands whole
@@ -2363,10 +2384,11 @@ mod tests {
     fn a_mark_the_map_is_not_holding_stands_whole() {
         let mut app = beside(0.001);
 
-        for _ in 0..30 {
-            stepped(&mut app, 0.001);
-        }
-        assert_eq!(drawn(&mut app), 1., "a system went out with nothing drawn");
+        assert_eq!(
+            stepped(&mut app, 0.001),
+            1.,
+            "a system went out with nothing drawn"
+        );
     }
 
     /// How much of that system's mark is drawn
@@ -2392,49 +2414,70 @@ mod tests {
         drawn(app)
     }
 
-    /// A mark goes out at its own pace, however the camera got there
+    /// A mark let go of part way out comes back over the handover
     ///
-    /// The distance says what a mark should come to, and the camera is free to
-    /// cross the whole band between two frames: a flight spends three frames
-    /// of its ninety in there, and a drag flicked across the view is not far
-    /// behind. Only a scroll crosses it slowly, and it was the one path that
-    /// ever looked like a fade.
+    /// Rather than in the frame the map lets go. The camera has not moved:
+    /// the crosshair has come nearer a neighbour, which is a change of hands,
+    /// and what was drawn a frame ago is where a mark comes back from.
     #[test]
-    fn a_mark_goes_out_at_its_own_pace() {
-        let mut app = approaching(0.02);
+    fn a_mark_let_go_of_comes_back_over_the_handover() {
+        let mut app = approaching(0.006);
+        let part = drawn(&mut app);
+        assert!(part < 1., "0.006 ly off drew the whole mark");
+
+        hold(&mut app, false);
+        let after = stepped(&mut app, 0.006);
+        assert!(
+            part < after && after < part + 0.05,
+            "let go of, a mark went from {part} to {after} in a frame"
+        );
+
+        for _ in 0..30 {
+            stepped(&mut app, 0.006);
+        }
         assert_eq!(drawn(&mut app), 1.);
+    }
 
-        // The camera arrives the whole way in, as a flight lands.
+    /// And one taken hold of goes out over it, then follows the zoom
+    ///
+    /// A flight lands the camera inside a system in a frame, which is the
+    /// same change of hands the other way round.
+    #[test]
+    fn a_mark_taken_hold_of_goes_out_over_the_handover() {
+        let system = crate::map::galaxy::tests::reaching(1, 0., 1.5e12);
+        let asked = |ly: f64| standing_for(&system, DVec3::new(ly, 0., 0.));
+        let mut app = beside(0.001);
+
+        hold(&mut app, true);
         let after = stepped(&mut app, 0.001);
-        assert!(after > 0.95, "a mark went out in one frame, to {after}");
+        assert!(after > 0.95, "taken hold of, a mark went out to {after}");
 
-        // And is gone half a second later.
         for _ in 0..30 {
             stepped(&mut app, 0.001);
         }
         assert_eq!(drawn(&mut app), 0.);
+        assert_eq!(stepped(&mut app, 0.006), asked(0.006));
     }
 
-    /// And comes back at the same pace
-    #[test]
-    fn a_mark_comes_back_at_its_own_pace() {
-        let mut app = approaching(0.001);
-
-        let after = stepped(&mut app, 0.02);
-        assert!(after < 0.05, "a mark came back in one frame, to {after}");
-    }
-
-    /// A system arriving under the camera is drawn where it stands
+    /// A mark goes with the zoom, on the frame the camera gets there
     ///
-    /// Rather than fading in from whole. It is a system the map has just been
-    /// told about, not one the camera has come up on, and a mark fading in
-    /// over what it stands for is the one thing the whole band is arranged to
-    /// avoid.
+    /// However fast the camera crosses the band, and whichever way: what is
+    /// drawn is what the distance asks, so a zoom stopped part way leaves the
+    /// mark part way, and one turned back brings it straight back.
     #[test]
-    fn a_system_arriving_is_drawn_where_it_stands() {
-        let mut app = approaching(0.001);
+    fn a_mark_goes_with_the_zoom() {
+        let system = crate::map::galaxy::tests::reaching(1, 0., 1.5e12);
+        let asked = |ly: f64| standing_for(&system, DVec3::new(ly, 0., 0.));
+        let mut app = approaching(0.02);
+        assert_eq!(drawn(&mut app), 1.);
 
-        assert_eq!(drawn(&mut app), 0., "a mark faded in over its own system");
+        // Part way into the band, then the whole way in as a flight lands,
+        // then back out past it.
+        let part = stepped(&mut app, 0.006);
+        assert!(0. < part && part < 1., "0.006 ly off drew {part} of a mark");
+        assert_eq!(part, asked(0.006));
+        assert_eq!(stepped(&mut app, 0.001), 0., "a mark trailed the zoom in");
+        assert_eq!(stepped(&mut app, 0.02), 1., "a mark trailed the zoom out");
     }
 
     /// A mark goes out on the approach to the system it stands for
