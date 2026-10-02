@@ -103,6 +103,7 @@ use galos_index::tree::cell::UNIFORM_SPAN;
 pub fn plugin(app: &mut App) {
     app.init_resource::<Gains>();
     app.init_resource::<Laid>();
+    app.insert_resource(ShowGlow(true));
     app.add_systems(Startup, spawn_glow);
     app.add_systems(
         Update,
@@ -111,6 +112,15 @@ pub fn plugin(app: &mut App) {
             .in_set(MapSet::Present),
     );
 }
+
+/// Whether the glow is drawn: the light of every system the map view is not
+/// drawing as a mark of its own
+///
+/// Off, the map view is its marks alone. They still go through the field's
+/// exposure and curve ([`crate::map::paint::curve`]), which is what brings a
+/// mark onto the display whether or not anything is laid behind it.
+#[derive(Resource)]
+pub(crate) struct ShowGlow(pub(crate) bool);
 
 /// What the field laid down last frame
 ///
@@ -804,6 +814,7 @@ fn build_glow(
     color_by: Res<ColorBy>,
     gains: Res<Gains>,
     view: Res<View>,
+    show_glow: Res<ShowGlow>,
     scale_population: Res<crate::map::paint::sizing::ScalePopulation>,
     spyglass: Res<crate::map::galaxy::Spyglass>,
     (mut laid, mut glow, mut meshes, mut last): Written<'_, '_>,
@@ -827,6 +838,7 @@ fn build_glow(
         || color_by.is_changed()
         || gains.is_changed()
         || view.is_changed()
+        || show_glow.is_changed()
         || scale_population.is_changed()
         || spyglass.is_changed();
     if !moved && last.is_some() && *last == seen {
@@ -857,11 +869,11 @@ fn build_glow(
     // off the political ones. Same deposit, a different weight; not this.
     //
     // Laid in a block rather than behind an early return, so the mesh below is
-    // written on every frame either way: a view that draws no field writes an
-    // empty one, where leaving the last frame's standing would keep a political
-    // field over the realistic sky.
+    // written on every frame either way: a view that draws no field, or a
+    // glow switched off, writes an empty one, where leaving the last frame's
+    // standing would keep a political field over the realistic sky.
     'lay: {
-        if *view != View::Map {
+        if *view != View::Map || !show_glow.0 {
             break 'lay;
         }
         let Ok((orbit, camera)) = camera.single() else { break 'lay };
@@ -1895,6 +1907,7 @@ mod exposure {
         app.insert_resource(ResidentIndex(index));
         app.insert_resource(Settled(std::sync::Arc::new(settled)));
         app.insert_resource(Populated::default());
+        app.insert_resource(ShowGlow(true));
         // Nothing is drawn as itself in this harness, so nothing is accounted
         // for and the field lays every cell's aggregate down whole. That is
         // the far case the exposure is judged on.

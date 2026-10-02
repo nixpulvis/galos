@@ -18,6 +18,7 @@ use crate::map::grid::{
 };
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
 use crate::map::paint::curve::{FieldCurve, FieldExposure};
+use crate::map::paint::glow::ShowGlow;
 use crate::map::paint::sizing::{ScalePopulation, View};
 use crate::map::rose::ShowRose;
 use crate::ui::widgets::{VALUE_WIDTH, check, fill_width, value_box};
@@ -127,6 +128,7 @@ pub(crate) struct Settings<'w> {
     star_exposure: ResMut<'w, StarExposure>,
     field_exposure: ResMut<'w, FieldExposure>,
     field_curve: ResMut<'w, FieldCurve>,
+    show_glow: ResMut<'w, ShowGlow>,
     star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
     poll: ResMut<'w, Poll>,
@@ -541,6 +543,23 @@ pub(super) fn settings_body(
             },
         );
         ui.add_space(FIELD_GAP);
+        // The light laid behind the marks for every system not drawn as one.
+        // Off, what is left is the marks, which the exposure and the curve
+        // below still bring onto the display.
+        edited(
+            &mut settings.show_glow,
+            |x| &mut x.0,
+            |on| {
+                check(
+                    ui,
+                    on,
+                    "Glow",
+                    "Draw the light of the systems too close together to \
+                     draw as their own dots",
+                )
+            },
+        );
+        ui.add_space(FIELD_GAP);
         // How many stops the field and the marks over it are lifted ahead of
         // the curve. The map is a political instrument at one setting and a
         // picture of where anybody has been at another, and which of those
@@ -549,8 +568,8 @@ pub(super) fn settings_body(
         titled(
             ui,
             "Field Exposure (EV)",
-            "How brightly the galaxy is drawn: a gain on its light ahead of \
-             the curve below",
+            "How brightly the galaxy is drawn, its dots and its glow alike: \
+             a gain on its light ahead of the curve below",
         );
         let mut field_ev = settings.field_exposure.0;
         fill_width(ui, VALUE_WIDTH);
@@ -1072,6 +1091,7 @@ mod tests {
         world.insert_resource(StarExposure::default());
         world.insert_resource(FieldExposure(0.));
         world.insert_resource(FieldCurve::default());
+        world.insert_resource(ShowGlow(true));
         world.insert_resource(StarProfile::default());
         world.insert_resource(ShowNames(true));
         world.insert_resource(Poll(Some(10.)));
@@ -1155,6 +1175,7 @@ mod tests {
                 ("StarExposure", touched::<StarExposure>(&world)),
                 ("FieldExposure", touched::<FieldExposure>(&world)),
                 ("FieldCurve", touched::<FieldCurve>(&world)),
+                ("ShowGlow", touched::<ShowGlow>(&world)),
                 ("StarProfile", touched::<StarProfile>(&world)),
                 ("ShowNames", touched::<ShowNames>(&world)),
                 ("Poll", touched::<Poll>(&world)),

@@ -89,12 +89,13 @@ an average system's mark along the axis drawn and held down as the reach
 widens. Each mark goes through the same curve on its own, at a set exposure,
 and is laid over the glow, so a system drawn as itself reads as one over the
 crowd behind it at every zoom. The settings pane, under the map view, sets
-it: Field Exposure slides the frame along the curve, and Field Curve is the
-curve itself, seven points dragged up and down — past one another too, to a
-peak or a trough — with a cubic through them that never overshoots one. What
-the filters exclude is
-drawn into a second target and dimmed after the curve, so the Filtered
-Opacity dims the glow as far as it dims a mark.
+it: Glow takes the glow away and leaves the marks, Field Exposure slides the
+frame along the curve, and Field Curve is the curve itself, seven points
+dragged up and down — past one another too, to a peak or a trough — with a
+cubic through them that never overshoots one. The exposure and the curve
+move the marks as well as the glow, with the glow on or off. What the
+filters exclude is drawn into a second target and dimmed after the curve, so
+the Filtered Opacity dims the glow as far as it dims a mark.
 
 The galaxy is drawn the way round the game draws it. Its coordinates are
 left handed — seen from galactic north with the core at the top, `+X` is on
