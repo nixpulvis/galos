@@ -10,7 +10,8 @@
 //! through one curve:
 //!
 //! - **The dial** ([`FieldExposure`]) is a gain, in stops, on the light
-//!   before the curve reads it, and **the tilt** ([`EVEN_AT`]) a gain the
+//!   before the curve reads it, **the glow's own dial** ([`GlowBrightness`])
+//!   a gain on the field alone, and **the tilt** ([`EVEN_AT`]) a gain the
 //!   reach sets on the field alone, so the field holds its level under the
 //!   marks as the camera comes in and goes out.
 //! - **The curve** ([`FieldCurve`]) takes a pixel's light, in stops over an
@@ -66,6 +67,7 @@ pub fn plugin(app: &mut App) {
     embedded_asset!(app, "curve.wgsl");
     app.add_plugins(MaterialPlugin::<CurveMaterial>::default());
     app.init_resource::<FieldExposure>();
+    app.init_resource::<GlowBrightness>();
     app.init_resource::<FieldCurve>();
     app.add_systems(Startup, spawn_curve);
     app.add_systems(Update, (fit_targets, route_field, set_curve).chain());
@@ -95,6 +97,18 @@ impl Default for FieldExposure {
         FieldExposure(0.)
     }
 }
+
+/// How many stops the glow is lifted or held down against the marks
+///
+/// The field alone, ahead of the curve: the marks stay where
+/// [`FieldExposure`] puts them, so this says how loud the crowd behind a
+/// system is and nothing about how the system itself reads. Where the glow
+/// runs bright enough to wash out the marks laid over it — along an axis
+/// whose hues come out strong, or in a dense patch — this holds it down
+/// without dimming the marks with it, which the field exposure cannot. Rests
+/// at nought, the tuned look.
+#[derive(Resource, Clone, Copy, Default, PartialEq)]
+pub struct GlowBrightness(pub f32);
 
 /// The reach at which the field is exposed as the marks are, in light years
 ///
@@ -267,19 +281,20 @@ fn encode(light: f32) -> f32 {
     if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1. / 2.4) - 0.055 }
 }
 
-/// Everything the frame is exposed by: the curve, the dial, the reach the
+/// Everything the frame is exposed by: the curve, the dials, the reach the
 /// field's tilt is read off, and the unit the curve is read in
 #[derive(SystemParam)]
 pub(crate) struct Exposing<'w> {
     curve: Res<'w, FieldCurve>,
     exposure: Res<'w, FieldExposure>,
+    glow: Res<'w, GlowBrightness>,
     gains: Res<'w, Gains>,
     spyglass: Res<'w, crate::map::galaxy::Spyglass>,
 }
 
 impl Exposing<'_> {
     /// Whether what the marks are exposed by moved since the system asking
-    /// last ran: the tilt is the field's alone
+    /// last ran: the glow's dial and the tilt are the field's alone
     pub(crate) fn is_changed(&self) -> bool {
         self.curve.is_changed()
             || self.exposure.is_changed()
@@ -291,9 +306,10 @@ impl Exposing<'_> {
         self.at(self.exposure.0)
     }
 
-    /// How the field is exposed: the dial, and the tilt the reach sets
+    /// How the field is exposed: the dial, the glow's own, and the tilt the
+    /// reach sets
     fn field(&self) -> Exposed {
-        self.at(self.exposure.0 + tilt(self.spyglass.radius))
+        self.at(self.exposure.0 + self.glow.0 + tilt(self.spyglass.radius))
     }
 
     fn at(&self, stops: f32) -> Exposed {

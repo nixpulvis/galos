@@ -89,6 +89,13 @@ struct Shot {
     /// can be profiled.
     hide: Option<(crate::map::galaxy::spawn::ColorBy, Vec<usize>)>,
     hide_at: u32,
+    /// The axis the map is colored along, from `GALOS_SHOT_COLOR`, by the
+    /// name the key gives it: `star class`, `allegiance`. The map's own
+    /// where it is not set; `GALOS_SHOT_HIDE`'s axis where that is.
+    color: Option<crate::map::galaxy::spawn::ColorBy>,
+    /// The glow's brightness, in stops, from `GALOS_SHOT_GLOW`; see
+    /// [`crate::map::paint::curve::GlowBrightness`].
+    glow: f32,
 }
 
 /// Where the camera stands on one frame.
@@ -141,6 +148,14 @@ impl Shot {
     }
 }
 
+/// An axis by the name the key gives it, read from `key`
+fn axis(key: &str, name: &str) -> crate::map::galaxy::spawn::ColorBy {
+    crate::map::galaxy::spawn::ColorBy::ALL
+        .into_iter()
+        .find(|offered| offered.name().eq_ignore_ascii_case(name))
+        .unwrap_or_else(|| panic!("{key}: no axis {name}"))
+}
+
 pub fn plugin(app: &mut App) {
     let Ok(path) = std::env::var("GALOS_SHOT") else { return };
     let number = |key: &str, fallback: f64| {
@@ -190,13 +205,10 @@ pub fn plugin(app: &mut App) {
         gone: std::collections::HashMap::new(),
         real: std::env::var("GALOS_SHOT_VIEW").as_deref() == Ok("real"),
         hide: std::env::var("GALOS_SHOT_HIDE").ok().map(|it| {
-            let (axis, buckets) = it
+            let (named, buckets) = it
                 .split_once(':')
                 .expect("GALOS_SHOT_HIDE is an axis and buckets, `state:0,27`");
-            let axis = crate::map::galaxy::spawn::ColorBy::ALL
-                .into_iter()
-                .find(|offered| offered.name().eq_ignore_ascii_case(axis))
-                .unwrap_or_else(|| panic!("GALOS_SHOT_HIDE: no axis {axis}"));
+            let axis = axis("GALOS_SHOT_HIDE", named);
             let buckets = buckets
                 .split(',')
                 .map(|bucket| {
@@ -214,6 +226,10 @@ pub fn plugin(app: &mut App) {
             (axis, buckets)
         }),
         hide_at: number("GALOS_SHOT_HIDE_AT", 60.) as u32,
+        color: std::env::var("GALOS_SHOT_COLOR")
+            .ok()
+            .map(|name| axis("GALOS_SHOT_COLOR", &name)),
+        glow: number("GALOS_SHOT_GLOW", 0.) as f32,
     });
     // After the field is built, so what is counted is what was painted this
     // frame and not what the last one left behind.
@@ -221,7 +237,7 @@ pub fn plugin(app: &mut App) {
         Update,
         capture.after(crate::map::paint::field::build_field),
     );
-    app.add_systems(Update, hide.after(capture));
+    app.add_systems(Update, (look, hide.after(look).after(capture)));
     // The window's size, where the run names one, so a capture comes out the
     // same on any display: `GALOS_SHOT_WIDTH` by `GALOS_SHOT_HEIGHT` points,
     // at `GALOS_SHOT_SCALE` pixels a point.
@@ -243,6 +259,18 @@ pub fn plugin(app: &mut App) {
             }
         },
     );
+}
+
+/// Hold the axis and the glow's brightness the run names
+fn look(
+    shot: Res<Shot>,
+    mut color_by: ResMut<crate::map::galaxy::spawn::ColorBy>,
+    mut glow: ResMut<crate::map::paint::curve::GlowBrightness>,
+) {
+    if let Some(color) = shot.color {
+        color_by.set_if_neq(color);
+    }
+    glow.set_if_neq(crate::map::paint::curve::GlowBrightness(shot.glow));
 }
 
 /// Color along `GALOS_SHOT_HIDE`'s axis, and hide its buckets on the frame

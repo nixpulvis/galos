@@ -17,7 +17,7 @@ use crate::map::grid::{
     Bright, RulerUnit, ShowGrid, ShowMiddle, ShowNumbers, ShowPicked,
 };
 use crate::map::labels::{NameLimit, NameRadius, ShowBodyNames};
-use crate::map::paint::curve::{FieldCurve, FieldExposure};
+use crate::map::paint::curve::{FieldCurve, FieldExposure, GlowBrightness};
 use crate::map::paint::glow::ShowGlow;
 use crate::map::paint::sizing::{ScalePopulation, View};
 use crate::map::rose::ShowRose;
@@ -129,6 +129,7 @@ pub(crate) struct Settings<'w> {
     field_exposure: ResMut<'w, FieldExposure>,
     field_curve: ResMut<'w, FieldCurve>,
     show_glow: ResMut<'w, ShowGlow>,
+    glow_brightness: ResMut<'w, GlowBrightness>,
     star_profile: ResMut<'w, StarProfile>,
     show_names: ResMut<'w, ShowNames>,
     poll: ResMut<'w, Poll>,
@@ -559,6 +560,44 @@ pub(super) fn settings_body(
                 )
             },
         );
+        if settings.show_glow.0 {
+            // In stops, as the field exposure is: the glow is linear light
+            // over thirty of them, and a step of a percent is nothing at one
+            // end of that and everything at the other. Indented under the
+            // switch, a brightness for a glow not drawn being a choice about
+            // nothing.
+            ui.indent("glow", |ui| {
+                titled(
+                    ui,
+                    "Brightness (EV)",
+                    "How brightly the glow is drawn behind the dots, which \
+                     stay as they are",
+                );
+                let mut glow_ev = settings.glow_brightness.0;
+                fill_width(ui, VALUE_WIDTH);
+                let slider = ui
+                    .horizontal(|ui| {
+                        let rail = ui.add(
+                            egui::Slider::new(&mut glow_ev, -8.0..=8.0)
+                                .step_by(0.25)
+                                .show_value(false),
+                        );
+                        let typed = value_box(
+                            ui,
+                            egui::DragValue::new(&mut glow_ev)
+                                .range(-8.0..=8.0)
+                                .speed(0.1)
+                                .suffix(" EV"),
+                        );
+                        rail | typed
+                    })
+                    .inner;
+                // Only when it lands somewhere new, as the field exposure.
+                if slider.changed() && settings.glow_brightness.0 != glow_ev {
+                    settings.glow_brightness.0 = glow_ev;
+                }
+            });
+        }
         ui.add_space(FIELD_GAP);
         // How many stops the field and the marks over it are lifted ahead of
         // the curve. The map is a political instrument at one setting and a
@@ -1092,6 +1131,7 @@ mod tests {
         world.insert_resource(FieldExposure(0.));
         world.insert_resource(FieldCurve::default());
         world.insert_resource(ShowGlow(true));
+        world.insert_resource(GlowBrightness(0.));
         world.insert_resource(StarProfile::default());
         world.insert_resource(ShowNames(true));
         world.insert_resource(Poll(Some(10.)));
@@ -1176,6 +1216,7 @@ mod tests {
                 ("FieldExposure", touched::<FieldExposure>(&world)),
                 ("FieldCurve", touched::<FieldCurve>(&world)),
                 ("ShowGlow", touched::<ShowGlow>(&world)),
+                ("GlowBrightness", touched::<GlowBrightness>(&world)),
                 ("StarProfile", touched::<StarProfile>(&world)),
                 ("ShowNames", touched::<ShowNames>(&world)),
                 ("Poll", touched::<Poll>(&world)),
