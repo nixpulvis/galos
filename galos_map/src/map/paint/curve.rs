@@ -557,11 +557,22 @@ type MapOnly = (
 ///
 /// Only where the window has moved. A resize reallocates the targets, and
 /// the curve reads a pixel of the frame as a texel of the first two.
+///
+/// **And the curve's material is touched when it does.** A material's bind
+/// group holds the textures it was prepared with, and the renderer prepares
+/// it again only when the material itself changes, never when an image it
+/// reads does. Left alone, the curve went on reading the targets as they
+/// stood before the resize — a field drawn for the old window — until
+/// something else moved the material: the camera, by way of the reach.
 fn fit_targets(
     window: Query<&Window, With<PrimaryWindow>>,
     targets: Option<Res<FieldTargets>>,
     mut images: ResMut<Assets<Image>>,
-    mut quad: Query<&mut Transform, With<CurveQuad>>,
+    mut materials: ResMut<Assets<CurveMaterial>>,
+    mut quad: Query<
+        (&mut Transform, &MeshMaterial3d<CurveMaterial>),
+        With<CurveQuad>,
+    >,
     mut cameras: Query<&mut RenderTarget, (Drawing, Without<VolumeCamera>)>,
     mut marching: Query<&mut RenderTarget, With<VolumeCamera>>,
 ) {
@@ -575,6 +586,7 @@ fn fit_targets(
         .map(|handle| (handle, size))
         .into_iter()
         .chain(targets.volume.iter().map(|handle| (handle, half)));
+    let mut resized = false;
     for (handle, size) in sized {
         if images.get(handle).is_some_and(|image| image.size() != size)
             && let Some(mut image) = images.get_mut(handle)
@@ -584,6 +596,7 @@ fn fit_targets(
                 height: size.y,
                 depth_or_array_layers: 1,
             });
+            resized = true;
         }
     }
     // An image target has no scale factor of its own, and the field is laid
@@ -606,9 +619,15 @@ fn fit_targets(
         }
     }
     let logical = Vec3::new(window.width(), window.height(), 1.);
-    for mut transform in &mut quad {
+    for (mut transform, material) in &mut quad {
         if transform.scale != logical {
             transform.scale = logical;
+        }
+        if resized {
+            // Taken as changed, which is all it takes to be prepared again
+            // over the targets as they now stand. A borrow alone marks
+            // nothing: only a mutable one through it does.
+            let _ = materials.get_mut(&material.0).map(|it| it.into_inner());
         }
     }
 }
