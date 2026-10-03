@@ -1211,15 +1211,51 @@ impl Filters {
     /// mask hiding the systems nobody lives in, which every system without
     /// a row is, or every filter picking systems out being a faction, which
     /// only a row names. Anything else asked only narrows what those admit.
-    /// A route or a hand-picked set names systems anywhere, a mask along
-    /// star class hides stars, not rows, and a political axis hides colonies
-    /// and lets empty space through.
+    /// A route or a hand-picked set names systems anywhere (see
+    /// [`Self::admits_only_named`]), a mask along star class hides stars,
+    /// not rows, and a political axis hides colonies and lets empty space
+    /// through.
     pub(crate) fn admits_only_rows(&self) -> bool {
         let mut picking = self.picking().peekable();
         self.mask.hides_empty()
             || (picking.peek().is_some()
                 && picking
                     .all(|filter| matches!(filter, Filter::Faction { .. })))
+    }
+
+    /// Whether everything these filters admit is a system they name
+    ///
+    /// Every filter picking systems out being a route or a hand-picked set,
+    /// whose systems are known by address before any payload is read;
+    /// anything else asked only narrows what those admit. So a cell where
+    /// none of them stands holds nothing admitted and need not be read whole
+    /// to find out; see [`crate::map::galaxy::walk::fetch`].
+    ///
+    /// **Read whole regardless, a route was the galaxy read whole.** Sol to
+    /// Sagittarius A* plotted over `.index/full` read some 97,000 marked
+    /// cells whole to find 197 stops. Weighing them off
+    /// [`crate::map::galaxy::walk`]'s per-frame budget took a hundred
+    /// seconds, and every cell drawn before its turn swapped its star for
+    /// another when the turn came — ten a frame, the whole time, on a still
+    /// map.
+    pub(crate) fn admits_only_named(&self) -> bool {
+        let mut picking = self.picking().peekable();
+        picking.peek().is_some()
+            && picking.all(|filter| {
+                matches!(filter, Filter::Route { .. } | Filter::Systems { .. })
+            })
+    }
+
+    /// The addresses the enabled filters name: every route's stops and
+    /// every hand-picked set's systems
+    pub(crate) fn named(&self) -> impl Iterator<Item = i64> + '_ {
+        self.picking().flat_map(|filter| match filter {
+            Filter::Route { systems, .. } | Filter::Systems { systems, .. } => {
+                systems.as_slice()
+            }
+            Filter::Faction { .. } | Filter::Recency { .. } => &[],
+        })
+        .copied()
     }
 
     /// Whether what these filters admit is the sky as it is drawn unfiltered,
@@ -1316,17 +1352,10 @@ impl Filters {
     ///
     /// [`reconcile`]: crate::map::galaxy::walk::reconcile
     pub(crate) fn prepared(&self) -> Prepared<'_> {
-        let mut named = rustc_hash::FxHashSet::default();
-        let mut names = false;
-        for active in self.asked.iter().filter(|active| active.enabled) {
-            if let Filter::Route { systems, .. }
-            | Filter::Systems { systems, .. } = &active.filter
-            {
-                names = true;
-                named.extend(systems.iter().copied());
-            }
-        }
-        Prepared { filters: self, named, names }
+        let names = self.picking().any(|filter| {
+            matches!(filter, Filter::Route { .. } | Filter::Systems { .. })
+        });
+        Prepared { filters: self, named: self.named().collect(), names }
     }
 
     /// Whether anything is being asked at all: a filter turned on, or a mask
@@ -2043,6 +2072,49 @@ mod tests {
                 !only_rows,
                 "{asked}: the rowless system"
             );
+        }
+    }
+
+    /// Only routes and hand-picked sets, narrowed or not, answer off the
+    /// systems they name
+    ///
+    /// Taken for named when something else picks too, a faction's colonies
+    /// in cells holding no named system would be read to a prefix and never
+    /// found. Not taken for named when it is, a route reads every marked cell
+    /// whole: Sol to Sagittarius A* was some 97,000 of them, and a hundred
+    /// seconds of stars swapping on a still map while they were weighed.
+    #[test]
+    fn only_what_admits_nothing_unnamed_answers_off_the_names() {
+        let nobody = Populated::default();
+        let unnamed =
+            Candidate::off_the_table(43, &nobody, Some(now()), StarKind::G);
+        let asking = |asked: Vec<Filter>| {
+            let mut filters = Filters::default();
+            for filter in asked {
+                filters.add(filter);
+            }
+            filters
+        };
+        let picked =
+            || Filter::Systems { label: "Picked".into(), systems: vec![42] };
+        let cases = [
+            ("a route", asking(vec![route(&[42, 44])]), true),
+            ("a set", asking(vec![picked()]), true),
+            ("a route or a set", asking(vec![route(&[44]), picked()]), true),
+            ("a set in a span", asking(vec![picked(), within(60)]), true),
+            ("a set or a faction", asking(vec![picked(), faction(7)]), false),
+            ("a faction", asking(vec![faction(7)]), false),
+            ("a span", asking(vec![within(60)]), false),
+        ];
+        for (asked, filters, only_named) in cases {
+            assert!(filters.asking(), "{asked} asked nothing");
+            assert_eq!(filters.admits_only_named(), only_named, "{asked}");
+            if only_named {
+                assert!(
+                    !filters.admits(&unnamed, now()),
+                    "{asked}: admitted a system it does not name"
+                );
+            }
         }
     }
 

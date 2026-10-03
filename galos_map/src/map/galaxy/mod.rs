@@ -879,22 +879,7 @@ impl System {
         // Named or nothing: one the table cannot name is one the map cannot
         // draw, and `System::build` reads the name itself.
         names.get(address)?;
-        // **The place comes from the galaxy, or from the populated table where
-        // that already holds it.** The names table stopped holding positions
-        // when a name became a function of an address, and what its row would
-        // answer with is the middle of a boxel — ten light years across at the
-        // class most systems are and 1,280 at the largest, which is a star
-        // drawn in the wrong place. A populated system's exact place is
-        // resident already, so that is asked first and costs nothing; anything
-        // else is one sphere query ([`Names::placed`]).
-        let at = match populated.get(address) {
-            Some(known) => DVec3::new(
-                known.position[0] as f64,
-                known.position[1] as f64,
-                known.position[2] as f64,
-            ),
-            None => names.placed(address),
-        };
+        let at = System::place(address, populated, names);
         // The names table says where a system is and what it is called, and
         // nothing about when it was last heard from. A span excludes it until
         // its cell payload lands and the system is rebuilt from the point.
@@ -906,6 +891,31 @@ impl System {
             populated,
             names,
         ))
+    }
+
+    /// Where the system at `address` stands, in light years
+    ///
+    /// **From the galaxy, or from the populated table where that already
+    /// holds it.** The names table stopped holding positions when a name
+    /// became a function of an address, and what its row would answer with
+    /// is the middle of a boxel — ten light years across at the class most
+    /// systems are and 1,280 at the largest, which is a star drawn in the
+    /// wrong place. A populated system's exact place is resident already, so
+    /// that is asked first and costs nothing; anything else is one sphere
+    /// query ([`Names::placed`]).
+    pub(crate) fn place(
+        address: i64,
+        populated: &Populated,
+        names: &Names,
+    ) -> DVec3 {
+        match populated.get(address) {
+            Some(known) => DVec3::new(
+                known.position[0] as f64,
+                known.position[1] as f64,
+                known.position[2] as f64,
+            ),
+            None => names.placed(address),
+        }
     }
 }
 

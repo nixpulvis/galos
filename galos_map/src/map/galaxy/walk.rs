@@ -26,6 +26,7 @@ use crate::map::bodies::spawn::Entered;
 use crate::map::camera::OrbitCamera;
 use crate::map::filter::{Candidate, Cut, Filtering, Prepared};
 use crate::map::galaxy::plan::{Accounted, Planned};
+use crate::map::galaxy::populated::Footprint;
 use crate::map::galaxy::spawn::{ColorBy, PendingSpawns};
 use crate::map::galaxy::{PendingEvictions, Spyglass, System};
 use crate::map::index::{Names, Populated, Transport};
@@ -38,6 +39,7 @@ use bevy::math::DVec3;
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
 use chrono::{DateTime, Utc};
+use galos_index::core::geometry::MAX_LEVEL;
 use galos_index::prelude::{CellId, CellSystem, Lit, Part, Stamp, StarKind};
 use galos_index::read::inhabited::{Inhabited, Readings};
 use galos_index::read::resident::{Resident, ResidentCell};
@@ -567,10 +569,11 @@ fn by_class(
 /// out of the payload's order — a faction is a handful of systems anywhere in
 /// a payload — and a class sample is exact to the cell's proportions only
 /// over the cell, so a prefix cannot answer the first and answers the
-/// second only to within its own sampling. Under a filter admitting nothing but rows of the populated table
-/// it is only the cells holding a row; see [`Whole::Rows`]. A cell the
-/// frame draws from is still read to its prefix first, so the frame fills
-/// in evenly; see [`reads`].
+/// second only to within its own sampling. Under a filter admitting nothing
+/// but rows of the populated table, or nothing but systems it names, it is
+/// only the cells holding one; see [`Whole::Holding`]. A cell the frame draws
+/// from is still read to its prefix first, so the frame fills in evenly; see
+/// [`reads`].
 pub(crate) fn fetch(
     planned: Res<Planned>,
     resident: Res<ResidentCells>,
@@ -580,8 +583,11 @@ pub(crate) fn fetch(
     scale_population: Res<ScalePopulation>,
     color_by: Res<ColorBy>,
     populated_order: Res<crate::map::galaxy::populated::PopulatedOrder>,
+    populated: Res<Populated>,
+    names: Res<Names>,
     cameras: Query<(&OrbitCamera, &Camera)>,
     mut tasks: ResMut<BoundedTasks>,
+    mut named: Local<Footprint>,
 ) {
     // **Only when something it reads has moved.** The scan below is the
     // one flat cost a still view used to pay for nothing: a pass over
@@ -621,16 +627,28 @@ pub(crate) fn fetch(
     // narrowing the map, the systems it admits standing anywhere in a
     // payload's standing order and [`reconcile`] drawing them first out of
     // whatever of it is held — or where all it admits is rows of the
-    // populated table, every one holding a row; and the ones that draw
-    // along star class, drawing every class in its proportion. Not under a
-    // mask that only thins the sky, which admits what the unfiltered map
-    // draws with some of it taken out: a cell's brightest less a few
-    // colonies, or a class sample less its hidden classes; see
-    // [`Filters::only_thins`].
+    // populated table or systems it names, every one holding one of those;
+    // and the ones that draw along star class, drawing every class in its
+    // proportion. Not under a mask that only thins the sky, which admits
+    // what the unfiltered map draws with some of it taken out: a cell's
+    // brightest less a few colonies, or a class sample less its hidden
+    // classes; see [`Filters::only_thins`].
     let by_class = by_class(*color_by, &planned.0.mode, by_population);
+    let only_rows = filters.admits_only_rows();
+    let only_named = !only_rows && filters.admits_only_named();
+    // Where the named systems stand, placed as [`System::find`] places
+    // them. Again only when what is named, or where, can have moved: a
+    // route's stops are a few hundred places, but this runs every frame a
+    // read lands.
+    if only_named && (filters.is_changed() || names.is_changed()) {
+        *named = Footprint::of(filters.named().map(|address| {
+            let at = System::place(address, &populated, &names);
+            CellId::of_point(at.to_array(), MAX_LEVEL)
+        }));
+    }
     let whole = if filters.asking() && !filters.only_thins() {
-        match filters.admits_only_rows() {
-            true => Whole::Rows { by_class },
+        match only_rows || only_named {
+            true => Whole::Holding { by_class },
             false => Whole::Every,
         }
     } else if by_class {
@@ -657,7 +675,10 @@ pub(crate) fn fetch(
             |slice, id| share.wanted(slice, id),
             |id| resident.0.cell(id).map_or(0, |held| held.points.len()),
             whole,
-            |id| populated_order.holds_a_row(id),
+            |id| match only_rows {
+                true => populated_order.holds_a_row(id),
+                false => named.holds(id),
+            },
             real,
         )
     };
@@ -671,14 +692,14 @@ pub(crate) fn fetch(
 ///
 /// `wanted` is how many of a cell's `slice` the frame draws, `held` how many
 /// of its points the map holds, `whole` which marked cells the draw wants
-/// held whole, `rows` whether a cell holds a row of the populated table
-/// ([`Whole::Rows`]), and `real` whether this is the photometric sky.
+/// held whole, `holds` whether a cell holds something the filters can admit
+/// ([`Whole::Holding`]), and `real` whether this is the photometric sky.
 fn reads(
     marks: &[galos_index::read::walk::MarkRef],
     wanted: impl Fn(usize, CellId) -> usize,
     held: impl Fn(CellId) -> usize,
     whole: Whole,
-    rows: impl Fn(CellId) -> bool,
+    holds: impl Fn(CellId) -> bool,
     real: bool,
 ) -> Vec<(CellId, usize)> {
     let mut asking = Vec::new();
@@ -704,7 +725,7 @@ fn reads(
         let whole = match whole {
             Whole::None => false,
             Whole::Drawing => sampled,
-            Whole::Rows { by_class } => (by_class && sampled) || rows(id),
+            Whole::Holding { by_class } => (by_class && sampled) || holds(id),
             Whole::Every => true,
         };
         // **Held whole, a cell that draws is read whole, but not first.** It is
@@ -746,19 +767,22 @@ enum Whole {
     /// sample reaches as far down a payload as its faintest class, and a
     /// cell that draws nothing samples nothing.
     Drawing,
-    /// Every one holding a row of the populated table, under a filter that
-    /// admits nothing else ([`Filters::admits_only_rows`]), and along star
-    /// class the ones [`Self::Drawing`] reads whole besides.
+    /// Every one holding something the filters can admit, under filters that
+    /// admit nothing but rows of the populated table
+    /// ([`Filters::admits_only_rows`]) or nothing but systems they name
+    /// ([`Filters::admits_only_named`]); and along star class the ones
+    /// [`Self::Drawing`] reads whole besides.
     ///
-    /// **A cell with no row holds nothing to find.** Read whole under every
-    /// filter, the uninhabited hidden at nine thousand light years back
-    /// read 16.2 million points over `.index/full` to draw 6,431 colonies,
-    /// 13.2 million of them out of the 12,799 cells of 15,431 without one
-    /// colony in them, and the view took eighty frames of the verdict
-    /// budget to weigh them.
+    /// **A cell holding none of them holds nothing to find.** Read whole
+    /// under every filter, the uninhabited hidden at nine thousand light
+    /// years back read 16.2 million points over `.index/full` to draw 6,431
+    /// colonies, 13.2 million of them out of the 12,799 cells of 15,431
+    /// without one colony in them, and the view took eighty frames of the
+    /// verdict budget to weigh them.
     ///
     /// [`Filters::admits_only_rows`]: crate::map::filter::Filters::admits_only_rows
-    Rows { by_class: bool },
+    /// [`Filters::admits_only_named`]: crate::map::filter::Filters::admits_only_named
+    Holding { by_class: bool },
     /// Every one, under a filter: see [`fetch`].
     Every,
 }
@@ -4365,7 +4389,7 @@ mod tests {
                 &marks,
                 wanted,
                 prefix,
-                Whole::Rows { by_class },
+                Whole::Holding { by_class },
                 rows,
                 false,
             );

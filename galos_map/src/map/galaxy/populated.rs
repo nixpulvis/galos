@@ -67,10 +67,39 @@ pub fn plugin(app: &mut App) {
 #[derive(Resource, Default)]
 pub struct PopulatedOrder {
     order: Vec<Stands>,
-    /// Where every row of the table stands in the tree, ascending: its
-    /// deepest cell's Morton key carried down to [`MAX_LEVEL`], so a cell's
-    /// rows are one run of it. See [`Self::holds_a_row`].
-    rows: Vec<u64>,
+    /// Where every row of the table stands in the tree. See
+    /// [`Self::holds_a_row`].
+    rows: Footprint,
+}
+
+/// Which cells of the tree a set of systems stands in
+///
+/// Each system's cell, its Morton key carried down to [`MAX_LEVEL`],
+/// ascending: the systems under a cell at any level are then one run of keys
+/// sharing the cell's own as their prefix, and whether a cell holds any of
+/// them is a binary search.
+#[derive(Default)]
+pub(crate) struct Footprint(Vec<u64>);
+
+impl Footprint {
+    /// Where `cells` stand, each a cell a system falls in at least as deep as
+    /// any cell [`Self::holds`] will be asked about
+    pub(crate) fn of(cells: impl IntoIterator<Item = CellId>) -> Footprint {
+        let mut keys: Vec<u64> = cells
+            .into_iter()
+            .map(|id| id.morton() << (3 * u32::from(MAX_LEVEL - id.level)))
+            .collect();
+        keys.sort_unstable();
+        Footprint(keys)
+    }
+
+    /// Whether any of the systems stands in `id`
+    pub(crate) fn holds(&self, id: CellId) -> bool {
+        let shift = 3 * u32::from(MAX_LEVEL - id.level);
+        let first = id.morton() << shift;
+        let at = self.0.partition_point(|&key| key < first);
+        self.0.get(at).is_some_and(|&key| key >> shift == id.morton())
+    }
 }
 
 /// One populated system as a draw wants it: where it stands, what to
@@ -99,13 +128,9 @@ impl PopulatedOrder {
     /// What says a cell cannot hold anything a filter admits, where
     /// everything it admits is a row
     /// ([`crate::map::filter::Filters::admits_only_rows`]), so the cell
-    /// need not be read whole to find it. A binary search: the rows under
-    /// a cell are the keys sharing its own as their prefix.
+    /// need not be read whole to find it.
     pub fn holds_a_row(&self, id: CellId) -> bool {
-        let shift = 3 * u32::from(MAX_LEVEL - id.level);
-        let first = id.morton() << shift;
-        let at = self.rows.partition_point(|&key| key < first);
-        self.rows.get(at).is_some_and(|&key| key >> shift == id.morton())
+        self.rows.holds(id)
     }
 
     /// How many systems anybody lives in.
@@ -137,7 +162,7 @@ pub(crate) fn gather(
     let mut order: Vec<(u64, Stands)> = Vec::new();
     // And where every row stands, an empty one too: a filter can admit a
     // row by its factions whether or not anybody lives there.
-    let mut rows: Vec<u64> = Vec::with_capacity(populated.0.len());
+    let mut rows: Vec<CellId> = Vec::with_capacity(populated.0.len());
     for system in populated.0.values() {
         let at = [
             f64::from(system.position[0]),
@@ -146,9 +171,7 @@ pub(crate) fn gather(
         ];
         let mut deepest = CellId::ROOT;
         index.0.descend(at, |id| deepest = id);
-        rows.push(
-            deepest.morton() << (3 * u32::from(MAX_LEVEL - deepest.level)),
-        );
+        rows.push(deepest);
         if system.population == 0 {
             continue;
         }
@@ -162,10 +185,9 @@ pub(crate) fn gather(
     });
     let order: Vec<Stands> =
         order.into_iter().map(|(_, stands)| stands).collect();
-    rows.sort_unstable();
 
     debug!(systems = order.len(), "gathered who lives where");
-    *cells = PopulatedOrder { order, rows };
+    *cells = PopulatedOrder { order, rows: Footprint::of(rows) };
 }
 
 #[cfg(test)]
