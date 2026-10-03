@@ -317,13 +317,15 @@ fn thin(
     // One pass over the sky, which is the only one: where each of those
     // systems falls on screen, and what it is standing at now. A mark that has
     // gone off every route is put back to whole here, that being the pass that
-    // can see it has.
+    // can see it has — and tried rather than told, since a system that has
+    // left every route is no longer spared eviction and is often despawned
+    // by `drain_evictions` in this same frame.
     let mut on_screen: HashMap<i64, (Entity, Option<Vec2>, Option<f32>)> =
         HashMap::default();
     for (entity, system, thinned) in &systems {
         if !on_routes.contains(&system.address) {
             if thinned.is_some() {
-                commands.entity(entity).remove::<Thinned>();
+                commands.entity(entity).try_remove::<Thinned>();
             }
             continue;
         }
