@@ -1250,8 +1250,9 @@ impl<'a> Along<'a> {
         Along { axis, populated }
     }
 
-    /// The bucket `point` stands in along the axis.
-    fn bucket(&self, point: &CellSystem) -> usize {
+    /// The bucket `point` stands in along the axis: what the walk strata
+    /// are drawn in proportion to, and what an enhanced picture colors by.
+    pub(crate) fn bucket(&self, point: &CellSystem) -> usize {
         match self.axis {
             ColorBy::StarClass => usize::from(point.kind.code()),
             axis => self
@@ -1388,7 +1389,7 @@ pub(crate) fn adopt(
 /// predicate a drawn system is, and without building a system to ask —
 /// [`System::of`] clones a name and reads a reach, work worth avoiding
 /// for a point that is not going to be drawn.
-fn candidate<'a>(
+pub(crate) fn candidate<'a>(
     point: &CellSystem,
     populated: &'a Populated,
 ) -> Candidate<'a> {

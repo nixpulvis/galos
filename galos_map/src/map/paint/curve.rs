@@ -732,15 +732,23 @@ fn fit_targets(
 /// black each frame, and lays it over the galaxy through the curve. The
 /// realistic view draws it straight onto the window over the scene, as it
 /// always has, and the curve and the dimmed camera stand down.
+///
+/// And all of them stand down while an enhanced picture covers the window
+/// ([`Covered`]): the map under it is drawn for nobody, and looking into
+/// the picture draws it again through a narrower lens, every mark several
+/// times the size.
+///
+/// [`Covered`]: crate::map::enhance::Covered
 fn route_field(
     view: Res<View>,
+    covered: Res<crate::map::enhance::Covered>,
     targets: Option<Res<FieldTargets>>,
     window: Query<&Window, With<PrimaryWindow>>,
     mut field: Query<(&mut Camera, &mut RenderTarget), With<FieldCamera>>,
     mut others: Query<&mut Camera, MapOnly>,
 ) {
     let Some(targets) = targets else { return };
-    if !view.is_changed() && !targets.is_added() {
+    if !view.is_changed() && !covered.is_changed() && !targets.is_added() {
         return;
     }
     let map = matches!(*view, View::Map);
@@ -756,9 +764,10 @@ fn route_field(
             *target = RenderTarget::Window(WindowRef::Primary);
             camera.clear_color = ClearColorConfig::None;
         }
+        camera.is_active = !covered.0;
     }
     for mut camera in &mut others {
-        camera.is_active = map;
+        camera.is_active = map && !covered.0;
     }
 }
 

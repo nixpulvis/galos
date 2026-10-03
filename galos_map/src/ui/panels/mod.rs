@@ -25,6 +25,7 @@ use crate::map::selection::{Picked, Selection};
 use crate::ui::MARGIN;
 use crate::ui::panels::filter::{admitted, took};
 use crate::ui::panels::fuel::StarClasses;
+use crate::ui::panels::insides::Insides;
 use crate::ui::panels::system::{body_described, described, star_described};
 use crate::ui::panels::window::{WIDTH, framed, inside, room_under, tile};
 use bevy::prelude::*;
@@ -34,12 +35,14 @@ use galos_index::records::{Body as DbBody, Star as DbStar};
 mod fields;
 mod filter;
 mod fuel;
+mod insides;
 mod system;
 mod window;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Panels>();
     app.init_resource::<StarClasses>();
+    app.init_resource::<Insides>();
     app.add_systems(Update, refresh.in_set(MapSet::Present));
     app.add_systems(Update, fill_filters.in_set(MapSet::Present));
     // `ui::chrome` concludes at its end whether the pointer is busy with the
@@ -410,6 +413,9 @@ fn panels(
     // And the real class of the stars a panel lists, looked up by address:
     // a list is finite where the galaxy is not. See [`StarClasses`].
     mut classes: ResMut<StarClasses>,
+    // What is inside each system a panel stands open on, for its star's
+    // class and its list of bodies. See [`Insides`].
+    mut insides: ResMut<Insides>,
     transport: Res<crate::map::index::Transport>,
 ) -> Result {
     if panels.open.is_empty() {
@@ -460,6 +466,15 @@ fn panels(
         .map(|system| system.address)
         .collect();
     classes.ask(listed, &transport);
+    let open: Vec<i64> = panels
+        .open
+        .iter()
+        .filter_map(|panel| match &panel.subject {
+            Subject::System(system) => Some(system.address),
+            _ => None,
+        })
+        .collect();
+    insides.keep(&open, &transport);
 
     let mut shut = Vec::new();
     let mut tallest: f32 = 0.;
@@ -468,6 +483,8 @@ fn panels(
     let mut picked = None;
     let mut opening = None;
     let mut wanted = None;
+    // A star or body asked about from a system's list of them.
+    let mut describing = None;
     // Whether the pointer was clicked over whichever panel it was over,
     // asked once for the whole pass: a click is one click however many
     // windows are drawn.
@@ -580,9 +597,22 @@ fn panels(
         };
         let window = window.show(ctx, |ui| {
             held = inside(ui, id, room, |ui| match &panel.subject {
-                Subject::System(system) => {
-                    described(ui, system, &names, eye, &mut moved, &mut wanted)
-                }
+                Subject::System(system) => described(
+                    ui,
+                    system,
+                    // The camera's own system is held fresher than a panel's
+                    // read, being asked after again while it is scanned.
+                    match contents.of() == Some(system.address) {
+                        true => contents.rows(),
+                        false => None,
+                    }
+                    .or_else(|| insides.of(system.address)),
+                    &names,
+                    eye,
+                    &mut moved,
+                    &mut wanted,
+                    &mut describing,
+                ),
                 Subject::Star(star) => mark_if_moved(&mut clock, |clock| {
                     star_described(
                         ui,
@@ -673,6 +703,9 @@ fn panels(
     // panel pushed onto the list being walked.
     if let Some(system) = opening {
         panels.open_system(system);
+    }
+    if let Some(subject) = describing {
+        panels.push(subject);
     }
     // Already resolved, both halves of it having been read off a system the
     // map holds, so it goes straight in rather than round by `Lookup`.

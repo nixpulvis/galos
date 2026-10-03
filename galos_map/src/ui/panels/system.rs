@@ -17,25 +17,53 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use bevy_egui::egui::Ui;
 use elite_journal::body::{Composition, Material, Orbit, Spin};
+use galos_index::prelude::StarKind;
 use galos_index::records::{
-    Body as DbBody, Economies, Star as DbStar, Surface,
+    Body as DbBody, Economies, Star as DbStar, Surface, SystemBodies,
 };
 use galos_photometry::{Distance, Magnitude};
 
 /// Everything the map knows about one system
+///
+/// `inside` is what is on record of its stars and bodies, [`None`] while
+/// that is still being read. A star or body asked about from the list of
+/// them is handed out through `describing`, to be opened once the panels
+/// have all been drawn.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn described(
     ui: &mut Ui,
     system: &System,
+    inside: Option<&SystemBodies>,
     names: &Factions,
     eye: Option<DVec3>,
     moved: &mut Option<MoveCamera>,
     wanted: &mut Option<Filter>,
+    describing: &mut Option<super::Subject>,
 ) {
+    let arrival = inside.and_then(galos_index::records::derive::arrival_star);
+    let kind = match arrival {
+        Some(star) => StarKind::of(&star.star_class),
+        None => system.indexed.map_or(StarKind::Unknown, |point| point.kind),
+    };
     egui::Grid::new(("system-fields", system.address)).num_columns(2).show(
         ui,
         |ui| {
             let [x, y, z] = system.position;
             copied(ui, "Position", format!("{x:.2}, {y:.2}, {z:.2}"));
+            field(
+                ui,
+                "From Sol",
+                format!("{:.1} Ly", system.position().length()),
+            );
+            field(ui, "Star class", star_class(arrival, kind));
+            field(
+                ui,
+                "Scoopable",
+                match kind {
+                    StarKind::Unknown => UNKNOWN.into(),
+                    kind => yes_no(kind.scoopable()),
+                },
+            );
             // What the realistic view sizes a star by: the magnitude the index
             // build assigned, how bright it looks from where the camera stands,
             // and its tint bucket. Unknown for a system built from a name lookup
@@ -70,6 +98,22 @@ pub(super) fn described(
             // can stand known while the other is not.
             field(ui, "Bodies", named(&system.body_count));
             field(ui, "Belts and rings", named(&system.non_body_count));
+            field(ui, "Scanned", scanned(inside, system.body_count));
+            field(
+                ui,
+                "Landable",
+                match inside {
+                    Some(inside) => inside
+                        .bodies
+                        .iter()
+                        .filter(|body| {
+                            body.surface.as_ref().is_some_and(|it| it.landable)
+                        })
+                        .count()
+                        .to_string(),
+                    None => READING.into(),
+                },
+            );
             field(
                 ui,
                 "Population",
@@ -108,6 +152,7 @@ pub(super) fn described(
         },
     );
 
+    bodies(ui, system, inside, describing);
     factions(ui, system.factions(), names, wanted);
 
     // Its own system rather than whatever is selected, since several panels
@@ -139,6 +184,180 @@ fn reading(politics: Option<&Politics>, axis: ColorBy) -> String {
     match name {
         "" => UNKNOWN.into(),
         name => name.into(),
+    }
+}
+
+/// What a row says while the system's stars and bodies are still being read
+const READING: &str = "...";
+
+/// The class of the star a ship drops in at
+///
+/// Its whole class off its scan where one is on record — class, subclass
+/// and luminosity, `K5 V` — and otherwise the kind the index carries for
+/// every classed system, `Class K`, which is as much as a route needs and
+/// all a system nobody has scanned has said.
+fn star_class(arrival: Option<&DbStar>, kind: StarKind) -> String {
+    match (arrival, kind.named()) {
+        (Some(star), _) => {
+            format!("{}{} {}", star.star_class, star.subclass, star.luminosity)
+                .trim_end()
+                .to_owned()
+        }
+        (None, Some(named)) => capitalised(named),
+        (None, None) => UNKNOWN.into(),
+    }
+}
+
+/// How many of a system's bodies are on record, out of how many it holds
+///
+/// The stars among them, as the game's own count of a system's bodies
+/// counts its stars.
+fn scanned(inside: Option<&SystemBodies>, of: Option<i32>) -> String {
+    let Some(inside) = inside else { return READING.into() };
+    let scanned = inside.stars.len() + inside.bodies.len();
+    match of {
+        Some(of) => format!("{scanned} of {of}"),
+        None => scanned.to_string(),
+    }
+}
+
+/// A star or a body on record inside a system, as its list holds it
+enum Inner<'a> {
+    Star(&'a DbStar),
+    Body(&'a DbBody),
+}
+
+impl Inner<'_> {
+    /// How far from where a ship drops in, light seconds, unknown last
+    fn away(&self) -> f32 {
+        match self {
+            Inner::Star(star) => star.distance_from_arrival_ls,
+            Inner::Body(body) => body.distance_from_arrival.unwrap_or(f32::MAX),
+        }
+    }
+
+    fn id(&self) -> i16 {
+        match self {
+            Inner::Star(star) => star.id,
+            Inner::Body(body) => body.id,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Inner::Star(star) => &star.name,
+            Inner::Body(body) => &body.name,
+        }
+    }
+
+    /// What it is and how far out, as its line reads beside its name
+    fn reading(&self) -> String {
+        let (class, away) = match self {
+            Inner::Star(star) => (
+                format!("{}{}", star.star_class, star.subclass),
+                Some(star.distance_from_arrival_ls),
+            ),
+            Inner::Body(body) => {
+                (body.planet_class.clone(), body.distance_from_arrival)
+            }
+        };
+        match away {
+            Some(away) => format!("{class}, {away:.1} Ls"),
+            None => class,
+        }
+    }
+}
+
+/// Every star and body on record in a system, nearest the arrival first,
+/// each line opening its own panel
+///
+/// **Folded until asked for.** A system holds anything from one star to a
+/// few hundred bodies, and the rows above are what most readers open the
+/// panel for; the list under them is a header until it is opened.
+///
+/// Named without the system's name in front, which every one of them
+/// carries and which would fill the line: `A 3 a` under `COL 285 SECTOR
+/// XX-A B1-2` says which body it is. One that is named for something else,
+/// or for the system alone, keeps its whole name.
+///
+/// A line is one control, as a system's line in a list is: a click on it or
+/// on its mark opens the star or body's panel, there being nothing else on
+/// the map to pick out of a system the camera may be nowhere near.
+fn bodies(
+    ui: &mut Ui,
+    system: &System,
+    inside: Option<&SystemBodies>,
+    describing: &mut Option<super::Subject>,
+) {
+    let Some(inside) = inside else {
+        ui.add_space(MARGIN);
+        ui.label(egui::RichText::new("Reading bodies...").weak());
+        return;
+    };
+    let mut listed: Vec<Inner> = inside
+        .stars
+        .iter()
+        .map(Inner::Star)
+        .chain(inside.bodies.iter().map(Inner::Body))
+        .collect();
+    if listed.is_empty() {
+        return;
+    }
+    listed.sort_by(|one, other| {
+        one.away().total_cmp(&other.away()).then(one.id().cmp(&other.id()))
+    });
+
+    ui.add_space(MARGIN);
+    egui::CollapsingHeader::new(
+        egui::RichText::new(format!("Bodies ({})", listed.len())).strong(),
+    )
+    .id_salt(("system-bodies", system.address))
+    .default_open(false)
+    .show(ui, |ui| {
+        let lines: Vec<(&str, String)> = listed
+            .iter()
+            .map(|inner| {
+                (short_name(inner.name(), system.name()), inner.reading())
+            })
+            .collect();
+        let rows = crate::ui::list::Rows::of(
+            ui,
+            ui.available_width(),
+            lines.iter().map(|(name, reading)| (*name, Some(reading.as_str()))),
+        );
+        for (inner, (name, reading)) in listed.iter().zip(lines) {
+            let salt = ("system-body", system.address, inner.id());
+            let asked = crate::ui::list::system_line(
+                ui,
+                name,
+                Some(reading),
+                rows,
+                salt,
+            );
+            if asked.is_some() {
+                *describing = Some(match inner {
+                    Inner::Star(star) => super::Subject::Star((*star).clone()),
+                    Inner::Body(body) => super::Subject::Body((*body).clone()),
+                });
+            }
+        }
+    });
+}
+
+/// A star or body's name with its system's in front taken off, where it has
+/// it and something after it
+///
+/// Compared without regard to case: the map holds a system's name upper
+/// case and a scan writes a body's as the game prints it.
+fn short_name<'a>(name: &'a str, system: &str) -> &'a str {
+    match name.get(..system.len()) {
+        Some(front)
+            if front.eq_ignore_ascii_case(system)
+                && name[system.len()..].starts_with(' ') =>
+        {
+            name[system.len()..].trim_start()
+        }
+        _ => name,
     }
 }
 

@@ -84,8 +84,9 @@ impl View {
     }
 
     /// [`Self::project`] with the lens worked out once, for a caller
-    /// projecting many places through one frame
-    fn projector(&self) -> Projector {
+    /// projecting many places through one frame: the walk's lit tiles, and
+    /// the map's enhanced picture, which projects every system in view
+    pub fn projector(&self) -> Projector {
         let forward = DVec3::from(self.forward).normalize_or_zero();
         let right = forward.cross(DVec3::from(self.up)).normalize_or_zero();
         let up = right.cross(forward);
@@ -108,7 +109,7 @@ impl View {
 /// the dark tiles cost: a millisecond of every moving frame over the
 /// hundred and forty thousand of them with the galaxy seen whole.
 #[derive(Clone, Copy)]
-struct Projector {
+pub struct Projector {
     eye: DVec3,
     forward: DVec3,
     right: DVec3,
@@ -118,7 +119,8 @@ struct Projector {
 }
 
 impl Projector {
-    fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+    /// Where a position lands on screen; see [`View::project`].
+    pub fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
         let from = DVec3::from(at) - self.eye;
         let ahead = from.dot(self.forward);
         if ahead <= 0.0 {

@@ -225,6 +225,55 @@ What is left, on `galaxypan`:
   a whole `NameEntry` to take its name; `name_of` is the cheaper answer.
   Off the main thread now, so it costs fill-in time rather than frames.
 
+## Enhance
+
+`map/enhance.rs`: every system in the view, read straight off the index
+payloads on a thread of its own, projected through the map's own mirrored
+lens (`plan::Lens`; the index's `View::projector` is right handed and the
+map draws the galaxy mirrored) and its map light (`system_light` ×
+`Hue::light`, clamped to the spyglass, what the filters exclude summed apart
+and laid under at the dim) summed
+per pixel; laid over the map as a flat picture `scale` windows across, a
+window-sized piece at a time, on one log curve whose top is read off the
+base. Run with `GALOS_ENHANCE=3 GALOS_ENHANCE_EXIT=1` and a pose held by
+`GALOS_SHOT_WAIT=1000000`: a 3× picture is drawn in 1.1–2 s and a 6× in
+1.5 s, the map's peak memory no higher than without it, the seams
+invisible, the picture registered on the window's own view (it correlates
+0.945 with the plain window shrunk to it, 0.896 mirrored), and a rerun
+bit-identical. While a picture covers the window the map's own cameras
+stand down (`Covered`) and the walk keeps planning the view as it stood, so
+looking about in it spawns nothing: zoomed 3× into the dense middle the map
+holds the 32,409 systems it held and draws at ~120 fps, where it had loaded
+287,622 at 15. The camera stands still under a picture: the wheel, a drag,
+`WASD` and `F`/`R` look about in it, and only close, escape and a resize of
+the window put it away. Left to do, the first first:
+
+- A system is a disc as large as the room around it on screen allows, up to
+  the map's floor (`Crowding`, read off the cells' counts), and a point where
+  the sky is crowded; its light is shared over the disc, so sparse sky is no
+  brighter for being drawn in marks. The curve is white at the view's
+  brightest and bends to put its middling lit pixel at a mid grey, so close
+  and far views both read. A system's own size, close enough to see it, is
+  still not drawn; nor is bloom, which is the next thing.
+- By hand: the base standing on the window as it lands, the wheel and a drag
+  in a shown picture with the map registered beneath it, cancel part way,
+  close and Escape. Only the scripted run has been seen.
+- The curve: a log of light topped at the base's 99.5th percentile
+  (`WHITE_AT`). Wide views come out paler and sharper than the map, which
+  lays its glow over the marks; no control for it yet.
+- A cell straddling pieces is read once a piece: 6× reads 88.7M systems for
+  the 37M in reach. Cheap at these sizes; a picture far past six would want
+  the culling done down the tree rather than over every cell a part.
+- The GPU holds every piece, RGBA8: 6× a 1440p window is half a gigabyte.
+  Pieces drawn on demand while looking in would bound it.
+- A filter change cancels through `Filters::is_changed`; check nothing writes
+  the filters every frame, or a picture never finishes.
+- Pointing at the picture: the full-window area that takes the wheel and the
+  drag also takes clicks, so nothing on the picture can be hovered or picked,
+  though the map underneath is registered to it and could answer.
+- The EDAstro-style distribution maps this was for: a straight-on lens with
+  top-down and side presets, which is what gives them a fixed scale.
+
 ## Broken
 
 - `cargo test --release -p galos_map` does not compile: `ui/bar/search.rs`

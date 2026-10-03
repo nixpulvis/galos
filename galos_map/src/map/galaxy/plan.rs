@@ -33,6 +33,7 @@ use galos_index::prelude::{
     CellId, Mode, Moments, Needed, StarKind, View as Viewpoint,
 };
 use galos_index::read::inhabited::Inhabited;
+use galos_index::read::screen::Projector;
 
 pub fn plugin(app: &mut App) {
     app.insert_resource(Planned(Needed {
@@ -230,12 +231,52 @@ fn shell(
 /// index cells are keyed in, so the eye is handed over as it stands. The lens
 /// is read off the camera's own clip matrix rather than its projection, since
 /// that is where the field of view has already been worked out.
+///
+/// **The whole view, also while looking into an enhanced picture.** There the
+/// window shows a piece of the picture through a lens narrower by
+/// [`OrbitCamera::frame`]'s scale, and the clip matrix is that piece's; the
+/// walk is given the view as it stood, so looking about in the picture moves
+/// nothing the map loads, and only what is painted over it follows.
 pub fn view(orbit: &OrbitCamera, camera: &Camera) -> Option<Viewpoint> {
     let viewport = camera.logical_viewport_size()?;
     // `y_axis.y` of the clip matrix is the cotangent of half the vertical field
     // of view.
-    let cot_half_fov = camera.clip_from_view().y_axis.y;
+    let cot_half_fov = camera.clip_from_view().y_axis.y / orbit.frame.scale;
     Some(viewpoint(orbit.eye(), orbit.rotation, cot_half_fov, viewport))
+}
+
+/// A [`Viewpoint`]'s projection, laid on the map's own screen
+///
+/// **Mirrored.** The index projects right handed, its right `forward × up`,
+/// which is the camera's own `x`; the map draws the galaxy mirrored across
+/// that ([`crate::map::camera::MIRROR`]), its right the camera's `-x`. Same
+/// lens and same middle, so where the map draws a point is where the index
+/// puts it reflected across the frame's vertical middle. Anything that asks
+/// the index's projection *where on screen* something is asks this, or what
+/// it finds is the other side of the screen.
+#[derive(Clone, Copy)]
+pub(crate) struct Lens {
+    /// The index's projection, its axes and focal length worked out once
+    projector: Projector,
+    /// The frame's width in pixels, which the reflection is across
+    width: f64,
+}
+
+impl Lens {
+    pub(crate) fn of(view: &Viewpoint) -> Lens {
+        Lens {
+            projector: view.projector(),
+            // As the index rounds its frame, so the middle is the same one.
+            width: (f64::from(view.viewport_height) * f64::from(view.aspect))
+                .round(),
+        }
+    }
+
+    /// Where a position lands on the map's screen, in pixels from the top
+    /// left, or [`None`] where it is behind the eye
+    pub(crate) fn project(&self, at: [f64; 3]) -> Option<[f64; 2]> {
+        self.projector.project(at).map(|[x, y]| [self.width - x, y])
+    }
 }
 
 /// Where the eye is, which way it faces, and the lens, as the index wants them
@@ -298,6 +339,30 @@ mod tests {
         // A quarter turn about Y sends -Z to -X, and leaves Y up.
         assert!((view.forward[0] + 1.).abs() < 1e-6, "not facing -X");
         assert!((view.up[1] - 1.).abs() < 1e-6, "up did not stay Y");
+    }
+
+    /// The lens lands a point where the map draws it: mirrored
+    ///
+    /// Unturned, the camera looks down -Z and the map's right is its -X, so a
+    /// point off to +X stands on the left of the screen. The index's own
+    /// projection puts it on the right; asked where something is, that is the
+    /// other side of the screen, and an enhanced picture drawn through it
+    /// comes out flipped.
+    #[test]
+    fn the_lens_lands_a_point_where_the_map_draws_it() {
+        let view = viewpoint(
+            DVec3::new(0., 0., 10.),
+            Quat::IDENTITY,
+            1.,
+            Vec2::new(200., 100.),
+        );
+        let [x, y] = Lens::of(&view)
+            .project([5., 0., 0.])
+            .expect("a point ahead of the eye");
+        assert!(x < 100., "drawn on the right, at {x}");
+        assert!((y - 50.).abs() < 1e-9, "not level with the eye, at {y}");
+        let right = OrbitCamera::default().right();
+        assert!(right.x < 0., "the map's right is no longer -X: {right}");
     }
 
     /// Republished aggregates are re-walked without the camera moving

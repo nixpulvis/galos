@@ -55,6 +55,11 @@ elite_journal = { path = "../elite_journal" }
 galos_index = { path = "../galos_index" }
 galos_photometry = { path = "../galos_photometry" }
 galos_route = { path = "../galos_route" }
+# What an enhanced picture is saved as; the one galos_sky writes.
+png = "0.18"
+# The native dialog an enhanced picture is saved through: the platform's own
+# on macOS and Windows, the desktop portal on Linux.
+rfd = "0.17"
 # Maps keyed by the index's own numbering — cells and addresses — which
 # nobody can choose collisions in, so `SipHash` buys nothing there and costs
 # the hot loops most of their time. The map's other maps are keyed by what
