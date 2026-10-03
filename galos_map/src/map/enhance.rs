@@ -10,17 +10,19 @@
 //! straight off its cell's payload, projected through the view's own lens
 //! ([`galos_index::read::screen::Projector`], the walk's projection), and the
 //! light the map would lay for it — its hue's [`Hue::light`] at
-//! [`system_light`], dimmed as the filters dim it — is added into the pixel
-//! it lands in. What comes out is the map's own reading at a resolution the
-//! map's budget never reaches, in the key's own colors.
+//! [`system_light`] — is added into the pixel it lands in, what the filters
+//! exclude into a sum of its own, laid under at the dim ([`Half`]). In
+//! short: the map's own reading at a resolution the map's budget never
+//! reaches, in the key's own colors.
 //!
 //! **A window-sized piece at a time, off the main thread.** The picture is
 //! `scale` windows across, and is summed a piece at a time on a thread of its
 //! own with workers reading the cells that land in the piece ([`lands_in`],
 //! through the map's own mirrored [`plan::Lens`]): only one piece's sums are
-//! ever held, twelve bytes a pixel of a window, whatever the picture's size.
-//! Each piece is turned into colors as it finishes and laid over the map, the
-//! middle first, and the map's own cameras stand down under it ([`Covered`]).
+//! ever held, twenty-four bytes a pixel of a window, whatever the picture's
+//! size. Each piece is turned into colors as it finishes and laid over the
+//! map, the middle first, and the map's own cameras stand down under it
+//! ([`Covered`]).
 //!
 //! **One curve over the whole picture.** What a pixel gathers runs from one
 //! unscanned star to thousands in the bubble, so it is drawn on a log curve,
@@ -72,7 +74,7 @@ use std::sync::atomic::{
     AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed,
 };
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "enhance.wgsl");
@@ -85,7 +87,10 @@ pub fn plugin(app: &mut App) {
     // one eye. The keys that would have moved it look about in the picture
     // instead ([`look`]).
     app.configure_sets(Update, MapSet::Camera.run_if(idle));
-    app.add_systems(Update, (look, drive, lay).chain().after(MapSet::Present));
+    app.add_systems(
+        Update,
+        (look, drive, lay, hide_chrome).chain().after(MapSet::Present),
+    );
     app.add_systems(EguiPrimaryContextPass, controls.in_set(PaintSet::Ui));
     app.add_observer(captured);
     script(app);
@@ -101,8 +106,12 @@ pub fn plugin(app: &mut App) {
 /// working without a person pressing the button.
 fn script(app: &mut App) {
     let Ok(scale) = std::env::var("GALOS_ENHANCE") else { return };
-    let scale =
-        scale.parse().unwrap_or(SCALE).clamp(*SCALES.start(), *SCALES.end());
+    // One of the scales offered, or the one a picture starts at.
+    let scale = scale
+        .parse()
+        .ok()
+        .filter(|scale| SCALES.contains(scale))
+        .unwrap_or(SCALE);
     let exit = std::env::var("GALOS_ENHANCE_EXIT").is_ok();
     app.insert_resource(Scripted { scale, exit, waited: 0, told: false });
     app.add_systems(
@@ -176,20 +185,29 @@ fn idle(enhance: Res<Enhance>) -> bool {
     matches!(enhance.phase, Phase::Off)
 }
 
-/// Look about in a shown picture with the keys that move the map
+/// Ask for a picture, and look about in a shown one, from the keyboard
 ///
-/// The camera stands still under a picture, so the keys that would have
-/// moved it move the window over the picture instead, at the rates they move
-/// the map: `WASD` across it, `F` in and `R` out about the window's middle.
-/// The keys that turn the camera have nothing to turn in a flat picture and
-/// do nothing.
+/// `P`, for picture, asks for one at the scale last picked, as the
+/// launcher's chip would. Once one is shown the camera stands still under it,
+/// so the keys that would have moved it move the window over the picture
+/// instead, at the rates they move the map: `WASD` across it, `F` in and `R`
+/// out about the window's middle. The keys that turn the camera have nothing
+/// to turn in a flat picture and do nothing.
 fn look(
     keys: Res<ButtonInput<KeyCode>>,
     keyboard: Res<Keyboard>,
     time: Res<Time<Real>>,
     mut enhance: ResMut<Enhance>,
 ) {
-    if enhance.phase != Phase::Shown || keyboard.typing || !bare(&keys) {
+    if keyboard.typing || !bare(&keys) {
+        return;
+    }
+    if enhance.phase == Phase::Off && keys.just_pressed(KeyCode::KeyP) {
+        enhance.asked = Some(Ask::Start);
+        enhance.choosing = false;
+        return;
+    }
+    if enhance.phase != Phase::Shown {
         return;
     }
     let Some(picture) = &mut enhance.picture else { return };
@@ -225,10 +243,18 @@ const SCALE: u32 = 3;
 
 /// The scales offered, windows across
 ///
-/// One window is the view as it is. Past six, a picture is thirty-six
-/// windows held as textures at once, which at a large window is most of a
-/// gigabyte of the GPU's.
-const SCALES: std::ops::RangeInclusive<u32> = 2..=6;
+/// One window is the view as it is. Every piece is held on the GPU while a
+/// picture is shown, so ten across is a hundred windows, a gigabyte and a
+/// half at a 1440p window: offered for the wide views that want it, and
+/// nothing past it until pieces are drawn on demand.
+const SCALES: [u32; 6] = [2, 3, 4, 5, 6, 10];
+
+/// How far past a texel to a pixel a picture may be looked into
+///
+/// Up to [`Picture::scale`] the window shows the picture at its own
+/// resolution or finer; past it each texel is spread over several pixels,
+/// which is how a reader reads a single system's pixel and its neighbours.
+const DEEPER: f32 = 8.;
 
 /// What enhancing is doing, and the picture it is doing it to
 #[derive(Resource)]
@@ -242,6 +268,8 @@ pub(crate) struct Enhance {
     asked: Option<Ask>,
     /// Where the last picture saved went, or why it did not
     saved: Option<Result<PathBuf, String>>,
+    /// Whether the launcher's scales are out
+    choosing: bool,
 }
 
 impl Default for Enhance {
@@ -252,6 +280,7 @@ impl Default for Enhance {
             picture: None,
             asked: None,
             saved: None,
+            choosing: false,
         }
     }
 }
@@ -293,8 +322,8 @@ struct Picture {
     mesh: Handle<Mesh>,
     /// How far into the picture the window is looking: how many times the
     /// picture's own size on the window it is shown at, from one, the
-    /// whole picture on the window, up to [`Picture::scale`], a piece's
-    /// pixel to the window's
+    /// whole picture on the window, through [`Picture::scale`], a piece's
+    /// pixel to the window's, up to [`DEEPER`] times that
     zoom: f32,
     /// Where the window's top left stands in the picture, in its logical
     /// pixels
@@ -427,8 +456,11 @@ fn drive(
     // Escape puts away whatever is under way, as it does anything else the
     // map opens.
     let mut asked = enhance.asked.take();
-    if keys.just_pressed(KeyCode::Escape) && enhance.phase != Phase::Off {
-        asked = Some(Ask::Close);
+    if keys.just_pressed(KeyCode::Escape) {
+        enhance.choosing = false;
+        if enhance.phase != Phase::Off {
+            asked = Some(Ask::Close);
+        }
     }
 
     // **The window changed size.** The pieces are cut to the window they were
@@ -660,7 +692,7 @@ impl Picture {
     fn zoom_about(&mut self, at: Vec2, factor: f32) {
         let before = self.zoom / self.scale as f32;
         let under = self.corner + at / before;
-        self.zoom = (self.zoom * factor).clamp(1., self.scale as f32);
+        self.zoom = (self.zoom * factor).clamp(1., self.scale as f32 * DEEPER);
         let after = self.zoom / self.scale as f32;
         self.corner = under - at / after;
         self.hold();
@@ -887,7 +919,9 @@ impl Spec {
         progress.total.store(total, Relaxed);
         progress.planned.store(true, Relaxed);
 
-        let mut white = None;
+        // The top of each curve, the admitted's and the excluded's, read off
+        // the base and held for every piece.
+        let mut whites = None;
         for (at, ((view, origin), cells)) in
             parts.into_iter().zip(&culled).enumerate()
         {
@@ -896,8 +930,11 @@ impl Spec {
             };
             // A base pixel takes in `scale` squared of the picture's.
             let per = if at == 0 { f64::from(self.scale).powi(2) } else { 1. };
-            let white = *white.get_or_insert_with(|| white_point(&sums, per));
-            let rgba = tone(&sums, per, white);
+            let whites = *whites.get_or_insert_with(|| {
+                [Half::Admitted, Half::Excluded]
+                    .map(|half| white_point(&sums, half, per))
+            });
+            let rgba = tone(&sums, per, whites, self.light.opacity);
             drop(sums);
             let part = (at > 0).then(|| self.order[at - 1]);
             progress.parts.fetch_add(1, Relaxed);
@@ -961,8 +998,10 @@ impl Spec {
     ) -> Option<Vec<AtomicU32>> {
         let (width, height) =
             (self.physical.x as usize, self.physical.y as usize);
+        // Six a pixel: the light the filters admit, and the light of what
+        // they exclude, each red, green and blue. See [`Half`].
         let sums: Vec<AtomicU32> =
-            (0..width * height * 3).map(|_| AtomicU32::new(0)).collect();
+            (0..width * height * CHANNELS).map(|_| AtomicU32::new(0)).collect();
         // The map's own screen, mirrored as it draws the galaxy.
         let lens = plan::Lens::of(&view);
         let origin = origin.as_dvec2();
@@ -1010,15 +1049,16 @@ impl Spec {
                                     .populated
                                     .get(point.id64 as i64)
                                     .is_some_and(|row| row.population > 0);
-                                let Some(light) = self.light.of(
+                                let Some((half, light)) = self.light.of(
                                     along.bucket(point),
                                     peopled,
                                     admitted,
                                 ) else {
                                     continue;
                                 };
-                                let pixel =
-                                    3 * (y as usize * width + x as usize);
+                                let pixel = CHANNELS
+                                    * (y as usize * width + x as usize)
+                                    + half.offset();
                                 for (channel, value) in light.iter().enumerate()
                                 {
                                     sums[pixel + channel]
@@ -1068,15 +1108,18 @@ fn workers() -> usize {
         .max(1)
 }
 
-/// The light one system lays into a picture, by its bucket along the axis,
-/// whether anybody lives there, and whether the filters admit it: the map's
-/// own light for a mark ([`system_light`] times the hue's
+/// The light one system lays into a picture, by its bucket along the axis
+/// and whether anybody lives there: the map's own light for a mark
+/// ([`system_light`] times the hue's
 /// [`crate::map::galaxy::spawn::Hue::light`]), in [`UNIT`]s of the brightest
 #[derive(Clone)]
 struct Light {
     color_by: ColorBy,
-    /// By bucket, then unpeopled and peopled: admitted, and dimmed
-    table: Vec<[[Option<[u32; 3]>; 2]; 2]>,
+    /// By bucket, then unpeopled and peopled
+    table: Vec<[[u32; 3]; 2]>,
+    /// The opacity what the filters exclude is drawn at, [`DimTo::opacity`];
+    /// spent on the excluded light after its curve, not on each system
+    opacity: f32,
 }
 
 impl Light {
@@ -1094,43 +1137,71 @@ impl Light {
             .flatten()
             .map(|light| light.max_element())
             .fold(f32::MIN_POSITIVE, f32::max);
-        let fixed = |light: Vec3, fade: f32| {
-            (fade > 0.).then(|| {
-                (light * fade / brightest * UNIT).round().as_uvec3().to_array()
-            })
+        let fixed = |light: Vec3| {
+            (light / brightest * UNIT).round().as_uvec3().to_array()
         };
         Light {
             color_by,
-            table: lights
-                .iter()
-                .map(|by| {
-                    [1., opacity].map(|fade| by.map(|light| fixed(light, fade)))
-                })
-                .collect(),
+            table: lights.iter().map(|by| by.map(fixed)).collect(),
+            opacity,
         }
     }
 
-    /// What one system lays, or [`None`] where it is not drawn at all: a
-    /// system the filters exclude with the dim at zero
+    /// Which half of a pixel one system lays its light into, and the light,
+    /// or [`None`] where it is not drawn at all: a system the filters exclude
+    /// with the dim at zero
     fn of(
         &self,
         bucket: usize,
         peopled: bool,
         admitted: bool,
-    ) -> Option<[u32; 3]> {
-        let by = self.table.get(bucket)?;
-        by[usize::from(!admitted)][usize::from(peopled)]
+    ) -> Option<(Half, [u32; 3])> {
+        let half = match admitted {
+            true => Half::Admitted,
+            false if self.opacity > 0. => Half::Excluded,
+            false => return None,
+        };
+        Some((half, self.table.get(bucket)?[usize::from(peopled)]))
     }
 }
 
-/// The light at the top of the curve: [`WHITE_AT`] of the base's lit pixels,
-/// as light a pixel of the picture gathers
-fn white_point(sums: &[AtomicU32], per: f64) -> f64 {
+/// Which of a pixel's two sums a system's light goes to
+///
+/// **What the filters exclude is dimmed after its curve, not before.** The
+/// map draws an excluded system as one faint mark, and a crowd of them is a
+/// crowd of faint marks: never brighter than one. Summed with the rest and
+/// dimmed a system at a time, the excluded outnumbered what was asked for —
+/// the whole galaxy's unscanned under a key showing one class — and their
+/// sum came up over it in grey. So each is summed apart and drawn on its own
+/// curve, and the excluded laid under the admitted at the dim's opacity:
+/// the backdrop the map's dim draws, however many stand in it.
+#[derive(Clone, Copy)]
+enum Half {
+    Admitted,
+    Excluded,
+}
+
+impl Half {
+    /// Where its three channels start in a pixel's sums
+    fn offset(self) -> usize {
+        match self {
+            Half::Admitted => 0,
+            Half::Excluded => 3,
+        }
+    }
+}
+
+/// How many sums a pixel holds: red, green and blue, for each [`Half`]
+const CHANNELS: usize = 6;
+
+/// The light at the top of `half`'s curve: [`WHITE_AT`] of the base's
+/// pixels lit in it, as light a pixel of the picture gathers
+fn white_point(sums: &[AtomicU32], half: Half, per: f64) -> f64 {
     let mut lit: Vec<f64> = sums
-        .as_chunks::<3>()
+        .as_chunks::<CHANNELS>()
         .0
         .iter()
-        .map(|pixel| brightest(pixel) / per)
+        .map(|pixel| brightest(of(pixel, half)) / per)
         .filter(|&light| light > 0.)
         .collect();
     if lit.is_empty() {
@@ -1141,32 +1212,48 @@ fn white_point(sums: &[AtomicU32], per: f64) -> f64 {
     white.max(1.)
 }
 
-/// A pixel's light in the brightest system's, along its brightest channel
-fn brightest(pixel: &[AtomicU32; 3]) -> f64 {
-    pixel
+/// `half`'s three channels of a pixel
+fn of(pixel: &[AtomicU32; CHANNELS], half: Half) -> &[AtomicU32] {
+    &pixel[half.offset()..half.offset() + 3]
+}
+
+/// Light along its brightest channel, in the brightest system's
+fn brightest(channels: &[AtomicU32]) -> f64 {
+    channels
         .iter()
         .map(|channel| f64::from(channel.load(Relaxed)))
         .fold(0., f64::max)
         / f64::from(UNIT)
 }
 
-/// Color a part: each pixel's light on a log curve topped at `white`, its
-/// hue held, as sRGB
-fn tone(sums: &[AtomicU32], per: f64, white: f64) -> Vec<u8> {
-    let top = (1. + white).ln();
-    let mut rgba = Vec::with_capacity(sums.len() / 3 * 4);
-    for pixel in sums.as_chunks::<3>().0 {
-        let light = brightest(pixel) / per;
-        if light <= 0. {
-            rgba.extend_from_slice(&[0, 0, 0, 255]);
-            continue;
-        }
-        // The brightest channel goes to the curve and the others with it,
-        // so a mix keeps the color the key gives it.
-        let level = ((1. + light).ln() / top).min(1.);
-        let scale = level / (light * per * f64::from(UNIT));
-        for channel in pixel {
-            let linear = f64::from(channel.load(Relaxed)) * scale;
+/// One half of a pixel on its log curve topped at `white`, its hue held,
+/// in linear light
+fn curved(channels: &[AtomicU32], per: f64, white: f64) -> [f64; 3] {
+    let light = brightest(channels) / per;
+    if light <= 0. {
+        return [0.; 3];
+    }
+    // The brightest channel goes to the curve and the others with it, so a
+    // mix keeps the color the key gives it.
+    let level = ((1. + light).ln() / (1. + white).ln()).min(1.);
+    let scale = level / (light * per * f64::from(UNIT));
+    [0, 1, 2].map(|at| f64::from(channels[at].load(Relaxed)) * scale)
+}
+
+/// Color a part: the admitted on their curve, and the excluded on theirs
+/// laid under them at `opacity`, as sRGB
+fn tone(
+    sums: &[AtomicU32],
+    per: f64,
+    whites: [f64; 2],
+    opacity: f32,
+) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(sums.len() / CHANNELS * 4);
+    for pixel in sums.as_chunks::<CHANNELS>().0 {
+        let admitted = curved(of(pixel, Half::Admitted), per, whites[0]);
+        let excluded = curved(of(pixel, Half::Excluded), per, whites[1]);
+        for (shown, faint) in admitted.into_iter().zip(excluded) {
+            let linear = shown + faint * f64::from(opacity);
             rgba.push((encode(linear as f32) * 255.).round() as u8);
         }
         rgba.push(255);
@@ -1326,6 +1413,34 @@ fn captured(
 #[derive(Resource, Default)]
 pub(crate) struct Covered(pub(crate) bool);
 
+/// Put the chrome away while there is a picture, as `I` does, and back as it
+/// was once the picture is
+///
+/// A picture is read, not worked on: the bar's filters and rows would change
+/// a map the picture no longer follows. What stays is what `I` leaves, the
+/// bare color key the picture was drawn in, the rose and the picture's own
+/// controls.
+fn hide_chrome(
+    enhance: Res<Enhance>,
+    mut hidden: ResMut<crate::ui::hide::ChromeHidden>,
+    // How the chrome stood when the picture was asked for.
+    mut was: Local<Option<bool>>,
+) {
+    match (enhance.picture.is_some(), *was) {
+        (true, None) => {
+            *was = Some(hidden.0);
+            hidden.0 = true;
+        }
+        // Held hidden, the eye in the corner included.
+        (true, Some(_)) if !hidden.0 => hidden.0 = true,
+        (false, Some(stood)) => {
+            hidden.0 = stood;
+            *was = None;
+        }
+        _ => {}
+    }
+}
+
 /// Lay the parts that are down over the window, where the window is looking
 /// into the picture
 fn lay(
@@ -1417,7 +1532,13 @@ fn systems(count: u64) -> String {
     }
 }
 
-/// The button, the progress, and the picture's own controls
+/// What stands over a picture: the pointer over it, and its own line at the
+/// foot of the window
+///
+/// The line, rather than a card in a corner: the chrome is put away while
+/// there is a picture, and what is left is read along the bottom edge
+/// without covering the rose or the key. Asking for a picture is
+/// [`launcher`]'s, in the chrome's own column.
 fn controls(
     mut contexts: EguiContexts,
     mut enhance: ResMut<Enhance>,
@@ -1460,95 +1581,46 @@ fn controls(
             });
     }
 
+    // The picture's own line. Nothing while there is no picture: the
+    // launcher in the chrome's column is what asks for one.
+    if enhance.phase == Phase::Off {
+        return Ok(());
+    }
     crate::ui::zone("enhance")
-        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-margin, -margin))
+        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0., -margin))
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| match enhance.phase {
-                Phase::Off => {
-                    ui.horizontal(|ui| {
-                        let scale = &mut enhance.scale;
-                        egui::ComboBox::from_id_salt("enhance-scale")
-                            .selected_text(format!("{scale}×"))
-                            .width(48.)
-                            .show_ui(ui, |ui| {
-                                for offered in SCALES {
-                                    ui.selectable_value(
-                                        scale,
-                                        offered,
-                                        format!("{offered}×"),
-                                    );
-                                }
-                            });
-                        if ui
-                            .button("enhance")
-                            .on_hover_text(
-                                "Draw every system in this view at several \
-                                 times the window's resolution, over the map",
-                            )
-                            .clicked()
-                        {
-                            enhance.asked = Some(Ask::Start);
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let asked = match enhance.phase {
+                        Phase::Off => None,
+                        Phase::Drawing => {
+                            if let Some(picture) = &enhance.picture
+                                && let Some(job) = &picture.job
+                            {
+                                drawing(ui, picture, job);
+                            }
+                            ui.small_button("cancel")
+                                .clicked()
+                                .then_some(Ask::Close)
                         }
-                    });
-                    if let Some(Err(why)) = &enhance.saved {
-                        ui.label(format!("not drawn: {why}"));
+                        Phase::Shown => {
+                            enhance.picture.as_ref().and_then(|picture| {
+                                shown(ui, picture, enhance.saved.as_ref())
+                            })
+                        }
+                    };
+                    if asked.is_some() {
+                        enhance.asked = asked;
                     }
-                }
-                Phase::Drawing => {
-                    let Some(picture) = &enhance.picture else { return };
-                    let Some(job) = &picture.job else { return };
-                    ui.set_width(280.);
-                    drawing(ui, picture, job);
-                    if ui.button("cancel").clicked() {
-                        enhance.asked = Some(Ask::Close);
-                    }
-                }
-                Phase::Shown => {
-                    let Some(picture) = &enhance.picture else { return };
-                    ui.label(format!(
-                        "{}× · {:.1}× in",
-                        picture.scale, picture.zoom
-                    ));
-                    ui.horizontal(|ui| {
-                        let saving = picture.saving.as_ref();
-                        let label = match saving {
-                            Some(saving) => format!(
-                                "saving {} of {}…",
-                                saving.row + 1,
-                                picture.scale
-                            ),
-                            None => "save png".to_owned(),
-                        };
-                        if ui
-                            .add_enabled(
-                                saving.is_none(),
-                                egui::Button::new(label),
-                            )
-                            .clicked()
-                        {
-                            enhance.asked = Some(Ask::Save);
-                        }
-                        if ui.button("close").clicked() {
-                            enhance.asked = Some(Ask::Close);
-                        }
-                    });
-                    match &enhance.saved {
-                        Some(Ok(path)) => {
-                            ui.label(format!("saved {}", path.display()));
-                        }
-                        Some(Err(why)) => {
-                            ui.label(format!("not saved: {why}"));
-                        }
-                        None => {}
-                    }
-                }
+                });
             });
         });
     Ok(())
 }
 
-/// How far a picture being drawn has got: the systems summed against what
-/// the cells in view own, the part under way, the rate and what is left
+/// How far a picture being drawn has got, along one line: the part under
+/// way, the systems summed against what the cells in view own, and what is
+/// left; the rate under the pointer
 fn drawing(ui: &mut egui::Ui, picture: &Picture, job: &Job) {
     let progress = &job.progress;
     let parts = picture.pieces.len() + 1;
@@ -1558,34 +1630,171 @@ fn drawing(ui: &mut egui::Ui, picture: &Picture, job: &Job) {
         n if n < parts => format!("piece {n} of {}", parts - 1),
         _ => "laying it down".to_owned(),
     };
-    ui.label(format!("enhancing {}×: {part}", picture.scale));
+    ui.label(format!("{}× enhance · {part}", picture.scale));
+    let bar = |share: f32| egui::ProgressBar::new(share).desired_width(140.);
     if !progress.planned.load(Relaxed) {
-        ui.add(egui::ProgressBar::new(0.).text("finding the cells in view"));
+        ui.add(bar(0.));
+        ui.weak("finding the cells in view");
         return;
     }
     let counted = progress.counted.load(Relaxed);
     let total = progress.total.load(Relaxed).max(1);
-    let share = (counted as f32 / total as f32).clamp(0., 1.);
-    ui.add(egui::ProgressBar::new(share).show_percentage());
     let elapsed = job.started.elapsed();
-    let left = (counted > 0).then(|| {
-        Duration::from_secs_f64(
-            elapsed.as_secs_f64() * (total - counted.min(total)) as f64
-                / counted as f64,
-        )
-    });
-    ui.label(format!(
-        "{} of {} systems · {}/s{}",
+    let rate = counted as f64 / elapsed.as_secs_f64().max(1e-3);
+    ui.add(bar((counted as f32 / total as f32).clamp(0., 1.)))
+        .on_hover_text(format!("{} systems a second", systems(rate as u64)));
+    let left = (counted > 0)
+        .then(|| (total - counted.min(total)) as f64 / rate.max(1.));
+    ui.weak(format!(
+        "{} of {} systems{}",
         systems(counted),
         systems(total),
-        systems((counted as f64 / elapsed.as_secs_f64().max(1e-3)) as u64),
-        left.map_or(String::new(), |left| {
-            let left = left.as_secs_f32();
-            if left < 10. {
-                format!(" · about {left:.1}s left")
-            } else {
-                format!(" · about {left:.0}s left")
-            }
+        left.map_or(String::new(), |left| match left < 10. {
+            true => format!(" · {left:.1}s left"),
+            false => format!(" · {left:.0}s left"),
         }),
     ));
+}
+
+/// A shown picture's line: how far into it the window is, saving it and
+/// putting it away; what is asked of it, where anything was
+fn shown(
+    ui: &mut egui::Ui,
+    picture: &Picture,
+    saved: Option<&Result<PathBuf, String>>,
+) -> Option<Ask> {
+    ui.label(format!("{}× enhance · {:.1}× zoom", picture.scale, picture.zoom));
+    let mut asked = None;
+    match &picture.saving {
+        Some(saving) => {
+            ui.add_enabled(
+                false,
+                egui::Button::new(format!(
+                    "saving {} of {}…",
+                    saving.row + 1,
+                    picture.scale
+                ))
+                .small(),
+            );
+        }
+        None => {
+            if ui.small_button("save png").clicked() {
+                asked = Some(Ask::Save);
+            }
+        }
+    }
+    match saved {
+        Some(Ok(path)) => {
+            ui.weak("saved").on_hover_text(path.display().to_string());
+        }
+        Some(Err(why)) => {
+            ui.weak("not saved").on_hover_text(why);
+        }
+        None => {}
+    }
+    if ui.small_button("close").clicked() {
+        asked = Some(Ask::Close);
+    }
+    asked
+}
+
+/// How large the launcher's mark is drawn, the eye's own size
+const MARK: f32 = 18.;
+
+/// The button that asks for a picture, in the chrome's own column under the
+/// eye, and the scales it offers
+///
+/// A viewfinder, painted as the eye and the gear above it are, and nothing
+/// else standing on the map: a click puts the scales out beside it, and a
+/// scale clicked asks for the picture there and then. `P` asks for one at
+/// the scale last picked. Nothing while there is a picture, the chrome
+/// being put away then.
+pub(crate) fn launcher(
+    ctx: &egui::Context,
+    at: egui::Pos2,
+    enhance: &mut Enhance,
+) {
+    if enhance.phase != Phase::Off {
+        return;
+    }
+    let mark = crate::ui::zone("enhance-launcher")
+        .fixed_pos(at)
+        .show(ctx, |ui| {
+            let (rect, response) = ui.allocate_exact_size(
+                egui::Vec2::splat(MARK),
+                egui::Sense::click(),
+            );
+            let ink = ui.style().interact(&response).fg_stroke.color;
+            paint_viewfinder(ui.painter(), rect, ink);
+            response.on_hover_text("Enhance this view (P)")
+        })
+        .inner;
+    if mark.clicked() {
+        enhance.choosing = !enhance.choosing;
+    }
+    if !enhance.choosing {
+        return;
+    }
+    let margin = crate::ui::MARGIN;
+    let scales = crate::ui::zone("enhance-scales")
+        .pivot(egui::Align2::LEFT_CENTER)
+        .fixed_pos(egui::pos2(
+            mark.rect.right() + margin / 2.,
+            mark.rect.center().y,
+        ))
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("enhance");
+                    for offered in SCALES {
+                        if ui
+                            .selectable_label(
+                                offered == enhance.scale,
+                                format!("{offered}×"),
+                            )
+                            .on_hover_text(format!(
+                                "Every system in this view, drawn {offered} \
+                                 windows across"
+                            ))
+                            .clicked()
+                        {
+                            enhance.scale = offered;
+                            enhance.asked = Some(Ask::Start);
+                            enhance.choosing = false;
+                        }
+                    }
+                });
+                if let Some(Err(why)) = &enhance.saved {
+                    ui.weak(format!("the last was not drawn: {why}"));
+                }
+            });
+        });
+    if scales.response.clicked_elsewhere() && !mark.clicked() {
+        enhance.choosing = false;
+    }
+}
+
+/// A viewfinder in `rect`: four corners and a point between them
+///
+/// Not a magnifier, which stands beside the search box and reads as one.
+fn paint_viewfinder(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    ink: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(1.5_f32, ink);
+    let frame = rect.shrink(rect.width() * 0.08);
+    let arm = frame.width() * 0.3;
+    for (corner, x, y) in [
+        (frame.left_top(), 1., 1.),
+        (frame.right_top(), -1., 1.),
+        (frame.left_bottom(), 1., -1.),
+        (frame.right_bottom(), -1., -1.),
+    ] {
+        painter
+            .line_segment([corner, corner + egui::vec2(x * arm, 0.)], stroke);
+        painter
+            .line_segment([corner, corner + egui::vec2(0., y * arm)], stroke);
+    }
+    painter.circle_filled(frame.center(), frame.width() * 0.1, ink);
 }

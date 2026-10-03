@@ -231,7 +231,8 @@ What is left, on `galaxypan`:
 payloads on a thread of its own, projected through the map's own mirrored
 lens (`plan::Lens`; the index's `View::projector` is right handed and the
 map draws the galaxy mirrored) and its map light (`system_light` ×
-`Hue::light`, dimmed as the filters dim it, clamped to the spyglass) summed
+`Hue::light`, clamped to the spyglass, what the filters exclude summed apart
+and laid under at the dim) summed
 per pixel; laid over the map as a flat picture `scale` windows across, a
 window-sized piece at a time, on one log curve whose top is read off the
 base. Run with `GALOS_ENHANCE=3 GALOS_ENHANCE_EXIT=1` and a pose held by

@@ -41,7 +41,7 @@ impl Default for ShowLegend {
 }
 
 /// How large the eye is drawn, the gear's own size
-const EYE: f32 = 18.;
+pub(super) const EYE: f32 = 18.;
 
 /// How much of its ink the eye keeps while the chrome is hidden and the
 /// pointer is not on it

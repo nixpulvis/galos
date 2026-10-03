@@ -51,7 +51,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 mod bar;
 mod clock;
 mod help;
-mod hide;
+pub(crate) mod hide;
 pub(crate) mod keys;
 pub(crate) mod legend;
 pub(crate) mod list;
@@ -104,8 +104,8 @@ pub(crate) struct SettingsOpen(bool);
 pub(crate) struct KeysOpen(pub(crate) bool);
 
 /// The switches over what of the chrome is out: the settings pane, the
-/// bindings window, the chrome as a whole, and the key left standing when
-/// it is put away
+/// bindings window, the chrome as a whole, the key left standing when it is
+/// put away, and the enhance launcher's scales
 ///
 /// One parameter, [`chrome`] being at Bevy's limit of sixteen.
 #[derive(SystemParam)]
@@ -114,6 +114,7 @@ pub(crate) struct Toggles<'w> {
     keys: ResMut<'w, KeysOpen>,
     hidden: ResMut<'w, hide::ChromeHidden>,
     legend: Res<'w, hide::ShowLegend>,
+    enhance: ResMut<'w, crate::map::enhance::Enhance>,
 }
 
 /// Whether the pane's control over the clock is out
@@ -393,10 +394,14 @@ pub(crate) fn chrome(
         });
     gear(ctx, edge, asked.middle, &mut toggles.settings.0);
     // Under the gear, as the gear hangs off the field.
-    hide::eye(
+    let eye =
+        egui::pos2(edge + MARGIN, asked.middle + GEAR_ROOM / 2. + MARGIN);
+    hide::eye(ctx, eye, &mut toggles.hidden.0);
+    // And under the eye, the viewfinder that asks for a picture of the view.
+    crate::map::enhance::launcher(
         ctx,
-        egui::pos2(edge + MARGIN, asked.middle + GEAR_ROOM / 2. + MARGIN),
-        &mut toggles.hidden.0,
+        eye + egui::vec2(0., hide::EYE + MARGIN / 2.),
+        &mut toggles.enhance,
     );
 
     // A press that landed on neither of the bar's two zones. Never spent: the
