@@ -222,9 +222,14 @@ impl Refreshed {
 /// back to what it reads from, and one task at a time: a pass still on the
 /// wire is a pass whose answer has not landed, and asking again over the top
 /// of it would read the same files twice.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every resident table a refresh asks about, and the beat"
+)]
 fn poll(
     transport: Res<Transport>,
     resident: Res<ResidentCells>,
+    tree: Res<ResidentIndex>,
     held: Res<Stamps>,
     names: Res<Names>,
     time: Res<Time<Real>>,
@@ -253,10 +258,29 @@ fn poll(
     // the offset is the table's own bookkeeping, moved by every
     // [`Names::absorb`], and a second copy here is a copy to get wrong.
     let read_to = names.read_to();
-    let cells: Vec<(CellId, Option<Stamp>)> = resident
+    // How much of each payload to read again: as much as is held. The walk
+    // holds a prefix of most cells, a share of them, and the strata and the
+    // filters' lists are worked out over whatever is held — so a cell swapped
+    // for its whole payload drew a different sample of itself, and on every
+    // publish that touched it the systems it had drawn were evicted for
+    // others. A cell held whole is read whole, which is how a system
+    // published into it arrives; how far into the rest to read is the
+    // walk's to say.
+    let cells: Vec<(CellId, Option<usize>, Option<Stamp>)> = resident
         .0
         .iter()
-        .map(|(id, _)| (id, held.cells.get(&id).copied().flatten()))
+        .map(|(id, cell)| {
+            let holding = cell.points.len();
+            let whole = tree
+                .0
+                .get(id)
+                .is_none_or(|owns| holding as u64 >= owns.slice_len());
+            (
+                id,
+                (!whole).then_some(holding),
+                held.cells.get(&id).copied().flatten(),
+            )
+        })
         .collect();
 
     // The pass as one zone, wrapped around the future for the reason
@@ -340,9 +364,16 @@ fn poll(
             found.delta = Some((tail, log_stamp));
         }
 
-        for (id, held) in cells {
+        for (id, prefix, held) in cells {
             let (moved_it, stamp) = moved(&source, Part::Cell(id), held).await;
-            if moved_it && let Ok(read) = source.payload(id).await {
+            if !moved_it {
+                continue;
+            }
+            let read = match prefix {
+                Some(holding) => source.payload_prefix(id, holding).await,
+                None => source.payload(id).await,
+            };
+            if let Ok(read) = read {
                 let lit = source.lit(id, read.len()).await.unwrap_or_default();
                 found.cells.push((id, read, lit, stamp));
             }
@@ -701,6 +732,64 @@ mod tests {
             "the republished cell never landed: held {:?}",
             holding(&app),
         );
+    }
+
+    /// A cell held as a prefix is refreshed as that prefix, not read whole
+    ///
+    /// The walk holds a share of most cells, and what it draws out of one is
+    /// a sample of whatever is held. Swapped for the whole payload on a
+    /// publish, the cell drew a different sample of itself: the systems it
+    /// had drawn were evicted for others, every poll, all over a still map
+    /// the feed was writing into.
+    #[test]
+    fn a_cell_held_in_part_is_refreshed_in_part() {
+        let dir = Scratch::new();
+        let systems: Vec<_> =
+            (1..=32).map(|id| input(id, id as f64 * 0.25)).collect();
+        let built = publish(&dir.0, &systems);
+        let mut app = watching(&dir.0, &built);
+
+        // The busiest cell, held to half of what it owns as the walk would
+        // hold a cell whose share is small.
+        let (cell, owns) = app
+            .world()
+            .resource::<ResidentCells>()
+            .0
+            .iter()
+            .map(|(id, cell)| (id, cell.points.len()))
+            .max_by_key(|&(_, owns)| owns)
+            .expect("a cell held");
+        assert!(owns >= 4, "the cell owns only {owns}");
+        let part = owns / 2;
+        let source = FsSource::new(&dir.0);
+        let prefix = block_on(source.payload_prefix(cell, part)).expect("read");
+        let lit = block_on(source.lit(cell, part)).expect("light");
+        app.world_mut()
+            .resource_mut::<ResidentCells>()
+            .0
+            .insert(cell, prefix, lit);
+        let stamped = app.world().resource::<Stamps>().cells.get(&cell).copied();
+
+        // The feed reports one more system, and the cell is published again.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut more = systems.clone();
+        more.push(input(33, 33.0 * 0.25));
+        publish(&dir.0, &more);
+
+        assert!(
+            pump(&mut app, |app| {
+                app.world().resource::<Stamps>().cells.get(&cell).copied()
+                    != stamped
+            }),
+            "the republished cell never landed",
+        );
+        let held = app
+            .world()
+            .resource::<ResidentCells>()
+            .0
+            .cell(cell)
+            .map_or(0, |held| held.points.len());
+        assert_eq!(held, part, "held {part} of {owns}, refreshed as {held}");
     }
 
     /// A name appended to the log is found without a restart
