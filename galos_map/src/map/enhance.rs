@@ -10,9 +10,10 @@
 //! straight off its cell's payload, projected through the view's own lens
 //! ([`galos_index::read::screen::Projector`], the walk's projection), and the
 //! light the map would lay for it — its hue's [`Hue::light`] at
-//! [`system_light`] — is added into the pixel it lands in, what the filters
-//! exclude into a sum of its own, laid under at the dim ([`Half`]). In
-//! short: the map's own reading at a resolution the map's budget never
+//! [`system_light`] — is shared over a mark one size for the whole picture,
+//! a point from far off and a disc close in ([`Spec::radius`]), what the
+//! filters exclude into a sum of its own, laid under at the dim ([`Half`]).
+//! In short: the map's own reading at a resolution the map's budget never
 //! reaches, in the key's own colors.
 //!
 //! **A window-sized piece at a time, off the main thread.** The picture is
@@ -869,6 +870,9 @@ struct Spec {
     /// The window's height in logical pixels, which the map's mark floor is
     /// measured in
     logical: f32,
+    /// The angle the map's mark in the world takes from the eye, at the
+    /// distance to what the camera looks at, radians; see [`Spec::radius`]
+    mark: f64,
     scale: u32,
     /// The pieces' columns and rows, by number
     places: Vec<UVec2>,
@@ -884,7 +888,8 @@ const BATCH: usize = 16;
 /// axis a system nobody lives in is worth some thousandth of a colony, and
 /// units set off the colony rounded it to nothing, so the uninhabited were
 /// not drawn at all. And a mark shares its light among the pixels it
-/// covers, a hundred or so at most, so the faintest must split that finely
+/// covers, some seven hundred at most (the floor ten windows across a
+/// display of two pixels a point), so the faintest must split that finely
 /// and keep its share. Sums are `u64`, which holds any galaxy's worth of
 /// the brightest at this many.
 const FAINTEST: f32 = 32_768.;
@@ -900,6 +905,13 @@ const WHITE_AT: f64 = 0.995;
 /// light: a mid grey, so the bulk of what is lit reads whether it is a
 /// pixel of a dozen systems or of a fraction of one
 const MIDDLE: f64 = 0.18;
+
+/// The radius under which a system is drawn as the one pixel it lands in
+///
+/// Under it a disc covers that pixel alone however it lands. At it and
+/// over, a disc always holds the middle of the pixel it lands in, which is
+/// never more than `√½` off, so a mark never covers no pixels at all.
+const POINT: f64 = 0.75;
 
 impl Spec {
     fn new(
@@ -941,6 +953,10 @@ impl Spec {
             picture: at(physical.y * picture.scale),
             physical,
             logical: picture.viewport.y,
+            mark: f64::from(crate::map::paint::sizing::MARK)
+                / (bevy::math::DVec3::from(view.eye).distance(center)
+                    * crate::map::space::LIGHT_YEAR)
+                    .max(1.),
             scale: picture.scale,
             places: picture
                 .pieces
@@ -1010,13 +1026,27 @@ impl Spec {
         }
     }
 
-    /// The radius, in `view`'s pixels, that the map's smallest mark comes to
-    /// in a part: as large on the window, shown whole, as the map draws it
-    fn floor(&self, view: &Viewpoint) -> f64 {
-        f64::from(
+    /// The radius, in `view`'s pixels, every system is drawn at, or none
+    /// where that comes to under [`POINT`]: a pixel each
+    ///
+    /// **One size over the whole picture, set by how far off it is seen.**
+    /// The map's mark in the world ([`MARK`]) seen from the eye's distance
+    /// to what it looks at, so a close view draws its systems as discs and
+    /// a far one as points, and every system in a picture is the same size
+    /// whatever its depth or how crowded the sky around it. Topped at the
+    /// map's own floor, as large on the window, shown whole, as the map's
+    /// smallest mark. Sized by the room each system had around it instead,
+    /// a picture drew sharp points where the sky was crowded and soft discs
+    /// where it was not, and its sparse edges read as a blur.
+    ///
+    /// [`MARK`]: crate::map::paint::sizing::MARK
+    fn radius(&self, view: &Viewpoint) -> f64 {
+        let floor = f64::from(
             crate::map::paint::field::SMALLEST * view.viewport_height
                 / self.logical.max(1.),
-        )
+        );
+        let radius = (self.mark * view.pixels_per_radian()).min(floor);
+        if radius < POINT { 0. } else { radius }
     }
 
     /// The cells each part reads: those whose box lands in it, or within a
@@ -1041,7 +1071,7 @@ impl Spec {
                         }
                         let (view, origin) = parts[at];
                         let lens = plan::Lens::of(&view);
-                        let margin = self.floor(&view);
+                        let margin = self.radius(&view);
                         let low = origin.as_dvec2() - margin;
                         let high = origin.as_dvec2() + size + margin;
                         let rect = [low.x, low.y, high.x, high.y];
@@ -1081,12 +1111,11 @@ impl Spec {
             (0..width * height * CHANNELS).map(|_| AtomicU64::new(0)).collect();
         // The map's own screen, mirrored as it draws the galaxy.
         let lens = plan::Lens::of(&view);
-        let floor = self.floor(&view);
-        let crowding = Crowding::of(&lens, origin, self.physical, cells);
+        let radius = self.radius(&view);
         let origin = origin.as_dvec2();
         // How far a point may stand off the part and still lay some of its
         // mark in it.
-        let reach = floor.ceil();
+        let reach = radius.ceil();
         let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
             for _ in 0..workers() {
@@ -1140,16 +1169,22 @@ impl Spec {
                                 ) else {
                                     continue;
                                 };
-                                let radius = crowding.radius(x, y, floor);
                                 // A mark shares the system's light among the
-                                // pixels it covers, as much light as a point.
-                                let share = covered(x, y, radius, width, height)
-                                    .count()
-                                    .max(1)
-                                    as u64;
-                                for (px, py) in
-                                    covered(x, y, radius, width, height)
-                                {
+                                // pixels of its disc, as much light as a
+                                // point. Counted over the whole disc and not
+                                // what lands in this part, so a mark across a
+                                // seam lays the same light on either side.
+                                let share = disc(x, y, radius).count() as u64;
+                                for (px, py) in disc(x, y, radius) {
+                                    let (Ok(px), Ok(py)) = (
+                                        usize::try_from(px),
+                                        usize::try_from(py),
+                                    ) else {
+                                        continue;
+                                    };
+                                    if px >= width || py >= height {
+                                        continue;
+                                    }
                                     let pixel = CHANNELS * (py * width + px)
                                         + half.offset();
                                     for (channel, value) in
@@ -1177,106 +1212,14 @@ impl Spec {
 ///
 /// Its eight corners projected and the rectangle round them laid against the
 /// part, which keeps a little more than it must and never less. A box
-/// reaching behind the eye is kept: it has no rectangle on screen. No margin:
-/// a system is drawn as a point, and lands in the part it projects into and
-/// nowhere else.
+/// reaching behind the eye is kept: it has no rectangle on screen. A mark's
+/// own width is the caller's, in `rect`.
 fn lands_in(lens: &plan::Lens, id: CellId, rect: [f64; 4]) -> bool {
     let Some([low_x, low_y, high_x, high_y]) = footprint(lens, id) else {
         return true;
     };
     let [left, top, right, bottom] = rect;
     high_x >= left && low_x <= right && high_y >= top && low_y <= bottom
-}
-
-/// How crowded a part's sky is: systems a pixel, over tiles of [`TILE`]
-/// pixels, from the cells' own counts spread over where each lands
-///
-/// **A point where the sky is crowded, a mark where it is not, and either
-/// as much light.** Drawn a pixel each, a picture of a few hundred stars
-/// close in is a few hundred pixels of millions, and shown whole each is
-/// averaged with the dark around it into almost nothing. Drawn at the map's
-/// floor everywhere, the crowded sky's systems land on one another and the
-/// picture's resolution is spent on blur. So a system is drawn as large as
-/// it can be without meeting its neighbours, by the room each has where it
-/// lands, and no larger than the map would draw it — but its light spread
-/// over the mark, not laid whole in each pixel of it: laid whole, every
-/// sky sparse enough for marks came out as bright as one dense with them,
-/// and the far views' thin edges glared. Read off every cell landing there
-/// and not the system's own: looking into the bubble, cells stand dozens
-/// deep over the same pixels, and each one's own room was a crowd's.
-struct Crowding {
-    across: usize,
-    down: usize,
-    /// Systems a pixel, tile by tile, row by row
-    per_pixel: Vec<f32>,
-}
-
-/// The side of a [`Crowding`] tile, in a part's pixels
-const TILE: usize = 16;
-
-impl Crowding {
-    fn of(
-        lens: &plan::Lens,
-        origin: UVec2,
-        size: UVec2,
-        cells: &[(CellId, u64)],
-    ) -> Crowding {
-        let across = (size.x as usize).div_ceil(TILE);
-        let down = (size.y as usize).div_ceil(TILE);
-        let mut systems = vec![0f64; across * down];
-        let tile = TILE as f64;
-        let origin = origin.as_dvec2();
-        for &(id, owned) in cells {
-            // A box reaching behind the eye lands nowhere in particular.
-            let Some([left, top, right, bottom]) = footprint(lens, id) else {
-                continue;
-            };
-            let (left, right) = (left - origin.x, right - origin.x);
-            let (top, bottom) = (top - origin.y, bottom - origin.y);
-            let area = ((right - left) * (bottom - top)).max(1.);
-            let each = owned as f64 / area;
-            let first = |low: f64| ((low / tile).floor().max(0.)) as usize;
-            let last = |high: f64, of: usize| {
-                ((high / tile).floor().max(0.) as usize).min(of - 1)
-            };
-            if right < 0. || bottom < 0. {
-                continue;
-            }
-            for row in first(top)..=last(bottom, down) {
-                let (low, high) = (row as f64 * tile, (row + 1) as f64 * tile);
-                let tall = bottom.min(high) - top.max(low);
-                if tall <= 0. {
-                    continue;
-                }
-                for column in first(left)..=last(right, across) {
-                    let (low, high) =
-                        (column as f64 * tile, (column + 1) as f64 * tile);
-                    let wide = right.min(high) - left.max(low);
-                    if wide > 0. {
-                        systems[row * across + column] += each * wide * tall;
-                    }
-                }
-            }
-        }
-        let per_pixel = systems
-            .into_iter()
-            .map(|count| (count / (tile * tile)) as f32)
-            .collect();
-        Crowding { across, down, per_pixel }
-    }
-
-    /// The radius a system at `x`, `y` is drawn at: half the room each
-    /// system has there, up to `floor`; under the room for a mark, a point
-    fn radius(&self, x: f64, y: f64, floor: f64) -> f64 {
-        let column = ((x.max(0.) as usize) / TILE).min(self.across - 1);
-        let row = ((y.max(0.) as usize) / TILE).min(self.down - 1);
-        let crowd = f64::from(self.per_pixel[row * self.across + column]);
-        let radius = match crowd > 0. {
-            true => (0.5 / crowd.sqrt()).min(floor),
-            false => floor,
-        };
-        if radius < 0.75 { 0. } else { radius }
-    }
 }
 
 /// The rectangle a cell's box lands in on `lens`'s frame, or [`None`]
@@ -1297,16 +1240,10 @@ fn footprint(lens: &plan::Lens, id: CellId) -> Option<[f64; 4]> {
     Some([low[0], low[1], high[0], high[1]])
 }
 
-/// The pixels of a `width` by `height` part a mark of `radius` at `x`, `y`
-/// covers: the one it lands in for a point, every one whose middle is inside
-/// the disc for a mark
-fn covered(
-    x: f64,
-    y: f64,
-    radius: f64,
-    width: usize,
-    height: usize,
-) -> impl Iterator<Item = (usize, usize)> {
+/// The pixels a mark of `radius` at `x`, `y` covers, on or off the part:
+/// the one it lands in for a point, every one whose middle is inside the
+/// disc for a mark
+fn disc(x: f64, y: f64, radius: f64) -> impl Iterator<Item = (i64, i64)> {
     let reach = radius.ceil() as i64;
     let (cx, cy) = (x.floor() as i64, y.floor() as i64);
     (-reach..=reach)
@@ -1316,10 +1253,6 @@ fn covered(
             reach == 0 || (px - x).powi(2) + (py - y).powi(2) <= radius * radius
         })
         .map(move |(dx, dy)| (cx + dx, cy + dy))
-        .filter(move |&(px, py)| {
-            px >= 0 && py >= 0 && px < width as i64 && py < height as i64
-        })
-        .map(|(px, py)| (px as usize, py as usize))
 }
 
 /// How many threads sum a picture: all but two, which the map's own frame

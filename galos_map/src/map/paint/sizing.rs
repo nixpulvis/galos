@@ -188,7 +188,7 @@ pub(crate) fn drawn_population(population: u64, hop: bool) -> u64 {
 /// angle draws every system the same however far off it is, so the near ones
 /// never pull ahead of the far ones and a wide view is a flat field of equal
 /// dots crowding into each other.
-const MARK: f32 = (8.5e-2 * crate::map::space::LIGHT_YEAR) as f32;
+pub(crate) const MARK: f32 = (8.5e-2 * crate::map::space::LIGHT_YEAR) as f32;
 
 /// The most of the sky a mark may take, as an angular radius in radians
 ///
