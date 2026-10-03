@@ -1,18 +1,16 @@
 //! The settings pane, and the gear that slides it out
 //!
 //! What the map lets a user set once and leave alone: the spyglass, the
-//! names, the grid, the two views, how faintly the filters dim and how much
-//! work a frame may do. Drawn by [`crate::ui::chrome`] before anything else,
-//! since the gear stands wherever the pane has reached.
+//! names, the grid, the two views and how faintly the filters dim. Drawn by
+//! [`crate::ui::chrome`] before anything else, since the gear stands wherever
+//! the pane has reached.
 
 use crate::map::bodies::Clock;
 use crate::map::bodies::spawn::ShowOrbits;
 use crate::map::filter::DimTo;
 use crate::map::galaxy::Spyglass;
 use crate::map::galaxy::fetch::Poll;
-use crate::map::galaxy::spawn::{
-    ShowNames, SpawnBudget, StarExposure, StarProfile,
-};
+use crate::map::galaxy::spawn::{ShowNames, StarExposure, StarProfile};
 use crate::map::grid::{
     Bright, RulerUnit, ShowGrid, ShowMiddle, ShowNumbers, ShowPicked,
 };
@@ -147,7 +145,6 @@ pub(crate) struct Settings<'w> {
     show_picked: ResMut<'w, ShowPicked>,
     pub(super) show_rose: ResMut<'w, ShowRose>,
     bright: ResMut<'w, Bright>,
-    spawn_budget: ResMut<'w, SpawnBudget>,
 }
 
 impl Settings<'_> {
@@ -778,45 +775,6 @@ pub(super) fn settings_body(
     if dim.0 == 0. {
         ui.label(egui::RichText::new("Not loaded").weak());
     }
-
-    // What a frame may spend, rather than what is drawn: the map ends up
-    // drawing the same sky whatever is set here, and this is how quickly it
-    // gets there against how smooth the frames are while it does.
-    heading(ui, "Performance", true);
-    titled(
-        ui,
-        "Spawn Budget",
-        "How many systems become stars each frame while a view fills in. \
-         Higher fills a view in fewer frames, at the cost of slower frames \
-         while it does",
-    );
-    edited(
-        &mut settings.spawn_budget,
-        |x| &mut x.0,
-        |budget| {
-            fill_width(ui, VALUE_WIDTH);
-            ui.horizontal(|ui| {
-                // Logarithmic, since every doubling is the same step in what
-                // it costs and what it buys.
-                let rail = ui.add(
-                    egui::Slider::new(
-                        budget,
-                        SpawnBudget::FLOOR..=SpawnBudget::CEILING,
-                    )
-                    .logarithmic(true)
-                    .show_value(false),
-                );
-                let typed = value_box(
-                    ui,
-                    egui::DragValue::new(budget)
-                        .range(SpawnBudget::FLOOR..=SpawnBudget::CEILING)
-                        .speed(16),
-                );
-                rail | typed
-            })
-            .inner
-        },
-    );
 }
 
 /// Draw `widget` over a copy of what `at` picks out of `resource`, and write
@@ -1153,7 +1111,6 @@ mod tests {
         world.insert_resource(ShowRose(false));
         world.insert_resource(Bright(1.));
         world.insert_resource(DimTo(0.3));
-        world.insert_resource(SpawnBudget::default());
         world.clear_trackers();
         world
     }
@@ -1233,7 +1190,6 @@ mod tests {
                 ("ShowRose", touched::<ShowRose>(&world)),
                 ("Bright", touched::<Bright>(&world)),
                 ("DimTo", touched::<DimTo>(&world)),
-                ("SpawnBudget", touched::<SpawnBudget>(&world)),
             ]
             .into_iter()
             .filter_map(|(name, marked)| marked.then_some(name))

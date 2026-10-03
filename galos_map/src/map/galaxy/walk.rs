@@ -1013,7 +1013,7 @@ pub(crate) struct PointOrders {
     /// reaches its cell. What that shows is the map filtering in over a
     /// second or two rather than stopping dead, which is what every other
     /// bounded thing here already does — see
-    /// [`crate::map::galaxy::spawn::SpawnBudget`].
+    /// [`crate::map::galaxy::spawn::SPAWN_BUDGET`].
     at: FxHashMap<CellId, u64>,
     cells: FxHashMap<CellId, Vec<u32>>,
     populated: FxHashMap<CellId, Vec<u32>>,

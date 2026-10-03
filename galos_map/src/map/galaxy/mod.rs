@@ -580,7 +580,7 @@ pub(crate) fn visibility(
 
 /// How many systems the evictor may despawn in one frame
 ///
-/// The companion to [`spawn::SpawnBudget`]. A big eviction — a zoom-out
+/// The companion to [`spawn::SPAWN_BUDGET`]. A big eviction — a zoom-out
 /// resolved a wide sky and the walk has since moved off it — is spread over
 /// frames so the structural churn a frame does stays bounded.
 const EVICT_BUDGET: usize = 4096;

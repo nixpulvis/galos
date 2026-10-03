@@ -92,8 +92,8 @@ Measured over `.index/full`; see the commit that queued the payload reads.
 
 ## The map
 
-- Settings are not persisted: the spawn budget, like every other setting,
-  is back at its default on every launch.
+- Settings are not persisted: every setting is back at its default on every
+  launch.
 - `galaxy::spawn::update` asks every drawn system every frame whether its row
   changed; a `Changed<System>` query would skip the rest.
 - The flight harness (`galaxy/flight.rs`) awaits every read each frame and
