@@ -64,17 +64,18 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderDevice;
 use bevy::shader::ShaderRef;
+use bevy::tasks::{IoTaskPool, Task, block_on, poll_once};
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use chrono::{DateTime, Utc};
 use galos_index::prelude::{CellId, Source, View as Viewpoint};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{
     AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed,
 };
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "enhance.wgsl");
@@ -161,7 +162,9 @@ fn scripted(
                 .as_ref()
                 .is_some_and(|it| it.saving.is_none()) =>
         {
-            enhance.asked = Some(Ask::Save);
+            // Where a picture with nobody at the window is written: the
+            // working directory, under the name the dialog would offer.
+            enhance.asked = Some(Ask::SaveTo(PathBuf::from(picture_name())));
         }
         (_, Some(saved)) if !scripted.told => {
             scripted.told = true;
@@ -268,8 +271,13 @@ pub(crate) struct Enhance {
     asked: Option<Ask>,
     /// Where the last picture saved went, or why it did not
     saved: Option<Result<PathBuf, String>>,
+    /// When the last picture was written, which the line says for
+    /// [`SAVED_FOR`] after
+    saved_at: Option<Instant>,
     /// Whether the launcher's scales are out
     choosing: bool,
+    /// The folder the last picture was saved to, which the dialog opens in
+    last_dir: Option<PathBuf>,
 }
 
 impl Default for Enhance {
@@ -280,7 +288,9 @@ impl Default for Enhance {
             picture: None,
             asked: None,
             saved: None,
+            saved_at: None,
             choosing: false,
+            last_dir: None,
         }
     }
 }
@@ -297,12 +307,15 @@ enum Phase {
 }
 
 /// What the controls asked for
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Ask {
     Start,
     /// Stop drawing, or put the picture away
     Close,
+    /// Ask where to save it
     Save,
+    /// Save it there
+    SaveTo(PathBuf),
 }
 
 /// A picture several windows across, in pieces a window each
@@ -332,6 +345,9 @@ struct Picture {
     job: Option<Job>,
     /// The PNG being written, a row of pieces at a time
     saving: Option<Saving>,
+    /// The save dialog, while it is out: where the picture is to go, or
+    /// [`None`] where it was cancelled
+    asking_where: Option<Task<Option<PathBuf>>>,
 }
 
 /// One part of a picture, and once it is drawn, what lays it over the map
@@ -519,14 +535,24 @@ fn drive(
             if let Some(picture) = &mut enhance.picture
                 && enhance.phase == Phase::Shown
                 && picture.saving.is_none()
+                && picture.asking_where.is_none()
             {
-                match Saving::start(picture) {
-                    Ok(saving) => {
-                        saving.ask_row(picture, &mut commands);
-                        picture.saving = Some(saving);
-                    }
-                    Err(why) => enhance.saved = Some(Err(why)),
-                }
+                picture.asking_where =
+                    Some(ask_where(enhance.last_dir.as_deref()));
+            }
+        }
+        Some(Ask::SaveTo(path)) => {
+            if let Some(picture) = &mut enhance.picture
+                && enhance.phase == Phase::Shown
+                && picture.saving.is_none()
+            {
+                start_saving(
+                    picture,
+                    path,
+                    &mut enhance.saved,
+                    &mut enhance.last_dir,
+                    &mut commands,
+                );
             }
         }
         _ => {}
@@ -586,6 +612,21 @@ fn drive(
             if orbit.frame != looking {
                 orbit.frame = looking;
             }
+            // The dialog answered: somewhere to save to, or cancelled.
+            if let Some(task) = &mut picture.asking_where
+                && let Some(chosen) = block_on(poll_once(task))
+            {
+                picture.asking_where = None;
+                if let Some(path) = chosen {
+                    start_saving(
+                        picture,
+                        path,
+                        &mut enhance.saved,
+                        &mut enhance.last_dir,
+                        &mut commands,
+                    );
+                }
+            }
         }
     }
 }
@@ -607,6 +648,7 @@ impl Picture {
             corner: Vec2::ZERO,
             job: None,
             saving: None,
+            asking_where: None,
         }
     }
 
@@ -1271,6 +1313,61 @@ fn encode(linear: f32) -> f32 {
     }
 }
 
+/// The name a picture is offered under: when it was saved
+fn picture_name() -> String {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    format!("galos-enhanced-{stamp}.png")
+}
+
+/// Put the platform's save dialog up, opened on `dir` where a picture was
+/// saved before, and answer where the picture is to go
+///
+/// Off the frame: the dialog is the platform's own, and waiting on it would
+/// stop the map. A name typed without the extension has it added, the file
+/// being a PNG whatever it is called.
+fn ask_where(dir: Option<&Path>) -> Task<Option<PathBuf>> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title("Save the enhanced picture")
+        .add_filter("PNG image", &["png"])
+        .set_file_name(picture_name());
+    if let Some(dir) = dir {
+        dialog = dialog.set_directory(dir);
+    }
+    IoTaskPool::get().spawn(async move {
+        let path = dialog.save_file().await?.path().to_owned();
+        let png =
+            path.extension().is_some_and(|it| it.eq_ignore_ascii_case("png"));
+        Some(match png {
+            true => path,
+            false => {
+                let mut named = path.into_os_string();
+                named.push(".png");
+                PathBuf::from(named)
+            }
+        })
+    })
+}
+
+/// Start writing `picture` to `path`, a row of pieces at a time, or say why
+/// it could not be
+fn start_saving(
+    picture: &mut Picture,
+    path: PathBuf,
+    saved: &mut Option<Result<PathBuf, String>>,
+    last_dir: &mut Option<PathBuf>,
+    commands: &mut Commands,
+) {
+    *saved = None;
+    match Saving::start(picture, path) {
+        Ok(saving) => {
+            *last_dir = saving.path.parent().map(Path::to_owned);
+            saving.ask_row(picture, commands);
+            picture.saving = Some(saving);
+        }
+        Err(why) => *saved = Some(Err(why)),
+    }
+}
+
 /// A picture being written, a row of pieces at a time
 ///
 /// A row is read back off the GPU, its texel rows written through the
@@ -1286,9 +1383,7 @@ struct Saving {
 }
 
 impl Saving {
-    fn start(picture: &Picture) -> Result<Saving, String> {
-        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-        let path = PathBuf::from(format!("galos-enhanced-{stamp}.png"));
+    fn start(picture: &Picture, path: PathBuf) -> Result<Saving, String> {
         let file =
             std::fs::File::create(&path).map_err(|err| err.to_string())?;
         let mut encoder = png::Encoder::new(
@@ -1399,6 +1494,7 @@ fn captured(
                     .map(|()| path)
                     .map_err(|err| err.to_string()),
             );
+            enhance.saved_at = Some(Instant::now());
         }
         Err(why) => enhance.saved = Some(Err(why)),
     }
@@ -1605,7 +1701,12 @@ fn controls(
                         }
                         Phase::Shown => {
                             enhance.picture.as_ref().and_then(|picture| {
-                                shown(ui, picture, enhance.saved.as_ref())
+                                shown(
+                                    ui,
+                                    picture,
+                                    enhance.saved.as_ref(),
+                                    enhance.saved_at,
+                                )
                             })
                         }
                     };
@@ -1656,17 +1757,25 @@ fn drawing(ui: &mut egui::Ui, picture: &Picture, job: &Job) {
     ));
 }
 
+/// How long the line says a picture was saved
+///
+/// Long enough to be read, and gone after: it is news, and the path stays
+/// under the pointer of nothing once it is. Why one was not saved stays,
+/// being something to act on.
+const SAVED_FOR: Duration = Duration::from_secs(3);
+
 /// A shown picture's line: how far into it the window is, saving it and
 /// putting it away; what is asked of it, where anything was
 fn shown(
     ui: &mut egui::Ui,
     picture: &Picture,
     saved: Option<&Result<PathBuf, String>>,
+    saved_at: Option<Instant>,
 ) -> Option<Ask> {
     ui.label(format!("{}× enhance · {:.1}× zoom", picture.scale, picture.zoom));
     let mut asked = None;
-    match &picture.saving {
-        Some(saving) => {
+    match (&picture.saving, &picture.asking_where) {
+        (Some(saving), _) => {
             ui.add_enabled(
                 false,
                 egui::Button::new(format!(
@@ -1677,20 +1786,26 @@ fn shown(
                 .small(),
             );
         }
-        None => {
+        (None, Some(_)) => {
+            ui.add_enabled(false, egui::Button::new("choosing where…").small());
+        }
+        (None, None) => {
             if ui.small_button("save png").clicked() {
                 asked = Some(Ask::Save);
             }
         }
     }
     match saved {
-        Some(Ok(path)) => {
+        Some(Ok(path))
+            if saved_at.is_some_and(|at| at.elapsed() < SAVED_FOR) =>
+        {
             ui.weak("saved").on_hover_text(path.display().to_string());
         }
         Some(Err(why)) => {
             ui.weak("not saved").on_hover_text(why);
         }
-        None => {}
+        // Nothing saved, or saved long enough ago to be old news.
+        _ => {}
     }
     if ui.small_button("close").clicked() {
         asked = Some(Ask::Close);

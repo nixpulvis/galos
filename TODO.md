@@ -269,7 +269,6 @@ the window put it away. Left to do, the first first:
 - Pointing at the picture: the full-window area that takes the wheel and the
   drag also takes clicks, so nothing on the picture can be hovered or picked,
   though the map underneath is registered to it and could answer.
-- Saving writes to the working directory; ask where.
 - The EDAstro-style distribution maps this was for: a straight-on lens with
   top-down and side presets, which is what gives them a fixed scale.
 
