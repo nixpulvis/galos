@@ -612,6 +612,18 @@ fn drive(
             if orbit.frame != looking {
                 orbit.frame = looking;
             }
+            // A row the writer had no room for, offered again; and what the
+            // writer came to, once it has finished.
+            if let Some(mut saving) = picture.saving.take() {
+                saving.hand_on(picture, &mut commands);
+                match saving.finished() {
+                    Some(ended) => {
+                        enhance.saved = Some(ended);
+                        enhance.saved_at = Some(Instant::now());
+                    }
+                    None => picture.saving = Some(saving),
+                }
+            }
             // The dialog answered: somewhere to save to, or cancelled.
             if let Some(task) = &mut picture.asking_where
                 && let Some(chosen) = block_on(poll_once(task))
@@ -1368,24 +1380,36 @@ fn start_saving(
     }
 }
 
-/// A picture being written, a row of pieces at a time
+/// A picture being written: read back off the GPU a row of pieces at a time
+/// on the frame, and encoded on a thread of its own
 ///
-/// A row is read back off the GPU, its texel rows written through the
-/// encoder, and let go before the next is asked for: what is held is one row
-/// of pieces, whatever the picture's size.
+/// A row is read back, handed to the writer, and the next asked for once
+/// the writer has taken it: what is held is a row being read, one waiting
+/// and one being written, whatever the picture's size. Encoding a picture
+/// of a gigabyte is seconds of deflate, which on the frame stopped the map
+/// for as long; on its own thread it costs the map nothing, and counts the
+/// lines it has written for the line to read as it goes.
 struct Saving {
     path: PathBuf,
-    writer: png::StreamWriter<'static, std::io::BufWriter<std::fs::File>>,
     /// The row of pieces being read back
     row: u32,
     /// Its pieces as they come back, by column
     read: Vec<Option<Vec<u8>>>,
+    /// A whole row read back, waiting for the writer to have room
+    held: Option<Vec<Vec<u8>>>,
+    /// Rows to the writer, let go after the last so it finishes
+    send: Option<mpsc::SyncSender<Vec<Vec<u8>>>>,
+    /// Lines of the picture written so far
+    written: Arc<AtomicU32>,
+    /// The writer, until it has finished the file or given up on it
+    writer: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
 impl Saving {
     fn start(picture: &Picture, path: PathBuf) -> Result<Saving, String> {
         let file =
             std::fs::File::create(&path).map_err(|err| err.to_string())?;
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
         let mut encoder = png::Encoder::new(
             std::io::BufWriter::new(file),
             picture.physical.x * picture.scale,
@@ -1394,19 +1418,39 @@ impl Saving {
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
-        let writer = encoder
+        let stream = encoder
             .write_header()
             .and_then(png::Writer::into_stream_writer)
             .map_err(|err| err.to_string())?;
+        // Room for one row waiting while the writer works on another.
+        let (send, rows) = mpsc::sync_channel(1);
+        let written = Arc::new(AtomicU32::new(0));
+        let writer = std::thread::Builder::new()
+            .name("enhance-save".into())
+            .spawn({
+                let (path, written) = (path.clone(), written.clone());
+                let piece = picture.physical;
+                move || write(stream, rows, &path, piece, &written)
+            })
+            .map_err(|err| err.to_string())?;
         Ok(Saving {
-            path: std::fs::canonicalize(&path).unwrap_or(path),
-            writer,
+            path,
             row: 0,
             read: vec![None; picture.scale as usize],
+            held: None,
+            send: Some(send),
+            written,
+            writer: Some(writer),
         })
     }
 
-    /// Ask the row of pieces being written back off the GPU
+    /// How much of the picture is written, `0..=1`
+    fn share(&self, picture: &Picture) -> f32 {
+        let lines = picture.physical.y * picture.scale;
+        self.written.load(Relaxed) as f32 / lines.max(1) as f32
+    }
+
+    /// Ask the row of pieces being read back off the GPU
     fn ask_row(&self, picture: &Picture, commands: &mut Commands) {
         let scale = picture.scale as usize;
         let row = self.row as usize;
@@ -1422,44 +1466,105 @@ impl Saving {
         }
     }
 
-    /// Write the row once every piece of it is back, and say whether the
-    /// picture is finished
-    fn write_row(&mut self, picture: &Picture) -> Result<bool, String> {
-        if self.read.iter().any(Option::is_none) {
-            return Ok(false);
+    /// Take a piece read back, and once its row is whole hold it for the
+    /// writer
+    fn took(&mut self, at: usize, data: Vec<u8>, picture: &Picture) {
+        let scale = picture.scale as usize;
+        if at / scale != self.row as usize {
+            return;
         }
-        let row_bytes = picture.physical.x as usize * 4;
-        let stride = RenderDevice::align_copy_bytes_per_row(row_bytes);
-        let rows = picture.physical.y as usize;
-        let read: Vec<Vec<u8>> =
-            self.read.iter_mut().flat_map(Option::take).collect();
-        for data in &read {
-            if data.len() < stride * (rows - 1) + row_bytes {
-                return Err(format!(
-                    "a piece came back {} bytes rather than {}",
-                    data.len(),
-                    stride * rows
-                ));
-            }
+        self.read[at % scale] = Some(data);
+        if self.read.iter().all(Option::is_some) {
+            self.held =
+                Some(self.read.iter_mut().flat_map(Option::take).collect());
         }
-        for y in 0..rows {
-            for data in &read {
-                self.writer
-                    .write_all(&data[y * stride..y * stride + row_bytes])
-                    .map_err(|err| err.to_string())?;
-            }
-        }
-        self.row += 1;
-        Ok(self.row == picture.scale)
     }
+
+    /// Hand the writer the row held, where it has room, and ask the next
+    /// off the GPU; after the last, let the writer finish
+    fn hand_on(&mut self, picture: &Picture, commands: &mut Commands) {
+        let (Some(row), Some(send)) = (self.held.take(), &self.send) else {
+            return;
+        };
+        match send.try_send(row) {
+            Ok(()) => {
+                self.row += 1;
+                if self.row < picture.scale {
+                    self.ask_row(picture, commands);
+                } else {
+                    self.send = None;
+                }
+            }
+            Err(mpsc::TrySendError::Full(row)) => self.held = Some(row),
+            // The writer gave up; why is its answer, read when it is joined.
+            Err(mpsc::TrySendError::Disconnected(_)) => self.send = None,
+        }
+    }
+
+    /// What the writer came to, once it has finished
+    fn finished(&mut self) -> Option<Result<PathBuf, String>> {
+        if !self.writer.as_ref()?.is_finished() {
+            return None;
+        }
+        let ended = match self.writer.take()?.join() {
+            Ok(written) => written,
+            Err(_) => Err("the writer stopped".to_owned()),
+        };
+        Some(ended.map(|()| self.path.clone()))
+    }
+}
+
+/// Write the rows of pieces as they come, line by line across each row,
+/// counting the lines into `written`; the file is taken away again where it
+/// could not be finished, so a picture left part written is not left lying
+fn write(
+    mut stream: png::StreamWriter<'static, std::io::BufWriter<std::fs::File>>,
+    rows: mpsc::Receiver<Vec<Vec<u8>>>,
+    path: &Path,
+    piece: UVec2,
+    written: &AtomicU32,
+) -> Result<(), String> {
+    let row_bytes = piece.x as usize * 4;
+    let stride = RenderDevice::align_copy_bytes_per_row(row_bytes);
+    let lines = piece.y as usize;
+    let each = || -> Result<(), String> {
+        // Until the frame lets go of its end: after the last row, or when
+        // the picture is put away part way, which leaves the PNG short.
+        for pieces in rows {
+            for data in &pieces {
+                if data.len() < stride * (lines - 1) + row_bytes {
+                    return Err(format!(
+                        "a piece came back {} bytes rather than {}",
+                        data.len(),
+                        stride * lines
+                    ));
+                }
+            }
+            for y in 0..lines {
+                for data in &pieces {
+                    stream
+                        .write_all(&data[y * stride..y * stride + row_bytes])
+                        .map_err(|err| err.to_string())?;
+                }
+                written.fetch_add(1, Relaxed);
+            }
+        }
+        Ok(())
+    };
+    let ended =
+        each().and_then(|()| stream.finish().map_err(|err| err.to_string()));
+    if ended.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    ended
 }
 
 /// Which piece a read-back is of
 #[derive(Component)]
 struct Reading(usize);
 
-/// Take a piece read back into the row being written, write the row once it
-/// is whole, and ask for the next
+/// Take a piece read back into the row being read, and hand the row to the
+/// writer once it is whole
 fn captured(
     read: On<ReadbackComplete>,
     readings: Query<&Reading>,
@@ -1470,34 +1575,11 @@ fn captured(
     // Once is enough: a readback left standing reads again every frame, and
     // one or two more may land before this despawn does.
     commands.entity(read.entity).try_despawn();
-    let enhance = &mut *enhance;
     let Some(picture) = &mut enhance.picture else { return };
     let Some(mut saving) = picture.saving.take() else { return };
-    let scale = picture.scale as usize;
-    if *at / scale != saving.row as usize {
-        picture.saving = Some(saving);
-        return;
-    }
-    saving.read[*at % scale] = Some(read.data.clone());
-    match saving.write_row(picture) {
-        Ok(false) if saving.read.iter().all(Option::is_none) => {
-            saving.ask_row(picture, &mut commands);
-            picture.saving = Some(saving);
-        }
-        Ok(false) => picture.saving = Some(saving),
-        Ok(true) => {
-            let path = saving.path.clone();
-            enhance.saved = Some(
-                saving
-                    .writer
-                    .finish()
-                    .map(|()| path)
-                    .map_err(|err| err.to_string()),
-            );
-            enhance.saved_at = Some(Instant::now());
-        }
-        Err(why) => enhance.saved = Some(Err(why)),
-    }
+    saving.took(*at, read.data.clone(), picture);
+    saving.hand_on(picture, &mut commands);
+    picture.saving = Some(saving);
 }
 
 /// Whether an enhanced picture covers the window
@@ -1779,9 +1861,8 @@ fn shown(
             ui.add_enabled(
                 false,
                 egui::Button::new(format!(
-                    "saving {} of {}…",
-                    saving.row + 1,
-                    picture.scale
+                    "saving {:.0}%",
+                    saving.share(picture) * 100.
                 ))
                 .small(),
             );
