@@ -248,11 +248,13 @@ holds the 32,409 systems it held and draws at ~120 fps, where it had loaded
 `WASD` and `F`/`R` look about in it, and only close, escape and a resize of
 the window put it away. Left to do, the first first:
 
-- Close in it is near black. A system is one pixel, which is the density a
-  wide view wants and nothing a close one can see: the opening view near Sol
-  lights a dozen pixels of thirty-three million. The map draws a mark at its
-  floor and its own size; the picture wants either that, switched in by
-  projected size, or bloom over the summed light, which is the next thing.
+- A system is a disc as large as the room around it on screen allows, up to
+  the map's floor (`Crowding`, read off the cells' counts), and a point where
+  the sky is crowded; its light is shared over the disc, so sparse sky is no
+  brighter for being drawn in marks. The curve is white at the view's
+  brightest and bends to put its middling lit pixel at a mid grey, so close
+  and far views both read. A system's own size, close enough to see it, is
+  still not drawn; nor is bloom, which is the next thing.
 - By hand: the base standing on the window as it lands, the wheel and a drag
   in a shown picture with the map registered beneath it, cancel part way,
   close and Escape. Only the scripted run has been seen.

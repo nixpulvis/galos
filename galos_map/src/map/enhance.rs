@@ -19,7 +19,7 @@
 //! `scale` windows across, and is summed a piece at a time on a thread of its
 //! own with workers reading the cells that land in the piece ([`lands_in`],
 //! through the map's own mirrored [`plan::Lens`]): only one piece's sums are
-//! ever held, twenty-four bytes a pixel of a window, whatever the picture's
+//! ever held, forty-eight bytes a pixel of a window, whatever the picture's
 //! size. Each piece is turned into colors as it finishes and laid over the
 //! map, the middle first, and the map's own cameras stand down under it
 //! ([`Covered`]).
@@ -866,6 +866,9 @@ struct Spec {
     /// The same view `scale` windows across
     picture: Viewpoint,
     physical: UVec2,
+    /// The window's height in logical pixels, which the map's mark floor is
+    /// measured in
+    logical: f32,
     scale: u32,
     /// The pieces' columns and rows, by number
     places: Vec<UVec2>,
@@ -875,13 +878,16 @@ struct Spec {
 /// How many cells a worker takes off the shared list at once
 const BATCH: usize = 16;
 
-/// The fixed-point unit a system's light is summed in, as a share of the
-/// brightest system's
+/// How many fixed-point units the faintest light the map lays comes to
 ///
-/// Sums are `u32`, so a pixel holds sixteen million systems at full light
-/// before it wraps; the faintest light the map lays, an unscanned star's,
-/// still comes to a dozen units.
-const UNIT: f32 = 256.;
+/// The units are set off the faintest, not the brightest: along a political
+/// axis a system nobody lives in is worth some thousandth of a colony, and
+/// units set off the colony rounded it to nothing, so the uninhabited were
+/// not drawn at all. And a mark shares its light among the pixels it
+/// covers, a hundred or so at most, so the faintest must split that finely
+/// and keep its share. Sums are `u64`, which holds any galaxy's worth of
+/// the brightest at this many.
+const FAINTEST: f32 = 32_768.;
 
 /// Of the base's lit pixels, the share drawn below the top of the curve
 ///
@@ -889,6 +895,11 @@ const UNIT: f32 = 256.;
 /// one pixel the bubble's core lands in, which would leave the rest of the
 /// galaxy dim.
 const WHITE_AT: f64 = 0.995;
+
+/// Where the base's middling lit pixel is drawn on the curve, in linear
+/// light: a mid grey, so the bulk of what is lit reads whether it is a
+/// pixel of a dozen systems or of a fraction of one
+const MIDDLE: f64 = 0.18;
 
 impl Spec {
     fn new(
@@ -929,6 +940,7 @@ impl Spec {
             base: at(physical.y),
             picture: at(physical.y * picture.scale),
             physical,
+            logical: picture.viewport.y,
             scale: picture.scale,
             places: picture
                 .pieces
@@ -973,9 +985,9 @@ impl Spec {
         progress.total.store(total, Relaxed);
         progress.planned.store(true, Relaxed);
 
-        // The top of each curve, the admitted's and the excluded's, read off
+        // Each half's curve, the admitted's and the excluded's, read off
         // the base and held for every piece.
-        let mut whites = None;
+        let mut curves = None;
         for (at, ((view, origin), cells)) in
             parts.into_iter().zip(&culled).enumerate()
         {
@@ -984,11 +996,11 @@ impl Spec {
             };
             // A base pixel takes in `scale` squared of the picture's.
             let per = if at == 0 { f64::from(self.scale).powi(2) } else { 1. };
-            let whites = *whites.get_or_insert_with(|| {
+            let curves = *curves.get_or_insert_with(|| {
                 [Half::Admitted, Half::Excluded]
-                    .map(|half| white_point(&sums, half, per))
+                    .map(|half| Curve::of(&sums, half, per, self.light.unit))
             });
-            let rgba = tone(&sums, per, whites, self.light.opacity);
+            let rgba = tone(&sums, per, curves, &self.light);
             drop(sums);
             let part = (at > 0).then(|| self.order[at - 1]);
             progress.parts.fetch_add(1, Relaxed);
@@ -998,7 +1010,17 @@ impl Spec {
         }
     }
 
-    /// The cells each part reads: those whose box lands in it
+    /// The radius, in `view`'s pixels, that the map's smallest mark comes to
+    /// in a part: as large on the window, shown whole, as the map draws it
+    fn floor(&self, view: &Viewpoint) -> f64 {
+        f64::from(
+            crate::map::paint::field::SMALLEST * view.viewport_height
+                / self.logical.max(1.),
+        )
+    }
+
+    /// The cells each part reads: those whose box lands in it, or within a
+    /// mark of it, a mark at the edge laying some of itself over the line
     fn cull(
         &self,
         parts: &[(Viewpoint, UVec2)],
@@ -1019,9 +1041,10 @@ impl Spec {
                         }
                         let (view, origin) = parts[at];
                         let lens = plan::Lens::of(&view);
-                        let low = origin.as_dvec2();
-                        let rect =
-                            [low.x, low.y, low.x + size.x, low.y + size.y];
+                        let margin = self.floor(&view);
+                        let low = origin.as_dvec2() - margin;
+                        let high = origin.as_dvec2() + size + margin;
+                        let rect = [low.x, low.y, high.x, high.y];
                         let cells = self
                             .cells
                             .iter()
@@ -1049,16 +1072,21 @@ impl Spec {
         origin: UVec2,
         cells: &[(CellId, u64)],
         progress: &Progress,
-    ) -> Option<Vec<AtomicU32>> {
+    ) -> Option<Vec<AtomicU64>> {
         let (width, height) =
             (self.physical.x as usize, self.physical.y as usize);
         // Six a pixel: the light the filters admit, and the light of what
         // they exclude, each red, green and blue. See [`Half`].
-        let sums: Vec<AtomicU32> =
-            (0..width * height * CHANNELS).map(|_| AtomicU32::new(0)).collect();
+        let sums: Vec<AtomicU64> =
+            (0..width * height * CHANNELS).map(|_| AtomicU64::new(0)).collect();
         // The map's own screen, mirrored as it draws the galaxy.
         let lens = plan::Lens::of(&view);
+        let floor = self.floor(&view);
+        let crowding = Crowding::of(&lens, origin, self.physical, cells);
         let origin = origin.as_dvec2();
+        // How far a point may stand off the part and still lay some of its
+        // mark in it.
+        let reach = floor.ceil();
         let next = AtomicUsize::new(0);
         std::thread::scope(|scope| {
             for _ in 0..workers() {
@@ -1090,8 +1118,10 @@ impl Spec {
                                     continue;
                                 };
                                 let (x, y) = (x - origin.x, y - origin.y);
-                                if !(0. ..width as f64).contains(&x)
-                                    || !(0. ..height as f64).contains(&y)
+                                if x < -reach
+                                    || y < -reach
+                                    || x >= width as f64 + reach
+                                    || y >= height as f64 + reach
                                 {
                                     continue;
                                 }
@@ -1110,13 +1140,26 @@ impl Spec {
                                 ) else {
                                     continue;
                                 };
-                                let pixel = CHANNELS
-                                    * (y as usize * width + x as usize)
-                                    + half.offset();
-                                for (channel, value) in light.iter().enumerate()
+                                let radius = crowding.radius(x, y, floor);
+                                // A mark shares the system's light among the
+                                // pixels it covers, as much light as a point.
+                                let share = covered(x, y, radius, width, height)
+                                    .count()
+                                    .max(1)
+                                    as u64;
+                                for (px, py) in
+                                    covered(x, y, radius, width, height)
                                 {
-                                    sums[pixel + channel]
-                                        .fetch_add(*value, Relaxed);
+                                    let pixel = CHANNELS * (py * width + px)
+                                        + half.offset();
+                                    for (channel, value) in
+                                        light.iter().enumerate()
+                                    {
+                                        sums[pixel + channel].fetch_add(
+                                            u64::from(*value) / share,
+                                            Relaxed,
+                                        );
+                                    }
                                 }
                             }
                             progress.counted.fetch_add(owned, Relaxed);
@@ -1138,6 +1181,107 @@ impl Spec {
 /// a system is drawn as a point, and lands in the part it projects into and
 /// nowhere else.
 fn lands_in(lens: &plan::Lens, id: CellId, rect: [f64; 4]) -> bool {
+    let Some([low_x, low_y, high_x, high_y]) = footprint(lens, id) else {
+        return true;
+    };
+    let [left, top, right, bottom] = rect;
+    high_x >= left && low_x <= right && high_y >= top && low_y <= bottom
+}
+
+/// How crowded a part's sky is: systems a pixel, over tiles of [`TILE`]
+/// pixels, from the cells' own counts spread over where each lands
+///
+/// **A point where the sky is crowded, a mark where it is not, and either
+/// as much light.** Drawn a pixel each, a picture of a few hundred stars
+/// close in is a few hundred pixels of millions, and shown whole each is
+/// averaged with the dark around it into almost nothing. Drawn at the map's
+/// floor everywhere, the crowded sky's systems land on one another and the
+/// picture's resolution is spent on blur. So a system is drawn as large as
+/// it can be without meeting its neighbours, by the room each has where it
+/// lands, and no larger than the map would draw it — but its light spread
+/// over the mark, not laid whole in each pixel of it: laid whole, every
+/// sky sparse enough for marks came out as bright as one dense with them,
+/// and the far views' thin edges glared. Read off every cell landing there
+/// and not the system's own: looking into the bubble, cells stand dozens
+/// deep over the same pixels, and each one's own room was a crowd's.
+struct Crowding {
+    across: usize,
+    down: usize,
+    /// Systems a pixel, tile by tile, row by row
+    per_pixel: Vec<f32>,
+}
+
+/// The side of a [`Crowding`] tile, in a part's pixels
+const TILE: usize = 16;
+
+impl Crowding {
+    fn of(
+        lens: &plan::Lens,
+        origin: UVec2,
+        size: UVec2,
+        cells: &[(CellId, u64)],
+    ) -> Crowding {
+        let across = (size.x as usize).div_ceil(TILE);
+        let down = (size.y as usize).div_ceil(TILE);
+        let mut systems = vec![0f64; across * down];
+        let tile = TILE as f64;
+        let origin = origin.as_dvec2();
+        for &(id, owned) in cells {
+            // A box reaching behind the eye lands nowhere in particular.
+            let Some([left, top, right, bottom]) = footprint(lens, id) else {
+                continue;
+            };
+            let (left, right) = (left - origin.x, right - origin.x);
+            let (top, bottom) = (top - origin.y, bottom - origin.y);
+            let area = ((right - left) * (bottom - top)).max(1.);
+            let each = owned as f64 / area;
+            let first = |low: f64| ((low / tile).floor().max(0.)) as usize;
+            let last = |high: f64, of: usize| {
+                ((high / tile).floor().max(0.) as usize).min(of - 1)
+            };
+            if right < 0. || bottom < 0. {
+                continue;
+            }
+            for row in first(top)..=last(bottom, down) {
+                let (low, high) = (row as f64 * tile, (row + 1) as f64 * tile);
+                let tall = bottom.min(high) - top.max(low);
+                if tall <= 0. {
+                    continue;
+                }
+                for column in first(left)..=last(right, across) {
+                    let (low, high) =
+                        (column as f64 * tile, (column + 1) as f64 * tile);
+                    let wide = right.min(high) - left.max(low);
+                    if wide > 0. {
+                        systems[row * across + column] += each * wide * tall;
+                    }
+                }
+            }
+        }
+        let per_pixel = systems
+            .into_iter()
+            .map(|count| (count / (tile * tile)) as f32)
+            .collect();
+        Crowding { across, down, per_pixel }
+    }
+
+    /// The radius a system at `x`, `y` is drawn at: half the room each
+    /// system has there, up to `floor`; under the room for a mark, a point
+    fn radius(&self, x: f64, y: f64, floor: f64) -> f64 {
+        let column = ((x.max(0.) as usize) / TILE).min(self.across - 1);
+        let row = ((y.max(0.) as usize) / TILE).min(self.down - 1);
+        let crowd = f64::from(self.per_pixel[row * self.across + column]);
+        let radius = match crowd > 0. {
+            true => (0.5 / crowd.sqrt()).min(floor),
+            false => floor,
+        };
+        if radius < 0.75 { 0. } else { radius }
+    }
+}
+
+/// The rectangle a cell's box lands in on `lens`'s frame, or [`None`]
+/// where it reaches behind the eye
+fn footprint(lens: &plan::Lens, id: CellId) -> Option<[f64; 4]> {
     let bounds = id.bounds();
     let (mut low, mut high) = ([f64::MAX; 2], [f64::MIN; 2]);
     for corner in 0..8 {
@@ -1146,13 +1290,38 @@ fn lands_in(lens: &plan::Lens, id: CellId, rect: [f64; 4]) -> bool {
             if corner & 2 == 0 { bounds.min[1] } else { bounds.max[1] },
             if corner & 4 == 0 { bounds.min[2] } else { bounds.max[2] },
         ];
-        let Some([x, y]) = lens.project(at) else { return true };
+        let [x, y] = lens.project(at)?;
         low = [low[0].min(x), low[1].min(y)];
         high = [high[0].max(x), high[1].max(y)];
     }
-    let [left, top, right, bottom] = rect;
-    high[0] >= left && low[0] <= right && high[1] >= top && low[1] <= bottom
+    Some([low[0], low[1], high[0], high[1]])
 }
+
+/// The pixels of a `width` by `height` part a mark of `radius` at `x`, `y`
+/// covers: the one it lands in for a point, every one whose middle is inside
+/// the disc for a mark
+fn covered(
+    x: f64,
+    y: f64,
+    radius: f64,
+    width: usize,
+    height: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    let reach = radius.ceil() as i64;
+    let (cx, cy) = (x.floor() as i64, y.floor() as i64);
+    (-reach..=reach)
+        .flat_map(move |dy| (-reach..=reach).map(move |dx| (dx, dy)))
+        .filter(move |&(dx, dy)| {
+            let (px, py) = ((cx + dx) as f64 + 0.5, (cy + dy) as f64 + 0.5);
+            reach == 0 || (px - x).powi(2) + (py - y).powi(2) <= radius * radius
+        })
+        .map(move |(dx, dy)| (cx + dx, cy + dy))
+        .filter(move |&(px, py)| {
+            px >= 0 && py >= 0 && px < width as i64 && py < height as i64
+        })
+        .map(|(px, py)| (px as usize, py as usize))
+}
+
 /// How many threads sum a picture: all but two, which the map's own frame
 /// and its render keep
 fn workers() -> usize {
@@ -1165,12 +1334,16 @@ fn workers() -> usize {
 /// The light one system lays into a picture, by its bucket along the axis
 /// and whether anybody lives there: the map's own light for a mark
 /// ([`system_light`] times the hue's
-/// [`crate::map::galaxy::spawn::Hue::light`]), in [`UNIT`]s of the brightest
+/// [`crate::map::galaxy::spawn::Hue::light`]), in fixed-point units with
+/// the faintest at [`FAINTEST`]
 #[derive(Clone)]
 struct Light {
     color_by: ColorBy,
     /// By bucket, then unpeopled and peopled
     table: Vec<[[u32; 3]; 2]>,
+    /// How many units the brightest system's light comes to, which the
+    /// curve is read in
+    unit: f64,
     /// The opacity what the filters exclude is drawn at, [`DimTo::opacity`];
     /// spent on the excluded light after its curve, not on each system
     opacity: f32,
@@ -1186,17 +1359,18 @@ impl Light {
                 })
             })
             .collect();
-        let brightest = lights
-            .iter()
-            .flatten()
-            .map(|light| light.max_element())
-            .fold(f32::MIN_POSITIVE, f32::max);
-        let fixed = |light: Vec3| {
-            (light / brightest * UNIT).round().as_uvec3().to_array()
-        };
+        let levels =
+            || lights.iter().flatten().map(|light| light.max_element());
+        let brightest = levels().fold(f32::MIN_POSITIVE, f32::max);
+        let faintest =
+            levels().filter(|&level| level > 0.).fold(brightest, f32::min);
+        let per_light = FAINTEST / faintest;
+        let fixed =
+            |light: Vec3| (light * per_light).round().as_uvec3().to_array();
         Light {
             color_by,
             table: lights.iter().map(|by| by.map(fixed)).collect(),
+            unit: f64::from(brightest * per_light),
             opacity,
         }
     }
@@ -1248,66 +1422,121 @@ impl Half {
 /// How many sums a pixel holds: red, green and blue, for each [`Half`]
 const CHANNELS: usize = 6;
 
-/// The light at the top of `half`'s curve: [`WHITE_AT`] of the base's
-/// pixels lit in it, as light a pixel of the picture gathers
-fn white_point(sums: &[AtomicU32], half: Half, per: f64) -> f64 {
-    let mut lit: Vec<f64> = sums
-        .as_chunks::<CHANNELS>()
-        .0
-        .iter()
-        .map(|pixel| brightest(of(pixel, half)) / per)
-        .filter(|&light| light > 0.)
-        .collect();
-    if lit.is_empty() {
-        return 1.;
+/// How a half's light is drawn: a log curve, white at [`WHITE_AT`] of the
+/// base's lit pixels and bent so its middling lit pixel lands at [`MIDDLE`]
+///
+/// **Two ends, read off the view.** A curve whose knee stood at one
+/// brightest system drew a sky of a fraction of a system a pixel — the
+/// close views, every pixel of the bubble a few stars deep at most —
+/// along its straight foot, a few percent of white: black. Bent where the
+/// view's own middling pixel lies, a close view and a far one each come
+/// out with their bulk at a grey that reads, and their brightest at white.
+#[derive(Clone, Copy)]
+struct Curve {
+    /// The light at white, as light a pixel of the picture gathers
+    white: f64,
+    /// Where the curve bends: light well under it is drawn in proportion,
+    /// light well over it by its logarithm
+    knee: f64,
+}
+
+impl Curve {
+    fn of(sums: &[AtomicU64], half: Half, per: f64, unit: f64) -> Curve {
+        let mut lit: Vec<f64> = sums
+            .as_chunks::<CHANNELS>()
+            .0
+            .iter()
+            .map(|pixel| brightest(of(pixel, half), unit) / per)
+            .filter(|&light| light > 0.)
+            .collect();
+        if lit.is_empty() {
+            return Curve { white: 1., knee: 1. };
+        }
+        let mut at = |share: f64| {
+            let at = ((lit.len() - 1) as f64 * share) as usize;
+            *lit.select_nth_unstable_by(at, f64::total_cmp).1
+        };
+        let white = at(WHITE_AT);
+        let middle = at(0.5);
+        Curve { white, knee: knee(middle, white) }
     }
-    let at = ((lit.len() - 1) as f64 * WHITE_AT) as usize;
-    let (_, white, _) = lit.select_nth_unstable_by(at, f64::total_cmp);
-    white.max(1.)
+
+    /// Light on the curve, `0..=1`
+    fn level(&self, light: f64) -> f64 {
+        ((1. + light / self.knee).ln() / (1. + self.white / self.knee).ln())
+            .min(1.)
+    }
+}
+
+/// The knee that draws `middle` at [`MIDDLE`] on a curve white at `white`
+///
+/// The higher the knee, the straighter the curve and the darker its middle;
+/// so it is found by halving, over its logarithm. Where even a straight
+/// line draws the middle bright enough, the knee stands far off and the
+/// curve is that line.
+fn knee(middle: f64, white: f64) -> f64 {
+    let level =
+        |knee: f64| (1. + middle / knee).ln() / (1. + white / knee).ln();
+    let (mut low, mut high) = ((white * 1e-9).ln(), (white * 1e9).ln());
+    if level(high.exp()) >= MIDDLE {
+        return high.exp();
+    }
+    for _ in 0..60 {
+        let mid = (low + high) / 2.;
+        // A lower knee bends harder, lifting the middle.
+        if level(mid.exp()) < MIDDLE { high = mid } else { low = mid }
+    }
+    low.exp()
 }
 
 /// `half`'s three channels of a pixel
-fn of(pixel: &[AtomicU32; CHANNELS], half: Half) -> &[AtomicU32] {
+fn of(pixel: &[AtomicU64; CHANNELS], half: Half) -> &[AtomicU64] {
     &pixel[half.offset()..half.offset() + 3]
 }
 
-/// Light along its brightest channel, in the brightest system's
-fn brightest(channels: &[AtomicU32]) -> f64 {
+/// Light along its brightest channel, in the brightest system's: `unit`
+/// fixed-point units to one
+fn brightest(channels: &[AtomicU64], unit: f64) -> f64 {
     channels
         .iter()
-        .map(|channel| f64::from(channel.load(Relaxed)))
+        .map(|channel| channel.load(Relaxed) as f64)
         .fold(0., f64::max)
-        / f64::from(UNIT)
+        / unit
 }
 
-/// One half of a pixel on its log curve topped at `white`, its hue held,
-/// in linear light
-fn curved(channels: &[AtomicU32], per: f64, white: f64) -> [f64; 3] {
-    let light = brightest(channels) / per;
+/// One half of a pixel on its curve, its hue held, in linear light
+fn curved(
+    channels: &[AtomicU64],
+    per: f64,
+    curve: Curve,
+    unit: f64,
+) -> [f64; 3] {
+    let light = brightest(channels, unit) / per;
     if light <= 0. {
         return [0.; 3];
     }
     // The brightest channel goes to the curve and the others with it, so a
     // mix keeps the color the key gives it.
-    let level = ((1. + light).ln() / (1. + white).ln()).min(1.);
-    let scale = level / (light * per * f64::from(UNIT));
-    [0, 1, 2].map(|at| f64::from(channels[at].load(Relaxed)) * scale)
+    let scale = curve.level(light) / (light * per * unit);
+    [0, 1, 2].map(|at| channels[at].load(Relaxed) as f64 * scale)
 }
 
 /// Color a part: the admitted on their curve, and the excluded on theirs
-/// laid under them at `opacity`, as sRGB
+/// laid under them at the dim's opacity, as sRGB
 fn tone(
-    sums: &[AtomicU32],
+    sums: &[AtomicU64],
     per: f64,
-    whites: [f64; 2],
-    opacity: f32,
+    curves: [Curve; 2],
+    light: &Light,
 ) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(sums.len() / CHANNELS * 4);
     for pixel in sums.as_chunks::<CHANNELS>().0 {
-        let admitted = curved(of(pixel, Half::Admitted), per, whites[0]);
-        let excluded = curved(of(pixel, Half::Excluded), per, whites[1]);
+        let admitted =
+            curved(of(pixel, Half::Admitted), per, curves[0], light.unit);
+        let excluded =
+            curved(of(pixel, Half::Excluded), per, curves[1], light.unit);
         for (shown, faint) in admitted.into_iter().zip(excluded) {
-            let linear = shown + faint * f64::from(opacity);
+            let linear = shown + faint * f64::from(light.opacity);
             rgba.push((encode(linear as f32) * 255.).round() as u8);
         }
         rgba.push(255);
