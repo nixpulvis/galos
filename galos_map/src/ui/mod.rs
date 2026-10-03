@@ -393,9 +393,12 @@ pub(crate) fn chrome(
             )
         });
     gear(ctx, edge, asked.middle, &mut toggles.settings.0);
-    // Under the gear, as the gear hangs off the field.
-    let eye =
-        egui::pos2(edge + MARGIN, asked.middle + GEAR_ROOM / 2. + MARGIN);
+    // Under the gear, as the gear hangs off the field, and centered in the
+    // room it is given: the gear's glyph stands in the middle of that room.
+    let eye = egui::pos2(
+        edge + MARGIN + (GEAR_ROOM - hide::EYE) / 2.,
+        asked.middle + GEAR_ROOM / 2. + MARGIN,
+    );
     hide::eye(ctx, eye, &mut toggles.hidden.0);
     // And under the eye, the viewfinder that asks for a picture of the view.
     crate::map::enhance::launcher(
