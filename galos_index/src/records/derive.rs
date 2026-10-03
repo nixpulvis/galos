@@ -16,7 +16,7 @@
 //! sides agree on.
 
 use crate::core::star::StarKind;
-use crate::records::SystemBodies;
+use crate::records::{Star, SystemBodies};
 use chrono::NaiveDateTime;
 use galos_photometry::{ClassLight, Flux, Magnitude};
 
@@ -118,16 +118,18 @@ pub fn lit(
 /// (system_address) ... ORDER BY system_address, distance_from_arrival_ls,
 /// id` of `galos_db::index::metadata`.
 pub fn arrival_class(bodies: &SystemBodies) -> Option<&str> {
-    bodies
-        .stars
-        .iter()
-        .min_by(|one, other| {
-            order(
-                (one.distance_from_arrival_ls, one.id),
-                (other.distance_from_arrival_ls, other.id),
-            )
-        })
-        .map(|star| star.star_class.as_str())
+    arrival_star(bodies).map(|star| star.star_class.as_str())
+}
+
+/// The star a ship drops in at, by [`arrival_class`]'s rule, for a reader
+/// that wants the rest of its record too
+pub fn arrival_star(bodies: &SystemBodies) -> Option<&Star> {
+    bodies.stars.iter().min_by(|one, other| {
+        order(
+            (one.distance_from_arrival_ls, one.id),
+            (other.distance_from_arrival_ls, other.id),
+        )
+    })
 }
 
 /// Which of two stars, as `(distance from arrival, body id)`, a ship drops
