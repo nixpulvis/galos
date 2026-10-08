@@ -11,20 +11,22 @@ and galos_index's layers.
   one). `galos::sink::Index` keeps its name, the sink's own.
 - Still open: `Sky` is also the galos_sky crate, and galos_map imports
   `Source` as `IndexSource`.
-- A system's identity is `id64: u64` in about a hundred places and
-  `address: i64` in about eighty-five (`Tree::holds(address: i64)` beside
-  `Tree::forget(id: u64)`). One newtype, and which sign, is the question.
+- A system's identity is `address: i64` at about 245 sites and `id64: u64`
+  at only five, with about eighty `as` casts between the two
+  (`Tree::holds(address: i64)` beside `Tree::forget(id: u64)`). One newtype,
+  and which sign, is the question.
 
 ## Fewer resources, fewer parameters
 
 Bevy caps a system at sixteen parameters, and the map has run into it:
-`SystemParam` bundles such as `Settings` (21 resources), `FilterBar` and
-`walk::Worked` exist mostly to get under the cap, and 21
-`#[allow(clippy::too_many_arguments)]` remain in galos_map, the widest being
-`ask_bar` and `state_bar` (`ui/bar/mod.rs`), `bodies/spawn.rs` and
-`galaxy/spawn.rs`. The route settings and the router are now one resource
-each (`RouteSettings`, `Router`), and asking for a route takes one `Asking`
-context in place of a dozen arguments; do the same elsewhere:
+`SystemParam` bundles such as `Settings` (25 resources), `FilterBar` and
+`walk::Worked` exist mostly to get under the cap, and 28
+`#[allow(clippy::too_many_arguments)]` remain in galos_map, among them
+`ask_bar` and `state_bar` (`ui/bar/mod.rs`), `panels` (`ui/panels/mod.rs`),
+`diagnostics` (`dev/mod.rs`), `bodies/spawn.rs` and `galaxy/spawn.rs`. The
+route settings and the router are now one resource each (`RouteSettings`,
+`Router`), and asking for a route takes one `Asking` context in place of a
+dozen arguments; do the same elsewhere:
 
 - Group what is always read together into one resource: the display toggles
   scattered over eight modules (`ShowNames`, `ShowBodyNames`, `ShowOrbits`,
@@ -102,8 +104,9 @@ Measured over `.index/full`; see the commit that queued the payload reads.
   frames" reads 28 where the running map fills a frame's budget every frame.
   Fill-in was checked with `dev/shot.rs` captures; how long it takes in the
   running map after the camera stops has not been measured end to end.
-- 71 clippy warnings in galos_map, most of them the argument counts above
-  and complex types; a few collapsible `if`s.
+- 59 clippy warnings in galos_map's library: 27 argument counts (the
+  ones above), 19 complex types, and a handful of collapsible `if`s, doc
+  list indents and `matches!`-shaped matches.
 
 ## Merged marks
 
@@ -281,5 +284,6 @@ the window put it away. Left to do, the first first:
 - `cargo test --release -p galos_map` does not compile: `ui/bar/search.rs`
   and `ui/bar/selection.rs` import `ui::testing::draw_selected`, which the
   release test build does not have.
-- `.index/7day` is at index format 2 and refuses to open until
-  `galos index migrate` is run over it.
+- `.index/7day` is at index format 2 and `.index/populated` at 3, against
+  the current 6; each refuses to open until `galos index migrate` is run
+  over it.
