@@ -50,6 +50,7 @@ use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 mod bar;
 mod clock;
+mod enhance;
 mod help;
 pub(crate) mod hide;
 pub(crate) mod keys;
@@ -64,6 +65,7 @@ mod text;
 mod widgets;
 
 pub fn plugin(app: &mut App) {
+    app.add_plugins(enhance::plugin);
     app.add_plugins(keys::plugin);
     app.add_plugins(loading::plugin);
     app.add_plugins(panels::plugin);
@@ -401,7 +403,7 @@ pub(crate) fn chrome(
     );
     hide::eye(ctx, eye, &mut toggles.hidden.0);
     // And under the eye, the viewfinder that asks for a picture of the view.
-    crate::map::enhance::launcher(
+    enhance::launcher(
         ctx,
         eye + egui::vec2(0., hide::EYE + MARGIN / 2.),
         &mut toggles.enhance,

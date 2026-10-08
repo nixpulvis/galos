@@ -50,7 +50,7 @@ use crate::map::galaxy::{Spyglass, plan};
 use crate::map::index::{Populated, ResidentIndex, Transport};
 use crate::map::keys::{PAN_PER_SECOND, ZOOM_PER_SECOND};
 use crate::map::paint::glow::{Gains, system_light};
-use crate::map::schedule::{MapSet, PaintSet};
+use crate::map::schedule::MapSet;
 use bevy::asset::{RenderAssetUsages, embedded_asset};
 use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::camera::{Hdr, ScalingMode};
@@ -67,7 +67,6 @@ use bevy::render::renderer::RenderDevice;
 use bevy::shader::ShaderRef;
 use bevy::tasks::{IoTaskPool, Task, block_on, poll_once};
 use bevy::window::PrimaryWindow;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use chrono::{DateTime, Utc};
 use galos_index::prelude::{CellId, Source, View as Viewpoint};
 use std::io::Write;
@@ -76,7 +75,7 @@ use std::sync::atomic::{
     AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed,
 };
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub fn plugin(app: &mut App) {
     embedded_asset!(app, "enhance.wgsl");
@@ -91,12 +90,16 @@ pub fn plugin(app: &mut App) {
     app.configure_sets(Update, MapSet::Camera.run_if(idle));
     app.add_systems(
         Update,
-        (look, drive, lay, hide_chrome).chain().after(MapSet::Present),
+        (look, drive, lay).chain().in_set(Driven).after(MapSet::Present),
     );
-    app.add_systems(EguiPrimaryContextPass, controls.in_set(PaintSet::Ui));
     app.add_observer(captured);
     script(app);
 }
+
+/// Where a picture is asked for, drawn and laid over the window each frame,
+/// for what follows [`Enhance`] to run after
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Driven;
 
 /// An enhance run with nobody at the window, from `GALOS_ENHANCE`
 ///
@@ -251,7 +254,7 @@ const SCALE: u32 = 3;
 /// picture is shown, so ten across is a hundred windows, a gigabyte and a
 /// half at a 1440p window: offered for the wide views that want it, and
 /// nothing past it until pieces are drawn on demand.
-const SCALES: [u32; 6] = [2, 3, 4, 5, 6, 10];
+pub(crate) const SCALES: [u32; 6] = [2, 3, 4, 5, 6, 10];
 
 /// How far past a texel to a pixel a picture may be looked into
 ///
@@ -263,20 +266,20 @@ const DEEPER: f32 = 8.;
 /// What enhancing is doing, and the picture it is doing it to
 #[derive(Resource)]
 pub(crate) struct Enhance {
-    phase: Phase,
+    pub(crate) phase: Phase,
     /// How many windows across the next picture is
-    scale: u32,
+    pub(crate) scale: u32,
     /// The picture being drawn or shown
-    picture: Option<Picture>,
+    pub(crate) picture: Option<Picture>,
     /// What the controls asked for this frame, for [`drive`] to carry out
-    asked: Option<Ask>,
+    pub(crate) asked: Option<Ask>,
     /// Where the last picture saved went, or why it did not
-    saved: Option<Result<PathBuf, String>>,
-    /// When the last picture was written, which the line says for
-    /// [`SAVED_FOR`] after
-    saved_at: Option<Instant>,
+    pub(crate) saved: Option<Result<PathBuf, String>>,
+    /// When the last picture was written, which the chrome's line says for a
+    /// while after
+    pub(crate) saved_at: Option<Instant>,
     /// Whether the launcher's scales are out
-    choosing: bool,
+    pub(crate) choosing: bool,
     /// The folder the last picture was saved to, which the dialog opens in
     last_dir: Option<PathBuf>,
 }
@@ -298,7 +301,7 @@ impl Default for Enhance {
 
 /// Where a picture is
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Phase {
+pub(crate) enum Phase {
     /// No picture: the map as it always is
     Off,
     /// Drawing one, a piece at a time
@@ -309,7 +312,7 @@ enum Phase {
 
 /// What the controls asked for
 #[derive(Clone, Debug, PartialEq)]
-enum Ask {
+pub(crate) enum Ask {
     Start,
     /// Stop drawing, or put the picture away
     Close,
@@ -320,9 +323,9 @@ enum Ask {
 }
 
 /// A picture several windows across, in pieces a window each
-struct Picture {
+pub(crate) struct Picture {
     /// Windows across
-    scale: u32,
+    pub(crate) scale: u32,
     /// The window it was started in, logical pixels
     viewport: Vec2,
     /// And physical, which is a piece's size in texels
@@ -338,17 +341,17 @@ struct Picture {
     /// picture's own size on the window it is shown at, from one, the
     /// whole picture on the window, through [`Picture::scale`], a piece's
     /// pixel to the window's, up to [`DEEPER`] times that
-    zoom: f32,
+    pub(crate) zoom: f32,
     /// Where the window's top left stands in the picture, in its logical
     /// pixels
     corner: Vec2,
     /// The thread drawing it, until every part is laid
-    job: Option<Job>,
+    pub(crate) job: Option<Job>,
     /// The PNG being written, a row of pieces at a time
-    saving: Option<Saving>,
+    pub(crate) saving: Option<Saving>,
     /// The save dialog, while it is out: where the picture is to go, or
     /// [`None`] where it was cancelled
-    asking_where: Option<Task<Option<PathBuf>>>,
+    pub(crate) asking_where: Option<Task<Option<PathBuf>>>,
 }
 
 /// One part of a picture, and once it is drawn, what lays it over the map
@@ -744,7 +747,7 @@ impl Picture {
 
     /// Zoom about `at`, a point on the window in logical pixels, by
     /// `factor`, holding the picture's point under it where it is
-    fn zoom_about(&mut self, at: Vec2, factor: f32) {
+    pub(crate) fn zoom_about(&mut self, at: Vec2, factor: f32) {
         let before = self.zoom / self.scale as f32;
         let under = self.corner + at / before;
         self.zoom = (self.zoom * factor).clamp(1., self.scale as f32 * DEEPER);
@@ -753,8 +756,13 @@ impl Picture {
         self.hold();
     }
 
+    /// How many parts it is drawn in: the base, and every piece
+    pub(crate) fn parts(&self) -> usize {
+        self.pieces.len() + 1
+    }
+
     /// Move the picture by `by` logical pixels of the window
-    fn pan(&mut self, by: Vec2) {
+    pub(crate) fn pan(&mut self, by: Vec2) {
         let shown = self.zoom / self.scale as f32;
         self.corner -= by / shown;
         self.hold();
@@ -791,10 +799,10 @@ impl Picture {
 /// the parts it has finished
 ///
 /// Dropped with the picture, which stops the thread at its next cell.
-struct Job {
-    progress: Arc<Progress>,
+pub(crate) struct Job {
+    pub(crate) progress: Arc<Progress>,
     finished: Mutex<mpsc::Receiver<Finished>>,
-    started: Instant,
+    pub(crate) started: Instant,
 }
 
 impl Drop for Job {
@@ -806,15 +814,15 @@ impl Drop for Job {
 /// How far a picture has got, counted in systems against what the cells in
 /// view own, which the index says before a payload is read
 #[derive(Default)]
-struct Progress {
+pub(crate) struct Progress {
     /// Systems summed so far, over every part
-    counted: AtomicU64,
+    pub(crate) counted: AtomicU64,
     /// Systems every part will sum, once the parts have been culled
-    total: AtomicU64,
+    pub(crate) total: AtomicU64,
     /// Whether `total` is known yet
-    planned: AtomicBool,
+    pub(crate) planned: AtomicBool,
     /// Parts finished
-    parts: AtomicUsize,
+    pub(crate) parts: AtomicUsize,
     /// Cells whose payload would not read, left out of the picture
     unread: AtomicU64,
     /// Set to stop the thread
@@ -1551,7 +1559,7 @@ fn start_saving(
 /// of a gigabyte is seconds of deflate, which on the frame stopped the map
 /// for as long; on its own thread it costs the map nothing, and counts the
 /// lines it has written for the line to read as it goes.
-struct Saving {
+pub(crate) struct Saving {
     path: PathBuf,
     /// The row of pieces being read back
     row: u32,
@@ -1607,7 +1615,7 @@ impl Saving {
     }
 
     /// How much of the picture is written, `0..=1`
-    fn share(&self, picture: &Picture) -> f32 {
+    pub(crate) fn share(&self, picture: &Picture) -> f32 {
         let lines = picture.physical.y * picture.scale;
         self.written.load(Relaxed) as f32 / lines.max(1) as f32
     }
@@ -1753,34 +1761,6 @@ fn captured(
 #[derive(Resource, Default)]
 pub(crate) struct Covered(pub(crate) bool);
 
-/// Put the chrome away while there is a picture, as `I` does, and back as it
-/// was once the picture is
-///
-/// A picture is read, not worked on: the bar's filters and rows would change
-/// a map the picture no longer follows. What stays is what `I` leaves, the
-/// bare color key the picture was drawn in, the rose and the picture's own
-/// controls.
-fn hide_chrome(
-    enhance: Res<Enhance>,
-    mut hidden: ResMut<crate::ui::hide::ChromeHidden>,
-    // How the chrome stood when the picture was asked for.
-    mut was: Local<Option<bool>>,
-) {
-    match (enhance.picture.is_some(), *was) {
-        (true, None) => {
-            *was = Some(hidden.0);
-            hidden.0 = true;
-        }
-        // Held hidden, the eye in the corner included.
-        (true, Some(_)) if !hidden.0 => hidden.0 = true,
-        (false, Some(stood)) => {
-            hidden.0 = stood;
-            *was = None;
-        }
-        _ => {}
-    }
-}
-
 /// Lay the parts that are down over the window, where the window is looking
 /// into the picture
 fn lay(
@@ -1861,298 +1841,4 @@ fn lay(
             UVec2::new(piece.column, piece.row).as_vec2() * picture.viewport;
         place(piece, picture_rect(low, picture.viewport), across);
     }
-}
-
-/// A count of systems as the progress reads it
-fn systems(count: u64) -> String {
-    match count {
-        0..1_000 => format!("{count}"),
-        1_000..1_000_000 => format!("{:.0}k", count as f64 / 1e3),
-        _ => format!("{:.1}M", count as f64 / 1e6),
-    }
-}
-
-/// What stands over a picture: the pointer over it, and its own line at the
-/// foot of the window
-///
-/// The line, rather than a card in a corner: the chrome is put away while
-/// there is a picture, and what is left is read along the bottom edge
-/// without covering the rose or the key. Asking for a picture is
-/// [`launcher`]'s, in the chrome's own column.
-fn controls(
-    mut contexts: EguiContexts,
-    mut enhance: ResMut<Enhance>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    let margin = crate::ui::MARGIN;
-    let enhance = &mut *enhance;
-
-    // While there is a picture, the window under the chrome is the
-    // picture's: the map takes no pointer, and in a shown picture the wheel
-    // and a drag look about in it.
-    if let Some(picture) = &mut enhance.picture {
-        let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("enhance-picture"))
-            .order(egui::Order::Background)
-            .fixed_pos(screen.min)
-            .constrain(false)
-            .show(ctx, |ui| {
-                let response =
-                    ui.allocate_rect(screen, egui::Sense::click_and_drag());
-                if enhance.phase != Phase::Shown {
-                    return;
-                }
-                if response.dragged() {
-                    let by = response.drag_delta();
-                    picture.pan(Vec2::new(by.x, by.y));
-                }
-                if response.hovered() {
-                    let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-                    if scroll != 0.
-                        && let Some(at) = response.hover_pos()
-                    {
-                        let at = at - screen.min;
-                        picture.zoom_about(
-                            Vec2::new(at.x, at.y),
-                            (scroll / 200.).exp(),
-                        );
-                    }
-                }
-            });
-    }
-
-    // The picture's own line. Nothing while there is no picture: the
-    // launcher in the chrome's column is what asks for one.
-    if enhance.phase == Phase::Off {
-        return Ok(());
-    }
-    crate::ui::zone("enhance")
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0., -margin))
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let asked = match enhance.phase {
-                        Phase::Off => None,
-                        Phase::Drawing => {
-                            if let Some(picture) = &enhance.picture
-                                && let Some(job) = &picture.job
-                            {
-                                drawing(ui, picture, job);
-                            }
-                            ui.small_button("cancel")
-                                .clicked()
-                                .then_some(Ask::Close)
-                        }
-                        Phase::Shown => {
-                            enhance.picture.as_ref().and_then(|picture| {
-                                shown(
-                                    ui,
-                                    picture,
-                                    enhance.saved.as_ref(),
-                                    enhance.saved_at,
-                                )
-                            })
-                        }
-                    };
-                    if asked.is_some() {
-                        enhance.asked = asked;
-                    }
-                });
-            });
-        });
-    Ok(())
-}
-
-/// How far a picture being drawn has got, along one line: the part under
-/// way, the systems summed against what the cells in view own, and what is
-/// left; the rate under the pointer
-fn drawing(ui: &mut egui::Ui, picture: &Picture, job: &Job) {
-    let progress = &job.progress;
-    let parts = picture.pieces.len() + 1;
-    let done = progress.parts.load(Relaxed).min(parts);
-    let part = match done {
-        0 => "the view".to_owned(),
-        n if n < parts => format!("piece {n} of {}", parts - 1),
-        _ => "laying it down".to_owned(),
-    };
-    ui.label(format!("{}× enhance · {part}", picture.scale));
-    let bar = |share: f32| egui::ProgressBar::new(share).desired_width(140.);
-    if !progress.planned.load(Relaxed) {
-        ui.add(bar(0.));
-        ui.weak("finding the cells in view");
-        return;
-    }
-    let counted = progress.counted.load(Relaxed);
-    let total = progress.total.load(Relaxed).max(1);
-    let elapsed = job.started.elapsed();
-    let rate = counted as f64 / elapsed.as_secs_f64().max(1e-3);
-    ui.add(bar((counted as f32 / total as f32).clamp(0., 1.)))
-        .on_hover_text(format!("{} systems a second", systems(rate as u64)));
-    let left = (counted > 0)
-        .then(|| (total - counted.min(total)) as f64 / rate.max(1.));
-    ui.weak(format!(
-        "{} of {} systems{}",
-        systems(counted),
-        systems(total),
-        left.map_or(String::new(), |left| match left < 10. {
-            true => format!(" · {left:.1}s left"),
-            false => format!(" · {left:.0}s left"),
-        }),
-    ));
-}
-
-/// How long the line says a picture was saved
-///
-/// Long enough to be read, and gone after: it is news, and the path stays
-/// under the pointer of nothing once it is. Why one was not saved stays,
-/// being something to act on.
-const SAVED_FOR: Duration = Duration::from_secs(3);
-
-/// A shown picture's line: how far into it the window is, saving it and
-/// putting it away; what is asked of it, where anything was
-fn shown(
-    ui: &mut egui::Ui,
-    picture: &Picture,
-    saved: Option<&Result<PathBuf, String>>,
-    saved_at: Option<Instant>,
-) -> Option<Ask> {
-    ui.label(format!("{}× enhance · {:.1}× zoom", picture.scale, picture.zoom));
-    let mut asked = None;
-    match (&picture.saving, &picture.asking_where) {
-        (Some(saving), _) => {
-            ui.add_enabled(
-                false,
-                egui::Button::new(format!(
-                    "saving {:.0}%",
-                    saving.share(picture) * 100.
-                ))
-                .small(),
-            );
-        }
-        (None, Some(_)) => {
-            ui.add_enabled(false, egui::Button::new("choosing where…").small());
-        }
-        (None, None) => {
-            if ui.small_button("save png").clicked() {
-                asked = Some(Ask::Save);
-            }
-        }
-    }
-    match saved {
-        Some(Ok(path))
-            if saved_at.is_some_and(|at| at.elapsed() < SAVED_FOR) =>
-        {
-            ui.weak("saved").on_hover_text(path.display().to_string());
-        }
-        Some(Err(why)) => {
-            ui.weak("not saved").on_hover_text(why);
-        }
-        // Nothing saved, or saved long enough ago to be old news.
-        _ => {}
-    }
-    if ui.small_button("close").clicked() {
-        asked = Some(Ask::Close);
-    }
-    asked
-}
-
-/// How large the launcher's mark is drawn, the eye's own size
-const MARK: f32 = 18.;
-
-/// The button that asks for a picture, in the chrome's own column under the
-/// eye, and the scales it offers
-///
-/// A viewfinder, painted as the eye and the gear above it are, and nothing
-/// else standing on the map: a click puts the scales out beside it, and a
-/// scale clicked asks for the picture there and then. `P` asks for one at
-/// the scale last picked. Nothing while there is a picture, the chrome
-/// being put away then.
-pub(crate) fn launcher(
-    ctx: &egui::Context,
-    at: egui::Pos2,
-    enhance: &mut Enhance,
-) {
-    if enhance.phase != Phase::Off {
-        return;
-    }
-    let mark = crate::ui::zone("enhance-launcher")
-        .fixed_pos(at)
-        .show(ctx, |ui| {
-            let (rect, response) = ui.allocate_exact_size(
-                egui::Vec2::splat(MARK),
-                egui::Sense::click(),
-            );
-            let ink = ui.style().interact(&response).fg_stroke.color;
-            paint_viewfinder(ui.painter(), rect, ink);
-            response.on_hover_text("Enhance this view (P)")
-        })
-        .inner;
-    if mark.clicked() {
-        enhance.choosing = !enhance.choosing;
-    }
-    if !enhance.choosing {
-        return;
-    }
-    let margin = crate::ui::MARGIN;
-    let scales = crate::ui::zone("enhance-scales")
-        .pivot(egui::Align2::LEFT_CENTER)
-        .fixed_pos(egui::pos2(
-            mark.rect.right() + margin / 2.,
-            mark.rect.center().y,
-        ))
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("enhance");
-                    for offered in SCALES {
-                        if ui
-                            .selectable_label(
-                                offered == enhance.scale,
-                                format!("{offered}×"),
-                            )
-                            .on_hover_text(format!(
-                                "Every system in this view, drawn {offered} \
-                                 windows across"
-                            ))
-                            .clicked()
-                        {
-                            enhance.scale = offered;
-                            enhance.asked = Some(Ask::Start);
-                            enhance.choosing = false;
-                        }
-                    }
-                });
-                if let Some(Err(why)) = &enhance.saved {
-                    ui.weak(format!("the last was not drawn: {why}"));
-                }
-            });
-        });
-    if scales.response.clicked_elsewhere() && !mark.clicked() {
-        enhance.choosing = false;
-    }
-}
-
-/// A viewfinder in `rect`: four corners and a point between them
-///
-/// Not a magnifier, which stands beside the search box and reads as one.
-fn paint_viewfinder(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    ink: egui::Color32,
-) {
-    let stroke = egui::Stroke::new(1.5_f32, ink);
-    let frame = rect.shrink(rect.width() * 0.08);
-    let arm = frame.width() * 0.3;
-    for (corner, x, y) in [
-        (frame.left_top(), 1., 1.),
-        (frame.right_top(), -1., 1.),
-        (frame.left_bottom(), 1., -1.),
-        (frame.right_bottom(), -1., -1.),
-    ] {
-        painter
-            .line_segment([corner, corner + egui::vec2(x * arm, 0.)], stroke);
-        painter
-            .line_segment([corner, corner + egui::vec2(0., y * arm)], stroke);
-    }
-    painter.circle_filled(frame.center(), frame.width() * 0.1, ink);
 }

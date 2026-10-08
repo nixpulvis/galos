@@ -845,7 +845,16 @@ mod tests {
     /// What a system's own panel reads as, line by line
     fn panel(system: &System) -> Vec<String> {
         words(|ui| {
-            described(ui, system, &known(&[]), None, &mut None, &mut None);
+            described(
+                ui,
+                system,
+                None,
+                &known(&[]),
+                None,
+                &mut None,
+                &mut None,
+                &mut None,
+            );
         })
     }
 
