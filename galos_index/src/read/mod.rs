@@ -8,6 +8,7 @@
 //! a router, [`inhabited`] the populated few rolled up the tree, and
 //! [`source`] the one seam every read goes through.
 
+pub mod http;
 pub mod inhabited;
 pub mod resident;
 pub mod screen;
