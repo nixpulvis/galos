@@ -8,6 +8,7 @@
 //! galos index diff .index/from_dump .index/from_db
 //! galos index backup -i .index/full --to /backups/full-2026-09-22
 //! galos index merge -i .index/full --from .index/caught_up
+//! galos index serve -i .index/full --listen 0.0.0.0:7878
 //! ```
 //!
 //! **Filling a directory is not here** — that is `galos ingest --index
@@ -50,6 +51,8 @@
 //! one. The union is taken at full precision out of the two resume
 //! points, newest `updated_at` winning, and the tree is raised again off
 //! it — the same cold build a dump gets. See [`galos_index::ops::absorb`].
+
+mod serve;
 
 use clap::Subcommand;
 use galos::sink::index::INDEX_DIR;
@@ -260,6 +263,24 @@ pub(super) enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Serve a directory over HTTP, for a reader with no disk under it.
+    ///
+    /// Read-only, so it takes no lock: a feed goes on publishing into the
+    /// directory while it is served, and a reader polling its stamps sees
+    /// each publish. See `galos_index::read::http` for what is answered at
+    /// which path.
+    Serve {
+        /// The index directory to serve.
+        #[arg(short = 'i', long = "index", value_name = "DIR",
+               env = "GALOS_INDEX", default_value = INDEX_DIR)]
+        dir: PathBuf,
+        /// The address to listen on.
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:7878")]
+        listen: String,
+        /// How many requests are answered at once.
+        #[arg(long, default_value_t = 8)]
+        threads: usize,
+    },
 }
 
 /// Leave with `code`, having dropped whatever was holding the directory
@@ -320,6 +341,9 @@ pub fn run(cli: Cli) -> ExitCode {
         }
         Command::Sectors { dir, out, force } => {
             sectors(&dir, out.as_deref(), force)
+        }
+        Command::Serve { dir, listen, threads } => {
+            return serve::serve(&dir, &listen, threads, &stopping());
         }
     }
     ExitCode::SUCCESS

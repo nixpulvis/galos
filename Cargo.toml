@@ -81,6 +81,9 @@ async-channel = "2"
 # next start to refuse.
 ctrlc = { version = "3", features = ["termination"] }
 tracing = "0.1"
+# `galos index serve`. Synchronous and small: the reads under it block, a
+# thread an answer is what they want, and the binary has no tokio to lend.
+tiny_http = "0.12"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
