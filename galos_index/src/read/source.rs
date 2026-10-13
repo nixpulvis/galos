@@ -298,11 +298,8 @@ impl Source for FsSource {
             Part::Names => names_head_path(&self.dir),
             Part::NamesDelta => names_delta_path(&self.dir),
         };
-        match std::fs::metadata(&path).and_then(|it| it.modified()) {
-            Ok(at) => Ok(Some(
-                at.duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_nanos() as Stamp),
-            )),
+        match std::fs::metadata(&path) {
+            Ok(meta) => Ok(Some(super::http::stamp_of(&meta)?)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }

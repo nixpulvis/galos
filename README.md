@@ -142,7 +142,7 @@ all.
 
 `galos db` has `status migrate verify catalog stats backup restore merge`;
 `galos index` has `status diff verify backup restore merge pack sweep
-migrate sectors`. Neither of them fills anything. What used to be two fill
+migrate sectors serve`. Neither of them fills anything. What used to be two fill
 verbs — a live one and a regional one, and
 which to reach for was a question about memory — is one verb that answers the
 memory question from what the run *is*. The index sink holds a live tree,
