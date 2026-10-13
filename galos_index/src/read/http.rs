@@ -22,14 +22,20 @@
 //! a `HEAD` and an `If-None-Match` are the cheap question the trait asks
 //! before anything is re-read.
 //!
-//! What is not here yet is the names table. It is mapped rather than read,
-//! and 5.8 GB of it has no business crossing a wire; it wants a search
-//! answered where it lies, which is its own route.
+//! **The names table is synced, not asked.** Routing and search run where
+//! the reader is, offline, over a table of its own: the head, the live
+//! generation's sections and the delta log are each served as the file they
+//! are, and a reader keeps them as files. The sections never change once
+//! written, and the log only grows until a fold moves the head, so after
+//! the first copy a poll costs the log's new bytes — asked for with a
+//! `Range` from the length already held.
 
 use crate::codec::Directory;
 use crate::codec::cells::format::payload_bytes;
 use crate::codec::layout::{
-    INDEX_FILE, factions_path, lit_path, payload_path, photometry_path,
+    ADDR_FILE, BYNAME_FILE, DELTA_FILE, EXCEPTION_FILE, HEAD_FILE, INDEX_FILE,
+    SPAN_FILE, TEXT_FILE, factions_path, generation_dir, lit_path,
+    names_delta_path, names_head_path, payload_path, photometry_path,
     populated_path, reaches_path,
 };
 use crate::codec::lights::lit_bytes;
@@ -64,7 +70,23 @@ pub enum Route {
     Lit { id: CellId, limit: Option<usize> },
     /// `/bodies/{address}`: the insides of one system.
     Bodies(i64),
+    /// `/names/head.bin`: which generation of the names table is live.
+    NamesHead,
+    /// `/names/delta.bin`: the log over the live generation. A reader that
+    /// holds its first bytes asks for the rest with a `Range`.
+    NamesDelta,
+    /// `/names/{generation}/{section}`: one section of one generation.
+    ///
+    /// Never rewritten once the head names it: a fold writes a new
+    /// generation beside it and moves the head. So a reader that has a
+    /// section has it for as long as the head it read stands.
+    NamesSection { generation: u64, section: &'static str },
 }
+
+/// The sections a names generation is made of, which are what
+/// [`Route::NamesSection`] may name.
+pub const NAMES_SECTIONS: [&str; 5] =
+    [ADDR_FILE, BYNAME_FILE, SPAN_FILE, EXCEPTION_FILE, TEXT_FILE];
 
 impl Route {
     /// The route a request names, or [`None`] for one nothing answers.
@@ -97,6 +119,17 @@ impl Route {
             "cells" => Route::Cell { id: cell_in(&mut parts)?, limit },
             "lit" => Route::Lit { id: cell_in(&mut parts)?, limit },
             "bodies" => Route::Bodies(parts.next()?.parse().ok()?),
+            "names" => match parts.next()? {
+                HEAD_FILE => Route::NamesHead,
+                DELTA_FILE => Route::NamesDelta,
+                generation => Route::NamesSection {
+                    generation: generation.parse().ok()?,
+                    section: {
+                        let name = parts.next()?;
+                        *NAMES_SECTIONS.iter().find(|it| **it == name)?
+                    },
+                },
+            },
             _ => return None,
         };
         match parts.next() {
@@ -128,6 +161,11 @@ impl Route {
                 format!("/lit/{}{}", cell(id), limit(at))
             }
             Route::Bodies(address) => format!("/bodies/{address}"),
+            Route::NamesHead => format!("/names/{HEAD_FILE}"),
+            Route::NamesDelta => format!("/names/{DELTA_FILE}"),
+            Route::NamesSection { generation, section } => {
+                format!("/names/{generation:03}/{section}")
+            }
         }
     }
 
@@ -148,6 +186,11 @@ impl Route {
             Route::Cell { id, .. } => payload_path(dir, *id),
             Route::Lit { id, .. } => lit_path(dir, *id),
             Route::Bodies(_) => return None,
+            Route::NamesHead => names_head_path(dir),
+            Route::NamesDelta => names_delta_path(dir),
+            Route::NamesSection { generation, section } => {
+                generation_dir(dir, *generation).join(section)
+            }
         })
     }
 }
@@ -237,6 +280,60 @@ pub fn answer(dir: &Path, route: &Route) -> io::Result<Answer> {
             }
         }
     }
+}
+
+/// What a `Range` header asks of a file `len` bytes long.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Ranged {
+    /// The whole file: no range, or one this does not read (several
+    /// ranges, a unit other than bytes), which HTTP lets a server ignore.
+    Whole,
+    /// Bytes `start` to `end`, both inclusive.
+    Part { start: u64, end: u64 },
+    /// A range that starts at or past the end. For the delta log that is a
+    /// reader already holding every byte, which is what it is told.
+    Unsatisfiable,
+}
+
+/// Read a `Range` header against a file `len` bytes long.
+///
+/// One range, `bytes=a-b`, `bytes=a-` or `bytes=-n`: what a reader resuming
+/// a section or taking a log's tail sends.
+pub fn range_in(header: &str, len: u64) -> Ranged {
+    let Some(spec) = header.trim().strip_prefix("bytes=") else {
+        return Ranged::Whole;
+    };
+    if spec.contains(',') {
+        return Ranged::Whole;
+    }
+    let Some((from, to)) = spec.split_once('-') else {
+        return Ranged::Whole;
+    };
+    let (start, end) = match (from.trim(), to.trim()) {
+        ("", "") => return Ranged::Whole,
+        ("", last) => match last.parse::<u64>() {
+            Ok(0) => return Ranged::Unsatisfiable,
+            Ok(n) => (len.saturating_sub(n), len.saturating_sub(1)),
+            Err(_) => return Ranged::Whole,
+        },
+        (first, last) => {
+            let Ok(start) = first.parse::<u64>() else {
+                return Ranged::Whole;
+            };
+            let end = match last {
+                "" => len.saturating_sub(1),
+                last => match last.parse::<u64>() {
+                    Ok(end) if end >= start => end.min(len.saturating_sub(1)),
+                    _ => return Ranged::Whole,
+                },
+            };
+            (start, end)
+        }
+    };
+    if start >= len {
+        return Ranged::Unsatisfiable;
+    }
+    Ranged::Part { start, end }
 }
 
 /// A stamp as an `ETag`: quoted, as the header wants it.
@@ -353,6 +450,9 @@ mod tests {
             Route::Cell { id, limit: Some(64) },
             Route::Lit { id, limit: Some(64) },
             Route::Bodies(-42),
+            Route::NamesHead,
+            Route::NamesDelta,
+            Route::NamesSection { generation: 7, section: TEXT_FILE },
         ] {
             let url = route.to_url();
             let (path, query) = match url.split_once('?') {
@@ -370,6 +470,9 @@ mod tests {
             ("/cells/3/1/1", None),
             ("/cells/3/1/1/1", Some("limit=many")),
             ("/bodies/sol", None),
+            ("/names/007/head.bin", None),
+            ("/names/007/../../index.bin", None),
+            ("/names/latest/text.bin", None),
         ] {
             assert_eq!(Route::parse(path, query), None, "{path}");
         }
@@ -450,6 +553,22 @@ mod tests {
         assert_eq!(inside, source.bodies(7).await.expect("bodies"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A range is read as HTTP reads one, and a log already held whole is
+    /// told so rather than sent nothing.
+    #[test]
+    fn a_range_reads_as_http_reads_one() {
+        use Ranged::*;
+        assert_eq!(range_in("bytes=0-9", 100), Part { start: 0, end: 9 });
+        assert_eq!(range_in("bytes=40-", 100), Part { start: 40, end: 99 });
+        assert_eq!(range_in("bytes=90-500", 100), Part { start: 90, end: 99 });
+        assert_eq!(range_in("bytes=-10", 100), Part { start: 90, end: 99 });
+        assert_eq!(range_in("bytes=100-", 100), Unsatisfiable);
+        assert_eq!(range_in("bytes=0-", 0), Unsatisfiable);
+        assert_eq!(range_in("bytes=0-1,4-5", 100), Whole);
+        assert_eq!(range_in("lines=0-1", 100), Whole);
+        assert_eq!(range_in("bytes=9-3", 100), Whole);
     }
 
     /// An `ETag` carries its stamp out and back.

@@ -11,7 +11,8 @@
 //! somewhere else. Nothing here is private: the directory is what the map
 //! draws.
 
-use galos_index::read::http::{self, Answer, Body, Route};
+use galos_index::read::http::{self, Answer, Body, Ranged, Route};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -92,14 +93,44 @@ fn respond(dir: &Path, request: Request) {
         Ok(answer) => answer,
         Err(err) => return failed(request, &route, err),
     };
+    let ranged = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Range"))
+        .map(|h| h.value.as_str().to_string());
     let response = match body {
-        Body::File(file, len) => Response::new(
-            StatusCode(200),
-            Vec::new(),
-            Box::new(file) as Box<dyn std::io::Read + Send>,
-            Some(len as usize),
-            None,
-        ),
+        Body::File(mut file, len) => {
+            match ranged.map_or(Ranged::Whole, |it| http::range_in(&it, len)) {
+                Ranged::Whole => Response::new(
+                    StatusCode(200),
+                    Vec::new(),
+                    Box::new(file) as Box<dyn std::io::Read + Send>,
+                    Some(len as usize),
+                    None,
+                ),
+                Ranged::Part { start, end } => {
+                    if let Err(err) = file.seek(SeekFrom::Start(start)) {
+                        return failed(request, &route, err);
+                    }
+                    let taken = end - start + 1;
+                    Response::new(
+                        StatusCode(206),
+                        vec![header(
+                            "Content-Range",
+                            &format!("bytes {start}-{end}/{len}"),
+                        )],
+                        Box::new(file.take(taken))
+                            as Box<dyn std::io::Read + Send>,
+                        Some(taken as usize),
+                        None,
+                    )
+                }
+                Ranged::Unsatisfiable => empty(416).with_header(header(
+                    "Content-Range",
+                    &format!("bytes */{len}"),
+                )),
+            }
+        }
         Body::Bytes(bytes) => {
             let len = bytes.len();
             Response::new(
@@ -143,7 +174,11 @@ fn reply(request: Request, response: Reply) {
         .with_header(header("Content-Type", "application/octet-stream"))
         .with_header(header("Cache-Control", "no-cache"))
         .with_header(header("Access-Control-Allow-Origin", "*"))
-        .with_header(header("Access-Control-Expose-Headers", "ETag"));
+        .with_header(header("Accept-Ranges", "bytes"))
+        .with_header(header(
+            "Access-Control-Expose-Headers",
+            "ETag, Content-Range",
+        ));
     if let Err(err) = request.respond(response) {
         tracing::debug!(%err, "a reader went away mid-answer");
     }
