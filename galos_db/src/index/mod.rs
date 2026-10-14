@@ -557,8 +557,7 @@ pub async fn build_to_dir(
     // cell where the cells were built, and every cell where the reaches
     // were, the one a file beside the other's payload.
     if spreading {
-        galos_index::codec::Directory::at(dir)
-            .spread_all_reaches(&|| false)?;
+        galos_index::codec::Directory::at(dir).spread_all_reaches(&|| false)?;
     }
     Ok(Reached::End(BuildReport { cells, meta }))
 }
