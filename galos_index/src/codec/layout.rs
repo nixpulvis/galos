@@ -73,11 +73,24 @@ pub fn lit_path(dir: &Path, id: CellId) -> PathBuf {
         .join(format!("{:02}-{morton:016x}.bin", id.level))
 }
 
+/// The subdirectory each cell's systems' reaches live in, beside
+/// [`PAYLOAD_DIR`] and [`PHOTOMETRY_DIR`].
+pub const REACH_DIR: &str = "reach";
+
+/// The file a cell's systems' reaches live in: the payload's own shard and
+/// name under [`REACH_DIR`], as [`lit_path`] is under [`PHOTOMETRY_DIR`].
+pub fn reach_path(dir: &Path, id: CellId) -> PathBuf {
+    let morton = id.morton();
+    dir.join(REACH_DIR)
+        .join(format!("{:03x}", morton & 0xfff))
+        .join(format!("{:02}-{morton:016x}.bin", id.level))
+}
+
 /// The populated-systems table, resident once and read for every color.
 pub const POPULATED_FILE: &str = "populated.bin";
 
-/// How far each scanned system reaches, resident once and read for every
-/// system the map draws.
+/// How far each scanned system reaches, by address: the table the builders
+/// keep and spread into each cell's [`reach_path`].
 pub const REACHES_FILE: &str = "reaches.bin";
 
 /// The faction id-to-name table, small and read whole.

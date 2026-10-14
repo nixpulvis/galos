@@ -3002,6 +3002,7 @@ pub(crate) fn evict_payloads(
     mut orders: ResMut<PointOrders>,
     mut held: ResMut<crate::map::index::refresh::Stamps>,
     mut keeping: ResMut<Keeping>,
+    names: Option<Res<Names>>,
     mut swept: Local<Option<Instant>>,
 ) {
     let now = time.last_update().unwrap_or_else(|| time.startup());
@@ -3072,6 +3073,10 @@ pub(crate) fn evict_payloads(
         orders.forget(id);
         held.forget(id);
         keeping.forget(id);
+        // And its reaches, which are laid against the payload let go.
+        if let Some(names) = &names {
+            names.reaches.forget(id);
+        }
     }
 }
 

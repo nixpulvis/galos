@@ -542,6 +542,13 @@ pub fn absorb(
         true => None,
         false => Some(rebuild(into, into_checkpoint, by, cursor, stop, said)?),
     };
+    // The merged reaches into the rebuilt cells, every one of which the
+    // rebuild wrote again.
+    if !dry_run {
+        crate::codec::Directory::at(into)
+            .spread_all_reaches(&|| stop())
+            .map_err(failed("the reaches spread into the cells"))?;
+    }
 
     Ok(Absorbed {
         held: union.held,

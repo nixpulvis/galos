@@ -47,17 +47,17 @@ impl Directory<'_> {
 }
 
 #[cfg(test)]
-pub(super) mod fixtures {
+pub(crate) mod fixtures {
     use crate::system::System;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// A scratch directory unique to this run, removed when the guard drops.
-    pub(super) struct Scratch(pub(super) PathBuf);
+    pub(crate) struct Scratch(pub(crate) PathBuf);
 
     impl Scratch {
-        pub(super) fn new() -> Scratch {
+        pub(crate) fn new() -> Scratch {
             static SEQ: AtomicU32 = AtomicU32::new(0);
             let n = SEQ.fetch_add(1, Ordering::Relaxed);
             let dir = std::env::temp_dir().join(format!(
@@ -77,7 +77,7 @@ pub(super) mod fixtures {
 
     /// A cube lattice of systems well inside the root cube, each a touch
     /// fainter than the last.
-    pub(super) fn systems(n: usize) -> Vec<System> {
+    pub(crate) fn systems(n: usize) -> Vec<System> {
         let side = (n as f64).cbrt().ceil() as usize;
         let step = 80.0;
         let span = (side.saturating_sub(1)) as f64 * step;

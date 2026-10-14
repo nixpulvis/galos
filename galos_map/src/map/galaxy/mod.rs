@@ -831,8 +831,9 @@ impl System {
             politics: populated.map(Politics::of),
             body_count: populated.and_then(|row| row.body_count),
             non_body_count: populated.and_then(|row| row.non_body_count),
-            // How far it reaches comes from the reaches table rather than from
-            // the political one: most systems with anything scanned in them
+            // How far it reaches comes from its cell's reaches, where the camera
+            // is near enough for them to be held, rather than from the
+            // political table: most systems with anything scanned in them
             // are not populated, and a system drawn at a stood-in size wears a
             // shell many times the orbits inside it.
             reach: names.reach(address),

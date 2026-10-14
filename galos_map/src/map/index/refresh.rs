@@ -22,9 +22,10 @@
 //! What is re-read whole and what is patched follows what a publish costs to
 //! write. The aggregates are half a megabyte and rewritten every pass, so they
 //! are read whole. A payload is tens of kilobytes and only the cells whose
-//! systems moved are rewritten, so only those are read. The populated,
-//! reaches and factions tables are a few megabytes each and written whole, so
-//! they are read the same way. The names table is a mapped base and an
+//! systems moved are rewritten, so only those are read. A cell's reaches are
+//! stamped apart from its payload, a scan moving a reach alone, and only the
+//! cells near the camera have theirs held. The populated and factions tables
+//! are a few megabytes each and written whole, so they are read whole. The names table is a mapped base and an
 //! append-only log of what the feed has said since, so a publish that named
 //! something moves the log and nothing else: the refresh reads the rows past
 //! the offset it holds and folds them in. The base moves only when the table
@@ -54,7 +55,7 @@ use galos_index::prelude::{
 };
 use galos_index::read::inhabited::Inhabitance;
 use galos_index::read::source::table;
-use galos_index::records::{Faction, PopulatedSystem, SystemReach};
+use galos_index::records::{Faction, PopulatedSystem};
 use galos_route::{BoostTable, Boosts, SystemBoost};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
@@ -88,7 +89,6 @@ pub fn plugin(app: &mut App) {
 pub struct Stamps {
     index: Option<Stamp>,
     populated: Option<Stamp>,
-    reaches: Option<Stamp>,
     boosts: Option<Stamp>,
     factions: Option<Stamp>,
     /// The names table's base: `names/head.bin`, which names the live
@@ -135,7 +135,6 @@ impl Stamps {
         Stamps {
             index: stamp(Part::Index).await,
             populated: stamp(Part::Populated).await,
-            reaches: stamp(Part::Reaches).await,
             boosts: stamp(Part::Table(BoostTable::NAME)).await,
             factions: stamp(Part::Factions).await,
             names: stamp(Part::Names).await,
@@ -185,7 +184,6 @@ struct Refreshing {
 struct Refreshed {
     index: Option<(Index, Option<Stamp>)>,
     populated: Option<(Vec<PopulatedSystem>, Option<Stamp>)>,
-    reaches: Option<(Vec<SystemReach>, Option<Stamp>)>,
     /// The supercharge table, or its absence: the inner [`Option`] is whether
     /// the index publishes one at all, which the router needs told apart from
     /// a galaxy where nobody has a jet cone. See [`Boosts::published`].
@@ -201,18 +199,21 @@ struct Refreshed {
     delta: Option<(Delta, Option<Stamp>)>,
     /// The payloads re-read, by cell, with their light
     cells: Vec<(CellId, Vec<CellSystem>, Vec<Lit>, Option<Stamp>)>,
+    /// The cells whose reaches the map holds and which have been written
+    /// since, to be let go and read again by [`crate::map::index::reach`]
+    reaches: Vec<CellId>,
 }
 
 impl Refreshed {
     fn is_empty(&self) -> bool {
         self.index.is_none()
             && self.populated.is_none()
-            && self.reaches.is_none()
             && self.boosts.is_none()
             && self.factions.is_none()
             && self.names.is_none()
             && self.delta.is_none()
             && self.cells.is_empty()
+            && self.reaches.is_empty()
     }
 }
 
@@ -250,8 +251,11 @@ fn poll(
     // What the task must ask about: the parts held, named here on the main
     // thread where the resident sets are.
     let index = held.index;
-    let (populated, reaches, boosts, factions) =
-        (held.populated, held.reaches, held.boosts, held.factions);
+    let (populated, boosts, factions) =
+        (held.populated, held.boosts, held.factions);
+    // And the cells whose reaches are held, which are stamped on their own:
+    // a scan moves a reach and leaves the payload where it was.
+    let reaching = names.reaches.stamps();
     let (names_head, delta) = (held.names, held.delta);
     // How far the table has read into the log, which is what the tail is
     // asked for past. Read off the table rather than filed beside the stamps:
@@ -324,11 +328,6 @@ fn poll(
             found.populated = Some((read, stamp));
         }
 
-        let (moved_it, stamp) = moved(&source, Part::Reaches, reaches).await;
-        if moved_it && let Ok(read) = source.reaches().await {
-            found.reaches = Some((read, stamp));
-        }
-
         // A table gone as well as a table moved: an index rebuilt without one
         // takes the supercharging away, and the map has to stop claiming it.
         let (moved_it, stamp) =
@@ -376,6 +375,14 @@ fn poll(
             if let Ok(read) = read {
                 let lit = source.lit(id, read.len()).await.unwrap_or_default();
                 found.cells.push((id, read, lit, stamp));
+            }
+        }
+
+        // Only asked after, not read: the cells are let go of and read again
+        // by the near reads, which hold them to the payload as it stands.
+        for (id, held) in reaching {
+            if moved(&source, Part::Reach(id), held).await.0 {
+                found.reaches.push(id);
             }
         }
 
@@ -441,9 +448,11 @@ fn apply(
         factions.0 = read.into_iter().map(|it| (it.id, it.name)).collect();
         held.factions = stamp;
     }
-    if let Some((read, stamp)) = found.reaches {
-        names.reaches = Arc::new(crate::map::index::names::Reaches::of(read));
-        held.reaches = stamp;
+    // Reaches written since they were read are let go, and the near reads
+    // take them up again; see [`crate::map::index::reach`]. The systems keep
+    // the reach they were drawn at until the new one lands.
+    for id in found.reaches {
+        names.reaches.forget(id);
     }
 
     // Which systems can supercharge, replaced whole: the table is about a
@@ -517,6 +526,9 @@ fn apply(
             lit,
         );
         held.holding(id, stamp);
+        // A payload written again may hold other systems, or the same in
+        // another order, so its reaches are read again against it.
+        names.reaches.forget(id);
     }
 }
 
@@ -632,18 +644,13 @@ mod tests {
         // The tables as `main` loads them: the names table mapped, and the
         // router's galaxy opened over the same directory the walk reads.
         let table = block_on(source.names()).expect("the names should open");
-        let reaches = block_on(source.reaches()).unwrap_or_default();
         let boosts = block_on(Boosts::read(&*source))
             .unwrap_or_else(|_| Boosts::absent());
         let sky = Arc::new(
             galos_index::prelude::Sky::open(dir)
                 .expect("the galaxy should map"),
         );
-        let names = Names::packed(
-            table,
-            crate::map::index::names::Reaches::of(reaches),
-            Some(Arc::clone(&sky)),
-        );
+        let names = Names::packed(table, Some(Arc::clone(&sky)));
         app.insert_resource(Router {
             jumps: galos_route::graph::Jumps::over(sky),
             boosts,
@@ -889,17 +896,13 @@ mod tests {
     /// had just read to find nothing had moved.
     #[test]
     fn startup_stamps_every_part_it_read() {
-        use galos_index::codec::layout::{
-            factions_path, populated_path, reaches_path,
-        };
+        use galos_index::codec::layout::{factions_path, populated_path};
         use galos_index::codec::tables::msgpack::write_meta;
 
         let dir = Scratch::new();
         publish(&dir.0, &[input(1, 0.0)]);
         write_meta(&populated_path(&dir.0), &Vec::<PopulatedSystem>::new())
             .expect("the populated table should write");
-        write_meta(&reaches_path(&dir.0), &Vec::<SystemReach>::new())
-            .expect("the reaches table should write");
         write_meta(&factions_path(&dir.0), &Vec::<Faction>::new())
             .expect("the factions table should write");
         publish_base(&dir.0, &[named(1, "First")]);
@@ -910,7 +913,6 @@ mod tests {
 
         assert!(held.index.is_some(), "the aggregates");
         assert!(held.populated.is_some(), "the populated table");
-        assert!(held.reaches.is_some(), "the reaches table");
         assert!(held.factions.is_some(), "the factions table");
         assert!(held.names.is_some(), "the names table's base");
         assert!(held.delta.is_some(), "and its log");

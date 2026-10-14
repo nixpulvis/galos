@@ -303,6 +303,24 @@ impl Index {
 
         agrees(dir, checkpoint, served, tree.len())?;
 
+        // A directory written before the per-cell reaches has its table
+        // spread into them once, here, rather than a cell at a time as the
+        // feed happens by: a reader takes a directory with any per-cell
+        // reaches for one that has them all.
+        let directory = galos_index::codec::Directory::at(dir);
+        if !directory.has_cell_reaches()
+            && galos_index::codec::layout::reaches_path(dir).exists()
+        {
+            let spread = directory
+                .spread_all_reaches(&|| false)
+                .map_err(failed("the reaches could not be spread"))?;
+            info!(
+                cells = spread.written,
+                dir = %dir.display(),
+                "spread the reaches into the cells",
+            );
+        }
+
         // The two halves of the directory, trimmed to what they agree on. A
         // system the names table has no row for cannot be asked about; a
         // name whose system is not in the tree is never drawn. Both are what
@@ -354,6 +372,9 @@ impl Index {
             tables
                 .write_everything(dir)
                 .map_err(failed("the metadata could not be repaired"))?;
+            galos_index::codec::Directory::at(dir)
+                .spread_all_reaches(&|| false)
+                .map_err(failed("the reaches could not be repaired"))?;
             Checkpoint::compact(checkpoint, resumed_at, ours, tree.inputs())
                 .map_err(failed("the resume point could not be repaired"))?;
         }
@@ -757,7 +778,8 @@ impl Index {
         }
         let placed = moving.len();
 
-        self.tree
+        let rewritten = self
+            .tree
             .publish(&self.dir)
             .map_err(failed("the cell tree could not be published"))?;
         // The body files first: the store has been holding what the pass
@@ -771,6 +793,22 @@ impl Index {
             .tables
             .write(&self.dir)
             .map_err(failed("the metadata could not be published"))?;
+
+        // The reaches of every cell whose payload was written, and of every
+        // cell holding a system a scan grew, whose payload was not: a reach
+        // moves alone. After the payloads, so each column is read off the
+        // payload it stands beside.
+        let mut cells: HashSet<_> = rewritten.into_iter().collect();
+        cells.extend(
+            self.tables
+                .take_reached()
+                .into_iter()
+                .filter_map(|address| self.tree.owner_of(address)),
+        );
+        let tables = &self.tables;
+        let spread = galos_index::codec::Directory::at(&self.dir)
+            .spread_reaches(cells, &|address| tables.reach_of(address))
+            .map_err(failed("the reaches could not be published"))?;
 
         // What this publish put in the directory, at full precision, on the
         // log beside the resume point — and the whole base behind it where
@@ -790,6 +828,7 @@ impl Index {
             rows = wrote.name_rows,
             folded = wrote.folded,
             bodies = bodies,
+            reach_cells = spread.written,
             cursor = cursor.is_some(),
             elapsed = ?start.elapsed(),
             // Which directory, for a log that carries the collect side's
@@ -849,6 +888,10 @@ impl Index {
             .tables
             .write_everything(&self.dir)
             .map_err(failed("the metadata could not be written"))?;
+        self.tables.take_reached();
+        galos_index::codec::Directory::at(&self.dir)
+            .spread_all_reaches(&|| false)
+            .map_err(failed("the reaches could not be written"))?;
         self.published_once = true;
 
         // A whole directory is written, so a whole resume point goes with

@@ -302,6 +302,14 @@ impl Tree {
         self.records.contains(address as u64)
     }
 
+    /// The cell whose payload holds `address`, where the tree holds it.
+    ///
+    /// What a publish asks of a system whose reach moved and nothing else:
+    /// that cell's reaches are rewritten and no payload is.
+    pub fn owner_of(&self, address: i64) -> Option<CellId> {
+        self.owner.get(&(address as u64)).copied()
+    }
+
     /// The record the tree holds for a system, if it holds one: what the
     /// directory publishes of it, at full precision.
     pub fn record(&self, address: i64) -> Option<&System> {
@@ -805,7 +813,15 @@ impl Tree {
     /// off the settled totals, one pass over the cells, and a payload is
     /// built only for a cell about to be written. See `settle`: a hundred
     /// edits over eight million systems publish in 52 ms.
-    pub fn publish(&mut self, dir: &std::path::Path) -> std::io::Result<()> {
+    ///
+    /// Answers the cells whose payloads were written, which are the cells a
+    /// caller spreads the reaches into
+    /// ([`crate::codec::Directory::spread_reaches`]): a payload rewritten
+    /// may hold other systems, or the same ones in another order.
+    pub fn publish(
+        &mut self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<Vec<CellId>> {
         self.settle();
         let mut dirtied = CellDiff::default();
         let mut payloads: HashMap<CellId, Vec<CellSystem>> = HashMap::new();
@@ -832,7 +848,7 @@ impl Tree {
         built.write_diff(dir, &dirtied)?;
         self.dirty.clear();
         self.gone.clear();
-        Ok(())
+        Ok(dirtied.changed)
     }
 }
 
