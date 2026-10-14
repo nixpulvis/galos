@@ -34,6 +34,11 @@
 //! directory at 5 has its index rewritten and nothing else; one older than 5
 //! is raised, and the raise writes the field itself.
 //!
+//! **The per-cell reaches are spread in place.** A directory with a reaches
+//! table and no `reach/` beside its payloads has the table read into every
+//! cell ([`Directory::spread_all_reaches`]); so does one just raised, whose
+//! payloads were all written again. No version moves for it.
+//!
 //! The raise is a publish like any other: the old index comes down first and
 //! the new one goes up last, so a run cut short leaves a directory with no
 //! index, which every reader reads as nothing and which running this again
@@ -76,6 +81,9 @@ pub struct Rewrote {
     pub placed: u64,
     /// Cells the raised tree holds.
     pub cells: u64,
+    /// Cells the reaches table was spread into, for a directory written
+    /// before the per-cell reaches, or raised again here; none otherwise.
+    pub spread: u64,
     /// Rows the contributed tables' own upgrades rewrote
     ///
     /// [`crate::codec::tables::Table::upgrade`] is a step of an open rather than
@@ -149,6 +157,19 @@ pub fn rewrite(
         }
     } else if wrote.from < INDEX_VERSION {
         wrote.placed = placed(dir, stop)?;
+    }
+
+    // The reaches into the cells, from the table by address: what a
+    // directory written before the per-cell reaches lacks, and what a raise
+    // owes every cell it wrote again. No index version moves for it, the
+    // cells being what they were and a cell with no reaches reading as one
+    // with nothing scanned.
+    let directory = Directory::at(dir);
+    let raised = wrote.from <= RAISED_THROUGH;
+    if (raised || !directory.has_cell_reaches())
+        && crate::codec::layout::reaches_path(dir).exists()
+    {
+        wrote.spread = directory.spread_all_reaches(stop)?.written;
     }
 
     // The contributed tables, which an open would bring forward but an open

@@ -747,6 +747,9 @@ fn size(bytes: u64) -> String {
 /// folded, a cell already columnar is left alone, `index.bin` is replaced
 /// once every cell is forward, and a table already at this version is not
 /// touched. The bodies, the sidecars and the tree's shape are unchanged.
+///
+/// A directory written before the per-cell reaches has its reaches table
+/// spread into them, a file beside each payload.
 fn migrate(dir: &Path, checkpoint: Option<&Path>, forced: bool) {
     let lock = locked(dir, forced);
     if !fold_names(dir, &lock) {
@@ -810,6 +813,11 @@ fn migrate(dir: &Path, checkpoint: Option<&Path>, forced: bool) {
             // directory built before its owner changed its shape.
             if wrote.upgraded > 0 {
                 println!("{} contributed rows brought forward", wrote.upgraded);
+            }
+            // Only where the cells had no reaches of their own yet, or were
+            // all written again by a raise.
+            if wrote.spread > 0 {
+                println!("reaches spread into {} cells", wrote.spread);
             }
             names_forward(dir, &lock);
         }

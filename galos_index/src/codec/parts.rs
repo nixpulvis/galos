@@ -61,7 +61,8 @@ impl CorePart {
             }
             CorePart::Reaches => {
                 "How far each scanned system reaches, which every shell is \
-                 sized by."
+                 sized by: the table by address, and a file beside each \
+                 cell's payload that the map reads."
             }
             CorePart::Factions => "The faction id-to-name table.",
             CorePart::Bodies => {

@@ -6,6 +6,7 @@
 
 pub(crate) mod load;
 pub(crate) mod names;
+pub(crate) mod reach;
 pub(crate) mod refresh;
 
 use bevy::math::DVec3;
@@ -68,9 +69,9 @@ pub struct Settled(pub Arc<Inhabitance>);
 /// Every system's name, where it sits, and how far it reaches: what the map
 /// knows about any system without asking for it.
 ///
-/// Held whole rather than fetched, since a search reaches any name, a route
-/// steps between any two positions, and every system in the sky is drawn at
-/// the size its reach says. The positions here are the graph the router
+/// Held whole rather than fetched, since a search reaches any name and a
+/// route steps between any two positions. The reaches are the exception,
+/// read a cell at a time for the cells near the camera. The positions here are the graph the router
 /// walks, so routing needs nothing loaded past this.
 ///
 /// **Mapped**, not decoded: the table is the file the index publishes, and
@@ -90,17 +91,16 @@ pub struct Names {
     /// log's tail in ([`galos_index::prelude::Names::absorb`]) and never
     /// touches the base.
     pub table: galos_index::prelude::Names,
-    /// How far each scanned system reaches, in metres, by address.
+    /// How far the systems near the camera reach, in metres, by address.
     ///
-    /// Its own table on disk (`reaches.bin`) and its own packing here, since
-    /// it is published whole as MessagePack and covers a fifth of the index
-    /// against the name table's whole: a system with nothing scanned in it
-    /// is absent, which is how the map tells "small" from "not on record"
-    /// and stands in for the second.
+    /// Read a cell at a time from the file beside each payload, and only for
+    /// the cells near enough for a reach to change what is drawn; see
+    /// [`crate::map::index::reach`]. A system absent here is drawn at the
+    /// stand-in, which is how the map tells "small" from "not on record".
     ///
-    /// Replaced whole by a refresh rather than patched: a scan arrives and
-    /// the system it is about grows, which is the one thing in here that
-    /// really changes with the feed.
+    /// Shared rather than replaced: a cell's reaches land and are let go
+    /// behind the lock [`names::Reaches`] keeps, so every clone of this
+    /// table answers with what is held now.
     pub reaches: Arc<names::Reaches>,
     /// The galaxy the places come out of, where there is one open.
     ///
@@ -164,17 +164,17 @@ impl Names {
         Names { sky: Some(sky), ..Names::reaching(entries, reaches) }
     }
 
-    /// The table as the index published it, with the reaches beside it.
+    /// The table as the index published it, with no reaches read yet.
     ///
     /// What the map opens with: [`galos_index::prelude::Names::open`] has
-    /// mapped the base and read the log, so there is nothing here to build. See
+    /// mapped the base and read the log, so there is nothing here to build,
+    /// and the reaches come a cell at a time as the camera nears them. See
     /// `loading::read`.
     pub fn packed(
         table: galos_index::prelude::Names,
-        reaches: names::Reaches,
         sky: Option<Arc<galos_index::prelude::Sky>>,
     ) -> Names {
-        Names { table, reaches: Arc::new(reaches), sky }
+        Names { table, reaches: Arc::default(), sky }
     }
 
     /// Where the system at `address` sits, in light years.

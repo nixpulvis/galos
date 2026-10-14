@@ -229,11 +229,13 @@ fn diagnostics(
                         ui,
                         "reaches",
                         &loaded.names.reaches.len().to_string(),
-                        "Systems with a reach on record — how far each one \
-                         holds anything scanned, which is what the star field \
-                         sizes the mark it paints for the system from. A \
-                         system absent from it has nothing scanned in it and \
-                         is stood in for.",
+                        "Systems near the camera with a reach held — how far \
+                         each one holds anything scanned, which is what the \
+                         star field sizes the mark it paints for the system \
+                         from. Read a cell at a time for the cells within \
+                         64 ly; a system absent from it has nothing scanned \
+                         in it, or is too far for its reach to show, and is \
+                         stood in for.",
                     );
                     pair(
                         ui,

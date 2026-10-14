@@ -54,8 +54,15 @@ pub enum Part {
     Cell(CellId),
     /// The populated-systems table
     Populated,
-    /// The reaches table
+    /// The reaches table, which only a directory written before the per-cell
+    /// reaches is read for
     Reaches,
+    /// One cell's systems' reaches
+    ///
+    /// Its own stamp rather than the payload's, as the light is not: a scan
+    /// moves a reach and nothing else about a system, so a cell's reaches
+    /// are rewritten while its payload stands.
+    Reach(CellId),
     /// The factions table
     Factions,
     /// The contributed table of this name
@@ -120,6 +127,20 @@ pub trait Source: Send + Sync {
     /// was handed. Empty where the cell has none on record.
     async fn lit(&self, id: CellId, limit: usize) -> io::Result<Vec<Lit>>;
 
+    /// The first `limit` of one cell's systems' reaches, in metres, in its
+    /// payload's own order, so the `at`th of one is the `at`th of the other.
+    ///
+    /// Empty where the cell has none on record, and where the file was
+    /// written for a payload of another length than the one beside it now:
+    /// the two are written one after the other, and a reader that lands
+    /// between them is told nothing rather than another payload's reaches.
+    /// [`Part::Reach`]'s stamp moves when the second lands.
+    async fn reach(
+        &self,
+        id: CellId,
+        limit: usize,
+    ) -> io::Result<Vec<Option<f32>>>;
+
     /// The populated-systems table, held resident for filtering and color.
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>>;
 
@@ -142,9 +163,11 @@ pub trait Source: Send + Sync {
     /// The faction id-to-name table, read whole and cached by the caller.
     async fn factions(&self) -> io::Result<Vec<Faction>>;
 
-    /// How far each scanned system reaches from its arrival star, held
-    /// resident: the map sizes every system it draws by this and cannot wait
-    /// on a fetch for it.
+    /// How far each scanned system reaches from its arrival star, the whole
+    /// table by address.
+    ///
+    /// What a directory written before the per-cell reaches ([`Self::reach`])
+    /// still answers with; a reader asks for it only there.
     async fn reaches(&self) -> io::Result<Vec<SystemReach>>;
 
     /// The bytes of the contributed table called `name`, or [`None`] where
@@ -240,6 +263,23 @@ impl Source for FsSource {
         Directory::at(&self.dir).read_lit(id, limit)
     }
 
+    async fn reach(
+        &self,
+        id: CellId,
+        limit: usize,
+    ) -> io::Result<Vec<Option<f32>>> {
+        let reach = Directory::at(&self.dir).read_reach(id, usize::MAX)?;
+        if reach.is_empty() {
+            return Ok(reach);
+        }
+        // Held to the payload beside it: one of another length is one
+        // written for another payload, which a publish is between.
+        if Index::payload_len(&self.dir, id)? != Some(reach.len()) {
+            return Ok(Vec::new());
+        }
+        Ok(reach.into_iter().take(limit).collect())
+    }
+
     async fn populated(&self) -> io::Result<Vec<PopulatedSystem>> {
         read_meta(&populated_path(&self.dir))
     }
@@ -293,6 +333,7 @@ impl Source for FsSource {
             Part::Cell(id) => crate::codec::layout::payload_path(&self.dir, id),
             Part::Populated => populated_path(&self.dir),
             Part::Reaches => reaches_path(&self.dir),
+            Part::Reach(id) => crate::codec::layout::reach_path(&self.dir, id),
             Part::Factions => factions_path(&self.dir),
             Part::Table(name) => Directory::at(&self.dir).table_path(name),
             Part::Names => names_head_path(&self.dir),

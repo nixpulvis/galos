@@ -152,6 +152,13 @@ pub fn cold(
     // index cannot tell.
     let counts = rows.finish(dir).map_err(failed)?;
 
+    // And the reaches into the cells they size, now both are written: a
+    // file beside each payload, which is what the map reads. Every cell,
+    // the build having written every payload again.
+    let spread = galos_index::codec::Directory::at(dir)
+        .spread_all_reaches(&|| false)
+        .map_err(failed)?;
+
     // One line, in the shape the sink's own publish prints, so a directory
     // written by either builder says what happened the same way.
     info!(
@@ -167,6 +174,7 @@ pub fn cold(
         rows = report.named_rows,
         populated = counts.populated,
         reaches = counts.reaches,
+        reach_cells = spread.written,
         tables = ?counts.contributed,
         elapsed = ?start.elapsed(),
         dir = %dir.display(),

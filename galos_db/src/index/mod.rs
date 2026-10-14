@@ -22,7 +22,7 @@ use galos_index::records::derive::{self, NearestStar};
 use galos_photometry::{Magnitude, Temperature};
 use metadata::Metadata;
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -550,7 +550,16 @@ pub async fn build_to_dir(
         write_names(db, dir, told).await?;
     }
 
+    let spreading = parts.cells || parts.reaches;
     let meta = metadata::write_parts(db, dir, parts, contributed, told).await?;
+
+    // The reaches into the cells they size, once both are written: every
+    // cell where the cells were built, and every cell where the reaches
+    // were, the one a file beside the other's payload.
+    if spreading {
+        galos_index::codec::Directory::at(dir)
+            .spread_all_reaches(&|| false)?;
+    }
     Ok(Reached::End(BuildReport { cells, meta }))
 }
 
@@ -1082,8 +1091,22 @@ async fn pass(
         asked += chunk.len() as u64;
         told(Progress { step: step::CHANGED, done: asked, of });
     }
-    level.tree.publish(dir)?;
+    let rewritten = level.tree.publish(dir)?;
     let report = level.meta.publish_pass(db, dir, body_files).await?;
+
+    // The reaches of every cell whose payload was written, and of every cell
+    // holding a system a scan grew while its payload stood.
+    let mut cells: HashSet<_> = rewritten.into_iter().collect();
+    cells.extend(
+        level
+            .meta
+            .take_reached()
+            .into_iter()
+            .filter_map(|address| level.tree.owner_of(address)),
+    );
+    let meta = &level.meta;
+    galos_index::codec::Directory::at(dir)
+        .spread_reaches(cells, &|address| meta.reach_of(address))?;
 
     // What the directory now serves and the cursor it is current as of, in
     // one frame. The answer is whether the log has grown far enough against
@@ -1282,6 +1305,20 @@ fn resume(
             meta.names(),
             tree.len(),
         ));
+    }
+    // A directory written before the per-cell reaches has its table spread
+    // into them once, here, rather than a cell at a time as the passes
+    // happen by: a reader takes a directory with any for one with all.
+    let directory = galos_index::codec::Directory::at(dir);
+    if !directory.has_cell_reaches()
+        && galos_index::codec::layout::reaches_path(dir).exists()
+    {
+        if let Err(err) = directory.spread_all_reaches(&|| false) {
+            return refuse(format!(
+                "{}: the reaches could not be spread into the cells: {err}",
+                dir.display(),
+            ));
+        }
     }
     Resume::Level(tree, meta, cursor)
 }

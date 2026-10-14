@@ -56,6 +56,10 @@ pub struct Wrote {
 /// tables the program contributes ([`crate::tables`]) beside them.
 pub struct Tables {
     sidecars: Sidecars,
+    /// The systems whose reach a patch moved since [`Self::take_reached`]
+    /// last asked: their cells' reaches are owed a rewrite whether or not
+    /// their payloads are.
+    reached: HashSet<i64>,
 }
 
 impl Tables {
@@ -83,7 +87,19 @@ impl Tables {
             dir = %dir.display(),
             "resumed the metadata tables",
         );
-        Ok(Tables { sidecars })
+        Ok(Tables { sidecars, reached: HashSet::new() })
+    }
+
+    /// How far a system reaches, where the table holds a row: what each
+    /// cell's reaches are spread from.
+    pub fn reach_of(&self, address: i64) -> Option<f32> {
+        self.sidecars.reach_of(address)
+    }
+
+    /// The systems whose reach moved since this was last asked, and forget
+    /// them.
+    pub fn take_reached(&mut self) -> HashSet<i64> {
+        std::mem::take(&mut self.reached)
     }
 
     /// How many systems the names table holds.
@@ -187,7 +203,9 @@ impl Tables {
             }
 
             if let Some(reach) = galaxy.reach_of(address) {
-                self.sidecars.reach(address, reach);
+                if self.sidecars.reach(address, reach) {
+                    self.reached.insert(address);
+                }
             }
         }
     }

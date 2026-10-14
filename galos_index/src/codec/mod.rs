@@ -9,6 +9,8 @@
 //! - [`cells`]: the index file and a payload a cell.
 //! - [`lights`]: the photometry sidecar beside them, every cell's light and
 //!   each system's, which only the realistic view reads.
+//! - [`reach`]: how far each cell's systems reach, beside its payload,
+//!   which only the map's near view reads.
 //! - [`names`]: the names table, mapped and searched.
 //! - [`bodies`]: every system's insides, packed a shard to a file.
 //! - [`tables`]: the MessagePack tables beside the cells — the
@@ -33,6 +35,7 @@ pub mod lights;
 pub mod lock;
 pub mod names;
 pub mod parts;
+pub mod reach;
 pub(crate) mod rows;
 pub(crate) mod spill;
 pub mod tables;
