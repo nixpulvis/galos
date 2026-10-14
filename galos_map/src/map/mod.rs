@@ -51,6 +51,7 @@ pub fn plugin(app: &mut App) {
     // After the galaxy, whose walk holds the payloads a refresh replaces and
     // the stamps it asks about.
     app.add_plugins(index::refresh::plugin);
+    app.add_plugins(index::reach::plugin);
     // After the bodies, whose descent into a star is what carries the ruled
     // plane from light years to light seconds.
     app.add_plugins(grid::plugin);

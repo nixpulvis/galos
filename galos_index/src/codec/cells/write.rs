@@ -97,6 +97,7 @@ impl Directory<'_> {
                 }
             }
             self.remove_lit(id)?;
+            self.remove_reach(id)?;
         }
         Ok(())
     }
@@ -170,16 +171,18 @@ impl Directory<'_> {
     /// written. `apply` false counts and removes nothing, which is what `galos
     /// index sweep` reports before it is asked to act.
     ///
-    /// The photometry sidecar's per-cell files are swept by the same rule,
-    /// being named as the payloads are: a cell the tree does not name has no
-    /// light either.
+    /// The photometry sidecar's per-cell files and the per-cell reaches are
+    /// swept by the same rule, being named as the payloads are: a cell the
+    /// tree does not name has no light and no reaches either.
     pub fn sweep_payloads(
         self,
         named: &dyn Fn(CellId) -> bool,
         apply: bool,
     ) -> io::Result<Swept> {
         let mut swept = Swept { removed: apply, ..Swept::default() };
-        for root in [self.root.join(PAYLOAD_DIR), self.lit_dir()] {
+        for root in
+            [self.root.join(PAYLOAD_DIR), self.lit_dir(), self.reach_dir()]
+        {
             let entries = match fs::read_dir(&root) {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,

@@ -88,6 +88,20 @@ impl Index {
     }
 }
 
+impl Index {
+    /// How many systems a cell's payload holds, without reading them: what a
+    /// column written beside the payload is held to.
+    pub fn payload_len(dir: &Path, id: CellId) -> io::Result<Option<usize>> {
+        match Payload::open(dir, id)? {
+            Some(payload) => Ok(Some(payload.len())),
+            None => {
+                let points = Index::read_payload(dir, id)?;
+                Ok((!points.is_empty()).then_some(points.len()))
+            }
+        }
+    }
+}
+
 /// One cell's payload, mapped rather than decoded.
 ///
 /// [`Index::read_payload`](crate::tree::index::Index::read_payload) reads the

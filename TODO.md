@@ -80,9 +80,16 @@ Measured over `.index/full`; see the commit that queued the payload reads.
   generation in place of the file's mtime (`read::source::Stamp`), a
   republish that stays atomic for a router holding a mapping, and a
   `galos index migrate` step.
-- `reaches.bin` as mapped fixed-width columns, as the names table is. It is
-  1.1 GB of MessagePack and ~1.3 s of the map's opening, and holds ~2 GB at
-  peak while it decodes. `boosts.bin` the same.
+- `boosts.bin` as mapped fixed-width columns, as the names table is. It is
+  read whole on opening (0.22 s over `.index/full`).
+- The reaches are read a cell at a time now (`reach/` beside each payload),
+  but the builders still keep the whole table: the feed and the database
+  watch hold `reaches.bin`'s 76 M rows in a `HashMap` to spread a cell's
+  column from. A dirty cell's column could be built from the old columns of
+  the cells the same publish rewrites, and `reaches.bin` dropped, along with
+  `Source::reaches` and `Part::Reaches`, which nothing in the map reads.
+- The HTTP server (`galos index serve`) wants a `/reach/{level}/{x}/{y}/{z}`
+  route beside `/lit/`, stamped by the reach file.
 - Every marked cell is read, to 16 points whatever its share, so that
   `screen::Empty` can light a dark patch of sky with the brightest system
   of a cell there. Measured at 60,000 ly, a still view opened 77,418 cells

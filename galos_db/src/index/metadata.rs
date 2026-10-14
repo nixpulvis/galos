@@ -135,6 +135,9 @@ pub(super) struct Metadata {
     /// The highest faction id read. Ids come from a sequence and a name is
     /// never rewritten, so one query past this answers a whole pass.
     high: i32,
+    /// The systems whose reach a patch moved since [`Self::take_reached`]
+    /// last asked, whose cells' reaches are owed a rewrite.
+    reached: HashSet<i64>,
 }
 
 impl Metadata {
@@ -151,7 +154,7 @@ impl Metadata {
     ) -> io::Result<Metadata> {
         let sidecars = Sidecars::resume(dir, tables)?;
         let high = sidecars.highest_faction();
-        Ok(Metadata { sidecars, high })
+        Ok(Metadata { sidecars, high, reached: HashSet::new() })
     }
 
     /// How many systems the names table stands for: every positioned one,
@@ -204,7 +207,9 @@ impl Metadata {
         let mut scanned = HashSet::with_capacity(reached.len());
         for (address, reach) in reached {
             scanned.insert(address);
-            self.sidecars.reach(address, reach);
+            if self.sidecars.reach(address, reach) {
+                self.reached.insert(address);
+            }
         }
 
         // What the contributed tables derive their rows from: the records
@@ -232,6 +237,17 @@ impl Metadata {
         }
 
         write_bodies(dir, &grouped, touched)
+    }
+
+    /// How far a system reaches, where the table holds a row.
+    pub(super) fn reach_of(&self, address: i64) -> Option<f32> {
+        self.sidecars.reach_of(address)
+    }
+
+    /// The systems whose reach moved since this was last asked, and forget
+    /// them.
+    pub(super) fn take_reached(&mut self) -> HashSet<i64> {
+        std::mem::take(&mut self.reached)
     }
 
     /// Write everything one pass's chunks moved: the rows the arrivals

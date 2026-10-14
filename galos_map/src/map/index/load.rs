@@ -29,7 +29,6 @@
 //! read the tables -- [`crate::ui::chrome`] and [`crate::dev::diagnostics`] --
 //! and those carry the gate themselves.
 
-use crate::map::index::names;
 use crate::map::index::refresh::Stamps;
 use crate::map::index::{
     Factions, IndexDir, Names, Populated, ResidentIndex, Settled, Transport,
@@ -81,7 +80,6 @@ pub(crate) enum Step {
     Cells,
     Populated,
     Names,
-    Reaches,
     Boosts,
     Factions,
     Jumps,
@@ -95,7 +93,6 @@ impl Step {
             Step::Cells => "the cells",
             Step::Populated => "the populated systems",
             Step::Names => "the names",
-            Step::Reaches => "how far systems reach",
             Step::Boosts => "the supercharge table",
             Step::Factions => "the factions",
             Step::Jumps => "the jumps a ship can make",
@@ -112,10 +109,9 @@ impl Step {
             1 => Step::Cells,
             2 => Step::Populated,
             3 => Step::Names,
-            4 => Step::Reaches,
-            5 => Step::Boosts,
-            6 => Step::Factions,
-            7 => Step::Jumps,
+            4 => Step::Boosts,
+            5 => Step::Factions,
+            6 => Step::Jumps,
             _ => Step::Stamps,
         }
     }
@@ -198,13 +194,16 @@ fn start(
 /// stamp of the publish and never asked for again. See
 /// [`Stamps::before_reading`].
 ///
-/// **The two big tables beside everything else, not after it.** The reaches
-/// are a gigabyte of MessagePack and the supercharge table a tenth of one,
-/// and measured over `.index/full` they were 1.54 s and 0.22 s of a 2.14 s
-/// opening read one after another. Nothing else read here waits on them, so
-/// they decode on threads of their own while the cells, the names and the
-/// rest are read and worked up on this one, and the opening is as long as
-/// the reaches alone. The step said is whichever is being waited on.
+/// **The supercharge table beside everything else, not after it.** It is a
+/// tenth of a gigabyte of MessagePack, 0.22 s of the opening measured over
+/// `.index/full`, and nothing else read here waits on it, so it decodes on a
+/// thread of its own while the cells, the names and the rest are read and
+/// worked up on this one. The step said is whichever is being waited on.
+///
+/// **No reaches.** They were the other big table, a gigabyte of MessagePack
+/// and 1.54 s of a 2.14 s opening, held whole for every system in the
+/// galaxy. They are read a cell at a time now, for the cells near the
+/// camera; see [`crate::map::index::reach`].
 async fn read(
     source: &Arc<dyn galos_index::prelude::Source>,
     step: &Arc<AtomicU8>,
@@ -216,9 +215,6 @@ async fn read(
     let held = Stamps::before_reading(&**source).await;
 
     std::thread::scope(|scope| {
-        let reaching = scope.spawn(|| {
-            names::Reaches::of(block_on(source.reaches()).unwrap_or_default())
-        });
         let boosting = scope.spawn(|| {
             block_on(galos_index::read::source::table::<BoostTable>(&**source))
                 .unwrap_or_default()
@@ -271,14 +267,11 @@ async fn read(
         at(Step::Jumps);
         let (sky, settled) = worked_up(dir, &index, &populated);
 
-        at(Step::Reaches);
-        let reaches = reaching.join().map_err(|_| "reading the reaches")?;
         at(Step::Boosts);
         let boosts = boosting.join().map_err(|_| "reading the boosts")?;
 
         Ok(stood_up(
-            dir, held, index, populated, table, reaches, boosts, factions, sky,
-            settled,
+            dir, held, index, populated, table, boosts, factions, sky, settled,
         ))
     })
 }
@@ -321,8 +314,8 @@ fn finish(
 /// What the cells alone are worked up into: the sky the router reads and the
 /// political rollup
 ///
-/// Apart from [`stood_up`] so it runs while the reaches are still decoding;
-/// neither reads them.
+/// Apart from [`stood_up`] so it runs while the supercharge table is still
+/// decoding; neither reads it.
 fn worked_up(
     dir: &str,
     index: &Index,
@@ -354,7 +347,7 @@ fn worked_up(
 /// Work up what was read into what the map holds
 ///
 /// All of it together, since the tables are read against each other: a name
-/// is looked up beside the reach it was published with, and a route is walked
+/// is looked up beside the cell it was published with, and a route is walked
 /// over the graph built from both. Half of them would be a map answering out
 /// of two different reads.
 #[allow(clippy::too_many_arguments)]
@@ -364,19 +357,17 @@ fn stood_up(
     index: Index,
     populated: Vec<PopulatedSystem>,
     table: galos_index::prelude::Names,
-    reaches: names::Reaches,
     boosts: Option<Vec<SystemBoost>>,
     factions: Vec<Faction>,
     sky: Option<Arc<galos_index::prelude::Sky>>,
     settled: Settled,
 ) -> Loaded {
     info!(
-        "index {dir} has {} cells, {} populated, {} names, {} reaches, \
+        "index {dir} has {} cells, {} populated, {} names, \
          {} supercharging, {} factions",
         index.len(),
         populated.len(),
         table.len(),
-        reaches.len(),
         boosts.as_ref().map_or(0, Vec::len),
         factions.len(),
     );
@@ -422,7 +413,7 @@ fn stood_up(
             populated.into_iter().map(|s| (s.address, s)).collect(),
         )),
         settled,
-        names: Names::packed(table, reaches, sky),
+        names: Names::packed(table, sky),
         factions: Factions(
             factions.into_iter().map(|f| (f.id, f.name)).collect(),
         ),
