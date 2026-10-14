@@ -83,8 +83,9 @@ pub fn reach_points(bytes: &[u8], limit: usize) -> Option<Vec<Option<f32>>> {
         (0..count.min(limit))
             .map(|at| {
                 let from = REACH_HEADER + at * 4;
-                let metres =
-                    f32::from_le_bytes(bytes[from..from + 4].try_into().unwrap());
+                let metres = f32::from_le_bytes(
+                    bytes[from..from + 4].try_into().unwrap(),
+                );
                 (!metres.is_nan()).then_some(metres)
             })
             .collect(),
@@ -152,7 +153,11 @@ pub struct Spread {
 impl Directory<'_> {
     /// Write one cell's systems' reaches, opening its shard directory the
     /// first time anything lands there, beside the file and renamed over it.
-    pub fn write_reach(self, id: CellId, reach: &[Option<f32>]) -> io::Result<()> {
+    pub fn write_reach(
+        self,
+        id: CellId,
+        reach: &[Option<f32>],
+    ) -> io::Result<()> {
         let path = reach_path(self.root(), id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -316,8 +321,8 @@ mod tests {
             let points = built.payload(cell.id);
             let want: Vec<Option<f32>> =
                 points.iter().map(|it| table.get(it.id64 as i64)).collect();
-            let read = pollster::block_on(source.reach(cell.id, usize::MAX))
-                .unwrap();
+            let read =
+                pollster::block_on(source.reach(cell.id, usize::MAX)).unwrap();
             if want.iter().all(Option::is_none) {
                 assert!(read.is_empty(), "{:?} has reaches", cell.id);
                 assert!(!reach_path(&scratch.0, cell.id).exists());
@@ -336,7 +341,8 @@ mod tests {
         let scratch = Scratch::new();
         let built = Snapshot::build(&systems(2000), &BuildParams::default());
         built.write(&scratch.0).unwrap();
-        let cell = built.index.cells().find(|c| !built.payload(c.id).is_empty());
+        let cell =
+            built.index.cells().find(|c| !built.payload(c.id).is_empty());
         let cell = cell.expect("a cell owning systems").id;
         let first = built.payload(cell)[0].id64 as i64;
         let dir = Directory::at(&scratch.0);
@@ -344,12 +350,19 @@ mod tests {
 
         dir.spread_reaches([cell], &|_| None).unwrap();
         assert!(pollster::block_on(source.reach(cell, 9)).unwrap().is_empty());
-        assert_eq!(pollster::block_on(source.stamp(Part::Reach(cell))).unwrap(), None);
+        assert_eq!(
+            pollster::block_on(source.stamp(Part::Reach(cell))).unwrap(),
+            None
+        );
 
         dir.spread_reaches([cell], &|a| (a == first).then_some(7.0)).unwrap();
         let read = pollster::block_on(source.reach(cell, 1)).unwrap();
         assert_eq!(read, [Some(7.0)]);
-        assert!(pollster::block_on(source.stamp(Part::Reach(cell))).unwrap().is_some());
+        assert!(
+            pollster::block_on(source.stamp(Part::Reach(cell)))
+                .unwrap()
+                .is_some()
+        );
     }
 
     /// A column written for a payload of another length is read as none:
@@ -359,7 +372,8 @@ mod tests {
         let scratch = Scratch::new();
         let built = Snapshot::build(&systems(2000), &BuildParams::default());
         built.write(&scratch.0).unwrap();
-        let cell = built.index.cells().find(|c| !built.payload(c.id).is_empty());
+        let cell =
+            built.index.cells().find(|c| !built.payload(c.id).is_empty());
         let cell = cell.expect("a cell owning systems").id;
         let len = built.payload(cell).len();
         Directory::at(&scratch.0)

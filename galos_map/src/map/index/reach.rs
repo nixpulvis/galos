@@ -92,9 +92,8 @@ pub(crate) fn ask(
     }
     let Ok(orbit) = cameras.single() else { return };
     let eye = orbit.eye();
-    let stepped = reading
-        .asked_from
-        .is_none_or(|from| from.distance(eye) >= STEP);
+    let stepped =
+        reading.asked_from.is_none_or(|from| from.distance(eye) >= STEP);
     if !stepped && !resident.is_changed() && !names.is_changed() {
         return;
     }
@@ -107,7 +106,10 @@ pub(crate) fn ask(
         if id.bounds().distance_to(at) > NEAR * 4. {
             names.reaches.forget(id);
         } else if let Some(cell) = resident.0.cell(id)
-            && names.reaches.laid(id).is_some_and(|laid| laid < cell.points.len())
+            && names
+                .reaches
+                .laid(id)
+                .is_some_and(|laid| laid < cell.points.len())
         {
             let addresses: Vec<i64> =
                 cell.points.iter().map(|point| point.id64 as i64).collect();

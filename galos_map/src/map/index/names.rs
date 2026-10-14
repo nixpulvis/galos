@@ -77,7 +77,8 @@ impl Reaches {
     pub fn of(rows: Vec<galos_index::records::SystemReach>) -> Reaches {
         let reaches = Reaches::default();
         if !rows.is_empty() {
-            let addresses: Vec<i64> = rows.iter().map(|it| it.address).collect();
+            let addresses: Vec<i64> =
+                rows.iter().map(|it| it.address).collect();
             let column = rows.iter().map(|it| Some(it.reach)).collect();
             reaches.put(CellId::ROOT, None, column, &addresses);
         }
@@ -87,7 +88,12 @@ impl Reaches {
     /// How far `address` reaches, where its cell's reaches are held and
     /// anything in it has been scanned.
     pub fn get(&self, address: i64) -> Option<f32> {
-        self.held.read().expect("the reaches lock").by_address.get(&address).copied()
+        self.held
+            .read()
+            .expect("the reaches lock")
+            .by_address
+            .get(&address)
+            .copied()
     }
 
     /// How many systems have a reach held.
@@ -131,7 +137,8 @@ impl Reaches {
     ) -> Vec<i64> {
         let mut held = self.held.write().expect("the reaches lock");
         let mut moved = Vec::new();
-        let gone = held.cells.remove(&id).map(|cell| cell.laid).unwrap_or_default();
+        let gone =
+            held.cells.remove(&id).map(|cell| cell.laid).unwrap_or_default();
         for address in gone {
             if held.by_address.remove(&address).is_some() {
                 moved.push(address);
@@ -198,8 +205,12 @@ mod tests {
         let reaches = Reaches::default();
         assert_eq!(reaches.get(3), None, "nothing read yet");
 
-        let moved =
-            reaches.put(CELL, Some(1), vec![Some(100.), None, Some(400.)], &[3, 5, 9]);
+        let moved = reaches.put(
+            CELL,
+            Some(1),
+            vec![Some(100.), None, Some(400.)],
+            &[3, 5, 9],
+        );
         assert_eq!(moved, [3, 9]);
         assert_eq!(reaches.len(), 2);
         assert_eq!(reaches.get(3), Some(100.));
@@ -221,7 +232,12 @@ mod tests {
         assert_eq!(reaches.laid(CELL), Some(3));
 
         // Read again, one system's reach gone: it is gone here too.
-        let moved = reaches.put(CELL, Some(2), vec![Some(1.), None, Some(3.)], &[7, 8, 9]);
+        let moved = reaches.put(
+            CELL,
+            Some(2),
+            vec![Some(1.), None, Some(3.)],
+            &[7, 8, 9],
+        );
         assert!(moved.contains(&8));
         assert_eq!(reaches.get(8), None);
 
