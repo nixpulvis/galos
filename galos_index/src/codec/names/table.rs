@@ -180,6 +180,7 @@ impl Table {
         // name read, so faulting it a page at a time is the same mistake
         // one level down.
         if let Some(exception) = held.text.exception.as_ref() {
+            #[cfg(unix)]
             exception.advise(memmap2::Advice::WillNeed)?;
             let mut seen = 0u64;
             for page in exception.chunks(PAGE) {
@@ -188,6 +189,9 @@ impl Table {
             std::hint::black_box(seen);
         }
         let bytes = &held.text.bytes;
+        // `madvise` is unix-only in memmap2; elsewhere the page touches
+        // below are the whole of the warm.
+        #[cfg(unix)]
         bytes.advise(memmap2::Advice::WillNeed)?;
         // A byte a page, which is what makes the read happen rather than
         // merely be suggested. Summed and handed to `black_box` so the
